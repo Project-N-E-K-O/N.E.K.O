@@ -1,17 +1,31 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-音频静音检测与裁剪工具
+Audio silence detection and trimming tool
 
-功能:
-- 基于 RMS 能量检测算法识别静音段落
-- 将超长静音段缩减至固定时长（从静音段正中间裁剪）
-- 保留静音段首尾边缘以确保自然过渡，不引入相位不连续
-- 保持输出与输入完全一致的技术参数
-- 支持取消操作与进度回调
-- MD5 校验确保数据完整性
+Features:
+- Detects silent segments using an RMS energy detection algorithm
+- Shrinks overlong silent segments to a fixed duration (trimming from the exact middle)
+- Keeps head/tail edges of silent segments for natural transitions, introducing no phase discontinuity
+- Keeps output technical parameters identical to the input
+- Supports cancellation and progress callbacks
+- MD5 checksum ensures data integrity
 
-静音阈值: -40 dBFS 以下且连续持续时间 ≥ 200 ms
-裁剪策略: 每段静音缩减至 200 ms，从正中间执行裁剪
+Silence threshold: below -40 dBFS lasting continuously >= 200 ms
+Trimming strategy: each silent segment is shrunk to 200 ms, trimmed from the exact middle
 """
 
 import io
@@ -35,7 +49,7 @@ RMS_FRAME_DURATION_MS = 10      # RMS 计算帧长 (ms)
 
 @dataclass
 class SilenceSegment:
-    """一段被检测到的静音区间"""
+    """A detected silent interval"""
     start_ms: float   # 起始时间 (ms)
     end_ms: float     # 结束时间 (ms)
 
@@ -46,7 +60,7 @@ class SilenceSegment:
 
 @dataclass
 class SilenceAnalysisResult:
-    """静音分析结果"""
+    """Silence analysis result"""
     original_duration_ms: float           # 原始音频总时长 (ms)
     silence_segments: list[SilenceSegment] = field(default_factory=list)  # 所有静音段
     total_silence_ms: float = 0.0         # 检测到的静音总时长 (ms)
@@ -60,7 +74,7 @@ class SilenceAnalysisResult:
 
 @dataclass
 class TrimResult:
-    """裁剪处理结果"""
+    """Trim processing result"""
     audio_data: bytes           # 处理后的音频二进制数据 (WAV)
     md5: str                    # MD5 校验值
     original_duration_ms: float
@@ -73,7 +87,7 @@ class TrimResult:
 
 
 class SilenceRemovalCancelledError(Exception):
-    """任务被用户取消"""
+    """Task cancelled by the user"""
     pass
 
 
@@ -82,7 +96,7 @@ CancelledError = SilenceRemovalCancelledError
 
 
 def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
-    """将原始 PCM bytes 转为 float64 numpy 数组 (范围 -1.0 ~ 1.0)"""
+    """Convert raw PCM bytes to a float64 numpy array (range -1.0 ~ 1.0)"""
     if sample_width == 1:
         # 8-bit unsigned
         arr = np.frombuffer(data, dtype=np.uint8).astype(np.float64)
@@ -112,7 +126,7 @@ def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
 
 
 def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
-    """将 float64 numpy 数组 (-1.0 ~ 1.0) 转回原始 PCM bytes"""
+    """Convert a float64 numpy array (-1.0 ~ 1.0) back to raw PCM bytes"""
     arr = np.clip(arr, -1.0, 1.0)
     if sample_width == 1:
         out = ((arr * 128.0) + 128.0).astype(np.uint8)
@@ -138,7 +152,7 @@ def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
 
 
 def _rms_dbfs(samples: np.ndarray) -> float:
-    """计算一帧采样的 RMS 值 (dBFS)"""
+    """Compute the RMS value (dBFS) of one frame of samples"""
     if len(samples) == 0:
         return -100.0
     rms = np.sqrt(np.mean(samples ** 2))
@@ -155,16 +169,16 @@ def detect_silence(
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> SilenceAnalysisResult:
     """
-    分析 WAV 音频中的静音段落。
+    Analyze silent segments in WAV audio.
 
-    参数:
-        audio_buffer: WAV 音频数据的 BytesIO
-        threshold_dbfs: 静音阈值 (dBFS)，低于此值视为静音
-        min_silence_ms: 最小静音持续时间 (ms)
-        progress_callback: 进度回调 (0-100)
-        cancel_check: 取消检测回调，返回 True 表示取消
+    Args:
+        audio_buffer: BytesIO of the WAV audio data
+        threshold_dbfs: silence threshold (dBFS); below this counts as silence
+        min_silence_ms: minimum silence duration (ms)
+        progress_callback: progress callback (0-100)
+        cancel_check: cancellation callback; returning True means cancel
 
-    返回:
+    Returns:
         SilenceAnalysisResult
     """
     audio_buffer.seek(0)
@@ -269,20 +283,21 @@ def trim_silence(
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> TrimResult:
     """
-    根据静音分析结果，将每段静音缩减至 RETAINED_SILENCE_MS (200 ms)。
+    Shrink each silent segment to RETAINED_SILENCE_MS (200 ms) based on the silence analysis.
 
-    裁剪策略:
-        对每段检测到的静音区间，保留首尾各 RETAINED_SILENCE_MS / 2 的边缘，
-        移除正中间多余的静音。这样拼接点处的采样自然过渡（均为近零值），
-        不会引入新的相位不连续或咔嗒声。
+    Trimming strategy:
+        For each detected silent interval, keep RETAINED_SILENCE_MS / 2 edges at the
+        head and tail, and remove the excess silence in the exact middle. Samples at
+        the splice points transition naturally (all near zero), introducing no new
+        phase discontinuities or clicks.
 
-    参数:
-        audio_buffer: 原始 WAV 音频的 BytesIO
-        analysis: detect_silence 返回的分析结果
-        progress_callback: 进度回调 (0-100)
-        cancel_check: 取消检测回调
+    Args:
+        audio_buffer: BytesIO of the original WAV audio
+        analysis: analysis result returned by detect_silence
+        progress_callback: progress callback (0-100)
+        cancel_check: cancellation callback
 
-    返回:
+    Returns:
         TrimResult
     """
     if not analysis.silence_segments:
@@ -408,7 +423,7 @@ def trim_silence(
 
 
 def format_duration_mmss(ms: float) -> str:
-    """将毫秒转为 mm:ss 格式"""
+    """Convert milliseconds to mm:ss format"""
     total_seconds = int(ms / 1000.0)
     minutes = total_seconds // 60
     seconds = total_seconds % 60
@@ -417,10 +432,10 @@ def format_duration_mmss(ms: float) -> str:
 
 def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[io.BytesIO, str]:
     """
-    如果输入不是 WAV，使用 pyav 解码为 16-bit PCM 单声道 WAV。
-    对 WAV 文件直接返回（不做重采样/格式转换）。
+    If the input is not WAV, decode it to 16-bit PCM mono WAV using pyav.
+    WAV files are returned as-is (no resampling/format conversion).
 
-    返回: (wav_buffer, original_format)
+    Returns: (wav_buffer, original_format)
     """
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
 
@@ -502,8 +517,8 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
 
 def convert_wav_back(wav_buffer: io.BytesIO, original_format: str, original_params: dict) -> io.BytesIO:
     """
-    将 WAV 转回原始格式（如果原始格式不是 WAV）。
-    保持与原始文件完全一致的技术参数。
+    Convert WAV back to the original format (if the original format is not WAV).
+    Keeps technical parameters identical to the original file.
     """
     if original_format == 'wav':
         wav_buffer.seek(0)

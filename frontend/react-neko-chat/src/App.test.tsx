@@ -1,14 +1,52 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import App from './App';
+import App, {
+  COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS,
+  COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+  COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+  getCompactToolWheelReboundVolume,
+  playCompactToolWheelDetentSound,
+  playCompactToolWheelReboundSound,
+  resetCompactToolWheelDetentAudioForTests,
+} from './App';
+import {
+  COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS,
+  computeCompactHistoryEnterDelay,
+  computeCompactHistoryExitDelay,
+} from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
+import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
+import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+  const COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY = 'neko.experiment.compactHistoryDefault';
+  const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
+  const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
+  const DEFAULT_CHAT_EMPTY_STATE_FALLBACK = getChatEmptyStateFallback('en');
+  const DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK = getChatCompanionEmptyStateFallback('en');
+  const LOCAL_STORAGE_KEYS_TO_RESET = [
+    COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY,
+    COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY,
+    COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
+    COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
+    ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+  ];
 
   beforeEach(() => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
+      window.localStorage.removeItem(key);
+    });
+    // 历史 UI 用例需要历史区默认展开：A/B 变体默认值现改为「教程完全结束后」才异步套用，测试里直接给一个
+    // 显式持久化「开」偏好，让历史区同步展开、与实验门控解耦（实验/门控行为另有专门用例覆盖）。
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+    delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
+    delete (window as Window & { NekoGameSystem?: unknown }).NekoGameSystem;
+    resetCompactToolWheelDetentAudioForTests();
+    document.body.style.pointerEvents = '';
+    document.body.classList.remove('yui-guide-chat-buttons-disabled');
+    document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
 
   const openCompactInputTools = async () => {
@@ -31,18 +69,59 @@ describe('App', () => {
 
   const clickCompactExportTool = async () => {
     await openCompactInputTools();
+    const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan');
     const exportButton = document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export');
+    expect(fan).not.toBeNull();
     expect(exportButton).not.toBeNull();
+    for (let index = 0; index < 7 && exportButton!.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
+      fireEvent.wheel(fan!, { deltaY: 80 });
+    }
+    expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
     expect(exportButton).not.toBeDisabled();
     fireEvent.click(exportButton!);
     return exportButton!;
   };
 
-  const waitForCompactHistoryDragLayerToClear = async () => {
-    await waitFor(() => {
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-    });
+  const rotateCompactToolToCenter = (tool: HTMLElement) => {
+    const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan');
+    expect(fan).not.toBeNull();
+    for (let index = 0; index < 7 && tool.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
+      fireEvent.wheel(fan!, { deltaY: 80 });
+    }
+    expect(tool).toHaveAttribute('data-compact-tool-wheel-slot', '0');
   };
+
+  const mockCompactToolFanRect = (fan: HTMLElement) => vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+    left: 0,
+    top: 0,
+    right: 232,
+    bottom: 232,
+    width: 232,
+    height: 232,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect);
+
+  const compactToolWheelPoint = (angleRad: number, radius = 92) => ({
+    clientX: 116 + Math.cos(angleRad) * radius,
+    clientY: 116 + Math.sin(angleRad) * radius,
+  });
+
+  it('selects locale-aware chat empty state fallbacks', () => {
+    expect(getChatEmptyStateFallback('zh-CN')).toBe('现在开始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-TW')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-HK')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-MO')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('zh-Hant')).toBe('現在開始跟我聊天吧！');
+    expect(getChatEmptyStateFallback('en-US')).toBe('Start chatting with me now!');
+    expect(getChatCompanionEmptyStateFallback('zh-CN')).toBe('（我就在这陪着你哦）');
+    expect(getChatCompanionEmptyStateFallback('zh-TW')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-HK')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-MO')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('zh-Hant')).toBe('（我就在這陪著你喔）');
+    expect(getChatCompanionEmptyStateFallback('en-US')).toBe("(I'm right here with you.)");
+  });
 
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -57,55 +136,24 @@ describe('App', () => {
     }));
   };
 
-  const setupAvatarDropBounds = () => {
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    return () => {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    };
-  };
-
-  const setupDesktopAvatarDropBounds = () => {
-    const hostWindow = window as Window & {
-      __nekoDesktopAvatarBounds?: unknown;
-    };
-    hostWindow.__nekoDesktopAvatarBounds = {
-      left: 100,
-      right: 200,
-      top: 100,
-      bottom: 200,
-      width: 100,
-      height: 100,
-    };
-    return () => {
-      delete hostWindow.__nekoDesktopAvatarBounds;
-    };
+  const mockMobileMatchMedia = (mobile = true) => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: mobile && query === '(max-width: 820px)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
   };
 
   const renderInputApp = (
     props: React.ComponentProps<typeof App> = {},
   ) => render(<App compactChatState="input" {...props} />);
+  const queryAvatarCursorOverlay = () => document.body.querySelector<HTMLElement>('.avatar-cursor-overlay');
+  const queryHammerCursorCompactImage = () => document.body.querySelector<HTMLImageElement>('.hammer-cursor-overlay-compact-image');
 
   it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
@@ -113,8 +161,48 @@ describe('App', () => {
     expect(screen.queryByPlaceholderText('Type a message...')).toBeNull();
     expect(document.body.querySelector('.compact-chat-stage-default')).not.toBeNull();
     expect(document.body.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(document.body.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_EMPTY_STATE_FALLBACK);
     expect(screen.getByRole('button', { name: '更多工具' })).toBeInTheDocument();
     expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
+  });
+
+  it('dispatches the frozen legacy full surface for chatSurfaceMode="full"', () => {
+    // The dispatcher routes `full` to the isolated FullChatSurface, which shows
+    // the full history list + full composer instead of the compact surface.
+    const message = parseChatMessage({
+      id: 'm-full',
+      role: 'assistant',
+      author: 'Neko',
+      time: '12:00',
+      blocks: [{ type: 'text', text: 'hello from full' }],
+    });
+    const { container } = render(<App chatSurfaceMode="full" messages={[message]} />);
+
+    // Full surface: history list + full composer with the persistent textarea.
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    expect(container.querySelector('.composer-bottom-bar')).not.toBeNull();
+
+    // Compact surface must NOT mount — the two subtrees are mutually exclusive.
+    expect(container.querySelector('.compact-chat-surface-shell')).toBeNull();
+    expect(container.querySelector('.compact-chat-stage')).toBeNull();
+  });
+
+  it('hides the full composer and tools when composerHidden is true', () => {
+    const message = parseChatMessage({
+      id: 'm-full-hidden',
+      role: 'assistant',
+      author: 'Neko',
+      time: '12:01',
+      blocks: [{ type: 'text', text: 'goodbye state' }],
+    });
+    const { container } = render(<App chatSurfaceMode="full" composerHidden messages={[message]} />);
+
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(screen.queryByPlaceholderText('Type a message...')).toBeNull();
+    expect(container.querySelector('.composer-panel')).toBeNull();
+    expect(container.querySelector('.composer-bottom-tools')).toBeNull();
+    expect(container.querySelector('.send-button-circle')).toBeNull();
   });
 
   it('enters compact input from the subtitle capsule when used uncontrolled', () => {
@@ -131,6 +219,51 @@ describe('App', () => {
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
   });
 
+  it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
+    );
+
+    fireEvent.click(container.querySelector('.compact-chat-capsule-button') as HTMLButtonElement);
+
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps compact text input and keyboard submit locked while the tutorial shield is active', async () => {
+    const onComposerSubmit = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Keyboard bypass attempt' } });
+    expect(input).toHaveValue('Keyboard bypass attempt');
+
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
+    await waitFor(() => {
+      expect(input).toHaveAttribute('readonly');
+    });
+
+    fireEvent.change(input, { target: { value: 'Changed while locked' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(input).toHaveValue('Keyboard bypass attempt');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   it('exposes explicit surface mode state on the rendered shell', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
@@ -144,26 +277,32 @@ describe('App', () => {
     expect(compactStage).toHaveAttribute('data-compact-chat-state', 'input');
   });
 
-  it('renders a compact drag handle in compact input and voice capsule states only', () => {
+  it('declares compact drag surface and no-drag controls in compact states only', () => {
     const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
-    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).toBeNull();
     expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-item', 'input');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
-    expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-drag-surface="true"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toBeNull();
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-no-drag', 'true');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-no-drag', 'true');
     expect(container.querySelector('[data-compact-resize-side="left"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
+    expect(container.querySelector('[data-compact-resize-side="left"]')).toHaveAttribute('data-compact-no-drag', 'true');
     expect(container.querySelector('[data-compact-resize-side="right"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
+    expect(container.querySelector('[data-compact-resize-side="right"]')).toHaveAttribute('data-compact-no-drag', 'true');
     const stableSurfaceShell = container.querySelector('.compact-chat-surface-shell');
     const stableSurfaceFrame = container.querySelector('.compact-chat-surface-frame');
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" composerHidden />);
-    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).toBeNull();
     expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-item', 'capsule');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-drag-surface="true"]')).toHaveAttribute('data-compact-geometry-part', 'capsuleBody');
     expect(container.querySelector('.compact-chat-surface-shell')).toBe(stableSurfaceShell);
     expect(container.querySelector('.compact-chat-surface-frame')).toBe(stableSurfaceFrame);
 
@@ -285,7 +424,7 @@ describe('App', () => {
       });
 
       await waitFor(() => {
-        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('430px');
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('180px');
       });
       fireEvent.pointerUp(rightHandle!, {
         pointerId: 22,
@@ -350,7 +489,257 @@ describe('App', () => {
     }
   });
 
-  it('toggles compact inline history from the export tool without calling the full export path', async () => {
+  it('starts compact input resize from the visible frame width instead of the carrier shell width', () => {
+    const resizeRequests: Array<{
+      side: string;
+      width: number;
+      phase: string;
+      screenRect?: { left: number; top: number; width: number; height: number; right: number; bottom: number };
+    }> = [];
+    const handleResizeRequest = (event: Event) => {
+      resizeRequests.push((event as CustomEvent).detail);
+    };
+    window.addEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 0, y: 0, width: 760, height: 80 },
+      surfaceScreenRect: { left: 0, top: -80, right: 720, bottom: -26, width: 720, height: 54 },
+    };
+    const getBoundingClientRectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function mockCompactSurfaceStartWidth(this: HTMLElement) {
+        if (this.classList.contains('compact-chat-surface-shell')) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 720,
+            bottom: 60,
+            width: 720,
+            height: 60,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.classList.contains('compact-chat-surface-frame')) {
+          return {
+            x: 0,
+            y: 0,
+            top: 12,
+            left: 0,
+            right: 430,
+            bottom: 66,
+            width: 430,
+            height: 54,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    try {
+      const leftHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="left"]');
+      expect(leftHandle).not.toBeNull();
+      fireEvent.pointerDown(leftHandle!, {
+        pointerId: 41,
+        clientX: 0,
+        screenX: 0,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
+      expect(resizeRequests).toEqual([
+        expect.objectContaining({
+          side: 'left',
+          width: 430,
+          phase: 'start',
+          screenRect: expect.objectContaining({
+            left: 0,
+            top: 12,
+            width: 430,
+            height: 54,
+            right: 430,
+            bottom: 66,
+          }),
+        }),
+      ]);
+      fireEvent.pointerUp(leftHandle!, {
+        pointerId: 41,
+        clientX: 0,
+        screenX: 0,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+    } finally {
+      getBoundingClientRectSpy.mockRestore();
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+      window.removeEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    }
+  });
+
+  it('keeps compact history collapsed by default and only applies the open variant after the tutorial ends', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'open');
+    const message = parseChatMessage({
+      id: 'assistant-gate-1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    // 无显式偏好 → 初始折叠（即便 variant=open，也要等教程结束才展开）
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    // 教程完成 → 套用 open 变体 → 展开
+    act(() => {
+      window.dispatchEvent(new Event('neko:tutorial-completed'));
+    });
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+  });
+
+  it('does not allocate the history experiment variant when starting on a full surface (keeps compact A/B clean)', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.removeItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY);
+    const message = parseChatMessage({
+      id: 'assistant-full-gate', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+    });
+    render(<App chatSurfaceMode="full" messages={[message]} />);
+    act(() => {
+      window.dispatchEvent(new Event('neko:tutorial-completed'));
+    });
+    // full → FullChatSurface（CompactChatApp 不 mount），实验 effect 不跑：不分配 variant、不上报曝光，
+    // full-surface 用户没见过紧凑历史面板，不该进入 compact A/B 样本。
+    expect(window.localStorage.getItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY)).toBeNull();
+  });
+
+  it('still reports the exposure when sessionStorage access throws (privacy mode)', () => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
+    const telemetry = vi.fn(() => true);
+    (window as unknown as { appTelemetry?: { event: (n: string, f?: Record<string, unknown>) => boolean } }).appTelemetry = { event: telemetry };
+    // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
+    // 二者共享 Storage.prototype，按 this 区分。
+    const realGetItem = Storage.prototype.getItem;
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (this === window.sessionStorage) throw new DOMException('denied', 'SecurityError');
+      return realGetItem.call(this, key);
+    });
+    try {
+      const message = parseChatMessage({
+        id: 'assistant-privacy-exposure', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+        blocks: [{ type: 'text', text: 'hi' }], status: 'sent',
+      });
+      render(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
+      act(() => {
+        window.dispatchEvent(new Event('neko:tutorial-completed'));
+      });
+      // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
+      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', expect.objectContaining({
+        experiment: 'compact_history_default',
+        variant: 'closed',
+      }));
+    } finally {
+      getItemSpy.mockRestore();
+      delete (window as unknown as { appTelemetry?: unknown }).appTelemetry;
+    }
+  });
+
+  it('keeps the proactive meme overlay through the same-turn assistant caption that follows it', () => {
+    // 回归：主动分享是「发表情包 + 说台词」，台词是 assistant 消息、紧随 meme 落地。
+    // 旧逻辑「有新消息就收起」会让图一瞬间被台词顶掉（线上实测：图闪一下就没）。
+    const meme = parseChatMessage({
+      id: 'meme-abc123',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }],
+      status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+    const img = container.querySelector('.compact-meme-overlay img');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+
+    const caption = parseChatMessage({
+      id: 'assistant-newer',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'hi' }],
+      status: 'sent',
+    });
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, caption]} />);
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+  });
+
+  it('collapses the meme overlay once the user speaks again', () => {
+    const meme = parseChatMessage({
+      id: 'meme-abc123', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }], status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
+
+    const userReply = parseChatMessage({
+      id: 'user-1', role: 'user', author: 'Me', time: '10:02', createdAt: 3,
+      blocks: [{ type: 'text', text: 'haha' }], status: 'sent',
+    });
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, userReply]} />);
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+  });
+
+  it('keeps the meme overlay alongside a music card from the same share (independent widgets)', () => {
+    const meme = parseChatMessage({
+      id: 'meme-xyz', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=y', alt: 'lol' }], status: 'sent',
+    });
+    const musicCard = parseChatMessage({
+      id: 'music-abc', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2,
+      blocks: [{ type: 'link', url: 'https://example.com/song', title: 'Song' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, musicCard]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=y');
+  });
+
+  it('keeps the meme overlay even when a much later music-only turn arrives (no user message)', () => {
+    // 表情包是独立挂件，不被猫娘后续的音乐分享收起；只有用户开口才换场。
+    const meme = parseChatMessage({
+      id: 'meme-old', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1000,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=z', alt: 'lol' }], status: 'sent',
+    });
+    const laterMusic = parseChatMessage({
+      id: 'music-later', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 1000 + 60000,
+      blocks: [{ type: 'link', url: 'https://example.com/song2', title: 'Song2' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, laterMusic]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=z');
+  });
+
+  it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({
       id: 'assistant-history-1',
@@ -371,28 +760,218 @@ describe('App', () => {
       />,
     );
 
-    const exportButton = await clickCompactExportTool();
-
     expect(onExportConversationClick).not.toHaveBeenCalled();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
-    expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-id', 'history:scroll');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-kind', 'scroll');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
-    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+    expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-item', 'musicPlayer');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     expect(container.querySelector('.compact-export-history-message')).toHaveAttribute('role', 'listitem');
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
-    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
-    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
+    expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
+    const exportButton = await clickCompactExportTool();
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-pressed', 'false');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'false');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '0');
+    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+
+    vi.useFakeTimers();
+    try {
+      const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.mouseEnter(scroll);
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.wheel(scroll, { deltaY: 80 });
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS);
+      });
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
+      container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
+        expect(button).toBeDisabled();
+      });
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'true');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+    } finally {
+      vi.useRealTimers();
+    }
+
     await clickCompactExportTool();
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+  });
+
+  it('keeps compact history hidden for new conversation messages after the user closes it', async () => {
+    const initialMessage = parseChatMessage({
+      id: 'assistant-history-before-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'I am visible before closing.' }],
+      status: 'sent',
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-history-after-close',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'This should not flash while history is closed.' }],
+      status: 'sent',
+    });
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-history-after-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: 'But it should appear after reopening history.' }],
+      status: 'sent',
+    });
+
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[initialMessage]} />,
+      );
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-before-close"]')).not.toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[initialMessage, userMessage, assistantMessage]}
+        />,
+      );
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+
+      rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[initialMessage, userMessage, assistantMessage]} />);
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).not.toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens and closes compact history from a guide request', async () => {
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+    const historyHandle = () => container.querySelector('.compact-history-visibility-handle');
+
+    expect(historyHandle()).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-close-guide',
+          open: false,
+          reason: 'avatar-floating-guide-close-history',
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(historyHandle()).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-history',
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(historyHandle()).toHaveAttribute('aria-expanded', 'true');
+    });
   });
 
   it('restores compact inline history from persisted open state after remount', () => {
@@ -412,7 +991,89 @@ describe('App', () => {
     );
 
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('toggles compact history visibility as soon as the handle is pressed', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    vi.useFakeTimers();
+
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
+
+      const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+      expect(handle).not.toBeNull();
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
+
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps compact history open when the first press causes the handle to leave before click', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).not.toBeNull();
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0, buttons: 1 });
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+
+    fireEvent.pointerLeave(handle!, { pointerType: 'mouse', buttons: 1 });
+    fireEvent.click(handle!);
+
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
   });
 
   it('keeps compact export history message actions read-only', async () => {
@@ -515,9 +1176,22 @@ describe('App', () => {
     expect(second).toHaveAttribute('data-compact-history-group', 'same');
     expect(user).toHaveAttribute('data-compact-history-group', 'switch');
     expect(image).toHaveAttribute('data-compact-history-complexity', 'rich');
-    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
-    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
-    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    // 去随机后：气泡宽度统一（比对话条窄约 48px）、无水平偏移、无旋转——规整不歪扭。
+    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe('calc(100% - 48px)');
+    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-rotate')).toBe('0deg');
+    const initialHistoryMessageCount = 4;
+    expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(0, initialHistoryMessageCount),
+    );
+    expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(3, initialHistoryMessageCount),
+    );
+    expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(0));
+    expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(3));
+    const stableFirstEnterDelay = first?.style.getPropertyValue('--compact-history-enter-delay');
+    const stableImageEnterDelay = image?.style.getPropertyValue('--compact-history-enter-delay');
     const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
     const stableWidth = second?.style.getPropertyValue('--compact-history-bubble-max-ratio');
     const stableRotate = second?.style.getPropertyValue('--compact-history-rotate');
@@ -538,6 +1212,35 @@ describe('App', () => {
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-stagger-x')).toBe(stableOffset);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe(stableWidth);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-rotate')).toBe(stableRotate);
+
+    const newAssistantMessage = parseChatMessage({
+      id: 'assistant-history-casual-new',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:04',
+      createdAt: 5,
+      blocks: [{ type: 'text', text: 'A fresh assistant message should not replay old history.' }],
+      status: 'sent',
+    });
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[firstAssistant, updatedSecondAssistant, userMessage, imageMessage, newAssistantMessage]}
+      />,
+    );
+
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-1"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableFirstEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-image"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableImageEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-new"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(4, 5),
+    );
   });
 
   it('opens compact inline preview with disabled final actions when nothing is selected', async () => {
@@ -582,10 +1285,10 @@ describe('App', () => {
     const anchor = container.querySelector('.compact-export-history-anchor');
     expect(anchor).not.toHaveClass('controls-collapsed');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    await clickCompactExportTool();
     expect(anchor).toHaveClass('controls-collapsed');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    await clickCompactExportTool();
     expect(anchor).not.toHaveClass('controls-collapsed');
   });
 
@@ -627,11 +1330,18 @@ describe('App', () => {
         <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage, userMessage]} />,
       );
 
-      await clickCompactExportTool();
       const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
       const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
       fireEvent.click(bubbles[1]);
 
+      expect(messages[1]).not.toHaveClass('is-selected');
+      await clickCompactExportTool();
+      fireEvent.click(bubbles[1]);
+      expect(messages[1]).toHaveClass('is-selected');
+      await clickCompactExportTool();
+      expect(messages[1]).not.toHaveClass('is-selected');
+      await clickCompactExportTool();
+      fireEvent.click(bubbles[1]);
       expect(messages[1]).toHaveClass('is-selected');
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
 
@@ -645,7 +1355,7 @@ describe('App', () => {
       });
       expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
         messageIds: ['user-history-select'],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });
@@ -657,923 +1367,36 @@ describe('App', () => {
     }
   });
 
-  it('starts compact history image drag without selecting the source bubble', async () => {
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-image-drag',
+  it('keeps compact history bubbles selectable by click while leaving text selectable', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-selectable-text',
       role: 'assistant',
       author: 'Neko',
       time: '10:00',
       createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
+      blocks: [{ type: 'text', text: 'Select this text or click to pick the bubble.' }],
       status: 'sent',
     });
 
     const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[imageMessage]} />,
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
     );
 
     await clickCompactExportTool();
     const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
     const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-    vi.spyOn(bubble, 'getBoundingClientRect').mockReturnValue({
-      left: 12,
-      top: 18,
-      right: 332,
-      bottom: 138,
-      width: 320,
-      height: 120,
-      x: 12,
-      y: 18,
-      toJSON: () => ({}),
-    } as DOMRect);
-    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
-      left: 40,
-      top: 52,
-      right: 120,
-      bottom: 100,
-      width: 80,
-      height: 48,
-      x: 40,
-      y: 52,
-      toJSON: () => ({}),
-    } as DOMRect);
 
-    fireEvent.pointerDown(imageBlock, {
-      pointerId: 31,
-      clientX: 50,
-      clientY: 62,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 31,
-      clientX: 78,
-      clientY: 74,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
+    // The bubble no longer captures pointers for a drag subsystem, so its text
+    // content stays in the DOM and selectable; only onClick / onKeyDown drive
+    // the export-selection toggle.
+    expect(bubble.textContent).toContain('Select this text or click to pick the bubble.');
+    expect(bubble).toHaveAttribute('role', 'button');
 
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    expect(dragLayer).not.toBeNull();
-    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'image');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-image-drag');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-block-index', '0');
-    expect(dragLayer?.parentElement).toBe(document.body);
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-width')).toBe('80px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-height')).toBe('48px');
-    expect(message).toHaveAttribute('data-compact-history-drag-source', 'image');
-    expect(message).not.toHaveClass('is-selected');
-
-    fireEvent.pointerUp(bubble, {
-      pointerId: 31,
-      clientX: 78,
-      clientY: 74,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
     fireEvent.click(bubble);
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('emits compact history drag geometry state for the desktop bridge', async () => {
-    const onCompactHistoryDragStateChange = vi.fn();
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-drag-geometry',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
-      status: 'sent',
-    });
-
-    const { container, rerender } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[imageMessage]}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-    vi.spyOn(message, 'getBoundingClientRect').mockReturnValue({
-      left: 8,
-      top: 12,
-      right: 348,
-      bottom: 156,
-      width: 340,
-      height: 144,
-      x: 8,
-      y: 12,
-      toJSON: () => ({}),
-    } as DOMRect);
-    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
-      left: 40,
-      top: 52,
-      right: 120,
-      bottom: 100,
-      width: 80,
-      height: 48,
-      x: 40,
-      y: 52,
-      toJSON: () => ({}),
-    } as DOMRect);
-
-    fireEvent.pointerDown(imageBlock, {
-      pointerId: 42,
-      clientX: 50,
-      clientY: 62,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 42,
-      clientX: 78,
-      clientY: 74,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const activeState = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .find(payload => payload.active === true);
-    expect(activeState).toEqual(expect.objectContaining({
-      active: true,
-      phase: 'dragging',
-      dragType: 'image',
-      messageId: 'assistant-history-drag-geometry',
-      blockIndex: 0,
-      needsDesktopBounds: false,
-    }));
-    expect(activeState).toEqual(expect.objectContaining({
-      sessionId: expect.stringMatching(/^compact-history-drag-/),
-      seq: expect.any(Number),
-      pointerClient: { clientX: 78, clientY: 74 },
-      sourceFrameRect: expect.objectContaining({ left: 8, top: 12, width: 340, height: 144 }),
-      connectionVisualRect: expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
-      dragHitRect: expect.objectContaining({ left: 58, top: 54, width: 100, height: 68 }),
-    }));
-    expect(activeState?.dragVisualRect).toEqual(expect.objectContaining({ left: 68, top: 64 }));
-    expect(activeState?.dragVisualRect.width).toBeGreaterThanOrEqual(80);
-    expect(activeState?.dragVisualRect.height).toBeGreaterThanOrEqual(47);
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          sessionId: 'compact-history-drag-other',
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-    });
-    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
-    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          sessionId: activeState?.sessionId,
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-    });
-
-    const rebasedActiveStates = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .filter(payload => payload.active === true);
-    const rebasedState = rebasedActiveStates[rebasedActiveStates.length - 1];
-    expect(rebasedState).toEqual(expect.objectContaining({
-      pointerClient: { clientX: 108, clientY: 94 },
-      sourceFrameRect: expect.objectContaining({ left: 38, top: 32, width: 340, height: 144 }),
-      dragHitRect: expect.objectContaining({ left: 88, top: 74, width: 100, height: 68 }),
-    }));
-    expect(rebasedState?.dragVisualRect).toEqual(expect.objectContaining({ left: 98, top: 84 }));
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
-    rerender(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[imageMessage]}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
-
-    fireEvent.pointerUp(window, {
-      pointerId: 42,
-      clientX: 108,
-      clientY: 94,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    await waitFor(() => {
-      expect(onCompactHistoryDragStateChange.mock.calls.some(([payload]) => (
-        payload.active === false && payload.sessionId === activeState?.sessionId
-      ))).toBe(true);
-    });
-  });
-
-  it('starts compact history bubble drag without changing selection', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-bubble-drag',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Drag this whole bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 32,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 32,
-      clientX: 74,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    const anchor = container.querySelector<HTMLElement>('.compact-export-history-anchor')!;
-    expect(dragLayer).not.toBeNull();
-    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'bubble');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-bubble-drag');
-    expect(dragLayer?.parentElement).toBe(document.body);
-    expect(anchor.contains(dragLayer)).toBe(false);
-    expect(message).toHaveAttribute('data-compact-history-drag-source', 'bubble');
-    expect(message).not.toHaveClass('is-selected');
-
-    fireEvent.pointerUp(bubble, {
-      pointerId: 32,
-      clientX: 74,
-      clientY: 39,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('clears compact history drag when the pointer is released outside the bubble', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-global-pointer-up',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Release this outside the bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 37,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 37,
-      clientX: 78,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).not.toBeNull();
-
-    fireEvent.pointerUp(window, {
-      pointerId: 37,
-      clientX: 96,
-      clientY: 42,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-    fireEvent.click(bubble);
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('sends a compact history text bubble when dropped on the avatar range', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-drop-text',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send this memory again.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 38,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 38,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-
-      const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-      expect(dragLayer).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-      fireEvent.pointerUp(window, {
-        pointerId: 38,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-        text: 'Send this memory again.',
-        images: [],
-        sourceMessageId: 'assistant-history-drop-text',
-        dragType: 'bubble',
-      }));
-      expect(message).not.toHaveClass('is-selected');
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'sending');
-      await waitForCompactHistoryDragLayerToClear();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('uses desktop avatar bounds for compact history drops in the Electron host', async () => {
-    const cleanupAvatar = setupDesktopAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-desktop-drop-text',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send this desktop memory.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 381,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 381,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-      fireEvent.pointerUp(window, {
-        pointerId: 381,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-        text: 'Send this desktop memory.',
-        sourceMessageId: 'assistant-history-desktop-drop-text',
-      }));
-      await waitForCompactHistoryDragLayerToClear();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('accepts desktop compact history drag target feedback from NEKO-PC', async () => {
-    const onCompactHistoryDrop = vi.fn();
-    const onCompactHistoryDragStateChange = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-desktop-feedback-drop',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send through desktop feedback.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[textMessage]}
-        onCompactHistoryDrop={onCompactHistoryDrop}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 382,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 382,
-      clientX: 78,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const activeState = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .find(payload => payload.active === true);
-    expect(activeState?.sessionId).toEqual(expect.stringMatching(/^compact-history-drag-/));
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          sessionId: 'compact-history-drag-other',
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'false');
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          sessionId: activeState?.sessionId,
-          seq: activeState?.seq,
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-    fireEvent.pointerUp(window, {
-      pointerId: 382,
-      clientX: 78,
-      clientY: 39,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    await waitFor(() => {
-      expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-    });
-    expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-      text: 'Send through desktop feedback.',
-      sourceMessageId: 'assistant-history-desktop-feedback-drop',
-    }));
-    await waitForCompactHistoryDragLayerToClear();
-  });
-
-  it('does not send a compact history drag released outside the avatar range', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-drop-miss',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Do not send this one.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 39,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 39,
-        clientX: 74,
-        clientY: 39,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 39,
-        clientX: 20,
-        clientY: 20,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-      fireEvent.click(bubble);
-
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-      expect(message).not.toHaveClass('is-selected');
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-      await waitForCompactHistoryDragLayerToClear();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('sends compact history image and mixed bubble payloads through the drop callback', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-drop-image',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image', width: 80, height: 40 }],
-      status: 'sent',
-    });
-    const mixedMessage = parseChatMessage({
-      id: 'assistant-history-drop-mixed',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [
-        { type: 'text', text: 'Look at this.' },
-        { type: 'image', url: 'data:image/png;base64,bWl4ZWQ=', alt: 'Mixed image' },
-      ],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[imageMessage, mixedMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
-      const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-
-      fireEvent.pointerDown(imageBlock, {
-        pointerId: 40,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubbles[0], {
-        pointerId: 40,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 40,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
-        text: '',
-        images: [expect.objectContaining({
-          url: 'data:image/png;base64,aW1hZ2U=',
-          alt: 'Memory image',
-          width: 80,
-          height: 40,
-        })],
-        dragType: 'image',
-      }));
-
-      fireEvent.pointerDown(bubbles[1], {
-        pointerId: 41,
-        clientX: 36,
-        clientY: 80,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubbles[1], {
-        pointerId: 41,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 41,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(2);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
-        text: 'Look at this.',
-        images: [expect.objectContaining({
-          url: 'data:image/png;base64,bWl4ZWQ=',
-          alt: 'Mixed image',
-        })],
-        sourceMessageId: 'assistant-history-drop-mixed',
-        dragType: 'bubble',
-      }));
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('treats compact history scroll as cancellation instead of selection or drag', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-scroll-cancel',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Scroll past this bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 33,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'touch',
-    });
-    fireEvent.scroll(scroll);
-    fireEvent.pointerUp(bubble, {
-      pointerId: 33,
-      clientX: 38,
-      clientY: 72,
-      buttons: 0,
-      pointerType: 'touch',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('keeps compact history pointer movement between click and drag thresholds selectable', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-threshold-cancel',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Move below the drag threshold and still select.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 34,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 34,
-      clientX: 43,
-      clientY: 36,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerUp(bubble, {
-      pointerId: 34,
-      clientX: 43,
-      clientY: 36,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
     expect(message).toHaveClass('is-selected');
-  });
 
-  it('keeps compact history interactive blocks out of bubble drag', async () => {
-    const action = vi.fn();
-    const linkMessage = parseChatMessage({
-      id: 'assistant-history-link-drag-ignore',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'link', url: 'https://example.com', title: 'Reference' }],
-      status: 'sent',
-    });
-    const buttonMessage = parseChatMessage({
-      id: 'assistant-history-button-drag-ignore',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [{
-        type: 'buttons',
-        buttons: [{ id: 'act', label: 'Act', action: 'act' }],
-      }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[linkMessage, buttonMessage]}
-        onMessageAction={action}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const linkBlock = container.querySelector<HTMLElement>('.message-block-link')!;
-    const actionButton = container.querySelector<HTMLButtonElement>('.message-action-button')!;
-    const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
-
-    fireEvent.pointerDown(linkBlock, {
-      pointerId: 35,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubbles[0], {
-      pointerId: 35,
-      clientX: 74,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-
-    fireEvent.pointerDown(actionButton, {
-      pointerId: 36,
-      clientX: 36,
-      clientY: 60,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubbles[1], {
-      pointerId: 36,
-      clientX: 74,
-      clientY: 63,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+    fireEvent.click(bubble);
+    expect(message).not.toHaveClass('is-selected');
   });
 
   it('rebuilds compact inline preview when a selected message updates without changing id', async () => {
@@ -1670,7 +1493,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(buildCompactInlinePreview).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1680,7 +1503,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(copyCompactInlineSelection).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1736,6 +1559,228 @@ describe('App', () => {
     expect(message).not.toHaveClass('is-selected');
   });
 
+  it('shrinks compact history immediately after overdragging past the maximum height', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-limit',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Resize me.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const maxHeight = Math.round(Math.max(120, window.innerHeight * 0.78 - 72));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 91,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'true');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'false');
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -500,
+      screenY: -500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'true');
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -700,
+      screenY: -700,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 91,
+      clientY: -660,
+      screenY: -660,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight - 40}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 91,
+      clientY: -660,
+      screenY: -660,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'false');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-content-locked', 'false');
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBe(`${maxHeight - 40}`);
+  });
+
+  it('keeps the max compact history height after releasing at an overdragged limit', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-max-release',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Max me.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const maxHeight = Math.round(Math.max(120, window.innerHeight * 0.78 - 72));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 93,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 93,
+      clientY: -500,
+      screenY: -500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 93,
+      clientY: -700,
+      screenY: -700,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 93,
+      clientY: -700,
+      screenY: -700,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBe(`${maxHeight}`);
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${maxHeight}px`);
+  });
+
+  it('keeps responsive compact history height when a resize returns to the starting height', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-return',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Resize and return.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+    const defaultHeight = Math.round(Math.max(120, Math.min(430 * 1.18, window.innerHeight * 0.63)));
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 92,
+      clientY: 460,
+      screenY: 460,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${defaultHeight + 40}px`);
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe(`${defaultHeight}px`);
+    fireEvent.pointerUp(resizeBar!, {
+      pointerId: 92,
+      clientY: 500,
+      screenY: 500,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBeNull();
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe('');
+  });
+
+  it('reverts compact history height when a resize is canceled', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-resize-cancel',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Cancel resize.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    const resizeBar = container.querySelector<HTMLDivElement>('.compact-export-history-resize-bar');
+    expect(resizeBar).not.toBeNull();
+
+    fireEvent.pointerDown(resizeBar!, {
+      pointerId: 94,
+      clientY: 500,
+      screenY: 500,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(resizeBar!, {
+      pointerId: 94,
+      clientY: 440,
+      screenY: 440,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).not.toBe('');
+    fireEvent.pointerCancel(resizeBar!, {
+      pointerId: 94,
+      clientY: 440,
+      screenY: 440,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(window.localStorage.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY)).toBeNull();
+    expect(document.documentElement.style.getPropertyValue('--compact-history-slot-height')).toBe('');
+    expect(container.querySelector('.compact-export-history-anchor'))
+      .toHaveAttribute('data-compact-export-history-resizing', 'false');
+  });
+
   it('hides compact inline history outside compact mode and restores it when compact returns', async () => {
     const message = parseChatMessage({
       id: 'assistant-history-close',
@@ -1757,6 +1802,8 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
@@ -1783,6 +1830,80 @@ describe('App', () => {
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
     expect(document.body.querySelector('.compact-chat-choice-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-input-tool-toggle')).not.toBeNull();
+  });
+
+  it('marquees overflowing compact galgame option text only while hovered', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        galgameModeEnabled
+        galgameOptions={[
+          { label: 'A', text: 'This generated reply is intentionally much longer than the visible option row' },
+          { label: 'B', text: 'Short reply' },
+        ]}
+      />,
+    );
+
+    const options = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.composer-galgame-option'));
+    expect(options).toHaveLength(2);
+    expect(options[0]).not.toHaveAttribute('title');
+    expect(options[1]).not.toHaveAttribute('title');
+
+    const longText = options[0].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const longInner = options[0].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(longText).not.toBeNull();
+    expect(longInner).not.toBeNull();
+    Object.defineProperty(longText!, 'clientWidth', {
+      configurable: true,
+      value: 110,
+    });
+    Object.defineProperty(longInner!, 'scrollWidth', {
+      configurable: true,
+      value: 260,
+    });
+
+    fireEvent.mouseEnter(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.mouseLeave(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    fireEvent.focus(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.blur(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    const shortText = options[1].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const shortInner = options[1].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(shortText).not.toBeNull();
+    expect(shortInner).not.toBeNull();
+    Object.defineProperty(shortText!, 'clientWidth', {
+      configurable: true,
+      value: 180,
+    });
+    Object.defineProperty(shortInner!, 'scrollWidth', {
+      configurable: true,
+      value: 184,
+    });
+
+    fireEvent.mouseEnter(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
+
+    fireEvent.focus(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
   });
 
   it('places compact galgame options below the surface when there is enough viewport space', async () => {
@@ -1850,6 +1971,85 @@ describe('App', () => {
 
       await waitFor(() => {
         expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
+  it('positions compact galgame options after pending screenshot attachments', async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 900,
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          composerAttachments={[
+            { id: 'screenshot-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+          ]}
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 100,
+          top: 100,
+          left: 24,
+          right: 454,
+          bottom: 248,
+          width: 430,
+          height: 148,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-top': '100px',
+          '--compact-choice-surface-left': '24px',
+          '--compact-choice-surface-width': '430px',
+          '--compact-choice-surface-height': '148px',
+        });
       });
     } finally {
       Object.defineProperty(window, 'innerHeight', {
@@ -2153,6 +2353,61 @@ describe('App', () => {
     }
   });
 
+  it('updates compact choice surface vars before applying forced desktop placement', async () => {
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    desktopWindow.__nekoDesktopCompactLayout = {
+      compactChoicePlacement: 'above',
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const choiceLayer = document.body.querySelector<HTMLElement>('body > .compact-chat-choice-anchor');
+      expect(shell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 72,
+          left: 18,
+          right: 448,
+          bottom: 154,
+          width: 430,
+          height: 82,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+        expect(choiceLayer).toHaveStyle({
+          '--compact-choice-surface-top': '72px',
+          '--compact-choice-surface-left': '18px',
+          '--compact-choice-surface-width': '430px',
+          '--compact-choice-surface-height': '82px',
+        });
+      });
+    } finally {
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('repositions compact galgame options when the compact surface moves after opening', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {
@@ -2374,7 +2629,7 @@ describe('App', () => {
     });
   });
 
-  it('prefers the latest assistant text for compact preview instead of echoing the latest user message', () => {
+  it('does not use historical assistant or user messages as compact speech preview text', () => {
     const assistantMessage = parseChatMessage({
       id: 'assistant-compact-priority',
       role: 'assistant',
@@ -2396,7 +2651,8 @@ describe('App', () => {
       <App chatSurfaceMode="compact" composerHidden messages={[assistantMessage, userMessage]} />,
     );
 
-    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('先看我这边的引导内容');
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('先看我这边的引导内容');
     expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
   });
 
@@ -2416,7 +2672,185 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'true');
-    expect(preview).toHaveTextContent('');
+    expect(preview?.textContent ?? '').toBe('');
+  });
+
+  it('hides compact empty-state copy when the tutorial takes chat buttons', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[]} />);
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).not.toBeNull();
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+
+    act(() => {
+      document.body.classList.add('yui-guide-standalone-input-shield-active');
+    });
+
+    await waitFor(() => {
+      expect(preview?.textContent ?? '').toBe('');
+    });
+    expect(preview).not.toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+  });
+
+  it('keeps tutorial guide streaming text fully readable in the compact capsule', () => {
+    const initialText = '先点这里打开对话。';
+    const updatedText = '先点这里打开对话，然后输入一句问候，后面这一长串教程台词也要自动向左滚动，让最新内容进入胶囊可视区域。';
+    const initialMessage = parseChatMessage({
+      id: 'yui-guide-chat-compact-input',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: initialText }],
+      status: 'streaming',
+    });
+    const updatedMessage = parseChatMessage({
+      ...initialMessage,
+      blocks: [{ type: 'text', text: updatedText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[initialMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(preview, 'clientWidth', {
+      configurable: true,
+      value: 100,
+    });
+    expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
+    expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
+    expect(preview).toHaveTextContent(initialText);
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[updatedMessage]} />);
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(updatedText);
+    expect((container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement).scrollLeft).toBe(320);
+  });
+
+  it('does not replay tutorial guide text animation when a later stream patch arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const partialText = '这一句已经显示到中段。';
+      const fullText = '这一句已经显示到中段。后面继续追加的教程台词应该直接接上当前流式文本，而不是先回到开头再快速滚动。';
+      const partialMessage = parseChatMessage({
+        id: 'yui-guide-progressive-compact-line',
+        role: 'assistant',
+        author: 'YUI',
+        time: '10:01',
+        createdAt: 2,
+        blocks: [{ type: 'text', text: partialText }],
+        status: 'streaming',
+      });
+      const fullMessage = parseChatMessage({
+        ...partialMessage,
+        blocks: [{ type: 'text', text: fullText }],
+      });
+
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[partialMessage]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(partialText);
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[fullMessage]} />);
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(fullText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+    const guideText = '这里是新手教程台词，应该直接进入胶囊预览，不等待普通助手语音播放状态。'.repeat(2);
+    const message = parseChatMessage({
+      id: 'yui-guide-day1-line-1',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: guideText }],
+      status: 'streaming',
+    });
+
+    const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
+    expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
+    expect(preview).toHaveTextContent(guideText);
+  });
+
+  it('does not merge the previous tutorial guide line into the next compact capsule line', () => {
+    const firstText = '上一句教程台词已经播放完。';
+    const secondText = '这一句教程台词刚开始流式播放，胶囊里只能看到这一句。';
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-day1-line-1',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: firstText }],
+      status: 'sent',
+    });
+    const secondMessage = parseChatMessage({
+      id: 'yui-guide-day1-line-2',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: secondText }],
+      status: 'streaming',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage, secondMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveTextContent(secondText);
+    expect(preview).not.toHaveTextContent(firstText);
+  });
+
+  it('auto-scrolls long tutorial guide text to the latest capsule text', () => {
+    const firstText = '这是新手教程胶囊里一段较长的台词，刚出现时应该跟随到末尾。';
+    const secondText = `${firstText}后面继续补充更长的说明，胶囊文本需要向左滚动来露出最新内容。`;
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-scroll-line',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: firstText }],
+      status: 'streaming',
+    });
+    const secondMessage = parseChatMessage({
+      ...firstMessage,
+      blocks: [{ type: 'text', text: secondText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage]} />,
+    );
+    const preview = container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement;
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 420,
+    });
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[secondMessage]} />);
+
+    expect(preview.scrollLeft).toBe(420);
+    expect(preview).toHaveTextContent(secondText);
   });
 
   it('falls back to revealing compact streaming text when playback state never arrives', async () => {
@@ -2435,7 +2869,7 @@ describe('App', () => {
     try {
       const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
 
-      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('');
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1400);
@@ -2493,6 +2927,281 @@ describe('App', () => {
     }
   });
 
+  it('keeps the compact caption moving forward when a new bubble joins the same turn instead of replaying it', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '猫娘先说出来的第一段内容，紧凑输入条会逐字显示这一句。';
+    const secondBubbleText = '紧接着猫娘又补了第二段，字幕应该接着往后追加而不是从头重播。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1400);
+      });
+
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+      expect(firstBubbleText.startsWith(revealedBefore)).toBe(true);
+
+      // Same turn (createdAt within the merge window): the merged preview re-keys
+      // to the new bubble's id, but the caption must keep the already-revealed
+      // prefix and continue, not rewind to empty and replay the whole turn.
+      const firstSent = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      const revealedAfter = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      const combinedText = `${firstBubbleText} ${secondBubbleText}`;
+      // Did not replay from zero, and what stays on screen is a forward
+      // continuation of what was already revealed.
+      expect(revealedAfter.length).toBeGreaterThanOrEqual(revealedBefore.length);
+      expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
+      expect(combinedText.startsWith(revealedAfter)).toBe(true);
+
+      // And it keeps moving forward into the appended bubble — proving the
+      // caption source switched to the merged turn rather than freezing on the
+      // first bubble's revealed prefix.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(combinedText.startsWith(revealedLater)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps appending when a new bubble joins a speech-revealed turn with no further playback signal', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '第一段由语音播放揭示完。';
+    const secondBubbleText = '第二段同 turn 追加，但这次没有任何播放状态或不可用事件到达。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      // First bubble is revealed by real speech playback (not the fallback path).
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      // Playback ends — the first bubble settles to its full text.
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: false,
+            audioContextTime: 1,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+
+      // Same-turn bubble arrives, but NO further playback state and NO
+      // speech-unavailable event. The fallback safety net must still reveal the
+      // appended text instead of freezing on the seeded prefix.
+      const firstSent = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-speech-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      // The same-turn append should start moving immediately from the seeded
+      // prefix instead of waiting for the fallback safety timer.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      const revealedImmediately = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedImmediately.length).toBeGreaterThan(revealedBefore.length);
+      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedImmediately)).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedLater)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses compact caption events as the live same-turn display source without waiting for message bubbles', async () => {
+    vi.useFakeTimers();
+    const firstCaption = '第一句由紧凑字幕事件直接驱动显示。';
+    const secondCaption = '第二句只通过同 turn 字幕事件追加，不等待历史气泡入队。';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'compact-caption-event-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-event-turn',
+            segmentId: 'compact-caption-event-turn:segment:1',
+            text: firstCaption,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-caption-event-turn',
+            playbackTurnId: 'compact-caption-event-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+      expect(firstCaption.startsWith(revealedBefore)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-event-turn',
+            segmentId: 'compact-caption-event-turn:segment:2',
+            text: secondCaption,
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      const revealedAfter = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      const mergedCaption = `${firstCaption} ${secondCaption}`;
+      expect(revealedAfter.length).toBeGreaterThan(revealedBefore.length);
+      expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
+      expect(mergedCaption.startsWith(revealedAfter)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces compact caption updates for the same segment instead of repeating prefixes', async () => {
+    vi.useFakeTimers();
+    const firstCaption = '第一句。';
+    const secondPartialCaption = '第二句。';
+    const secondFullCaption = '第二句话补全。';
+    const mergedCaption = `${firstCaption} ${secondFullCaption}`;
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:1',
+            text: firstCaption,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:2',
+            text: secondPartialCaption,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:2',
+            text: secondFullCaption,
+          },
+        }));
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            source: 'test',
+          },
+        }));
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(previewText).toBe(mergedCaption);
+      expect(previewText).not.toContain(`${secondPartialCaption} ${secondFullCaption}`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reveals compact streaming text when assistant speech is unavailable', async () => {
     vi.useFakeTimers();
     const streamingText = '语音不可用时，紧凑态仍然应该用文本速度显示猫娘正在说的内容。';
@@ -2509,7 +3218,7 @@ describe('App', () => {
     try {
       const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
 
-      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('');
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
 
       act(() => {
         window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
@@ -2569,6 +3278,428 @@ describe('App', () => {
       const visibleLength = container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0;
       expect(visibleLength).toBeGreaterThanOrEqual(7);
       expect(visibleLength).toBeLessThanOrEqual(8);
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        streamingText.slice(0, visibleLength),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores speech playback state from a different assistant turn', async () => {
+    vi.useFakeTimers();
+    const streamingText = '当前 turn 的语音播放状态才能推动这段紧凑字幕。';
+    const message = parseChatMessage({
+      id: 'assistant-compact-streaming-progress-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      turnId: 'compact-current-playback-turn',
+      blocks: [{ type: 'text', text: streamingText }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-previous-playback-turn',
+            playbackTurnId: 'compact-previous-playback-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 5,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-current-playback-turn',
+            playbackTurnId: 'compact-current-playback-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const visibleLength = container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0;
+      expect(visibleLength).toBeGreaterThan(0);
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        streamingText.slice(0, visibleLength),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not flash the previous sentence when the next assistant sentence streams under a new turn id', async () => {
+    vi.useFakeTimers();
+    const firstSentence = '第一句话已经说完了，不能在第二句话开始时闪回来。';
+    const secondSentence = '第二句话现在开始说，紧凑字幕只能显示这句的前缀。';
+    const firstStreaming = parseChatMessage({
+      id: 'assistant-compact-segment-first',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      turnId: 'compact-first-segment-turn',
+      blocks: [{ type: 'text', text: firstSentence }],
+      status: 'streaming',
+    });
+    const firstSent = parseChatMessage({
+      ...firstStreaming,
+      status: 'sent',
+    });
+    const secondStreaming = parseChatMessage({
+      id: 'assistant-compact-segment-second',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 5,
+      turnId: 'compact-second-segment-turn',
+      blocks: [{ type: 'text', text: secondSentence }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-first-segment-turn',
+            playbackTurnId: 'compact-first-segment-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      const visibleBeforeFirstSettle = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeFirstSettle.length).toBeGreaterThan(0);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'compact-first-segment-turn',
+            source: 'test',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe(visibleBeforeFirstSettle);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'compact-second-segment-turn',
+            source: 'test',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-second-segment-turn',
+            playbackTurnId: 'compact-second-segment-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(previewText).not.toContain(firstSentence.slice(0, 6));
+      expect(secondSentence.startsWith(previewText)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not use a stale streaming message from an older turn during a new-turn gap', async () => {
+    vi.useFakeTimers();
+    const previousTurnText = '上一轮残留的 streaming 气泡绝不能在新分句空窗里闪出来。';
+    const firstSentence = '当前第一句话刚说完，等待第二句话。';
+    const secondSentence = '当前第二句话开始后才可以显示这里。';
+    const stalePreviousStreaming = parseChatMessage({
+      id: 'assistant-compact-stale-previous-streaming',
+      role: 'assistant',
+      author: 'Neko',
+      time: '09:59',
+      createdAt: 1,
+      turnId: 'compact-stale-previous-turn',
+      blocks: [{ type: 'text', text: previousTurnText }],
+      status: 'streaming',
+    });
+    const firstSent = parseChatMessage({
+      id: 'assistant-compact-current-first-sent',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      turnId: 'compact-current-first-turn',
+      blocks: [{ type: 'text', text: firstSentence }],
+      status: 'sent',
+    });
+    const secondStreaming = parseChatMessage({
+      id: 'assistant-compact-current-second-streaming',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 3,
+      turnId: 'compact-current-second-turn',
+      blocks: [{ type: 'text', text: secondSentence }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[stalePreviousStreaming, firstSent]} />,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'compact-current-first-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(previousTurnText);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'compact-current-second-turn',
+            source: 'test',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[stalePreviousStreaming, firstSent]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(previousTurnText);
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[stalePreviousStreaming, firstSent, secondStreaming]} />);
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-current-second-turn',
+            playbackTurnId: 'compact-current-second-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(previewText).not.toContain(previousTurnText.slice(0, 8));
+      expect(secondSentence.startsWith(previewText)).toBe(true);
+      expect(previewText.length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the same-turn compact caption merged after the turn-ending boundary', async () => {
+    vi.useFakeTimers();
+    const firstSentence = '同一轮第一句话已经结束。';
+    const secondSentence = '同一轮第二句话延迟进入队列后才应该显示。';
+    const firstStreaming = parseChatMessage({
+      id: 'assistant-compact-same-turn-first-streaming',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      turnId: 'compact-same-delayed-turn',
+      blocks: [{ type: 'text', text: firstSentence }],
+      status: 'streaming',
+    });
+    const firstSent = parseChatMessage({
+      ...firstStreaming,
+      status: 'sent',
+    });
+    const secondStreaming = parseChatMessage({
+      id: 'assistant-compact-same-turn-second-streaming',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 3,
+      turnId: 'compact-same-delayed-turn',
+      blocks: [{ type: 'text', text: secondSentence }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-same-delayed-turn',
+            playbackTurnId: 'compact-same-delayed-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const visibleBeforeFirstSettle = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeFirstSettle.length).toBeGreaterThan(0);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'compact-same-delayed-turn',
+            source: 'test',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe(visibleBeforeFirstSettle);
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            turnId: 'compact-same-delayed-turn',
+            playbackTurnId: 'compact-same-delayed-turn',
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      const mergedText = `${firstSentence} ${secondSentence}`;
+      expect(mergedText.startsWith(previewText)).toBe(true);
+      expect(previewText.length).toBeGreaterThan(0);
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-compact-same-turn-first-streaming"]')).not.toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-compact-same-turn-second-streaming"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores speech-unavailable events from a different assistant turn', async () => {
+    vi.useFakeTimers();
+    const streamingText = '当前 turn 的语音不可用事件才能触发紧凑字幕兜底。';
+    const message = parseChatMessage({
+      id: 'assistant-compact-streaming-unavailable-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      turnId: 'compact-current-unavailable-turn',
+      blocks: [{ type: 'text', text: streamingText }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[message]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'compact-previous-unavailable-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'compact-current-unavailable-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const visibleLength = container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0;
+      expect(visibleLength).toBeGreaterThan(0);
       expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
         streamingText.slice(0, visibleLength),
       );
@@ -2891,7 +4022,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps settled compact preview text bounded after streaming ends', () => {
+  it('does not use a settled assistant message as compact speech preview text', () => {
     const settledText = '这是猫娘已经说完的一整段内容，用来确认紧凑态在非流式状态下仍然保持有限预览，不重新变成长聊天框。'.repeat(3);
     const message = parseChatMessage({
       id: 'assistant-compact-settled-bounded',
@@ -2907,8 +4038,8 @@ describe('App', () => {
 
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
-    expect(preview?.textContent?.length).toBe(84);
-    expect(preview?.textContent?.endsWith('...')).toBe(true);
+    expect(preview).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+    expect(preview).not.toHaveTextContent(settledText.slice(0, 20));
   });
 
   it('keeps compact speech display active when a playing message settles from streaming to sent', async () => {
@@ -3068,6 +4199,13 @@ describe('App', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-id', 'input:text');
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-hit-region-kind', 'input-text');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-id', 'input:minimize');
+    expect(container.querySelector('.compact-chat-minimize-ball')).toHaveAttribute('data-compact-hit-region-kind', 'input-minimize');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-id', 'input:tool-toggle');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-hit-region-kind', 'input-tool-toggle');
     expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
     expect(container.querySelector('.composer-bottom-bar')).toBeNull();
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
@@ -3086,6 +4224,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-surface-shell')).not.toBeNull();
     expect(container.querySelector('.compact-chat-surface-frame')).toHaveAttribute('data-compact-geometry-item', 'capsule');
     expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
   });
 
   it('does not expose compact galgame choices while voice mode hides the composer', () => {
@@ -3131,7 +4270,9 @@ describe('App', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '语音模式下不能进入输入态。' }));
+    const capsule = container.querySelector('.compact-chat-capsule-button');
+    expect(capsule).toHaveTextContent(DEFAULT_CHAT_COMPANION_EMPTY_STATE_FALLBACK);
+    fireEvent.click(capsule as Element);
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
     expect(container.querySelector('.composer-input')).toBeNull();
@@ -3171,24 +4312,222 @@ describe('App', () => {
 
     const fan = container.querySelector('.compact-input-tool-fan');
     const shell = container.querySelector('.compact-chat-surface-shell');
+    const appShell = container.querySelector('.app-shell');
     const inlineInput = container.querySelector('[data-compact-geometry-part="inputBody"]');
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(fan).not.toBeNull();
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
     expect(fan).toHaveAttribute('data-compact-geometry-owner', 'surface');
     expect(fan).toHaveAttribute('data-compact-geometry-item', 'toolFan');
     expect(fan?.parentElement).toBe(shell);
     expect(inlineInput?.contains(fan)).toBe(false);
     expect(shell?.contains(fan)).toBe(true);
-    expect(fan).not.toHaveAttribute('style');
+    expect(shell).toHaveAttribute('data-compact-tool-layer-open', 'true');
+    expect(appShell).toHaveAttribute('data-compact-tool-layer-open', 'true');
+    expect((fan as HTMLElement).style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
+    expect((fan as HTMLElement).style.getPropertyValue('--compact-tool-wheel-drag-counter-angle')).toBe('0deg');
     expect(fan?.querySelector('.compact-input-tool-fan-hit-region')).not.toBeNull();
     expect(fan?.querySelector('.compact-input-tool-wheel-charge')).not.toBeNull();
     expect(fan?.querySelectorAll('[data-compact-tool-wheel-slot="-2"], [data-compact-tool-wheel-slot="-1"], [data-compact-tool-wheel-slot="0"], [data-compact-tool-wheel-slot="1"], [data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="-2"], .compact-input-tool-item[data-compact-tool-wheel-slot="-1"], .compact-input-tool-item[data-compact-tool-wheel-slot="0"], .compact-input-tool-item[data-compact-tool-wheel-slot="1"], .compact-input-tool-item[data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"]')).toHaveLength(1);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]')).toHaveLength(1);
-    expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
+    expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
+  });
+
+  it('renders stable compact input tool labels instead of native browser titles', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        importImageButtonLabel="Import test label"
+        screenshotButtonLabel="Screenshot test label"
+        jukeboxButtonLabel="Jukebox test label"
+        translateButtonLabel="Translate test label"
+        galgameToggleButtonLabel="Galgame test label"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+
+    const fan = container.querySelector('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    const expectedLabels = [
+      ['.compact-input-tool-item-import', 'Import test label'],
+      ['.compact-input-tool-item-screenshot', 'Screenshot test label'],
+      ['.compact-input-tool-item-jukebox', 'Jukebox test label'],
+      ['.compact-input-tool-item-translate', 'Translate test label'],
+      ['.compact-input-tool-item-galgame', 'Galgame test label'],
+      ['.compact-input-tool-item-export', 'Show history actions'],
+      ['.compact-input-tool-item-avatar', 'Avatar tools'],
+    ];
+
+    expectedLabels.forEach(([selector, label]) => {
+      const item = fan?.querySelector(selector);
+      expect(item).not.toBeNull();
+      expect(item).not.toHaveAttribute('title');
+      expect(item?.querySelector('.compact-input-tool-tooltip')).toHaveTextContent(label);
+    });
+  });
+
+  it('keeps the default compact tool wheel layout on mobile when the original arc fits', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 10,
+        right: 242,
+        bottom: 242,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('uses viewport-fit compact tool wheel layout on mobile when the original arc would clip', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 220,
+        top: 580,
+        right: 452,
+        bottom: 812,
+        width: 232,
+        height: 232,
+        x: 220,
+        y: 580,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('uses the visual viewport when checking compact tool wheel clipping on mobile', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const originalVisualViewport = window.visualViewport;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: {
+        width: 390,
+        height: 180,
+        offsetLeft: 0,
+        offsetTop: 0,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      },
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 10,
+        right: 242,
+        bottom: 242,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: originalVisualViewport });
+    }
+  });
+
+  it('keeps the default compact tool wheel layout when viewport-fit would still clip at the top edge', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: -90,
+        right: 242,
+        bottom: 142,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: -90,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
   });
 
   it('anchors compact avatar tool bubbles to the fan origin instead of the rotating tool item', async () => {
@@ -3200,20 +4539,197 @@ describe('App', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(240);
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
       const fan = container.querySelector('.compact-input-tool-fan');
       const avatarToolItem = container.querySelector('.compact-input-tool-item-avatar');
-      const popover = container.querySelector('#composer-tool-popover-compact');
+      const popover = container.querySelector('#composer-avatar-tool-quickbar');
       expect(fan).not.toBeNull();
       expect(avatarToolItem).not.toBeNull();
       expect(popover).not.toBeNull();
       expect(popover?.parentElement).toBe(fan);
       expect(avatarToolItem?.contains(popover)).toBe(false);
-      expect(popover).toHaveClass('composer-icon-popover');
+      expect(popover).toHaveClass('avatar-tool-quickbar');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('opens compact avatar tool manager near the edit button and supports header dragging', async () => {
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+      const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+      expect(editButton).not.toBeNull();
+      expect(editButton.querySelectorAll('img')).toHaveLength(1);
+      expect(editButton.querySelector('img')).toHaveAttribute('src', '/static/icons/edit_tool_unified.png');
+      Object.defineProperty(editButton, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          left: 700,
+          top: 600,
+          right: 746,
+          bottom: 646,
+          width: 46,
+          height: 46,
+          x: 700,
+          y: 600,
+          toJSON: () => ({}),
+        }),
+      });
+
+      fireEvent.click(editButton);
+
+      const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+      expect(dialog).toHaveClass('is-positioned');
+      expect(dialog).toHaveStyle({
+        '--avatar-tool-manager-left': '366px',
+        '--avatar-tool-manager-top': '12px',
+      });
+      expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
+      expect(dialog.querySelector('.avatar-tool-icon-hammer')).not.toBeNull();
+
+      const header = dialog.querySelector('.avatar-tool-manager-header') as HTMLElement;
+      expect(header).not.toBeNull();
+      fireEvent.pointerDown(header, {
+        pointerId: 31,
+        pointerType: 'mouse',
+        button: 0,
+        buttons: 1,
+        clientX: 500,
+        clientY: 200,
+      });
+      fireEvent.pointerMove(header, {
+        pointerId: 31,
+        pointerType: 'mouse',
+        buttons: 1,
+        clientX: 530,
+        clientY: 230,
+      });
+
+      await waitFor(() => {
+        expect(dialog).toHaveClass('is-dragging');
+        expect(dialog).toHaveStyle({
+          '--avatar-tool-manager-left': '396px',
+          '--avatar-tool-manager-top': '42px',
+        });
+      });
+
+      fireEvent.pointerUp(header, {
+        pointerId: 31,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 530,
+        clientY: 230,
+      });
+      expect(dialog).not.toHaveClass('is-dragging');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('adds the React chat asset version to compact avatar tool images when provided by the host template', async () => {
+    window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'asset 1';
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    const editImage = editButton?.querySelector('img');
+    const quickbarImage = container.querySelector('.avatar-tool-quickbar-image') as HTMLImageElement;
+    expect(editButton).not.toBeNull();
+    expect(editImage).toHaveAttribute('src', '/static/icons/edit_tool_unified.png?v=asset%201');
+    expect(quickbarImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+
+    fireEvent.click(editButton);
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    const managerImage = dialog.querySelector('.avatar-tool-manager-tool-image') as HTMLImageElement;
+    expect(managerImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+  });
+
+  it('temporarily restores body pointer events while the avatar tool manager is open', async () => {
+    document.body.style.pointerEvents = 'none';
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    fireEvent.click(editButton);
+
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+    expect(document.body.style.pointerEvents).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      expect(document.body.style.pointerEvents).toBe('none');
+    });
+  });
+
+  it('keeps avatar tool manager focus trapped and restores focus to the edit button on close', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    editButton.focus();
+    expect(editButton).toHaveFocus();
+    fireEvent.click(editButton);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    const closeButton = screen.getByRole('button', { name: 'Close' });
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+
+    await waitFor(() => {
+      expect(closeButton).toHaveFocus();
+    });
+
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(closeButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      expect(editButton).toHaveFocus();
+    });
+  });
+
+  it('clears avatar tool manager state when compact surface closes', async () => {
+    const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    fireEvent.click(editButton);
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+
+    rerender(<App chatSurfaceMode="minimized" compactChatState="input" />);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+    });
+
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
+    expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
   });
 
   it('keeps compact avatar tool choices open after the pointer leaves the tool toggle', async () => {
@@ -3227,11 +4743,11 @@ describe('App', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(240);
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
       const fan = container.querySelector('.compact-input-tool-fan');
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      expect(container.querySelector('#composer-tool-popover-compact')).not.toBeNull();
+      expect(container.querySelector('#composer-avatar-tool-quickbar')).not.toBeNull();
 
       fireEvent.pointerLeave(actionButton, { clientX: 96, clientY: 96, pointerType: 'mouse' });
       await act(async () => {
@@ -3239,7 +4755,7 @@ describe('App', () => {
       });
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      expect(container.querySelector('#composer-tool-popover-compact')).not.toBeNull();
+      expect(container.querySelector('#composer-avatar-tool-quickbar')).not.toBeNull();
 
       fireEvent.pointerDown(screen.getByPlaceholderText('Type a message...'), {
         pointerId: 13,
@@ -3252,6 +4768,45 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('opens compact fan when an external avatar tool menu request arrives during tutorial lock', async () => {
+    const { container, rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+      />,
+    );
+
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+      'data-compact-input-tool-fan-open',
+      'false',
+    );
+    expect(container.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+        avatarToolMenuOpenRequest={{
+          id: 'avatar-tools-open-1',
+          open: true,
+          reason: 'avatar-floating-guide-open-avatar-tool-menu',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+        'data-compact-input-tool-fan-open',
+        'true',
+      );
+      expect(
+        container.querySelectorAll('#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id]'),
+      ).toHaveLength(3);
+    });
   });
 
   it('opens compact input tools on hover-capable pointer enter', () => {
@@ -3345,7 +4900,7 @@ describe('App', () => {
     }
   });
 
-  it('closes compact input tools when pointer press follows hover open', async () => {
+  it('closes compact input tools when a tap follows hover open', async () => {
     vi.useFakeTimers();
     const originalMatchMedia = window.matchMedia;
     mockHoverCapableMatchMedia();
@@ -3356,7 +4911,10 @@ describe('App', () => {
       const actionButton = screen.getByRole('button', { name: '更多工具' });
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       fireEvent.pointerEnter(actionButton, { pointerType: 'mouse' });
+      // A quick tap (press + release) toggles the hover-opened fan shut.
       fireEvent.pointerDown(actionButton, { pointerId: 8, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(actionButton, { pointerId: 8, button: 0, pointerType: 'mouse' });
+      fireEvent.click(actionButton);
       fireEvent.pointerLeave(actionButton, { clientX: 96, clientY: 96, pointerType: 'mouse' });
 
       await act(async () => {
@@ -3370,13 +4928,16 @@ describe('App', () => {
     }
   });
 
-  it('opens compact input tools on primary pointer press', () => {
+  it('opens compact input tools on a primary pointer tap', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     const actionButton = screen.getByRole('button', { name: '更多工具' });
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     fireEvent.pointerDown(actionButton, { pointerId: 9, button: 0, buttons: 1, pointerType: 'mouse' });
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
 
+    fireEvent.pointerUp(actionButton, { pointerId: 9, button: 0, pointerType: 'mouse' });
+    fireEvent.click(actionButton);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
   });
 
@@ -3392,12 +4953,10 @@ describe('App', () => {
         />,
       );
 
-      fireEvent.pointerDown(screen.getByRole('button', { name: '更多工具' }), {
-        pointerId: 9,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
+      const toggle = screen.getByRole('button', { name: '更多工具' });
+      fireEvent.pointerDown(toggle, { pointerId: 9, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(toggle, { pointerId: 9, button: 0, pointerType: 'mouse' });
+      fireEvent.click(toggle);
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
 
@@ -3409,6 +4968,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(240);
       });
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-interactive', 'true');
+      rotateCompactToolToCenter(importButton);
       fireEvent.click(importButton, { clientX: 140, clientY: 140 });
       expect(onComposerImportImage).toHaveBeenCalledTimes(1);
     } finally {
@@ -3526,6 +5086,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(240);
       });
       const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
+      rotateCompactToolToCenter(importButton);
 
       fireEvent.pointerDown(importButton, { pointerId: 3, clientX: 55, button: 0, buttons: 1, pointerType: 'mouse' });
       fireEvent.pointerUp(importButton, { pointerId: 3, clientX: 55, buttons: 0, pointerType: 'mouse' });
@@ -3538,7 +5099,45 @@ describe('App', () => {
     }
   });
 
-  it('keeps faded compact tool edge buttons focusable and actionable', async () => {
+  it('keeps compact tool button clicks after sub-detent pointer jitter', async () => {
+    vi.useFakeTimers();
+    const onGalgameModeToggle = vi.fn();
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          onGalgameModeToggle={onGalgameModeToggle}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+      const fanRectSpy = mockCompactToolFanRect(fan);
+      try {
+        const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+        expect(galgameButton).not.toBeDisabled();
+
+        fireEvent.pointerDown(galgameButton, { pointerId: 45, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerMove(galgameButton, { pointerId: 45, ...compactToolWheelPoint(5 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerUp(galgameButton, { pointerId: 45, ...compactToolWheelPoint(5 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+        fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
+
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+        expect(onGalgameModeToggle).toHaveBeenCalledTimes(1);
+      } finally {
+        fanRectSpy.mockRestore();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps faded compact tool edge buttons visible but not confirmable', async () => {
     vi.useFakeTimers();
     const onExportConversationClick = vi.fn();
     const onGalgameModeToggle = vi.fn();
@@ -3571,24 +5170,28 @@ describe('App', () => {
       const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
 
       expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
-      expect(exportButton).toHaveAttribute('tabindex', '0');
+      expect(exportButton).toHaveAttribute('tabindex', '-1');
       expect(exportButton).toHaveAttribute('aria-hidden', 'false');
-      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '2');
+      expect(exportButton).toBeDisabled();
+      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
       expect(galgameButton).toHaveAttribute('tabindex', '0');
       expect(galgameButton).toHaveAttribute('aria-hidden', 'false');
+      expect(galgameButton).not.toBeDisabled();
 
       fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
       expect(onGalgameModeToggle).toHaveBeenCalledTimes(1);
 
+      expect(container.querySelector('.compact-export-history-controls')).toBeNull();
       fireEvent.click(exportButton, { clientX: 140, clientY: 140 });
       expect(onExportConversationClick).not.toHaveBeenCalled();
-      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('rotates compact input tools by pointer dragging while keeping five visible buttons active', () => {
+  it('rotates compact input tools by pointer dragging while keeping only center and adjacent buttons active', () => {
     render(
       <App
         chatSurfaceMode="compact"
@@ -3598,16 +5201,171 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
     const firstCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
-    expect(firstCenter).toHaveClass('compact-input-tool-item-import');
+    expect(firstCenter).toHaveClass('compact-input-tool-item-screenshot');
 
-    fireEvent.pointerDown(fan, { pointerId: 1, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerMove(fan, { pointerId: 1, clientX: 60, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerUp(fan, { pointerId: 1, clientX: 60, buttons: 0, pointerType: 'mouse' });
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 1, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 1, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(fan, { pointerId: 1, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
-    const nextCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
-    expect(nextCenter).toHaveClass('compact-input-tool-item-screenshot');
-    expect(fan.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
+      const nextCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
+      expect(nextCenter).toHaveClass('compact-input-tool-item-avatar');
+      expect(fan.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
+      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="-2"][tabindex="-1"]')).toHaveLength(1);
+      expect(fan.querySelectorAll('[data-compact-tool-wheel-slot="2"][tabindex="-1"]')).toHaveLength(1);
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('shows continuous compact tool wheel drag offset below the detent threshold and snaps back on release', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
+    expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 41, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 41, ...compactToolWheelPoint(15 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'true');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeCloseTo(15, 1);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle'))).toBeCloseTo(60, 1);
+
+      fireEvent.pointerUp(fan, { pointerId: 41, ...compactToolWheelPoint(15 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'false');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('keeps residual compact tool wheel drag offset after crossing one detent', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 42, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 42, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeGreaterThan(8);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeLessThan(10);
+
+      fireEvent.pointerUp(fan, { pointerId: 42, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('does not carry linear drag remainder into angular compact tool wheel dragging', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+
+    try {
+      fireEvent.pointerDown(fan, {
+        pointerId: 44,
+        clientX: 116,
+        clientY: 116,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(fan, {
+        pointerId: 44,
+        clientX: 116,
+        clientY: 149,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+      fireEvent.pointerMove(fan, {
+        pointerId: 44,
+        ...compactToolWheelPoint(100 * (Math.PI / 180)),
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      const residualDragAngle = Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'));
+      expect(residualDragAngle).toBeGreaterThan(1);
+      expect(residualDragAngle).toBeLessThan(12);
+
+      fireEvent.pointerUp(fan, {
+        pointerId: 44,
+        ...compactToolWheelPoint(100 * (Math.PI / 180)),
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('adds detent resistance before compact tool wheel drag breaks through', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 43, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 43, ...compactToolWheelPoint(34 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      const resistedAngle = Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'));
+      expect(resistedAngle).toBeGreaterThan(25);
+      expect(resistedAngle).toBeLessThan(30);
+
+      fireEvent.pointerMove(fan, { pointerId: 43, ...compactToolWheelPoint(37 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      const residualAngle = Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'));
+      expect(residualAngle).toBeGreaterThan(5);
+      expect(residualAngle).toBeLessThan(8);
+
+      fireEvent.pointerUp(fan, { pointerId: 43, ...compactToolWheelPoint(37 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+    } finally {
+      fanRectSpy.mockRestore();
+    }
   });
 
   it('rotates compact input tools when dragging from a tool button without firing that button', () => {
@@ -3622,20 +5380,25 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
     const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
-    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden-backward');
 
-    fireEvent.pointerDown(importButton, { pointerId: 4, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerMove(importButton, { pointerId: 4, clientX: 60, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerUp(importButton, { pointerId: 4, clientX: 60, buttons: 0, pointerType: 'mouse' });
-    fireEvent.click(importButton, { clientX: 140, clientY: 140 });
+    try {
+      fireEvent.pointerDown(importButton, { pointerId: 4, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(importButton, { pointerId: 4, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(importButton, { pointerId: 4, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+      fireEvent.click(importButton, { clientX: 140, clientY: 140 });
 
-    expect(onComposerImportImage).not.toHaveBeenCalled();
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
-    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(onComposerImportImage).not.toHaveBeenCalled();
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
   });
 
-  it('anchors compact emoji choices above the compact wheel toggle', async () => {
+  it('anchors compact avatar quickbar above the compact wheel toggle', async () => {
     vi.useFakeTimers();
     try {
       render(
@@ -3655,15 +5418,32 @@ describe('App', () => {
       const emojiButton = avatarTool.querySelector('.composer-emoji-btn') as HTMLButtonElement;
       fireEvent.click(emojiButton);
 
-      expect(avatarTool.querySelector('#composer-tool-popover-compact')).toBeNull();
-      expect(fan.querySelector(':scope > #composer-tool-popover-compact')).not.toBeNull();
+      expect(avatarTool.querySelector('#composer-avatar-tool-quickbar')).toBeNull();
+      expect(fan.querySelector(':scope > #composer-avatar-tool-quickbar')).not.toBeNull();
+      expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+      expect(emojiButton).toHaveClass('is-active');
 
-      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      const lollipopButton = fan.querySelector<HTMLButtonElement>('#composer-avatar-tool-quickbar [data-avatar-tool-id="lollipop"]');
+      expect(lollipopButton).not.toBeNull();
+      fireEvent.click(lollipopButton!);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
       expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
       expect(avatarTool.querySelector('.composer-emoji-btn')).toHaveClass('is-active');
-      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+      expect(fan.querySelector('#composer-avatar-tool-quickbar')).toBeNull();
+
+      fireEvent.click(emojiButton);
+
+      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     } finally {
       vi.useRealTimers();
     }
@@ -3685,23 +5465,12 @@ describe('App', () => {
 
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      const fanRectSpy = vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
-        left: 0,
-        top: 0,
-        right: 232,
-        bottom: 232,
-        width: 232,
-        height: 232,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      } as DOMRect);
+      const fanRectSpy = mockCompactToolFanRect(fan);
       restoreFanRect = () => fanRectSpy.mockRestore();
 
       fireEvent.pointerDown(fan, {
         pointerId: 18,
-        clientX: 174,
-        clientY: 174,
+        ...compactToolWheelPoint(45 * (Math.PI / 180)),
         button: 0,
         buttons: 1,
         pointerType: 'mouse',
@@ -3718,12 +5487,12 @@ describe('App', () => {
       });
       fireEvent.pointerMove(window, {
         pointerId: 18,
-        clientX: 520,
+        clientX: 116,
         clientY: 980,
         buttons: 1,
         pointerType: 'mouse',
       });
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
       fireEvent.blur(window);
       act(() => {
         window.dispatchEvent(new CustomEvent('neko:desktop-compact-pointer-outside'));
@@ -3859,22 +5628,628 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.wheel(fan, { deltaY: 80 });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+    expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
 
     fireEvent.wheel(fan, { deltaY: -80 });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
-
-    fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerMove(fan, { pointerId: 7, clientX: 102, clientY: 132, buttons: 1, pointerType: 'mouse' });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
-    fireEvent.pointerMove(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 1, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    fireEvent.wheel(fan, { deltaY: 1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
-    fireEvent.pointerUp(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse' });
+    fireEvent.wheel(fan, { deltaY: -1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 7, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 7, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+      fireEvent.pointerMove(fan, { pointerId: 7, ...compactToolWheelPoint(-10 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      fireEvent.pointerUp(fan, { pointerId: 7, ...compactToolWheelPoint(-10 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('retargets compact tool hover to the visual button under the pointer after wheel rotation', async () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    // The default wheel's slot 0 sits at 45deg on the 80px orbit, initially the screenshot tool.
+    const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+    const pointerAtPreviousSlot = compactToolWheelPoint(75.82 * (Math.PI / 180), 80);
+
+    try {
+      fireEvent.pointerMove(fan, {
+        pointerId: 81,
+        ...pointerAtSelectedSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
+      const avatarButton = fan.querySelector('.compact-input-tool-item-avatar');
+      const galgameButton = fan.querySelector('.compact-input-tool-item-galgame');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+
+      fireEvent.pointerMove(fan, {
+        pointerId: 81,
+        ...pointerAtPreviousSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      expect(galgameButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('75.82deg');
+
+      fireEvent.wheel(fan, {
+        deltaY: 80,
+        ...pointerAtSelectedSlot,
+      });
+
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(avatarButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('routes compact tool wheel background scrolling to the open inline history', () => {
+    const previousHistoryOpen = window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+    const originalElementsFromPoint = document.elementsFromPoint;
+    let scrollRectSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 900 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 300 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollTopByElement.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopByElement.set(this, value);
+      },
+    });
+
+    try {
+      window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+      const messages = Array.from({ length: 8 }, (_, index) => parseChatMessage({
+        id: `compact-history-wheel-${index}`,
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        author: index % 2 === 0 ? 'Neko' : 'You',
+        time: '10:00',
+        createdAt: index,
+        blocks: [{ type: 'text', text: `History row ${index}` }],
+        status: 'sent',
+      }));
+
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={messages}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan')!;
+      const fanHitRegion = fan.querySelector<HTMLElement>('.compact-input-tool-fan-hit-region')!;
+      const scroll = document.body.querySelector<HTMLDivElement>('.compact-export-history-scroll')!;
+
+      scrollRectSpy = vi.spyOn(scroll, 'getBoundingClientRect').mockReturnValue({
+        left: 20,
+        top: 20,
+        right: 420,
+        bottom: 320,
+        width: 400,
+        height: 300,
+        x: 20,
+        y: 20,
+        toJSON: () => ({}),
+      } as DOMRect);
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: () => [fanHitRegion, fan, scroll],
+      });
+
+      scroll.scrollTop = 120;
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      act(() => {
+        fireEvent.wheel(fanHitRegion, { deltaY: 80, clientX: 160, clientY: 160 });
+      });
+
+      expect(scroll.scrollTop).toBe(200);
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+      scroll.scrollTop = 0;
+      act(() => {
+        fireEvent.wheel(fanHitRegion, { deltaY: -80, clientX: 160, clientY: 160 });
+      });
+
+      expect(scroll.scrollTop).toBe(0);
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+    } finally {
+      if (previousHistoryOpen === null) {
+        window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, previousHistoryOpen);
+      }
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+      }
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: originalElementsFromPoint || (() => []),
+      });
+      scrollRectSpy?.mockRestore();
+    }
+  });
+
+  it('keeps compact tool wheel detent audio silent for an empty URL and plays every detent when configured', () => {
+    const playSfx = vi.fn();
+    const preloadSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+
+    playCompactToolWheelDetentSound('');
+    expect(GameAudioSystem).not.toHaveBeenCalled();
+    expect(playSfx).not.toHaveBeenCalled();
+
+    playCompactToolWheelDetentSound('/static/sfx/tool-detent-a.ogg');
+    playCompactToolWheelDetentSound('/static/sfx/tool-detent-a.ogg');
+
+    expect(GameAudioSystem).toHaveBeenCalledTimes(1);
+    expect(preloadSfx).toHaveBeenCalledTimes(1);
+    expect(preloadSfx).toHaveBeenCalledWith([
+      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+    ]);
+    expect(playSfx).toHaveBeenCalledTimes(2);
+    expect(playSfx).toHaveBeenNthCalledWith(1, {
+      src: '/static/sfx/tool-detent-a.ogg',
+      preload: 'auto',
+    });
+    expect(playSfx).toHaveBeenNthCalledWith(2, {
+      src: '/static/sfx/tool-detent-a.ogg',
+      preload: 'auto',
+    });
+  });
+
+  it('silently skips compact tool wheel audio when the host audio API is malformed', () => {
+    const windowWithAudio = window as Window & { NekoGameSystem?: unknown };
+    const malformedAudioSystems: unknown[] = [
+      {},
+      { GameAudioSystem: 'not-a-constructor' },
+      { GameAudioSystem: vi.fn().mockImplementation(() => ({})) },
+    ];
+
+    malformedAudioSystems.forEach(audioSystemShape => {
+      resetCompactToolWheelDetentAudioForTests();
+      windowWithAudio.NekoGameSystem = audioSystemShape;
+      expect(() => playCompactToolWheelDetentSound('/static/sfx/tool-detent-a.ogg')).not.toThrow();
+      expect(() => {
+        render(
+          <App
+            chatSurfaceMode="compact"
+            compactChatState="input"
+          />,
+        );
+      }).not.toThrow();
+    });
+  });
+
+  it('preloads compact tool wheel sounds when the chat UI mounts before the wheel opens', async () => {
+    const playSfx = vi.fn();
+    const preloadSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(GameAudioSystem).toHaveBeenCalledTimes(1);
+    });
+    expect(preloadSfx).toHaveBeenCalledTimes(1);
+    expect(preloadSfx).toHaveBeenCalledWith([
+      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+    ]);
+    expect(playSfx).not.toHaveBeenCalled();
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+  });
+
+  it('retries compact tool wheel preload if the game audio system appears after chat UI mount', async () => {
+    vi.useFakeTimers();
+    const playSfx = vi.fn();
+    const preloadSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+      expect(GameAudioSystem).not.toHaveBeenCalled();
+
+      (window as Window & {
+        NekoGameSystem?: {
+          GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
+        };
+      }).NekoGameSystem = { GameAudioSystem };
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130);
+      });
+
+      expect(GameAudioSystem).toHaveBeenCalledTimes(1);
+      expect(preloadSfx).toHaveBeenCalledWith([
+        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+      ]);
+      expect(playSfx).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries compact tool wheel preload when the first preload attempt fails', async () => {
+    vi.useFakeTimers();
+    const firstPreloadSfx = vi.fn(() => {
+      throw new Error('preload failed');
+    });
+    const secondPreloadSfx = vi.fn();
+    const playSfx = vi.fn();
+    const GameAudioSystem = vi.fn()
+      .mockImplementationOnce(() => ({ playSfx, preloadSfx: firstPreloadSfx }))
+      .mockImplementationOnce(() => ({ playSfx, preloadSfx: secondPreloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof secondPreloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+
+      expect(GameAudioSystem).toHaveBeenCalledTimes(1);
+      expect(firstPreloadSfx).toHaveBeenCalledWith([
+        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+      ]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130);
+      });
+
+      expect(GameAudioSystem).toHaveBeenCalledTimes(2);
+      expect(secondPreloadSfx).toHaveBeenCalledWith([
+        ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+        COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+      ]);
+      expect(playSfx).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('randomly selects one of the configured compact tool wheel detent sounds', () => {
+    const playSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+    const randomSpy = vi.spyOn(Math, 'random')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.26)
+      .mockReturnValueOnce(0.51)
+      .mockReturnValueOnce(0.99);
+
+    try {
+      playCompactToolWheelDetentSound();
+      playCompactToolWheelDetentSound();
+      playCompactToolWheelDetentSound();
+      playCompactToolWheelDetentSound();
+    } finally {
+      randomSpy.mockRestore();
+    }
+
+    expect(COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS).toEqual([
+      '/static/sounds/compact-tool-wheel/gear-detent-1.mp3',
+      '/static/sounds/compact-tool-wheel/gear-detent-2.mp3',
+      '/static/sounds/compact-tool-wheel/gear-detent-3.mp3',
+      '/static/sounds/compact-tool-wheel/gear-detent-4.mp3',
+    ]);
+    expect(playSfx).toHaveBeenCalledTimes(4);
+    expect(playSfx).toHaveBeenNthCalledWith(1, {
+      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[0],
+      preload: 'auto',
+    });
+    expect(playSfx).toHaveBeenNthCalledWith(2, {
+      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[1],
+      preload: 'auto',
+    });
+    expect(playSfx).toHaveBeenNthCalledWith(3, {
+      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[2],
+      preload: 'auto',
+    });
+    expect(playSfx).toHaveBeenNthCalledWith(4, {
+      src: COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS[3],
+      preload: 'auto',
+    });
+  });
+
+  it('plays the compact tool wheel rebound sound separately from detents', () => {
+    const playSfx = vi.fn();
+    const preloadSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
+
+    playCompactToolWheelReboundSound();
+
+    expect(preloadSfx).toHaveBeenCalledWith([
+      ...COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
+      COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+    ]);
+    expect(playSfx).toHaveBeenCalledTimes(1);
+    expect(playSfx).toHaveBeenCalledWith(
+      {
+        src: COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
+        preload: 'auto',
+      },
+      { volume: 0.85 },
+    );
+  });
+
+  it('scales compact tool wheel rebound volume by residual drag distance', () => {
+    expect(getCompactToolWheelReboundVolume(0)).toBeNull();
+    expect(getCompactToolWheelReboundVolume(0.199)).toBeNull();
+    expect(getCompactToolWheelReboundVolume(0.2)).toBe(0.38);
+    expect(getCompactToolWheelReboundVolume(-0.36)).toBe(0.38);
+    expect(getCompactToolWheelReboundVolume(0.399)).toBe(0.38);
+    expect(getCompactToolWheelReboundVolume(0.4)).toBe(0.6);
+    expect(getCompactToolWheelReboundVolume(-0.62)).toBe(0.6);
+    expect(getCompactToolWheelReboundVolume(0.699)).toBe(0.6);
+    expect(getCompactToolWheelReboundVolume(0.7)).toBe(0.85);
+    expect(getCompactToolWheelReboundVolume(-0.9)).toBe(0.85);
+  });
+
+  it('rotates compact input tools from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelRotateRequest={{
+          id: 'compact-tool-wheel-rotate-guide',
+          direction: 1,
+          stepCount: 1,
+          reason: 'avatar-floating-guide-galgame-drag',
+          forceFast: true,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+    });
+  });
+
+  it('sets compact input tool wheel index from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-non-default',
+          index: 6,
+          reason: 'test-non-default',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-day3-entry',
+          index: 0,
+          reason: 'avatar-floating-guide-day3-entry-reset',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+    });
+  });
+
+  it('toggles compact history from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-history',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    });
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactHistoryOpenRequest={{
+          id: 'compact-history-close-guide',
+          open: false,
+          reason: 'avatar-floating-guide-history',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.body.querySelector('.compact-export-history-anchor')).toHaveAttribute(
+        'data-compact-export-history-visibility',
+        'closing',
+      );
+    });
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+  });
+
+  // 折中语义（取舍脉络见 App.tsx openCompactInputToolFan 注释）：
+  // 轮盘转角在「会话内」（组件存活期间）延续上次滚到的位置，关闭再展开不弹回默认；
+  // 但「不」持久化到 localStorage —— 页面刷新/组件重挂后随 useState 初值复位到环位 0。
+  it('keeps the compact input tool wheel position within a session but resets after remount', () => {
+    const { unmount } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
+    fireEvent.click(actionButton);
+    let fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    fireEvent.wheel(fan, { deltaY: 80 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+    // 转角不再写入 localStorage —— 该 key 始终为空。
+    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBeNull();
+
+    // 会话内关闭再展开：保持上次转出来的位置（avatar 仍在正中槽位 0）。
+    fireEvent.click(actionButton);
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    fireEvent.click(actionButton);
+    fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+    // 卸载再重挂（模拟页面刷新）：转角复位回默认环位 0（screenshot 居中）。
+    unmount();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    // 重挂后依然不产生持久化写入。
+    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBeNull();
   });
 
   it('stops compact input tool wheel motion on pointer release', async () => {
@@ -3889,47 +6264,57 @@ describe('App', () => {
 
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
-
-      fireEvent.pointerDown(fan, {
-        pointerId: 21,
-        clientX: 100,
-        clientY: 100,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(16);
-      });
-      fireEvent.pointerMove(fan, {
-        pointerId: 21,
-        clientX: 76,
-        clientY: 100,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
+      const fanRectSpy = mockCompactToolFanRect(fan);
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
-      fireEvent.pointerUp(fan, {
-        pointerId: 21,
-        clientX: 76,
-        clientY: 100,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
+      try {
+        fireEvent.pointerDown(fan, {
+          pointerId: 21,
+          ...compactToolWheelPoint(0),
+          button: 0,
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16);
+        });
+        fireEvent.pointerMove(fan, {
+          pointerId: 21,
+          ...compactToolWheelPoint(40 * (Math.PI / 180)),
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(900);
-      });
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+        fireEvent.pointerUp(fan, {
+          pointerId: 21,
+          ...compactToolWheelPoint(40 * (Math.PI / 180)),
+          buttons: 0,
+          pointerType: 'mouse',
+        });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(900);
+        });
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+      } finally {
+        fanRectSpy.mockRestore();
+      }
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('charges compact input tool wheel after sustained one-way drag and releases backward', async () => {
+  it('charges compact input tool wheel after sustained one-way drag and releases visually without changing the final center', async () => {
     vi.useFakeTimers();
+    const playSfx = vi.fn();
+    const preloadSfx = vi.fn();
+    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    (window as Window & {
+      NekoGameSystem?: {
+        GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
+      };
+    }).NekoGameSystem = { GameAudioSystem };
     const pointOnWheel = (angle: number) => ({
       clientX: 116 + Math.cos(angle) * 92,
       clientY: 116 + Math.sin(angle) * 92,
@@ -3970,7 +6355,7 @@ describe('App', () => {
       for (let index = 1; index <= 12; index += 1) {
         fireEvent.pointerMove(fan, {
           pointerId: 22,
-          ...pointOnWheel(index * 0.42),
+          ...pointOnWheel(index * 0.7),
           buttons: 1,
           pointerType: 'mouse',
         });
@@ -3980,7 +6365,7 @@ describe('App', () => {
       for (let index = 13; index <= 24; index += 1) {
         fireEvent.pointerMove(fan, {
           pointerId: 22,
-          ...pointOnWheel(index * 0.42),
+          ...pointOnWheel(index * 0.7),
           buttons: 1,
           pointerType: 'mouse',
         });
@@ -3989,9 +6374,10 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-active', 'true');
       expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-direction', 'forward');
       const beforeReleaseCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className;
+      expect(beforeReleaseCenter).toBeTruthy();
       fireEvent.pointerUp(fan, {
         pointerId: 22,
-        ...pointOnWheel(24 * 0.42),
+        ...pointOnWheel(24 * 0.7),
         buttons: 0,
         pointerType: 'mouse',
       });
@@ -4002,11 +6388,28 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(1);
       });
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className).not.toBe(beforeReleaseCenter);
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '6');
+
+      for (let timerRun = 0; timerRun < 64 && fan.getAttribute('data-compact-tool-wheel-charge-release-active') === 'true'; timerRun += 1) {
+        await act(async () => {
+          await vi.advanceTimersToNextTimerAsync();
+        });
+      }
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-active', 'false');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '0');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className).toBe(beforeReleaseCenter);
+      expect(Math.abs(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')))).toBeGreaterThan(4);
+      expect(playSfx.mock.calls.some(([request]) => (
+        typeof request === 'object'
+        && request !== null
+        && 'src' in request
+        && request.src === COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC
+      ))).toBe(true);
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(700);
+        await vi.advanceTimersByTimeAsync(120);
       });
-      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-active', 'false');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
     } finally {
       restoreFanRect();
       vi.useRealTimers();
@@ -4049,10 +6452,10 @@ describe('App', () => {
         buttons: 1,
         pointerType: 'mouse',
       });
-      for (let index = 1; index <= 20; index += 1) {
+      for (let index = 1; index <= 28; index += 1) {
         fireEvent.pointerMove(fan, {
           pointerId: 23,
-          ...pointOnWheel(index * 0.42),
+          ...pointOnWheel(index * 0.7),
           buttons: 1,
           pointerType: 'mouse',
         });
@@ -4064,7 +6467,7 @@ describe('App', () => {
 
       fireEvent.pointerMove(fan, {
         pointerId: 23,
-        ...pointOnWheel(19 * 0.42),
+        ...pointOnWheel(24 * 0.7),
         buttons: 1,
         pointerType: 'mouse',
       });
@@ -4076,16 +6479,494 @@ describe('App', () => {
       expect(reducedFirstAngle + reducedSecondAngle).toBeLessThan(chargedFirstAngle + chargedSecondAngle);
       fireEvent.pointerUp(fan, {
         pointerId: 23,
-        ...pointOnWheel(19 * 0.42),
+        ...pointOnWheel(24 * 0.7),
         buttons: 0,
         pointerType: 'mouse',
       });
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(700);
+        await vi.advanceTimersByTimeAsync(2500);
       });
     } finally {
       fanRectSpy.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it('rattles in two levels before auto releasing at max charge', async () => {
+    vi.useFakeTimers();
+    const pointOnWheel = (angle: number) => ({
+      clientX: 116 + Math.cos(angle) * 92,
+      clientY: 116 + Math.sin(angle) * 92,
+    });
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 232,
+      bottom: 232,
+      width: 232,
+      height: 232,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    try {
+      fireEvent.pointerDown(fan, {
+        pointerId: 24,
+        ...pointOnWheel(0),
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      let index = 1;
+      for (; index <= 80; index += 1) {
+        fireEvent.pointerMove(fan, {
+          pointerId: 24,
+          ...pointOnWheel(index * 0.7),
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        if (fan.getAttribute('data-compact-tool-wheel-charge-rattle') === 'weak') {
+          break;
+        }
+      }
+
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-active', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-rattle', 'weak');
+
+      for (index += 1; index <= 100; index += 1) {
+        fireEvent.pointerMove(fan, {
+          pointerId: 24,
+          ...pointOnWheel(index * 0.7),
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        if (fan.getAttribute('data-compact-tool-wheel-charge-rattle') === 'strong') {
+          break;
+        }
+      }
+
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-active', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-rattle', 'strong');
+
+      for (index += 1; index <= 120; index += 1) {
+        fireEvent.pointerMove(fan, {
+          pointerId: 24,
+          ...pointOnWheel(index * 0.7),
+          buttons: 1,
+          pointerType: 'mouse',
+        });
+        if (fan.getAttribute('data-compact-tool-wheel-charge-release-active') === 'true') {
+          break;
+        }
+      }
+
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-active', 'false');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-active', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-rattle', 'none');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9000);
+      });
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-active', 'false');
+    } finally {
+      fanRectSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('exposes a yarn-ball minimize entry in compact input and capsule states', () => {
+    const onCompactMinimizeRequest = vi.fn();
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
+    );
+    const ball = container.querySelector('.compact-chat-minimize-ball');
+    expect(ball).not.toBeNull();
+    // 毛绒球走 origin-drag 手势（单击折叠 / 长按拖 surface，与右侧轮盘原点对偶），
+    // 标记 no-drag 避免宿主被动 hit-test 重复起拖。
+    expect(ball).toHaveAttribute('data-compact-no-drag', 'true');
+    // 纯单击（无拖动）折叠为 minimized。
+    fireEvent.click(ball!);
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+    // 胶囊态同样有毛绒球折叠入口（两态都覆盖）。
+    rerender(<App chatSurfaceMode="compact" compactChatState="default" onCompactMinimizeRequest={onCompactMinimizeRequest} />);
+    expect(container.querySelector('.compact-chat-minimize-ball')).not.toBeNull();
+  });
+
+  it('clears the active avatar tool cursor before compact minimize', async () => {
+    const onCompactMinimizeRequest = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
+    );
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    });
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+  });
+
+  it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const grabs: Array<Record<string, number>> = [];
+    const moves: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrime = (event: Event) => primes.push((event as CustomEvent).detail);
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    const onMove = (event: Event) => moves.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    window.addEventListener('neko:compact-surface-drag-move', onMove);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 51, clientX: 160, clientY: 46, screenX: 460, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(1);
+      expect(primes[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 51, clientX: 182, clientY: 48, screenX: 482, screenY: 342,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+        currentClientX: 182,
+        currentClientY: 48,
+      });
+      expect(moves).toHaveLength(0);
+      fireEvent.pointerMove(document, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(moves).toHaveLength(1);
+      expect(moves[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toHaveLength(1);
+      expect(primeEnds[0]).toMatchObject({ pointerId: 51 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+        reason: 'pointerup',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      window.removeEventListener('neko:compact-surface-drag-move', onMove);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('dispatches compact surface drag cleanup from document pointercancel', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 61, clientX: 120, clientY: 40, screenX: 320, screenY: 240,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerCancel(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toEqual([{ pointerId: 61 }]);
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 61,
+        clientX: 150,
+        clientY: 46,
+        screenX: 350,
+        screenY: 246,
+        reason: 'pointercancel',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('finishes a replaced compact surface drag before priming the next pointer', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const sequence: string[] = [];
+    const onPrime = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primes.push(detail);
+      sequence.push(`prime:${detail.pointerId}`);
+    };
+    const onPrimeEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primeEnds.push(detail);
+      sequence.push(`prime-end:${detail.pointerId}`);
+    };
+    const onEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      ends.push(detail);
+      sequence.push(`end:${detail.pointerId}:${detail.reason}`);
+    };
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 71, clientX: 150, clientY: 50, screenX: 450, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 71, clientX: 175, clientY: 58, screenX: 475, screenY: 348,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerDown(minimize, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(2);
+      expect(primes[0]).toMatchObject({ pointerId: 71 });
+      expect(primes[1]).toMatchObject({ pointerId: 72 });
+      expect(sequence).toEqual([
+        'prime:71',
+        'end:71:replaced',
+        'prime-end:71',
+        'prime:72',
+      ]);
+      expect(primeEnds).toContainEqual({ pointerId: 71 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 71,
+        clientX: 175,
+        clientY: 58,
+        screenX: 475,
+        screenY: 348,
+        reason: 'replaced',
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        buttons: 0, pointerType: 'mouse',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    const grabs: Array<Record<string, number>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      fireEvent.pointerDown(toggle, {
+        pointerId: 7, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 7, clientX: 122, clientY: 108, buttons: 1, pointerType: 'mouse',
+      });
+      // 拖动超阈值 → 派发一次抓取事件，锚点用按下点（不跳变）。
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({ clientX: 100, clientY: 100, screenX: 300, screenY: 320 });
+      fireEvent.pointerUp(document, {
+        pointerId: 7, clientX: 122, clientY: 108, buttons: 0, pointerType: 'mouse',
+      });
+      // 拖完补发的 click 被吞掉，不应展开轮盘。
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+    }
+  });
+
+  it('suppresses the submit default action after dragging the compact submit toggle', () => {
+    const onComposerSubmit = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    fireEvent.change(input, { target: { value: 'hello' } });
+    expect(toggle).toHaveAttribute('type', 'submit');
+
+    fireEvent.pointerDown(toggle, {
+      pointerId: 81, clientX: 120, clientY: 48, screenX: 420, screenY: 338,
+      button: 0, buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerUp(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 0, pointerType: 'mouse',
+    });
+    fireEvent.click(toggle);
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps origin drag click suppression armed across a slow drag (no timeout clear)', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
+      const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      fireEvent.pointerDown(toggle, {
+        pointerId: 31, clientX: 100, clientY: 100, screenX: 300, screenY: 300,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 1, pointerType: 'mouse',
+      });
+      // 慢速拖拽：跨过任何旧的固定时长窗口（曾经的 120ms 定时器会在此误清抑制标志）。
+      vi.advanceTimersByTime(1000);
+      fireEvent.pointerUp(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 0, pointerType: 'mouse',
+      });
+      // 释放后补发的 click 仍应被吞掉，轮盘不被误展开。
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a stationary tap on the tool toggle as open (no drag-grab)', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    const grabs: Event[] = [];
+    const onGrab = (event: Event) => grabs.push(event);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      fireEvent.pointerDown(toggle, {
+        pointerId: 8, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(toggle, {
+        pointerId: 8, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(0);
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+    }
+  });
+
+  it('dispatches a drag-grab from the open wheel origin and collapses the wheel', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    fireEvent.click(toggle);
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    const fanRectSpy = vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 232, bottom: 232, width: 232, height: 232, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const grabs: Array<Record<string, number>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      // 在轮盘中心（origin）按下并拖动 → 移动文本框而非旋转轮盘。
+      fireEvent.pointerDown(fan, {
+        pointerId: 9, clientX: 10, clientY: 10, screenX: 210, screenY: 210,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(fan, {
+        pointerId: 9, clientX: 32, clientY: 16, buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({ clientX: 10, clientY: 10, screenX: 210, screenY: 210 });
+      // 拖动是移动手势 → 轮盘收起。
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      fanRectSpy.mockRestore();
     }
   });
 
@@ -4114,35 +6995,31 @@ describe('App', () => {
     try {
       fireEvent.pointerDown(fan, {
         pointerId: 19,
-        clientX: 31.43,
-        clientY: 146.78,
+        ...compactToolWheelPoint(140 * (Math.PI / 180)),
         button: 0,
         buttons: 1,
         pointerType: 'mouse',
       });
       fireEvent.pointerMove(fan, {
         pointerId: 19,
-        clientX: 26.05,
-        clientY: 119.14,
+        ...compactToolWheelPoint(180 * (Math.PI / 180)),
         buttons: 1,
         pointerType: 'mouse',
       });
       fireEvent.pointerMove(fan, {
         pointerId: 19,
-        clientX: 29.46,
-        clientY: 91.11,
+        ...compactToolWheelPoint(220 * (Math.PI / 180)),
         buttons: 1,
         pointerType: 'mouse',
       });
       fireEvent.pointerUp(fan, {
         pointerId: 19,
-        clientX: 29.46,
-        clientY: 91.11,
+        ...compactToolWheelPoint(220 * (Math.PI / 180)),
         buttons: 0,
         pointerType: 'mouse',
       });
 
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-translate');
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -4158,18 +7035,23 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 40, buttons: 0, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
-
-    fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-    fireEvent.pointerMove(fan, { pointerId: 7, clientX: 60, clientY: 102, buttons: 1, pointerType: 'mouse' });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
-    fireEvent.pointerUp(fan, { pointerId: 7, clientX: 60, clientY: 102, buttons: 0, pointerType: 'mouse' });
-    fireEvent.pointerMove(fan, { pointerId: 7, clientX: 10, clientY: 102, buttons: 0, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    try {
+      fireEvent.pointerDown(fan, { pointerId: 7, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 7, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+      fireEvent.pointerUp(fan, { pointerId: 7, ...compactToolWheelPoint(40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 7, ...compactToolWheelPoint(90 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
   });
 
   it('keeps compact toggle tools open and shows their active state after toggling', async () => {
@@ -4191,30 +7073,34 @@ describe('App', () => {
 
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(240);
-      });
-      fireEvent.pointerDown(fan, { pointerId: 1, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 1, clientX: 60, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 1, clientX: 60, buttons: 0, pointerType: 'mouse' });
-      fireEvent.pointerDown(fan, { pointerId: 2, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 2, clientX: 60, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 2, clientX: 60, buttons: 0, pointerType: 'mouse' });
+      const fanRectSpy = mockCompactToolFanRect(fan);
+      try {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(240);
+        });
+        // 新工具顺序里 galgame 是环位 6（默认 slot -1）。反向拖一步（wheelIndex 0→6）
+        // 把它转到正中 slot 0，再点击验证 toggle 后 fan 保持展开。
+        fireEvent.pointerDown(fan, { pointerId: 1, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerMove(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerUp(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
-      const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
-      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      await act(async () => {
-        fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
-      });
-      const activeGalgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        await act(async () => {
+          fireEvent.click(galgameButton, { clientX: 140, clientY: 140 });
+        });
+        const activeGalgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
 
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      expect(activeGalgameButton).toHaveClass('is-active');
-      expect(activeGalgameButton).toHaveAttribute('data-compact-tool-active', 'true');
-      expect(activeGalgameButton).toHaveAttribute('aria-pressed', 'true');
+        expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+        expect(activeGalgameButton).toHaveClass('is-active');
+        expect(activeGalgameButton).toHaveAttribute('data-compact-tool-active', 'true');
+        expect(activeGalgameButton).toHaveAttribute('aria-pressed', 'true');
+      } finally {
+        fanRectSpy.mockRestore();
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -4241,21 +7127,54 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
   });
 
-  it('reopens compact input tools after closing them from the tool toggle pointer press', () => {
+  it('reopens compact input tools after closing them from a tool toggle tap', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
     const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     expect(actionButton).not.toBeNull();
 
-    fireEvent.pointerDown(actionButton, { pointerId: 21, button: 0, buttons: 1, pointerType: 'mouse' });
+    const tapToggle = (pointerId: number) => {
+      fireEvent.pointerDown(actionButton, { pointerId, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(actionButton, { pointerId, button: 0, pointerType: 'mouse' });
+      fireEvent.click(actionButton);
+    };
+
+    tapToggle(21);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
 
-    fireEvent.pointerDown(actionButton, { pointerId: 22, button: 0, buttons: 1, pointerType: 'mouse' });
+    tapToggle(22);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
 
-    fireEvent.pointerDown(actionButton, { pointerId: 23, button: 0, buttons: 1, pointerType: 'mouse' });
+    tapToggle(23);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+  });
+
+  it('signals fan-open solid state to the desktop shell on open and close', () => {
+    const openStates: Array<boolean | undefined> = [];
+    const onOpenState = (event: Event) => openStates.push((event as CustomEvent).detail?.open);
+    window.addEventListener('neko:compact-tool-fan-open-state-change', onOpenState);
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+
+      const tapToggle = (pointerId: number) => {
+        fireEvent.pointerDown(actionButton, { pointerId, button: 0, buttons: 1, pointerType: 'mouse' });
+        fireEvent.pointerUp(actionButton, { pointerId, button: 0, pointerType: 'mouse' });
+        fireEvent.click(actionButton);
+      };
+
+      tapToggle(51);
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(openStates).toContain(true);
+
+      tapToggle(52);
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(openStates[openStates.length - 1]).toBe(false);
+    } finally {
+      window.removeEventListener('neko:compact-tool-fan-open-state-change', onOpenState);
+    }
   });
 
   it('uses hover for enter and leave while click only toggles compact input tools', async () => {
@@ -4451,6 +7370,41 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
   });
 
+  it('keeps controlled compact input focused after submitting text for continuous typing', async () => {
+    const onComposerSubmit = vi.fn();
+
+    function CompactContinuousInputHarness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('input');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          onCompactChatStateChange={setCompactChatState}
+          onComposerSubmit={onComposerSubmit}
+        />
+      );
+    }
+
+    const { container } = render(<CompactContinuousInputHarness />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'First compact message' } });
+    const sendButton = screen.getByRole('button', { name: 'Send' });
+    sendButton.focus();
+    expect(document.activeElement).toBe(sendButton);
+    fireEvent.click(sendButton);
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByPlaceholderText('Type a message...'));
+    });
+    const refocusedInput = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+    expect(refocusedInput.selectionStart).toBe(refocusedInput.value.length);
+    expect(refocusedInput.selectionEnd).toBe(refocusedInput.value.length);
+  });
+
   it('returns empty compact input to subtitle state when it loses focus', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
@@ -4633,7 +7587,32 @@ describe('App', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
 
     expect(onComposerSubmit).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(input).toHaveValue('');
+    expect(screen.getByRole('button', { name: '更多工具' })).toBeDisabled();
+  });
+
+  it('locks only compact text entry while tutorial input lock is active', async () => {
+    const onComposerSubmit = vi.fn();
+    const onComposerImportImage = vi.fn();
+    renderInputApp({
+      compactInputLocked: true,
+      onComposerSubmit,
+      onComposerImportImage,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).not.toBeDisabled();
+    expect(input).toHaveAttribute('readonly');
+
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+
+    await openCompactInputTools();
+    const importButton = document.body.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
+    rotateCompactToolToCenter(importButton);
+    fireEvent.click(importButton);
+    expect(onComposerImportImage).toHaveBeenCalledTimes(1);
   });
 
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
@@ -4660,18 +7639,22 @@ describe('App', () => {
 
     await openCompactInputTools();
 
-    fireEvent.click(document.body.querySelector('.compact-input-tool-item-import')!);
+    const importButton = document.body.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
+    rotateCompactToolToCenter(importButton);
+    fireEvent.click(importButton);
     expect(onComposerImportImage).toHaveBeenCalledTimes(1);
 
     await openCompactInputTools();
-    fireEvent.click(document.body.querySelector('.compact-input-tool-item-screenshot')!);
+    const screenshotButton = document.body.querySelector('.compact-input-tool-item-screenshot') as HTMLButtonElement;
+    rotateCompactToolToCenter(screenshotButton);
+    fireEvent.click(screenshotButton);
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
   });
 
   it('renders pending composer attachments and removes them through callback', () => {
     const onComposerRemoveAttachment = vi.fn();
 
-    render(
+    const { container } = render(
       <App
         composerAttachments={[
           { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
@@ -4680,6 +7663,11 @@ describe('App', () => {
       />,
     );
 
+    const viewport = container.querySelector('.composer-attachment-viewport');
+    expect(viewport).toHaveClass('composer-attachment-viewport-compact');
+    expect(viewport).toHaveAttribute('data-compact-geometry-item', 'attachments');
+    expect(container.querySelector('.compact-chat-surface-shell .composer-attachment-viewport')).toBe(viewport);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).toBeNull();
     expect(screen.getByAltText('Screenshot 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 
@@ -4734,7 +7722,7 @@ describe('App', () => {
       renderInputApp({ onAvatarInteraction });
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
       fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
@@ -4787,7 +7775,7 @@ describe('App', () => {
       renderInputApp({ onAvatarInteraction });
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 110 });
@@ -4809,6 +7797,59 @@ describe('App', () => {
         actionId: 'poke',
         touchZone: 'body',
       }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('uses viewport positioning for cat-paw reward drops', async () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 220,
+          top: 100,
+          bottom: 220,
+          width: 120,
+          height: 120,
+        }),
+      },
+    });
+
+    try {
+      const { container } = renderInputApp({ onAvatarInteraction });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 190, clientY: 190 });
+
+      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'fist',
+        rewardDrop: true,
+      }));
+
+      const firstDrop = container.querySelector<HTMLElement>('.fist-floating-drop');
+      expect(firstDrop).not.toBeNull();
+      expect(window.getComputedStyle(firstDrop!).position).toBe('fixed');
+      expect(firstDrop).toHaveStyle({
+        left: '171px',
+        top: '159px',
+      });
     } finally {
       randomSpy.mockRestore();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
@@ -4844,7 +7885,7 @@ describe('App', () => {
       renderInputApp({ onAvatarInteraction });
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
       for (let index = 0; index < 6; index += 1) {
@@ -4878,7 +7919,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+  it('keeps the lollipop desktop cursor image stable across avatar range changes', async () => {
     vi.useFakeTimers();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -4906,13 +7947,13 @@ describe('App', () => {
     });
 
     try {
-      const { container } = renderInputApp();
+      renderInputApp();
 
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(240);
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
@@ -4920,8 +7961,8 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      const avatarImage = () => container.querySelector('.avatar-cursor-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      const avatarImage = () => document.body.querySelector('.avatar-cursor-overlay-image-lollipop');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       boundsAvailable = false;
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -4930,7 +7971,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -4978,7 +8019,7 @@ describe('App', () => {
       renderInputApp({ onAvatarInteraction });
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
       for (let index = 0; index < 4; index += 1) {
@@ -5036,7 +8077,7 @@ describe('App', () => {
       renderInputApp({ onAvatarInteraction });
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
 
@@ -5052,49 +8093,108 @@ describe('App', () => {
     }
   });
 
-  it('selects an avatar tool from the group and clears it from the active badge', async () => {
+  it('selects and clears an avatar tool from the quickbar', async () => {
     renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    expect(screen.getByRole('group', { name: 'Tool icons' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Avatar quick tools' })).toBeInTheDocument();
 
-    const lollipopButton = screen.getByRole('button', { name: '棒棒糖' });
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
+    expect(lollipopButton).not.toBeNull();
     expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
 
-    fireEvent.click(lollipopButton);
+    fireEvent.click(lollipopButton!);
+
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
 
     await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
-    const activeBadgeButton = screen.getByRole('button', { name: 'Emoji: 棒棒糖' });
-    expect(activeBadgeButton).toHaveClass('is-active');
-    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
-
-    fireEvent.click(activeBadgeButton);
-
-    await openCompactInputTools();
-    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
-    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
   });
 
-  it('clears the selected avatar tool from the icon badge', async () => {
+  it('closes the transparent compact tool fan after selecting an avatar cursor tool', async () => {
     renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
-    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(fan).toHaveAttribute('aria-hidden', 'true');
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
+  });
+
+  it('clears the selected compact avatar tool from the avatar wheel button', async () => {
+    renderInputApp();
 
     await openCompactInputTools();
-    expect(screen.getByRole('button', { name: 'Emoji: 猫爪' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
+    expect(lollipopButton).not.toBeNull();
+    fireEvent.click(lollipopButton!);
 
-    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
 
     await openCompactInputTools();
-    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Emoji: 猫爪' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '恢复鼠标' })).not.toBeInTheDocument();
+    const fan = document.body.querySelector<HTMLElement>('.compact-input-tool-fan');
+    const avatarTool = fan?.querySelector<HTMLElement>('.compact-input-tool-item-avatar');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(queryAvatarCursorOverlay()).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+  });
+
+  it('disables avatar sub-actions when the avatar wheel slot is not actionable', async () => {
+    const { container } = renderInputApp();
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const lollipopButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="lollipop"]');
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(lollipopButton).not.toBeNull();
+    expect(lollipopButton).not.toBeDisabled();
+    expect(editButton).not.toBeDisabled();
+
+    fireEvent.wheel(fan, { deltaY: 80 });
+    fireEvent.wheel(fan, { deltaY: 80 });
+    fireEvent.wheel(fan, { deltaY: 80 });
+
+    expect(fan.querySelector('.compact-input-tool-item-avatar')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+    expect(lollipopButton).toBeDisabled();
+    expect(editButton).toBeDisabled();
+  });
+
+  it('clears the selected avatar tool from the quickbar bubble', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    const fistButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="fist"]');
+    expect(fistButton).not.toBeNull();
+    fireEvent.click(fistButton!);
+
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
 
   it('emits avatar tool state changes for desktop hosts', async () => {
@@ -5109,68 +8209,100 @@ describe('App', () => {
 
     onAvatarToolStateChange.mockClear();
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
-    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+      clientX: 240,
+      clientY: 320,
+      screenX: 640,
+      screenY: 420,
+    });
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: true,
       toolId: 'hammer',
       variant: 'primary',
+      imageKind: 'cursor',
+      cursorClientX: 240,
+      cursorClientY: 320,
+      cursorScreenX: 640,
+      cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
         cursorHotspotX: 50,
         cursorHotspotY: 54,
+        cursorNaturalWidth: 100,
+        cursorNaturalHeight: 96,
+        cursorDisplayWidth: 100,
+        cursorDisplayHeight: 96,
       }),
     }));
   });
 
   it('anchors the desktop cursor overlay to the current pointer when a tool is activated', async () => {
-    const { container } = renderInputApp();
+    renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
       clientX: 240,
       clientY: 320,
     });
 
-    const overlay = container.querySelector('.avatar-cursor-overlay');
+    const overlay = queryAvatarCursorOverlay();
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
+  });
+
+  it('moves the desktop cursor overlay synchronously with pointer movement', async () => {
+    renderInputApp();
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+      clientX: 240,
+      clientY: 320,
+    });
+
+    const overlay = queryAvatarCursorOverlay();
+    expect(overlay).not.toBeNull();
+
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
+
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {
-    const { container, rerender } = renderInputApp();
+    const { rerender } = renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
     rerender(<App compactChatState="input" composerHidden />);
 
-    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(queryAvatarCursorOverlay()).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
     expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
     expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
   });
 
   it('clears the tool cursor when the host issues a reset key', async () => {
-    const { container, rerender } = renderInputApp();
+    const { rerender } = renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
     rerender(<App compactChatState="input" _toolCursorResetKey="voice-mode-reset-1" />);
 
-    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(queryAvatarCursorOverlay()).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
     expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
     expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
@@ -5181,7 +8313,7 @@ describe('App', () => {
     const { rerender } = renderInputApp({ onAvatarToolStateChange });
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
     onAvatarToolStateChange.mockClear();
@@ -5207,41 +8339,49 @@ describe('App', () => {
     renderInputApp({ onAvatarToolStateChange });
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
     fireEvent.blur(window);
 
-    onAvatarToolStateChange.mockClear();
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+    onAvatarToolStateChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,
       toolId: null,
       insideHostWindow: true,
     }));
+    expect(queryAvatarCursorOverlay()).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+    expect(screen.queryByRole('group', { name: 'Avatar quick tools' })).toBeNull();
   });
 
   it('restores the native cursor while desktop system UI owns focus', async () => {
-    const { container } = renderInputApp();
+    renderInputApp();
 
     await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
     fireEvent.blur(window);
 
-    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(queryAvatarCursorOverlay()).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
     expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
     expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
 
     fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
 
-    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(queryAvatarCursorOverlay()).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
   });
 
@@ -5249,22 +8389,22 @@ describe('App', () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
 
     try {
-      const { container } = renderInputApp();
+      renderInputApp();
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
-      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(queryAvatarCursorOverlay()).toBeNull();
       expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
       fireEvent.pointerOut(window, { relatedTarget: null, clientX: 160, clientY: 220 });
-      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(queryAvatarCursorOverlay()).toBeNull();
       expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
       fireEvent.pointerOut(window, { relatedTarget: null, clientX: -1, clientY: 220 });
 
-      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(queryAvatarCursorOverlay()).toBeNull();
       expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
     } finally {
       delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
@@ -5295,19 +8435,19 @@ describe('App', () => {
     });
 
     try {
-      const { container } = renderInputApp();
+      renderInputApp();
 
       await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(screen.getByRole('button', { name: '锤子' }));
 
-      const compactImageBefore = container.querySelector('.hammer-cursor-overlay-compact-image');
+      const compactImageBefore = queryHammerCursorCompactImage();
       expect(compactImageBefore).not.toBeNull();
       expect(compactImageBefore).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
 
       fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
 
-      const compactImageAfter = container.querySelector('.hammer-cursor-overlay-compact-image');
+      const compactImageAfter = queryHammerCursorCompactImage();
       expect(compactImageAfter).not.toBeNull();
       expect(compactImageAfter).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
     } finally {

@@ -12,7 +12,7 @@
  * 1. 加载本地 i18next 库（从 /static/libs/）
  * 2. 检查依赖加载状态
  * 3. 处理加载失败容错（重新加载或降级方案）
- * 4. 从 Steam API 获取语言设置
+ * 4. 从配置覆盖 / Steam API 获取语言设置
  * 5. 初始化 i18next
  */
 
@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-05-03-1';
+    const LOCALE_VERSION = '2026-06-22-tutorial-i18n-bubblemeta';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
@@ -82,12 +82,37 @@
     function getLanguageFromQuery() {
         try {
             const params = new URLSearchParams(window.location.search || '');
-            const queryLanguage = String(params.get('ui_lang') || params.get('lang') || '').trim();
-            if (queryLanguage && SUPPORTED_LANGUAGES.includes(queryLanguage)) {
+            const queryLanguage = normalizeSupportedLanguageCode(params.get('ui_lang') || params.get('lang'));
+            if (queryLanguage) {
                 return queryLanguage;
             }
         } catch (error) {
             console.warn('[i18n] 解析 URL 语言参数失败:', error);
+        }
+        return '';
+    }
+
+    function normalizeSupportedLanguageCode(rawLanguage) {
+        const value = String(rawLanguage || '').trim();
+        if (!value) {
+            return '';
+        }
+        if (SUPPORTED_LANGUAGES.includes(value)) {
+            return value;
+        }
+        const lower = value.toLowerCase();
+        const langCode = lower.split('-')[0];
+        if (langCode === 'en') return 'en';
+        if (langCode === 'ja') return 'ja';
+        if (langCode === 'ko') return 'ko';
+        if (langCode === 'ru') return 'ru';
+        if (langCode === 'es') return 'es';
+        if (langCode === 'pt') return 'pt';
+        if (langCode === 'zh') {
+            if (/(tw|hk|hant)/i.test(value)) {
+                return 'zh-TW';
+            }
+            return 'zh-CN';
         }
         return '';
     }
@@ -108,25 +133,9 @@
         // 2. 检查浏览器语言设置
         const browserLanguage = navigator.language || navigator.userLanguage;
         if (browserLanguage) {
-            // 完全匹配
-            if (SUPPORTED_LANGUAGES.includes(browserLanguage)) {
-                return browserLanguage;
-            }
-            // 部分匹配（例如 'en-US' 匹配 'en'）
-            const langCode = browserLanguage.split('-')[0].toLowerCase();
-            if (langCode === 'en') return 'en';
-            if (langCode === 'ja') return 'ja';
-            if (langCode === 'ko') return 'ko';
-            if (langCode === 'ru') return 'ru';
-            if (langCode === 'es') return 'es';
-            if (langCode === 'pt') return 'pt';
-            if (langCode === 'zh') {
-                // 根据地区/脚本区分简繁（如 zh-TW / zh-HK / zh-Hant）
-                const upper = browserLanguage.toUpperCase();
-                if (upper.includes('TW') || upper.includes('HK') || upper.includes('HANT')) {
-                    return 'zh-TW';
-                }
-                return 'zh-CN';
+            const normalized = normalizeSupportedLanguageCode(browserLanguage);
+            if (normalized) {
+                return normalized;
             }
         }
 
@@ -134,39 +143,53 @@
         return 'zh-CN';
     }
 
-    // 从 Steam API 获取语言设置（异步）
-    async function getSteamLanguage() {
+    // 从后端获取语言设置（异步）：同一请求携带手工 UI 覆盖和 Steam 语言
+    async function getServerLanguagePreferences() {
         try {
             const response = await fetch('/api/config/steam_language', {
                 method: 'GET',
                 headers: { 'Content-Type': 'application/json' },
+                cache: 'no-store',
                 // 设置超时，避免阻塞太久
                 signal: AbortSignal.timeout(2000)
             });
 
             if (!response.ok) {
                 console.log('[i18n] Steam 语言 API 响应异常:', response.status);
-                return null;
+                return { uiLanguage: null, steamLanguage: null };
             }
 
             const data = await response.json();
             console.log('[i18n] Steam API 返回语言设置:', data);
 
-            if (data.success && data.i18n_language && SUPPORTED_LANGUAGES.includes(data.i18n_language)) {
-                return data.i18n_language;
+            const uiLanguage = normalizeSupportedLanguageCode(data && data.uiLanguage);
+            if (uiLanguage) {
+                console.log('[i18n] 使用 uiLanguage 覆盖语言:', uiLanguage);
             }
 
-            console.log('[i18n] Steam 语言 API 返回无效数据，回退到浏览器设置');
-            return null;
+            let steamLanguage = null;
+            if (data.success && data.i18n_language && SUPPORTED_LANGUAGES.includes(data.i18n_language)) {
+                steamLanguage = data.i18n_language;
+            }
+
+            if (!steamLanguage) {
+                console.log('[i18n] Steam 语言 API 返回无效数据，回退到浏览器设置');
+            }
+            return { uiLanguage, steamLanguage };
         } catch (error) {
             // 可能是超时或网络错误，静默处理
             console.log('[i18n] 无法从 Steam 获取语言设置，使用浏览器设置:', error.message);
-            return null;
+            return { uiLanguage: null, steamLanguage: null };
         }
     }
 
-    // 获取初始语言：优先 Steam 设置，然后 localStorage，然后浏览器设置，最后默认中文
+    // 获取初始语言：uiLanguage 强制覆盖 > URL 参数 > Steam 设置 > localStorage / 浏览器设置 > 默认中文
     async function getInitialLanguage() {
+        const serverLanguages = await getServerLanguagePreferences();
+        if (serverLanguages.uiLanguage) {
+            return serverLanguages.uiLanguage;
+        }
+
         const queryLanguage = getLanguageFromQuery();
         if (queryLanguage) {
             localStorage.setItem('i18nextLng', queryLanguage);
@@ -174,11 +197,10 @@
         }
 
         // 1. 尝试从 Steam API 获取语言
-        const steamLanguage = await getSteamLanguage();
-        if (steamLanguage) {
+        if (serverLanguages.steamLanguage) {
             // 保存到 localStorage，下次可以直接使用
-            localStorage.setItem('i18nextLng', steamLanguage);
-            return steamLanguage;
+            localStorage.setItem('i18nextLng', serverLanguages.steamLanguage);
+            return serverLanguages.steamLanguage;
         }
 
         // 2. 回退到浏览器语言

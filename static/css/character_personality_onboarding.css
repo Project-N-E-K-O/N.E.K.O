@@ -390,6 +390,8 @@
     font-weight: 900;
     line-height: 1.2;
     text-align: center;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     box-shadow: 0 6px 0 rgba(186, 230, 253, 0.92);
 }
 

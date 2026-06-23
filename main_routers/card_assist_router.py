@@ -1,9 +1,24 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Card-Assist Router
 
 Four endpoints powering the in-app AI assistant that helps users author a
-catgirl character card (Character Card Manager → "AI 辅助生成" button):
+catgirl character card (Character Card Manager -> "AI-assisted generation"
+button):
 
   POST /api/card-assist/clarify   — return 2-4 chip-style clarifying questions
   POST /api/card-assist/generate  — return a full field dict (Chinese keys)
@@ -27,6 +42,7 @@ from fastapi.responses import JSONResponse
 
 from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_card_assist import (
+    get_card_assist_chat_advice_only_directive,
     get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
     get_card_assist_generate_prompt,
@@ -43,14 +59,18 @@ logger = get_module_logger(__name__, "CardAssist")
 
 
 def _reject_untrusted_card_assist(request: Request, payload: Any) -> JSONResponse | None:
-    """本地 Origin/CSRF 守卫：card-assist 这四个 POST 都会真去打用户配置的 agent
-    LLM、消耗其 API / 免费额度，属于「有副作用的浏览器侧请求」，必须和仓库里其它此类
-    端点一样先过统一守卫，挡掉恶意网页用 ``no-cors`` + ``text/plain`` body 伪造合法 JSON
-    偷跑配额——攻击者读不到响应，但不拦就能白嫖配额（Codex #3328998416）。
+    """Local Origin/CSRF guard: all four card-assist POSTs actually call the user's
+    configured agent LLM and consume its API / free quota, making them
+    "browser-side requests with side effects". Like every other such endpoint in
+    the repo, they must pass the unified guard first to block malicious pages
+    from forging legitimate-looking JSON via ``no-cors`` + ``text/plain`` bodies
+    to burn quota — the attacker cannot read the response, but without the guard
+    they could still freeload the quota (Codex #3328998416).
 
-    复用 ``_validate_local_mutation_request``：返回 ``None`` 放行；返回 403
-    JSONResponse(``error_code=csrf_validation_failed``) 表示拒绝，调用方原样 return 即可。
-    payload 仅用于 body 内 ``_csrf_token`` 兜底，非 dict 传 None 避免 ``.get`` 抛错。"""
+    Reuses ``_validate_local_mutation_request``: ``None`` means allow; a 403
+    JSONResponse(``error_code=csrf_validation_failed``) means reject, and the
+    caller should return it as-is. ``payload`` is only used for the in-body
+    ``_csrf_token`` fallback; pass None for non-dict payloads to avoid ``.get`` errors."""
     return _validate_local_mutation_request(
         request,
         payload=payload if isinstance(payload, dict) else None,
@@ -143,9 +163,11 @@ _LOCALE_OUTPUT_LANGUAGE: dict[str, tuple[str, str]] = {
 
 
 def _output_language_directive(locale_code: str) -> str:
-    """对「没有专门 prompt 版本」的 locale 生成一条显式输出语言指示，追加到 prompt 末尾。
-    字段 key 已由 _resolve_target_keys 按 locale 模板给定，这里只约束 values / 问题 / 说明
-    用目标语言。en / zh-CN 与基础 prompt 一致 → 返回空串、不加任何东西。"""
+    """For locales without a dedicated prompt version, generate an explicit output-language
+    directive appended to the end of the prompt. Field keys are already fixed by
+    _resolve_target_keys per the locale template; this only constrains values / questions /
+    descriptions to the target language. en / zh-CN match the base prompt -> return an empty
+    string and add nothing."""
     pair = _LOCALE_OUTPUT_LANGUAGE.get(locale_code)
     if not pair:
         return ""
@@ -219,12 +241,12 @@ def _clean_plain_field_value(raw: str) -> str:
     return text
 
 
-def _build_assist_llm():
+async def _build_assist_llm():
     """Construct an LLM client backed by the agent API config. Returns
     ``(llm, error_dict_or_None)``. Caller must ``await llm.aclose()`` if llm is
     not None.
     """
-    from utils.llm_client import create_chat_llm
+    from utils.llm_client import create_chat_llm_async
     try:
         cm = get_config_manager()
         api_cfg = cm.get_model_api_config("agent")
@@ -239,12 +261,14 @@ def _build_assist_llm():
         return None, {"success": False, "error": "assist_api_not_configured",
                       "message": "agent model not set"}
     try:
-        llm = create_chat_llm(
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+        llm = await create_chat_llm_async(
             model,
             base_url,
             api_key,
             timeout=_LLM_TIMEOUT_SECONDS,
             max_retries=1,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length structured suggestions aren't truncated
         )
     except Exception as exc:
         logger.warning("card-assist: create_chat_llm failed: %s", exc)
@@ -282,7 +306,7 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]
     a plain string (treated as one user message) or a list of OpenAI-style
     role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
     """
-    llm, err = _build_assist_llm()
+    llm, err = await _build_assist_llm()
     if err is not None:
         return None, err
     quota_err = await _reserve_agent_quota("card_assist.invoke")
@@ -296,7 +320,7 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
     # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
-        resp = await llm.ainvoke(prompt)
+        resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt is the user's own card draft (user-provided config — uncapped by design, cf. llm-prompt-budget.md §6).
     except Exception as exc:
         logger.warning("card-assist: LLM ainvoke failed: %s", exc)
         try:
@@ -714,6 +738,21 @@ _CHAT_REWRITE_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CHAT_ADVICE_ONLY_INTENT_RE = re.compile(
+    r"(建议|意见|点评|审一下|审稿|检查一下|帮我看看|看一下|指出问题|分析|优缺点|"
+    r"修改方向|修改方案|候选写法|suggest|suggestion|advice|critique|review|"
+    r"pros\s+and\s+cons|candidate\s+rewrite)",
+    re.IGNORECASE,
+)
+
+_CHAT_DIRECT_EDIT_REQUEST_RE = re.compile(
+    r"(直接|现在|立刻|马上|帮我|替我|给我)?\s*"
+    r"(改一下|改下|改一改|修改一下|调整一下|调整下|改成|修改成|换成|写成|写进|应用|采纳|"
+    r"更新字段|保存到字段|直接改|帮我改|替我改|"
+    r"apply|make\s+the\s+changes|edit\s+the\s+field|update\s+the\s+field|change\s+it\s+to)",
+    re.IGNORECASE,
+)
+
 
 def _latest_user_text(history: list[dict]) -> str:
     for msg in reversed(history):
@@ -723,7 +762,11 @@ def _latest_user_text(history: list[dict]) -> str:
 
 
 def _chat_text_requests_edits(text: str) -> bool:
-    return bool(_CHAT_EDIT_INTENT_RE.search(text or ""))
+    text = text or ""
+    return bool(
+        _CHAT_EDIT_INTENT_RE.search(text)
+        or _CHAT_DIRECT_EDIT_REQUEST_RE.search(text)
+    )
 
 
 def _chat_text_requests_full_rewrite(text: str) -> bool:
@@ -732,6 +775,15 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     return bool(
         _CHAT_FULL_REWRITE_RE.search(text)
         and _CHAT_REWRITE_VERB_RE.search(text)
+    )
+
+
+def _chat_text_requests_advice_only(text: str) -> bool:
+    if not text:
+        return False
+    return bool(
+        _CHAT_ADVICE_ONLY_INTENT_RE.search(text)
+        and not _CHAT_DIRECT_EDIT_REQUEST_RE.search(text)
     )
 
 
@@ -1007,6 +1059,10 @@ async def chat(request: Request):
     target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
     latest_user = _latest_user_text(history)
+    advice_only = (
+        body.get("advice_only") is True
+        or _chat_text_requests_advice_only(latest_user)
+    )
 
     dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
     if not dev_cat_name or len(dev_cat_name) > 40:
@@ -1016,6 +1072,8 @@ async def chat(request: Request):
     system_content = system_template % (
         dev_cat_name, current_card_text, target_keys_text
     )
+    if advice_only:
+        system_content += get_card_assist_chat_advice_only_directive(lang)
     # 聊天回复 + actions 里的字段值也用目标语言（Codex #3331696257）
     system_content += _output_language_directive(locale_code)
 
@@ -1049,18 +1107,20 @@ async def chat(request: Request):
         if len(reply) > _CHAT_MAX_MESSAGE_CHARS:
             reply = reply[:_CHAT_MAX_MESSAGE_CHARS] + "…"
         actions = _sanitize_actions(parsed.get("actions"))
+        if advice_only:
+            actions = []
     elif parsed is not None:
         warning = "llm_bad_shape"
 
     if not reply and content and not isinstance(parsed, dict):
         reply = (content or "")[:_CHAT_MAX_MESSAGE_CHARS]
 
-    edit_intent = _chat_text_requests_edits(latest_user)
+    edit_intent = False if advice_only else _chat_text_requests_edits(latest_user)
     # 前端「重写整张卡」quick action 透传的 locale 无关 flag 优先——本地化文案（es/ja/ko/pt/
     # ru/zh-TW 的「重写」措辞）正则匹配不到，只靠 _chat_text_requests_full_rewrite 会漏判，
     # _complete_full_rewrite_actions 补全通路不触发、部分 action 被当部分重写存下（Codex
     # #3333137718）。同时保留文本启发式，兼容用户手敲的全量重写措辞。
-    full_rewrite_intent = (
+    full_rewrite_intent = (not advice_only) and (
         body.get("full_rewrite") is True
         or _chat_text_requests_full_rewrite(latest_user)
     )

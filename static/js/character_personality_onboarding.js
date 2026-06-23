@@ -2,6 +2,21 @@
     'use strict';
 
     const STYLE_ID = 'character-personality-onboarding-style';
+    // 复用本脚本 src 上的 ?v= 版本参数，让动态注入的样式表一起走统一缓存失效。
+    // IIFE 同步执行期间 document.currentScript 即本脚本，querySelector 作为兜底。
+    const ASSET_VERSION_QUERY = (function () {
+        try {
+            let src = document.currentScript && document.currentScript.src;
+            if (!src) {
+                const el = document.querySelector('script[src*="character_personality_onboarding.js"]');
+                src = el ? el.src : '';
+            }
+            const queryIndex = src ? src.indexOf('?') : -1;
+            return queryIndex >= 0 ? src.slice(queryIndex) : '';
+        } catch (err) {
+            return '';
+        }
+    })();
     const TUTORIAL_PROMPT_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
@@ -78,7 +93,7 @@
         const styleLink = document.createElement('link');
         styleLink.id = STYLE_ID;
         styleLink.rel = 'stylesheet';
-        styleLink.href = '/static/css/character_personality_onboarding.css';
+        styleLink.href = '/static/css/character_personality_onboarding.css' + ASSET_VERSION_QUERY;
         document.head.appendChild(styleLink);
     }
 

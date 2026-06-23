@@ -11,13 +11,12 @@
     <link rel="stylesheet" href="/static/css/voice_clone.css">
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
     <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <div class="container">
-        <div class="container-header">
+        <div class="container-header page-title-bar">
             <h2 data-i18n="voice.title" data-text="Voice Registration">音色注册</h2>
             <div class="neko-window-actions">
                 <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
@@ -44,6 +43,7 @@
                         <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
+                        <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
                     </select>
                 </div>
                 <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
@@ -234,14 +234,11 @@
         </div>
     </div>
 
-    <!-- Driver.js 库 -->
-    <script src="/static/libs/driver.min.js"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/tutorial-skip-controller.js"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js"></script>
-    <script src="/static/universal-tutorial-manager.js"></script>
+    <script src="/static/tutorial/core/skip-controller.js"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js"></script>
 
     <!-- 初始化 -->
     <script>

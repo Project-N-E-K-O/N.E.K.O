@@ -7,11 +7,13 @@ from .entry_common import (
     SdkError,
     plugin_entry,
     tr,
+    ui,
     LLM_OPERATION_SUMMARIZE_SESSION,
 )
 
 
 class _TutorSummaryEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_summarize_session",
         name=tr("entries.summarize_session.name", default="Summarize Study Session"),

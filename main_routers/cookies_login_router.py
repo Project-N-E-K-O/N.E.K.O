@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Cookies Login Router - Enhanced
 
@@ -44,7 +58,7 @@ SUSPICIOUS_PATTERN = re.compile(
 )
 
 def verify_local_access(request: Request):
-    """🛡️ 纵深防御：拦截非本地主机的越权访问尝试"""
+    """🛡️ Defense in depth: block unauthorized access attempts from non-local hosts."""
     client_host = getattr(request.client, "host", None) if request.client else None
     
     allowed_hosts = ["127.0.0.1", "::1", "localhost"]
@@ -71,7 +85,7 @@ class CookieSubmit(BaseModel):
     @field_validator("cookie_string")
     @classmethod
     def check_suspicious_patterns(cls, v: str) -> str:
-        """安全加固：拦截 XSS 或 SQL 注入特征"""
+        """Security hardening: block XSS or SQL injection patterns."""
         if SUSPICIOUS_PATTERN.search(v):
             logger.warning(f"🚨 检测到恶意内容注入尝试！恶意内容注入，length={len(v)}")
             raise ValueError("检测到非法或危险字符，请求已被系统拦截。")
@@ -81,7 +95,7 @@ class CookieSubmit(BaseModel):
 # ============ 1. 内部辅助逻辑 ============
 
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
-    """统一的各平台核心字段防呆校验"""
+    """Unified sanity validation of core fields for each platform."""
     platform_validations = {
         "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
@@ -106,7 +120,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 
 @router.get("/page", response_class=HTMLResponse, summary="凭证管理可视化后台入口")
 async def render_auth_page(request: Request):
-    """访问凭证管理网页 (限制仅本地访问)"""
+    """Credential management page (local access only)."""
     return templates.TemplateResponse("cookies_login.html", {"request": request})
 
 # ============ 3. API 核心功能 ============
@@ -165,7 +179,7 @@ async def save_cookie(data: CookieSubmit):
 
 @router.get("/cookies/status", summary="获取所有平台Cookie状态汇总")
 async def get_all_cookies_status():
-    """返回每个支持平台的 Cookie 存在状态（前端个人动态功能使用）"""
+    """Return cookie presence status for each supported platform (used by the frontend personal-feed feature)."""
     try:
         platforms = login_manager.get_supported_platforms()
         loaded = await asyncio.gather(
@@ -241,7 +255,7 @@ async def delete_platform_cookies(platform: str):
 
 @router.post("/save_cookie", summary="保存Cookie(兼容旧版)")
 async def api_save_cookie_legacy(data: CookieSubmit):
-    """通过调用统一逻辑来消除冗余"""
+    """Eliminate redundancy by delegating to the unified logic."""
     try:  
         result = await save_cookie(data)
         logger.info(f"✅ 兼容版cookies保存成功 | 平台: {data.platform}")

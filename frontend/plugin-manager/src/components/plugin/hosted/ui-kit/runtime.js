@@ -15,6 +15,27 @@ function formatErrorMessage(error) {
   if (error.message) return String(error.message);
   return String(error);
 }
+function createHostedBridgeError(data) {
+  const payload = data && typeof data === 'object' ? data : {};
+  const raw = payload.error;
+  let message = '';
+  let code = typeof payload.code === 'string' ? payload.code : '';
+  let details = payload.details;
+  if (raw && typeof raw === 'object') {
+    if (!code && typeof raw.code === 'string') code = raw.code;
+    if (details === undefined && raw.details !== undefined) details = raw.details;
+    if (typeof raw.message === 'string') message = raw.message;
+    else if (typeof raw.detail === 'string') message = raw.detail;
+  } else if (typeof raw === 'string') {
+    message = raw;
+  }
+  if (!message) message = 'Hosted surface request failed';
+  const error = new Error(message);
+  if (code) error.code = code;
+  if (details !== undefined) error.details = details;
+  if (payload.status !== undefined) error.status = payload.status;
+  return error;
+}
 function reportHostedRuntimeError(scope, error, details) {
   const message = formatErrorMessage(error);
   try { console.error('[plugin-ui]', scope, { message, details, error }); } catch (_) {}
@@ -997,10 +1018,12 @@ window.addEventListener('message', (event) => {
   if (!pending) return;
   __pendingRequests.delete(data.requestId);
   if (data.ok) pending.resolve(data.result);
-  else pending.reject(new Error(data.error || 'Hosted surface request failed'));
+  else pending.reject(createHostedBridgeError(data));
 });
-function requestHost(method, payload) {
+function requestHost(method, payload, options) {
   const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const requestedTimeoutMs = Number(options && options.timeoutMs);
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
     parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload }, '*');
@@ -1008,11 +1031,11 @@ function requestHost(method, payload) {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
       reject(new Error('Hosted surface request timed out'));
-    }, 30000);
+    }, timeoutMs);
   });
 }
 const api = {
-  call(actionId, args) { return requestHost('call', { actionId, args: args || {} }); },
+  call(actionId, args, options) { return requestHost('call', { actionId, args: args || {} }, options || {}); },
   async refresh() {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);

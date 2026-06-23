@@ -29,12 +29,35 @@
 
 html,
 body {
-height: 100%;
+height: 100vh;
+height: 100dvh;
+min-height: 100vh;
+max-height: 100vh;
+max-height: 100dvh;
+width: 100%;
 margin: 0;
 padding: 0;
-background: transparent;
+background: #e1f4ff;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
+overflow: hidden;
+display: flex;
+flex-direction: column;
+}
+
+#main-content {
+height: 100vh;
+height: 100dvh;
+max-height: 100vh;
+max-height: 100dvh;
+min-height: 0;
+width: 100%;
+display: flex;
+flex: 1 0 100vh;
+flex-basis: 100dvh;
+flex-direction: column;
+background: #fff;
+overflow: hidden;
 }
 
 .container {
@@ -44,9 +67,13 @@ background: #fff;
 border-radius: 0;
 box-shadow: none;
 padding: 0;
-padding-bottom: 100px; /* 归还被保存按钮占用的空间 */
 position: relative;
-min-height: 100vh;
+height: 100%;
+min-height: 0;
+display: flex;
+flex: 1 1 0;
+flex-direction: column;
+overflow: hidden;
 }
 
 body .container-header {
@@ -56,9 +83,10 @@ display: flex;
 justify-content: space-between;
 align-items: center;
 border-radius: 0;
-position: sticky;
+position: relative;
 top: 0;
 z-index: 100;
+flex: 0 0 auto;
 -webkit-app-region: drag;
 }
 
@@ -69,12 +97,13 @@ z-index: 100;
 
 .container-header h2 {
 margin: 0;
-font-size: 1.5rem;
+font-size: clamp(0.9rem, 2.5vw, 1.5rem);
 font-weight: 600;
 position: relative;
 font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
 letter-spacing: 1px;
 color: transparent;
+white-space: nowrap;
 --button-text-stroke-color: #22b3ff;
 }
 
@@ -158,8 +187,37 @@ white-space: nowrap;
 
 .container-content {
 padding: 24px 32px;
+padding-bottom: 120px;
 background: #fff;
-border-radius: 0 0 20px 20px;
+border-radius: 0;
+flex: 1 1 auto;
+min-height: 0;
+overflow-x: hidden;
+overflow-y: auto;
+overscroll-behavior: contain;
+scrollbar-gutter: stable;
+scrollbar-width: thin;
+scrollbar-color: rgba(64, 197, 241, 0.65) rgba(179, 229, 252, 0.28);
+}
+
+.container-content::-webkit-scrollbar {
+width: 10px;
+}
+
+.container-content::-webkit-scrollbar-track {
+background: rgba(179, 229, 252, 0.28);
+border-radius: 999px;
+}
+
+.container-content::-webkit-scrollbar-thumb {
+background: linear-gradient(180deg, #96e8ff 0%, #40C5F1 52%, #17A7FF 100%);
+border: 2px solid rgba(255, 255, 255, 0.82);
+border-radius: 999px;
+box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 2px 6px rgba(64, 197, 241, 0.28);
+}
+
+.container-content::-webkit-scrollbar-thumb:hover {
+background: linear-gradient(180deg, #baf2ff 0%, #4BD4FD 45%, #17A7FF 100%);
 }
 
 h2 {
@@ -857,6 +915,7 @@ opacity: 0.95 !important;
 /* 启用自定义API配置开关样式 */
 /* 禁用TTS开关样式 */
 .disable-tts-toggle {
+    position: relative;
     display: inline-flex;
     align-items: center;
     cursor: pointer;
@@ -869,6 +928,8 @@ opacity: 0.95 !important;
 
 .disable-tts-toggle input[type="checkbox"] {
     position: absolute;
+    top: 0;
+    left: 0;
     width: 1px;
     height: 1px;
     padding: 0;
@@ -908,6 +969,27 @@ opacity: 0.95 !important;
 
 .disable-tts-toggle input[type="checkbox"]:checked + .disable-tts-slider::after {
     transform: translateX(18px);
+}
+
+.mimo-assist-select-row {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+    width: 100%;
+    max-width: 600px;
+}
+
+.mimo-assist-select-row .api-provider-dropdown,
+.mimo-assist-select-row select {
+    flex: 0 0 100%;
+    width: 100%;
+    max-width: 600px;
+}
+
+.mimo-token-plan-toggle {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .custom-api-toggle-wrapper {
@@ -1058,10 +1140,14 @@ transition: all 0.3s ease-in-out;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    width: 100%;
     padding: 12px 20px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     cursor: pointer;
+    font: inherit;
+    text-align: left;
     transition: all 0.2s ease-in-out;
 }
 
@@ -1105,7 +1191,39 @@ transition: max-height 0.3s ease-in-out;
 }
 
 .model-content.expanded {
-max-height: 2000px;
+    max-height: 2000px;
+}
+
+.nested-model-config-container {
+    margin: 10px 12px;
+    border: 1px solid #d6edf8;
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(64, 197, 241, 0.04);
+}
+
+.nested-model-header {
+    padding: 10px 14px;
+    background: rgba(64, 197, 241, 0.14);
+    border-bottom: 1px solid rgba(64, 197, 241, 0.16);
+}
+
+.nested-model-header .model-title {
+    color: var(--text-blue);
+    font-size: 0.9rem;
+}
+
+.nested-model-header .toggle-icon {
+    color: var(--text-blue);
+}
+
+.nested-model-header:hover {
+    opacity: 1;
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.16);
+}
+
+.nested-model-content.expanded {
+    max-height: 800px;
 }
 
 .model-content .field-row {
@@ -1397,6 +1515,28 @@ input:checked + .slider:before {
     color: #fff;
 }
 
+/* GPT-SoVITS「教程文档」跳转按钮 */
+.gsv-tutorial-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--accent-blue);
+    background: #fff;
+    color: var(--text-blue);
+    font-weight: 500;
+    font-size: 0.85em;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+}
+
+.gsv-tutorial-link:hover {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
 /* ============ Key Book Section ============ */
 #key-book-section {
     margin-top: 0;
@@ -1536,8 +1676,12 @@ input:checked + .slider:before {
 /* Responsive */
 @media (max-width: 800px) {
 .container {
-padding: 20px 16px;
-margin: 20px 16px;
+padding: 0;
+margin: 0;
+}
+
+.container-content {
+    padding: 18px 18px 120px;
 }
 
 .api-provider-dropdown-menu-scroll {

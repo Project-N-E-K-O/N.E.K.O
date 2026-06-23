@@ -482,7 +482,7 @@
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
             // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
             // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
-            // 而误弹自启动提示。和 tutorial heartbeat (app-tutorial-prompt.js) 同构。
+            // 而误弹自启动提示。和 tutorial heartbeat (tutorial/core/app-prompt.js) 同构。
             const hasReplaySensitiveDelta = (
                 foregroundDelta > 0
                 || homeInteractionsDelta > 0
@@ -799,10 +799,10 @@
             }
         ];
         if (state.canNeverRemind) {
-            buttons.unshift({
+            buttons.push({
                 value: 'never',
                 text: translate('autostartPrompt.never', '不再提示'),
-                variant: 'secondary'
+                variant: 'link'
             });
         }
         const stopPromptVoice = function () {
@@ -815,14 +815,10 @@
         try {
             const decision = await window.showDecisionPrompt({
                 skin: 'autostart-retention',
-                title: translate('autostartPrompt.title', '要不要让 N.E.K.O 开机自动启动？'),
+                title: translate('autostartPrompt.title', '要不要让 N.E.K.O. 开机自动启动？'),
                 message: translate(
                     'autostartPrompt.message',
-                    '这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。'
-                ),
-                note: translate(
-                    'autostartPrompt.note',
-                    '只会为当前用户开启，之后也可以随时关闭。'
+                    '下次开机，N.E.K.O. 会自动准备好。'
                 ),
                 dismissValue: null,
                 closeOnClickOutside: false,

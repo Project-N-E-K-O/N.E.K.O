@@ -87,6 +87,14 @@ class PluginStatePersistence(StorageResultTemplate):
     """Async-first plugin state persistence."""
 
     STATE_VERSION = 1
+    VALID_BACKENDS = {"file", "memory", "off"}
+
+    @classmethod
+    def normalize_backend(cls, backend: str | None) -> str:
+        normalized_backend = (backend or "off").lower()
+        if normalized_backend not in cls.VALID_BACKENDS:
+            raise InvalidArgumentError("backend must be one of: file, memory, off")
+        return normalized_backend
 
     def __init__(
         self,
@@ -96,9 +104,7 @@ class PluginStatePersistence(StorageResultTemplate):
         logger: LoggerLike | None = None,
         backend: str = "off",
     ):
-        normalized_backend = (backend or "off").lower()
-        if normalized_backend not in {"file", "memory", "off"}:
-            raise InvalidArgumentError("backend must be one of: file, memory, off")
+        normalized_backend = self.normalize_backend(backend)
         super().__init__(logger=logger or get_plugin_logger(plugin_id, "storage.state"))
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)

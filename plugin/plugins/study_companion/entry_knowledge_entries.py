@@ -6,6 +6,7 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
     StudyConfig,
     PublicGraphContributionBuilder,
     build_contribution_settings_payload,
@@ -43,6 +44,7 @@ class _KnowledgeEntriesMixin:
                 self, exc, operation="study_knowledge_quality_status"
             )
 
+    @ui.action()
     @plugin_entry(
         id="study_anonymous_knowledge_preview",
         name=tr(
@@ -69,6 +71,7 @@ class _KnowledgeEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_anonymous_knowledge_preview")
 
+    @ui.action()
     @plugin_entry(
         id="study_knowledge_map",
         name=tr("entries.knowledge_map.name", default="Study Knowledge Map"),
@@ -78,15 +81,24 @@ class _KnowledgeEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 200}},
+            "properties": {
+                "limit": {"type": "integer", "default": 200},
+                "stage": {"type": "string", "default": ""},
+            },
         },
         llm_result_fields=["summary", "nodes", "edges"],
     )
-    async def study_knowledge_map(self, limit: int = 200, **_):
+    async def study_knowledge_map(self, limit: int = 200, stage: str = "", **_):
         try:
             safe_limit = max(1, min(1000, int(limit or 200)))
+            stage_key = str(stage or "").strip()
             topics, mastery, weak_topics, wrong_questions = await asyncio.gather(
-                asyncio.to_thread(self._store.list_topics, safe_limit),
+                asyncio.to_thread(
+                    self._store.list_topics,
+                    safe_limit,
+                    None,
+                    stage_key or None,
+                ),
                 asyncio.to_thread(self._store.list_mastery_overview, safe_limit),
                 asyncio.to_thread(
                     self._knowledge_tracker.get_weak_topics, limit=min(50, safe_limit)
@@ -106,6 +118,7 @@ class _KnowledgeEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_knowledge_map")
 
+    @ui.action()
     @plugin_entry(
         id="study_set_knowledge_contribution_opt_in",
         name=tr(

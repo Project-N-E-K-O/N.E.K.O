@@ -507,6 +507,69 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#error')?.textContent).toBe('failed')
   })
 
+  it('preserves hosted bridge error metadata on api.call failures', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+        },
+      },
+      configurable: true,
+    })
+
+    const promise = ui.api.call('game_agent_status')
+    expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        type: 'neko-hosted-surface-response',
+        requestId: requestMessage.requestId,
+        ok: false,
+        error: '插件未运行',
+        code: 'PLUGIN_NOT_RUNNING',
+        details: { plugin_id: 'game_agent_minecraft' },
+        status: 409,
+      },
+    }))
+
+    await expect(promise).rejects.toMatchObject({
+      message: '插件未运行',
+      code: 'PLUGIN_NOT_RUNNING',
+      details: { plugin_id: 'game_agent_minecraft' },
+      status: 409,
+    })
+  })
+
+  it('honors per-call hosted bridge timeouts', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestMessage: any
+      Object.defineProperty(window, 'parent', {
+        value: {
+          postMessage(message: any) {
+            requestMessage = message
+          },
+        },
+        configurable: true,
+      })
+
+      const promise = ui.api.call('study_export_notes', {}, { timeoutMs: 80000 })
+      const settled = vi.fn()
+      promise.then(settled, settled)
+      expect(requestMessage?.type).toBe('neko-hosted-surface-request')
+
+      await vi.advanceTimersByTimeAsync(30000)
+      await flushMicrotasks()
+      expect(settled).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(50000)
+      await expect(promise).rejects.toThrow('Hosted surface request timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows toast notifications and removes them', () => {
     vi.useFakeTimers()
     const remove = ui.showToast ? ui.showToast('Saved', { tone: 'success', timeout: 100 }) : ui.useToast().success('Saved', { timeout: 100 })

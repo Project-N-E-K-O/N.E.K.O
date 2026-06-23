@@ -14,7 +14,7 @@ from .prompt_templates import (
     STUDY_KNOWLEDGE_TRACK_REQUIREMENTS,
     STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT,
     STUDY_MODE_SYSTEM_GUIDANCE,
-    STUDY_PROMPT_CONTEXT_MAX_CHARS,
+    STUDY_PROMPT_CONTEXT_MAX_TOKENS,
     STUDY_QUESTION_GENERATE_EXAMPLE,
     STUDY_QUESTION_GENERATE_REQUIREMENTS,
     STUDY_QUESTION_GENERATE_SYSTEM_PROMPT,
@@ -24,6 +24,7 @@ from .prompt_templates import (
     STUDY_SUMMARIZE_SESSION_REQUIREMENTS,
     STUDY_SUMMARIZE_SESSION_SYSTEM_PROMPT,
 )
+from utils.tokenize import count_tokens, truncate_to_tokens
 
 from .constants import (
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -99,9 +100,9 @@ def _compact_prompt_value(
 
 
 def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
-    limit = STUDY_PROMPT_CONTEXT_MAX_CHARS.get(operation, 8000)
+    limit = STUDY_PROMPT_CONTEXT_MAX_TOKENS.get(operation, 4000)
     raw = _json_dump(context)
-    if len(raw) <= limit:
+    if count_tokens(raw) <= limit:
         return raw
     for list_limit, string_limit, dict_key_limit in (
         (16, 1000, 64),
@@ -117,14 +118,18 @@ def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
         if isinstance(compact, dict):
             compact = {"_prompt_truncated": True, **compact}
         rendered = _json_dump(compact)
-        if len(rendered) <= limit:
+        if count_tokens(rendered) <= limit:
             return rendered
-    excerpt = raw[: max(0, limit - 200)]
+    excerpt = truncate_to_tokens(raw, max(0, limit - 100))
+    fallback = {
+        "_prompt_truncated": True,
+        "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
+    }
+    while count_tokens(_json_dump(fallback)) > limit and excerpt:
+        excerpt = excerpt[:-1]
+        fallback["context_excerpt"] = f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]"
     return _json_dump(
-        {
-            "_prompt_truncated": True,
-            "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
-        }
+        fallback
     )
 
 

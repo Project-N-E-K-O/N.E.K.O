@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Computer-Use Agent — single-call Thought + Action + Code paradigm.
 
@@ -603,7 +617,7 @@ class ComputerUseAdapter:
                 self.last_error = "Agent model not configured"
                 return
 
-            self._llm_client = create_chat_llm(
+            self._llm_client = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # output budget set per-call via invoke_raw(max_completion_tokens=...) (ping vs main call differ); transport timeout set here.
                 model=model,
                 base_url=base_url,
                 api_key=api_key,
@@ -673,7 +687,7 @@ class ComputerUseAdapter:
                     # purely by the per-call ``timeout=timeout_s`` argument
                     # on the ping's ``invoke_raw`` below, which routes
                     # through ``_params()`` without mutating the instance.
-                    self._llm_client = create_chat_llm(
+                    self._llm_client = create_chat_llm(  # noqa: LLM_OUTPUT_BUDGET  # output budget set per-call via invoke_raw(max_completion_tokens=...) (ping vs main call differ); transport timeout set here.
                         model=model,
                         base_url=base_url,
                         api_key=api_key,
@@ -1169,7 +1183,7 @@ class ComputerUseAdapter:
                 # stays accessible. No instance state mutation, so a
                 # background ping running concurrently can't clip this
                 # request's budget.
-                resp = self._llm_client.invoke_raw(
+                resp = self._llm_client.invoke_raw(  # noqa: LLM_INPUT_BUDGET  # agent messages (screenshot + bounded history) capped upstream by the CUA history window; output budget set here per-call.
                     messages,
                     max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,

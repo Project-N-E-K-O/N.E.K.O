@@ -1,11 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Provider 统一注册表。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-集中管理所有 LLM 供应商的：
-  - extra_body 配置（禁用 thinking 等）
-  - Context Cache 行为（header、token 字段、阈值）
+"""Unified provider registry.
 
-其他模块通过本文件获取 provider 特化参数，而非各自硬编码。
+Centralizes, for every LLM provider:
+  - extra_body config (disabling thinking, etc.)
+  - Context Cache behavior (header, token field, thresholds)
+
+Other modules obtain provider-specific parameters from this file instead of
+hard-coding their own.
 """
 
 from __future__ import annotations
@@ -33,6 +48,7 @@ AGENT_USE_EXTRA_BODY = True
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
+    "qwen3.6-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash-2026-04-16": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
@@ -41,6 +57,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.6-plus": EXTRA_BODY_OPENAI,
     "qwen3.6-plus-2026-04-02": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
+    "qwen3.7-plus-2026-05-26": EXTRA_BODY_OPENAI,
+    "qwen3.7-plus": EXTRA_BODY_OPENAI,
+    "qwen3.7-max": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -48,12 +67,15 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-4.6v": EXTRA_BODY_CLAUDE,
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
+    "glm-5.2": EXTRA_BODY_CLAUDE,
     # Kimi系列
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
+    "kimi-k2.6": EXTRA_BODY_CLAUDE,
     # MiniMax系列
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
+    "MiniMax-M3": EXTRA_BODY_CLAUDE,
     "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
     # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
@@ -86,11 +108,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
 
 
 def get_extra_body(model: str) -> dict | None:
-    """根据模型名称返回对应的 extra_body 配置。
+    """Return the extra_body config for the given model name.
 
     Returns:
-        对应的 extra_body dict；模型不需要特殊配置时返回空 dict；
-        model 为空时返回 None。
+        The matching extra_body dict; an empty dict when the model needs no
+        special config; None when model is empty.
     """
     if not model:
         return None
@@ -104,13 +126,58 @@ def get_agent_extra_body(model: str) -> dict | None:
     return get_extra_body(model)
 
 
+# Top-level extra_body keys that *disable* thinking (one per provider family in
+# MODELS_EXTRA_BODY_MAP). Gemini nests its thinking_config under an "extra_body"
+# wrapper key whose only payload here is the thinking config, so the whole key is
+# thinking-related. Anything NOT in this set (e.g. step-2-mini's "tools" with the
+# built-in web_search) is unrelated provider config that must survive Focus.
+_THINKING_EXTRA_BODY_KEYS = frozenset({
+    "enable_thinking",   # EXTRA_BODY_OPENAI (qwen / silicon …)
+    "thinking",          # EXTRA_BODY_CLAUDE (claude / glm / kimi / doubao …)
+    "reasoning",         # EXTRA_BODY_OPENROUTER
+    "reasoning_split",   # EXTRA_BODY_MINIMAX
+    "extra_body",        # EXTRA_BODY_GEMINI/_3 (google.thinking_config wrapper)
+})
+
+
+def focus_extra_body(model: str) -> dict | None:
+    """extra_body for a Focus (thinking-on) turn: the model's resolved extra_body
+    with only the *thinking-disable* keys removed.
+
+    Focus wants thinking to run free (drop the disable knob), but must NOT
+    silently nuke unrelated provider config — e.g. ``step-2-mini`` ships a
+    built-in ``web_search`` tool in its extra_body, which a blunt
+    ``extra_body=None`` would drop. Returns the surviving non-thinking dict, or
+    ``None`` when nothing remains (the body was purely thinking-disable)."""
+    resolved = get_extra_body(model) or {}
+    kept = {k: v for k, v in resolved.items() if k not in _THINKING_EXTRA_BODY_KEYS}
+    return kept or None
+
+
+def leaks_thinking_in_content(model: str) -> bool:
+    """True for models that stream chain-of-thought into ``content`` (not the
+    separate ``reasoning_content`` field), which a Focus (thinking-on) turn
+    would otherwise speak aloud.
+
+    Only the Qwen3.5/3.6/3.7 *hybrid* models do this — they emit the whole CoT
+    into ``content`` terminated by a lone ``</think>`` (see the leak note in
+    ``utils.llm_client``). The ``qwen3-vl-*`` vision models route reasoning to
+    ``reasoning_content`` and stay clean, so they are excluded. Used to gate
+    ``utils.llm_client.ThinkingStreamStripper`` onto the streaming path so clean
+    providers keep streaming untouched."""
+    m = (model or "").lower()
+    if "vl" in m:
+        return False
+    return any(tag in m for tag in ("qwen3.5", "qwen3.6", "qwen3.7"))
+
+
 # ────────────────────────────────────────────────────────────────
 # Cache Provider 配置（原 tests/test_cco_capacity.py PROVIDER_CACHE_CONFIG）
 # ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class CacheProviderConfig:
-    """单个供应商的 Context Cache 行为描述。"""
+    """Context Cache behavior description for a single provider."""
 
     provider_id: str
     name: str
@@ -266,7 +333,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
 
 
 def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
-    """通过 base_url substring 匹配识别 provider。"""
+    """Identify the provider by base_url substring matching."""
     if not base_url:
         return None
     for provider in CACHE_PROVIDERS.values():
@@ -276,7 +343,7 @@ def resolve_cache_provider(base_url: str | None) -> CacheProviderConfig | None:
 
 
 def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
-    """返回构造 ChatOpenAI 时需要的 cache 相关参数。
+    """Return the cache-related kwargs needed when constructing ChatOpenAI.
 
     Returns:
         {"default_headers": dict, "enable_cache_control": bool}

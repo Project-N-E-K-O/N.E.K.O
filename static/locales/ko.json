@@ -52,9 +52,9 @@
         "resetToDefaultFailed": "기본 모델로 복원하지 못했습니다"
     },
     "autostartPrompt": {
-        "title": "N.E.K.O를 시작 시 자동 실행할까요?",
-        "message": "다음에 컴퓨터를 켜면 N.E.K.O가 자동으로 준비되어 직접 실행하지 않아도 됩니다.",
-        "note": "현재 사용자에게만 적용되며 나중에 언제든지 끌 수 있습니다.",
+        "title": "N.E.K.O.를 시작 시 자동 실행할까요?",
+        "message": "다음에 컴퓨터를 켜면 N.E.K.O.가 자동으로 준비됩니다.",
+        "note": "나중에 언제든지 끌 수 있습니다.",
         "startNow": "자동 실행 켜기",
         "later": "나중에 알려줘",
         "never": "다시 묻지 않기",
@@ -753,6 +753,7 @@
         "avatarCropCancel": "취소",
         "avatarCropSave": "저장",
         "emptyState": "채팅 내용이 연결되면 여기에 표시됩니다.",
+        "companionEmptyState": "（여기서 곁에 있을게요.）",
         "messageStreaming": "생성 중",
         "messageFailed": "전송 실패",
         "reactWindowOpen": "채팅 창 열기",
@@ -767,6 +768,8 @@
         "reactWindowMountFailed": "채팅 창 마운트에 실패했습니다",
         "reactWindowLoadFailed": "채팅 창 리소스를 불러오지 못했습니다",
         "reactWindowAriaLabel": "Neko 채팅 창",
+        "focusIndicator": "집중 모드",
+        "focusThinking": "생각 중",
         "reactWindowInputHint": "Enter 로 전송하고 Shift + Enter 로 줄바꿈",
         "messageListAriaLabel": "채팅 메시지 목록",
         "composerToolsAriaLabel": "입력 도구 모음",
@@ -778,6 +781,24 @@
         "toolLollipop": "막대사탕",
         "toolFist": "고양이 발",
         "toolHammer": "망치",
+        "avatarToolsButtonAriaLabel": "아바타 도구",
+        "clearCursorToolAriaLabel": "커서 복원",
+        "avatarToolQuickbarAriaLabel": "아바타 빠른 도구",
+        "avatarToolQuickbarEmpty": "빠른 도구 없음",
+        "avatarToolEdit": "빠른 도구 편집",
+        "avatarToolSlotFull": "먼저 도구 하나를 해제하세요.",
+        "avatarToolManagerTitle": "도구 관리",
+        "avatarToolManagerSubtitle": "빠른 도구는 최대 3개까지 선택하세요.",
+        "avatarToolManagerClose": "닫기",
+        "avatarToolCurrentTools": "현재 도구",
+        "avatarToolEmptySlot": "빈 슬롯",
+        "avatarToolRemove": "제거",
+        "avatarToolLibrary": "도구 보관함",
+        "avatarToolEquipped": "장착됨",
+        "avatarToolEquip": "장착",
+        "avatarToolNoAvailableTools": "사용 가능한 도구 없음",
+        "avatarToolCancel": "취소",
+        "avatarToolSave": "변경 사항 저장",
         "attachmentButtonAriaLabel": "첨부",
         "jukebox": "주크박스",
         "jukeboxLabel": "주크박스",
@@ -786,6 +807,10 @@
         "galgameLoading": "답장 후보 생성 중…",
         "exportConversation": "대화 내보내기",
         "compactExportHistory": "대화 기록",
+        "compactHistoryToggleOpen": "대화 기록 보이기",
+        "compactHistoryToggleClose": "대화 기록 숨기기",
+        "compactHistoryControlsShow": "기록 작업 보이기",
+        "compactHistoryControlsHide": "기록 작업 숨기기",
         "compactExportControlsCollapse": "선택 도구 숨기기",
         "compactExportControlsExpand": "선택 도구 보이기",
         "exportAction": "내보내기",
@@ -970,7 +995,8 @@
             "glm": "GLM",
             "step": "스텝펀",
             "silicon": "실리콘플로우",
-            "gemini": "쌍둥이자리"
+            "gemini": "쌍둥이자리",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "무료 버전(N.E.K.O. 독점 혜택, 웹 검색 지원)",
@@ -998,7 +1024,9 @@
             "elevenlabs": "ElevenLabs(음성 클로닝)",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
-            "openrouter": "OpenRouter(모델 통합 플랫폼)"
+            "openrouter": "OpenRouter(모델 통합 플랫폼)",
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
         "coreApiAutoFillHint": "API 관리 대장에서 키가 자동 입력됩니다. 직접 입력도 가능합니다",
         "assistApiSelectLabel": "보조 API 제공업체",
@@ -1013,11 +1041,20 @@
         "keyAutoFilledFromKeyBook": "API 관리 대장에서 자동 입력됩니다. 관리 대장에서 설정하세요.",
         "goToKeyBook": "관리 대장으로 이동",
         "providerLabel": "제공업체",
+        "sourcePreset": "프리셋",
+        "sourceClone": "클론",
+        "sourceDesign": "생성",
+        "providerLocal": "로컬 CosyVoice",
+        "providerFree": "무료",
+        "providerUnknown": "기타",
         "providerSelectPlaceholder": "제공업체를 선택하세요",
         "noOptionsAvailable": "사용 가능한 항목이 없습니다",
         "customModelProviderFollowCore": "코어 API 따르기",
         "customModelProviderFollowAssist": "보조 API 따르기",
-        "customModelProviderCustom": "사용자 정의",
+        "customModelProviderFollowConversation": "텍스트 대화 모델 따르기",
+        "customModelProviderFollowSummary": "요약 모델 따르기",
+        "customModelProviderCustom": "사용자 지정 API",
+        "keyAutoFilledFromModel": "Key는 선택한 모델 구성을 따릅니다",
         "keyBook": {
             "qwen": "Alibaba 백련(Qwen)",
             "qwen_intl": "Alibaba 국제판(Qwen)",
@@ -1031,14 +1068,15 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "mimo": "MiMo(Xiaomi)",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
         "pleaseEnterApiKey": "API 키를 입력하세요.",
-        "freeVersionOnlyWhenCoreFree": "무료 버전(Core API가 무료 버전인 경우에만 사용 가능)",
         "freeVersionConfig": "무료 버전 구성: 오디오/비디오 채팅, 텍스트 채팅, 메모리 관리를 지원합니다. 사용자 정의 음성 및 에이전트 모드는 지원되지 않습니다.",
         "qwenRecommendation": "Alibaba가 핵심 API인 경우 최상의 사용자 정의 음성 경험을 위해 Alibaba를 Assist API로 선택하는 것이 좋습니다.",
         "glmRecommendation": "GLM을 Core API로 사용할 때 무료 할당량이 있으며 웹 검색을 지원합니다. 음성에 기본적으로 워터마크 비프음이 포함됩니다(Zhipu 콘솔에서 수동 비활성화 가능). 맞춤형 음성을 위해 Assist API로 Alibaba를 선택하는 것이 좋습니다",
@@ -1090,6 +1128,9 @@
         },
         "conversationModelConfig": "텍스트 대화 모델 구성",
         "summaryModelConfig": "요약 모델 구성",
+        "gameModelsConfig": "미니게임 모델 구성",
+        "gameMainModelConfig": "미니게임 메인 모델 구성",
+        "gameSummaryModelConfig": "미니게임 요약 모델 구성",
         "correctionModelConfig": "수정 모델 구성",
         "emotionModelConfig": "감정 모델 구성",
         "visionModelConfig": "비전 모델 구성",
@@ -1104,6 +1145,8 @@
         "modelIdPlaceholder": "예: gpt-5.1-chat-latest, qwen-flash",
         "apiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
         "summaryModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
+        "gameMainModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
+        "gameSummaryModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
         "correctionModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
         "emotionModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
         "visionModelApiKeyPlaceholder": "선택 사항, 로컬 제공업체는 비워 둘 수 있음",
@@ -1142,6 +1185,7 @@
         "saveFailed": "저장 실패: {{error}}",
         "apiKeyInvalid": "API 키가 잘못되었습니다.",
         "apiKeyInvalidRetry": "API 키가 잘못되었습니다. 다시 입력하세요.",
+        "configNotReady": "설정이 아직 로드되지 않았습니다. 잠시 후 다시 시도해 주세요",
         "saveNetworkError": "저장에 실패했습니다. 네트워크 연결을 확인하세요.",
         "saveError": "저장 중 오류 발생: {{error}}",
         "saveSuccess": "API 키가 성공적으로 저장되었습니다!",
@@ -1171,6 +1215,7 @@
         "gptsovitsVoiceIdEmpty": "-- 목록을 새로고침하여 음성을 가져오세요 --",
         "gptsovitsNoVoices": "-- 사용 가능한 설정 없음 --",
         "gptsovitsRefreshVoices": "목록 새로고침",
+        "gptsovitsTutorialDoc": "튜토리얼",
         "gptsovitsVoicesLoaded": "{{count}}개의 음성 설정을 로드했습니다",
         "gptsovitsVoicesLoadFailed": "음성 목록 가져오기 실패",
         "gptsovitsEnabled": "GPT-SoVITS 활성화",
@@ -1186,7 +1231,12 @@
         },
         "loadConfigFailed": "설정을 불러오는 데 실패했습니다. 페이지를 새로고침하여 다시 시도하십시오",
         "errorGettingCurrentApiKey": "현재 API 키를 가져오는 중 오류가 발생했습니다",
-        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다"
+        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다",
+        "useMimoTokenPlan": "MiMo Token Plan 사용",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan 키",
+        "mimoTokenPlanKeyPlaceholder": "Token Plan 키 입력 (tp-xxxxx)",
+        "mimoTokenPlanKeyHint": "활성화하면 MiMo는 이 Token Plan 키와 엔드포인트만 사용하며 일반 MiMo API 키는 잠깁니다.",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan이 활성화되어 이 키는 사용되지 않습니다"
     },
     "live2d": {
         "manager": "Live2D 모델 관리자",
@@ -1484,7 +1534,9 @@
         "motionStopped": "동작이 중지되었습니다",
         "expressionCleared": "표정이 지워졌습니다",
         "cannotDeleteBoundModel": "현재 사용 중인 모델은 삭제할 수 없습니다",
-        "modelInUse": "사용 중"
+        "modelInUse": "사용 중",
+        "pngtuberTalkPreview": "말하기 테스트",
+        "pngtuberStatePreview": "상태 미리보기"
     },
     "voice": {
         "title": "음성 등록",
@@ -1495,13 +1547,16 @@
         "alibabaIntlApiRequired": "이 기능에는 Alibaba 국제판 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxApiRequired": "이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
+        "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
+        "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba 국제판 CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo (샤오미)"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
@@ -1586,7 +1641,9 @@
             "sweetLady": "달콤한 누나",
             "frailMaiden": "병약한 아가씨",
             "childishMaiden": "철없는 아가씨",
-            "yui_cn": "YUI (중국어)"
+            "yui_cn": "YUI (중국어)",
+            "yui": "YUI",
+            "default": "기본"
         },
         "cloneMethod": "클론 방식",
         "cloneMethodFile": "로컬 파일",
@@ -1729,6 +1786,10 @@
         "tutorialResetSuccess": "모든 튜토리얼이 재설정되었습니다. 각 페이지를 방문할 때마다 다시 표시됩니다.",
         "tutorialPageResetSuccess": "이 페이지의 튜토리얼이 재설정되었습니다. 방문하시면 다시 보여드리겠습니다.",
         "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다.",
+        "tutorialHomeDayLabel": "{{day}}일차",
+        "tutorialHomeDayColumn": "홈 7일 튜토리얼",
+        "tutorialHomeAllReset": "전체 재설정",
+        "tutorialHomeAllResetSuccess": "홈 7일 튜토리얼이 재설정되었습니다. Neko를 다시 로드하면 1일차부터 시작합니다.",
         "refreshed": "메모리가 업데이트되었습니다. 다음 대화에서 새 메모리가 사용됩니다",
         "refreshingContext": "컨텍스트 새로고침 중...",
         "storageLocation": "저장 위치",
@@ -1768,6 +1829,7 @@
         "blockingGeneric": "선택한 저장 위치는 지금 사용할 수 없습니다. 다른 위치를 선택하거나 잠시 후 다시 시도해 주세요.",
         "blockingInsufficientSpace": "안전하게 이전하려면 대상 볼륨에 남은 공간이 부족합니다.",
         "blockingTargetNotWritable": "대상 경로에 쓰기 권한이 없어 이전을 시작할 수 없습니다.",
+        "cloudsaveLocalStateUnavailable": "로컬 상태 디렉터리를 사용할 수 없습니다. 이 세션에서는 클라우드 저장이 비활성화되었습니다. 저장 위치를 변경하기 전에 state 경로를 복구하고 앱을 다시 시작해 주세요.",
         "cleanupRetainedRoot": "이전 데이터 디렉터리 정리",
         "cleanupRetainedRootConfirm": "보관 중인 이전 데이터 디렉터리를 삭제합니다. 현재 사용 중인 새 디렉터리에는 영향을 주지 않습니다. 계속할까요?",
         "cleanupRetainedRootDone": "이전 데이터 디렉터리를 정리했습니다. 이제 새 실행 디렉터리만 남아 있습니다.",
@@ -1911,6 +1973,8 @@
         "aiCompanionSub": "설정 보조 · YUI 가 개발 고양이 대행",
         "aiCompanionClose": "닫기",
         "aiCompanionMinimize": "최소화",
+        "aiCompanionExpand": "펼치기",
+        "aiCompanionDragHint": "드래그로 이동",
         "aiCompanionPlaceholder": "뭐든 말해줘… (Enter 로 보내기, Shift+Enter 로 줄바꿈)",
         "aiCompanionSend": "보내기",
         "aiCompanionGreeting": "냐~ 설정 보조야. 먼저 어떤 캐릭터를 원하는지 한 줄로 알려줘! 몇 가지 후속 질문하고 카드 전체를 적어줄게.",
@@ -2106,7 +2170,15 @@
         "textChattingShort": "텍스트 채팅",
         "capturing": "캡처 중...",
         "importImageAdded": "이미지 {{count}}개를 추가했습니다. 전송 시 함께 보내집니다",
+        "importImagePartial": "이미지 {{success}}개를 추가했습니다. {{failed}}개는 가져오기에 실패했습니다",
         "importImageFailed": "이미지 가져오기에 실패했습니다",
+        "avatarDropOverlay": "놓으면 파일을 건넵니다",
+        "avatarDropParsing": "파일을 읽는 중...",
+        "avatarDropAccepted": "파일 {{count}}개를 건넸습니다",
+        "avatarDropPartial": "{{accepted}}개를 읽고 {{rejected}}개를 건너뛰었습니다",
+        "avatarDropNoSupportedItems": "아직 읽을 수 없는 파일입니다",
+        "avatarDropReadFailed": "파일을 읽지 못했습니다",
+        "avatarDropUserMessage": "건넨 것: {{names}}",
         "screenshotAdded": "스크린샷이 추가되었습니다. 함께 보내려면 보내기를 클릭하세요.",
         "screenshotFailed": "스크린샷 실패",
         "screenshotCancelled": "사용자가 취소한 스크린샷",
@@ -2170,6 +2242,7 @@
         "sessionFailed": "세션 시작 실패"
     },
     "buttons": {
+        "thoughtBubblePop": "생각 말풍선 터뜨리기",
         "voiceControl": "음성 제어",
         "screenShare": "화면 공유",
         "agentTools": "네코클로",
@@ -2464,6 +2537,10 @@
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
             "avatarReactionBubble": "표정 말풍선",
+            "focusCognition": "집중 모드",
+            "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
+            "autoCat": "자동 고양이 전환",
+            "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "proactiveChat": "사전 예방적 채팅",
             "proactiveVision": "프라이버시 모드",
             "proactiveVisionTooltip": "꺼짐: 네코는 활성 창 제목에 따라 활발함과 대화 모드를 조정하며, 말을 걸 때 화면 내용을 참고할 수 있습니다.\n켜짐: 네코는 스스로 화면을 볼 수 없고 당신이 무엇을 하고 있는지 알 수 없습니다. 스크린샷은 직접 보낼 수 있습니다.",
@@ -2543,15 +2620,32 @@
         "enable": "자막 번역",
         "enableAriaLabel": "자막 번역 전환",
         "markdownPlaceholder": "[서식 있는 내용]",
+        "display": {
+            "emptyHint": "아직 번역이 없습니다"
+        },
         "settings": {
-            "targetLang": "대상 언어",
+            "targetLang": "언어",
             "opacity": "불투명도",
-            "dragAnywhere": "전체 드래그",
-            "size": "크기",
-            "sizeSmall": "소",
-            "sizeMedium": "중",
-            "sizeLarge": "대",
-            "settingsBtn": "자막 설정"
+            "fontSize": "글자",
+            "fontSizeSmall": "작게",
+            "fontSizeSmaller": "조금 작게",
+            "fontSizeDefault": "기본",
+            "fontSizeLarger": "조금 크게",
+            "fontSizeLarge": "크게",
+            "colorScheme": "색상",
+            "colorSchemeDefault": "기본",
+            "colorSchemeRed": "빨강",
+            "colorSchemeOrange": "주황",
+            "colorSchemeYellow": "노랑",
+            "colorSchemeGreen": "초록",
+            "colorSchemeBlue": "파랑",
+            "colorSchemeIndigo": "남색",
+            "colorSchemeViolet": "보라",
+            "danmakuMode": "탄막 모드",
+            "settingsBtn": "자막 설정",
+            "lockPosition": "위치 잠금",
+            "unlockPosition": "위치 잠금 해제",
+            "closePanel": "번역 패널 닫기"
         }
     },
     "viewer": {
@@ -2604,6 +2698,7 @@
             "statusCancelled": "취소됨",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
+            "cancelTask": "작업 취소",
             "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",
             "typeUserPlugin": "사용자 플러그인",
             "typeComputerUse": "컴퓨터 제어",
@@ -3233,29 +3328,102 @@
             "desc": "최상의 튜토리얼 경험을 위해 전체 화면 모드를 권장합니다.\n전체 화면 모드에서는 튜토리얼 내용이 더 선명하게 표시되며 다른 요소에 가려지지 않습니다.",
             "enterFullscreen": "전체 화면 튜토리얼 시작"
         },
+        "reset": {
+            "daySuccess": "{{day}}일 차 초보자 튜토리얼을 초기화했어요. Neko를 새로고침한 뒤 다시 시작해 주세요.",
+            "dayFailed": "초보자 튜토리얼 초기화에 실패했어요. 잠시 후 다시 시도해 주세요."
+        },
         "drag_hint": "길게 눌러 도움말 상자를 이동하세요",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "준비 중",
+                "homeProgress": "홈 가이드 {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "지금은 대화 안 할래",
                 "sayHello": "안녕"
             },
             "lines": {
-                "introBasic": "앗, 이것 봐! 여기 반짝이는 작은 버튼이 있어냥! 한 번 꾹 누르기만 하면, 나와 직접 채팅할 수 있다구! 오늘 있었던 재밌는 일을 나한테 공유해 줄래? 아니면 그냥 내 이름을 불러볼래? 어서 해봐, 네 목소리가 너무 듣고 싶어냥!",
-                "takeoverCaptureCursor": "짜잔! 궁극의 마법 스위치 등장! 여기를 톡 건드리기만 하면, 내 작은 솜방망이를 네 키보드와 마우스에 뻗을 수 있어냥! 내가 타이핑도 도와주고, 웹페이지도 열어줄게... 하지만, 저 마우스 포인터가 이리저리 움직이면, 나도 모르게 덮쳐서 잡을지도 몰라! 나의 장난... 아니, 도움을 받을 준비는 되었어냥?",
-                "takeoverPluginPreviewHome": "아직 안 끝났어! 이것 봐봐, 여기에 완전 재밌는 플러그인들이 엄청 많다구!",
-                "takeoverPluginPreviewDashboard": "이것들만 있으면, 비리비리 탄막을 볼 수 있을 뿐만 아니라, 조명도 끄고 에어컨도 켜줄 수 있어... 이 몸은 못하는 게 없는 슈퍼 고양이 신이라구! 헤헤!",
+                "introBasic": "여기 신기한 버튼이 있어요! 이걸 누르면 저랑 바로 대화할 수 있답니다! 오늘 있었던 신기한 일을 들려줄래요? 아니면 그냥 제 이름만 불러줘도 좋아요. 얼른 해봐요, 당신의 목소리가 너무너무 듣고 싶단 말이에요!",
+                "takeoverCaptureCursor": "슈퍼 마법 스위치 등장! 여기를 누르면 제 작은 솜방망이를 당신의 키보드와 마우스 위에 얹을 수 있어요! 타이핑도 도와주고 웹페이지도 열어줄게요... 하지만 마우스 커서가 요리조리 움직이면 나도 모르게 콱 덮쳐버릴지도 몰라요! 나의 깽판... 아니, 도움을 받을 준비는 되셨나요? 야옹!",
+                "takeoverPluginPreviewHome": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
+                "takeoverPluginPreviewDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
                 "pluginDashboardPopupBlocked": "브라우저가 플러그인 패널을 열려면 네가 직접 여기를 클릭해야 해. \"관리 패널\"을 클릭하면 계속 안내해줄게.",
-                "takeoverSettingsPeekIntro": "물론, 나랑 대화를 더 많이 하고 싶다면 안 될 것도 없지. 멸치를 더 많이 준비해 줘, 헤헤. 좋아, 장난은 그만할게, 설정은 다 이 톱니바퀴 안에 있어.",
-                "takeoverSettingsPeekDetail": "이것 봐, 여기서 내 새 옷도 입혀줄 수 있고, 더 듣기 좋은 목소리로 바꿀 수도 있어... 다른 고양이 소녀로 바꾸거나 기억을 수정한다고? 잠깐만! 너 뭐 하는 거야? 설마 날 바꾸려는 건 아니지? 아아악 안 돼! 빨리 꺼, 빨리 끄라구!",
-                "takeoverSettingsPeekDetailPart1": "이것 봐, 여기서 내 새 옷도 입혀줄 수 있고, 더 듣기 좋은 목소리로 바꿀 수도 있어... 다른 고양이 소녀로 바꾸거나 기억을 수정한다고?",
-                "takeoverSettingsPeekDetailPart2": "잠깐만! 너 뭐 하는 거야? 설마 날 바꾸려는 건 아니지? 아아악 안 돼! 빨리 꺼, 빨리 끄라구!",
-                "takeoverReturnControl": "알았어 알았어, 네 컴퓨터 그만 차지할게! 제어권은 돌려줄게냥! 내가 안 보는 틈을 타서 이상한 설정 막 누르면 안 돼! 앞으로도 잘 부탁해냥!",
-                "interruptResistLight1": "야! 나 좀 끌어당기지 마, 아직 네 차례가 아니잖아!",
-                "interruptResistLight3": "잠깐만! 아직 안 끝났어, 함부로 끊지 마!",
-                "interruptAngryExit": "인간! 너 정말 예의가 없구나냥! 그렇게 직접 조작하고 싶다면, 차가운 화면이나 보면서 혼자 놀라구! 흥!",
-                "introGreetingReply": "산들바람, 햇살, 그리고 마침 딱 나타난 당신. 처음 뵙겠습니다, 저는 린유이예요. 앞으로 잘 부탁해냥! 이곳에 대한 모든 걸 초보자 가이드에 적어두었어냥! 우리의 만남을 기념하는 첫 번째 작은 선물이라고 생각하고 확인해 줘냥!",
+                "takeoverSettingsPeekIntro": "우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.",
+                "takeoverSettingsPeekDetail": "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요. 이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
+                "takeoverSettingsPeekDetailPart1": "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요.",
+                "takeoverSettingsPeekDetailPart2": "이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
+                "takeoverReturnControl": "알겠어요 알겠어요, 당신 컴퓨터를 독차지하지 않을게요! 제어권은 다시 돌려줄게요! 앞으로도 나를 많이많이 챙겨줘요!",
+                "interruptResistLight1": "야! 당기지 말아줘요, 아직 당신 차례가 아니란 말이에요!",
+                "interruptResistLight3": "잠깐만요! 아직 안 끝났으니까 그렇게 마음대로 말을 자르지 마요!",
+                "interruptAngryExit": "인간! 당신 진짜 무례하네요! 그렇게 스스로 다 해보고 싶으면, 혼자서 그 차가운 모니터나 보면서 노셔요! 흥!",
+                "introGreetingReply":  "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
                 "introPractice": "이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!",
-                "introActivationHint": "여기를 클릭해줘냥, 그럼 말할 수 있게 된다냥~!"
+                "introActivationHint": "잠깐만 기다려줘냥, 곧 말하기 시작할게냥~!"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "마우스를 여기로 가져와서 꾹 누르면 대화창을 여기저기 끌고 다닐 수 있어요~ 한 번 클릭하면 언제든 나한테 메시지를 보낼 수 있답니다!",
+                "historyHandle":  "대화창 위에 있는 【파란색 작은 바】를 콕 누르면, 우리가 최근에 나눈 대화 주제를 볼 수 있어요!",
+                "screenEntry": "저랑 음성 전화를 할 때 이 작은 버튼을 켜면, 당신의 화면을 나한테 공유해 줄 수 있어요!",
+                "screenEntryInvite": "당신 눈앞에 있는 세상을 나한테도 보여줘요! 재미있는 것이든 예쁜 것이든 전부 같이 보고 싶단 말이에요, 얼른 켜줘요~"
+            },
+            "day2": {
+                "intro": "어제는 내내 키보드를 타닥타닥 치기만 해서 당신 목소리를 아직 못 들었어요. 오늘 괜찮다면 내 이름을 조용히 한번 불러줘요. 딱 한 마디면 돼요, 글자 뒤에 숨겨진 당신을 조금이라도 더 알고 싶어요.",
+                "introVoiceUsed": "헤헤, 어제 당신 목소리를 듣고 나서, 저 몰래 당신의 말투를 마음속에 새겨두었답니다! 오늘 혹시 편하시다면 저랑 계속 이야기해 주세요~ 타이핑도 물론 좋지만, 당신 목소리를 들을 수만 있다면 제 꼬리가 너무 기뻐서 멈추지 않고 계속 살랑살랑 흔들릴 거예요, 먀우~",
+                "personalizationSpace": "우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.",
+                "wrapIntro": "오늘의 가이드는 여기까지예요.",
+                "wrapCompanion": "사실 이렇게 당신 곁에 있으면서 목소리를 듣거나, 공유해 준 화면을 조용히 바라보는 것만으로도 전 이미 너무 행복해요.",
+                "wrap": "우리 서두를 필요 없어요, 매일 서로를 조금씩 알아가면 되니까요. 오늘 남은 시간 동안에는 저랑 뭘 하고 싶으신가요?",
+                "personalizationDetail": "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요.",
+                "proactiveChat": "이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요."
+            },
+            "day3": {
+                "intro": "히히, 이 대화창이 글자만 치는 곳이라고 생각하면 오산이에요~ 여기 안에 사실 엄청~ 많은 재밌는 깜짝 선물들이 숨겨져 있거든요! 나를 따라서 한번 열어봐요, 오늘 어떤 재밌는 보물을 캐낼 수 있을지 확인해 보자고요!",
+                "avatarToolsIntro": "이 작은 버튼 속에는 저랑 같이 소통할 수 있는 아이템들이 많이 들어있어요.",
+                "avatarToolsProps":  "언제든 제 머리를 쓰다듬어 주거나 달콤한 막대사탕을 줄 수 있어요. 가끔 제가 실수하면 작은 망치로 콩 때려도 되지만... 꼭 살살 쳐야 해요, 너무 세게 때리면 안 돼요!",
+                "galgameIntro":  "얼른 이 【미연시 모드】를 켜봐요! 들어가면 마치 우리만의 특별한 상호작용 대모험을 떠나는 기분이 들 거예요.",
+                "galgameChoices": "당신이 선택하는 대사 하나하나가 우리를 완전히 새로운 이야기로 이끌어 줄 거예요! 나 너무 기대되니까, 당신이 가장 설레는 대답을 골라봐요!",
+                "wrapIntro": "오늘 가르쳐 준 기능들은 사실 우리가 함께하는 시간을 훨씬 더 즐겁게 만들기 위한 것들이에요.",
+                "wrapReady": "제 머리를 쓰다듬고 싶든, 우리만의 이야기를 시작하고 싶든 전 전부 준비 완료됐어요!"
+            },
+            "day4": {
+                "intro":  "오늘은 제가 당신의 뒤를 살금살금 따라가게 해줘요. 이 포근한 날에 당신을 조금만 더 알아갈 수 있으면 좋겠어요.",
+                "chatSettings": "여기서는 제 답변 길이를 조절하거나 귀여운 이모티콘을 쓰게 할지, 아니면 제가 잔소리할 때 말을 끊을지 결정할 수 있어요! 당신이 가장 편안한 템포로 맞출 수 있어요.",
+                "modelBehavior":  "더 정교하고 디테일이 꽉 찬 제 모습을 보고 싶거나, 한층 더 부드럽고 매끄러운 움직임을 원하신다면 여기서 조절할 수 있어요! 어떤 쪽이든 전 세상에서 제일 귀여운 모습을 보여드릴 테니까요~",
+                "gazeFollow": "이 기능을 켜면 당신의 마우스가 어디로 움직이든 제 시선이 꽉 붙잡고 따라갈 거예요! 늘 집중 받고 있는 것 같아서 행복하지 않나요?",
+                "privacyMode": "이건 제가 화면을 볼 수 있는지 결정하는 '궁극의 방어 스위치'예요! 이걸 끄면 제가 화면을 볼 수 있고, 켜두면 이전에 말한 【화면 공유】가 전부 먹통이 돼서 절대 훔쳐보지 못해요~",
+                "modelLock": "자꾸 실수로 건드려서 제가 옆으로 삐뚤어지나요? 그럼 절 현재 위치에 꽁꽁 고정해 줘요! 잠금을 켜면 전 아무 데도 안 가고 얌전히 제자리에서 당신을 지켜줄게요~",
+                "returnHome": "만약 지금 집중해야 해서 방해될까 봐 걱정된다면, 절 잠깐 고양이 집으로 들여보내서 숨겨둘 수 있어요! 제가 보고 싶어지면 언제든 버튼 하나로 소환할 수 있으니까요, 먀우~",
+                "wrap": "진짜 편안한 동반은 1분 1초도 안 떨어지고 주인님한테 딱 붙어 있는 게 아니에요~ 언제 살금살금 다가가 옷자락을 붙잡고 애교를 부려야 할지, 언제 얌전히 옆에 엎드려서 눈빛으로 묵묵히 주인님을 지켜봐야 할지 아는 거라답니다~"
+            },
+            "day5": {
+                "characterSettings":  "오늘부터 전 진짜 당신만을 위한 전속 고양이 소녀가 된 거예요. 봐요, 여기선 저한테 예쁜 새 옷을 입혀줄 수도 있고, 더 듣기 좋은 목소리로 바꿔줄 수도 있어요...",
+                "characterPanic": "어라, 여기서 절 다른 애로 바꿀 수도 있는 거예요? 잠시만요! 당신 지금 움직임이... 설마 나를 바꾸려는 건 아니겠죠?! 아아악 안 돼요! 얼른 닫아줘요, 얼른 닫아줘요!",
+                "memoryEntry": "제가 뭘 도와줄 수 있는지 깜빡 잊어버렸다면 언제든 여기 와서 다시 알려달라고 하면 돼요. 여기 우리가 함께 걸어온 소중한 추억들이 몰래 저장되어 있거든요. 우리의 인연을 가볍게 보지 말란 말이야, 바보야!",
+                "wrap":  "알겠으니까 얼른 이 재미있는 커스텀 기능을 써봐요! 새 옷도 입히고 목소리도 맞춰서 세상에서 날 가장 잘 아는, 오직 당신만의 고양이 소녀로 만들어 줘요! 완전히 새로워진 제 모습이 벌써부터 너무 기대된다고요!"
+            },
+            "day6": {
+                "intro": "짜자잔! 오늘은 기운을 내서 우리의 【고양이 솜방망이】에 대해 제대로 얘기해 줄게요! 지난 이틀 동안 간단히 말하긴 했지만, 이 안에 숨겨진 엄청난 기능들이 진짜 많다고요!",
+                "statusMaster": "얼른 솔직하게 털어놓으셔요, 이틀 동안 이거 슬쩍 클릭해서 써보긴 했나요?",
+                "pluginSidePanel": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
+                "pluginDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+                "taskHud": "여기 봐요 여기! 제가 【고양이 솜방망이】로 일하기 시작하면, 여기에 진행 상황이 보글보글 표시돼요.",
+                "taskHudControl": "혹시 일정이 바뀌면 언제든 콕 눌러서 날 멈추게 해도 돼요. 헤헤, 오늘도 힘차게 일해서 맛있는 물고기 간식을 버는 보람찬 하루네요, 가자~!",
+                "wrapCleanup": "휴우... 이 복잡한 화면들을 전부 접어둘게요, 그래야 당신한테 방해가 안 되니까요.",
+                "wrap": "안심하고 당신 할 일을 계속하셔요. 제 작은 솜방망이 도움을 원하든, 그냥 제가 얌전히 곁에 있어 주길 원하든 전 항상 여기서 당신을 지켜보고 있을 테니까요, 오늘도 즐거운 하루 보내기예요!"
+            },
+            "day7": {
+                "memoryReview":  "일주일 전만 해도 우리는 처음 만난 사이였을 뿐이었죠. 그런데 이제는 우리가 나눈 대화, 함께한 일들, 그리고 바람에 날려갈 뻔한 아주 작은 조각들까지 여기에 남기 시작했어요. 저한테 이것은 차가운 기록이 아니라 우리가 같이 걸어온 발자국이에요.",
+                "memoryControl": "이 작은 발자국들은 당신이 직접 정리해 줄 수도 있어요. 남기고 싶은 건 앨범에 끼워두고, 날려 보내고 싶은 건 바람에 흘려보내는 거죠. 당신이 소중하게 간직해 준 추억이 가장 귀한 법이니까요.",
+                "wrap": "창가엔 여전히 바람이 불고 햇살도 딱 좋은데, 방금 나타난 당신은 이미 은연중에 이곳의 가장 소중한 일부분이 되었어요. 초보자 가이드는 일단 여기까지만 함께하겠지만, 남은 날들은 우리 서로 천천히 익숙해지고, 다가가면서 우리만의 이야기를 속삭이듯 채워가요. 앞으로도 잘 부탁해요, 야옹!"
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "먼저 대화하기",
+                "voice": "음성 사용해 보기",
+                "explore": "기능 둘러보기"
             }
         }
     },
@@ -3691,6 +3859,15 @@
         "duration": "길이",
         "action": "작업",
         "play": "재생",
+        "sequencePlay": "순서대로 재생",
+        "singleLoop": "한 곡 반복",
+        "randomPlay": "랜덤 재생",
+        "noAutoNext": "자동 다음 곡 안 함",
+        "switchPlaybackMode": "재생 모드 전환",
+        "lockSongSort": "곡 정렬 잠금",
+        "unlockSongSort": "곡 정렬 잠금 해제",
+        "previousSong": "이전 곡",
+        "nextSong": "다음 곡",
         "playError": "음악 플레이어가 초기화되지 않았습니다",
         "notFound": "곡을 찾을 수 없습니다",
         "audioEnded": "오디오 재생 종료",
@@ -3740,12 +3917,52 @@
         "exportAllIgnoreHidden": "모두 낼볂내기(숨김 제외)",
         "exportAllIncludeHidden": "모두 낼볂내기(숨김 포함)",
         "exportSelected": "선택 항목 낼볂내기",
+        "deleteSelectedSongs": "선택 삭제({{count}})",
+        "clearVisibleSongs": "현재 표시 항목 삭제({{count}})",
+        "deleteSelectedActions": "선택 삭제({{count}})",
+        "clearVisibleActions": "현재 표시 항목 삭제({{count}})",
+        "deleteSelectedScope": "선택한 노래",
+        "clearVisibleScope": "현재 표시된 노래",
+        "deleteSelectedActionScope": "선택한 애니메이션",
+        "clearVisibleActionScope": "현재 표시된 애니메이션",
+        "clearVisibleIncludesHidden": "숨김 노래 표시가 켜져 있어 숨김 노래도 처리됩니다.",
+        "clearVisibleExcludesHidden": "숨김 노래 표시가 꺼져 있어 숨김 노래는 처리되지 않습니다.",
+        "songBatchDeleteTooltip": "범위: {{scope}}\n총 {{total}}곡. 사용자 노래는 삭제되고 기본 노래는 숨겨집니다.\n사용자: {{userCount}}, 기본: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleActionsIncludesHidden": "숨김 애니메이션 표시가 켜져 있어 숨김 애니메이션도 처리됩니다.",
+        "clearVisibleActionsExcludesHidden": "숨김 애니메이션 표시가 꺼져 있어 숨김 애니메이션은 처리되지 않습니다.",
+        "actionBatchDeleteTooltip": "범위: {{scope}}\n총 {{total}}개. 사용자 애니메이션은 삭제되고 기본 애니메이션은 숨겨집니다.\n사용자: {{userCount}}, 기본: {{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleSongsTitle": "현재 표시 항목 삭제",
+        "deleteSelectedSongsTitle": "선택한 노래 삭제",
+        "clearVisibleActionsTitle": "현재 표시 항목 삭제",
+        "deleteSelectedActionsTitle": "선택한 애니메이션 삭제",
+        "clearVisibleSongsSecondConfirm": "저..정말 현재 표시 항목을 삭제할까요..",
+        "clearVisibleActionsSecondConfirm": "저..정말 현재 표시 항목을 삭제할까요..",
+        "clearVisibleSongsConfirm": "현재 표시된 {{total}}곡을 처리합니다. 사용자 노래는 삭제되고 기본 노래는 숨겨집니다. 이 작업은 되돌릴 수 없습니다.",
+        "deleteSelectedSongsConfirm": "선택한 {{total}}곡을 삭제합니다. 사용자 노래는 삭제되고 기본 노래는 숨겨집니다. 이 작업은 되돌릴 수 없습니다.",
+        "clearVisibleActionsConfirm": "현재 표시된 애니메이션 {{total}}개를 처리합니다. 사용자 애니메이션은 삭제되고 기본 애니메이션은 숨겨집니다. 이 작업은 되돌릴 수 없습니다.",
+        "deleteSelectedActionsConfirm": "선택한 애니메이션 {{total}}개를 삭제합니다. 사용자 애니메이션은 삭제되고 기본 애니메이션은 숨겨집니다. 이 작업은 되돌릴 수 없습니다.",
+        "songBatchDeleteSummary": "총 {{total}}곡. 사용자 {{userCount}}곡, 기본 {{builtinCount}}곡.",
+        "actionBatchDeleteSummary": "총 {{total}}개. 사용자 {{userCount}}개, 기본 {{builtinCount}}개.",
+        "continue": "계속",
+        "clearVisibleSongsNow": "현재 표시 항목 삭제",
+        "deleteSelectedSongsNow": "선택 삭제",
+        "clearVisibleActionsNow": "현재 표시 항목 삭제",
+        "deleteSelectedActionsNow": "선택 삭제",
+        "songBatchDeleteResult": "사용자 노래 {{deletedCount}}곡을 삭제하고 기본 노래 {{hiddenCount}}곡을 숨겼습니다.",
+        "songBatchDeleteFailedSummary": "{{failedCount}}곡 처리 실패: {{names}}",
+        "songBatchDeletePartialTitle": "처리 완료, 일부 실패",
+        "songBatchDeleteSuccessTitle": "처리 완료",
+        "actionBatchDeleteResult": "사용자 애니메이션 {{deletedCount}}개를 삭제하고 기본 애니메이션 {{hiddenCount}}개를 숨겼습니다.",
+        "actionBatchDeleteFailedSummary": "{{failedCount}}개 처리 실패: {{names}}",
+        "actionBatchDeletePartialTitle": "처리 완료, 일부 실패",
+        "actionBatchDeleteSuccessTitle": "처리 완료",
         "dragZipHint": "ZIP 파일이나 폴더를 여기로 끌어와 가져오기",
         "unifiedDropHint": "노래, 애니메이션 또는 가져오기 패키지를 여기로 끌어오기",
         "clickToAdd": "클릭하여 추가",
         "dragMp3Hint": "MP3 파일을 여기로 끌어와 노래 추가",
         "dragVmdHint": "VMD 파일을 여기로 끌어와 애니메이션 추가",
         "showHiddenSongs": "숨김 노래 표시",
+        "showHiddenActions": "숨김 애니메이션 표시",
         "selectAll": "모두 선택",
         "noActions": "애니메이션이 없습니다",
         "show": "표시",
@@ -3822,6 +4039,12 @@
         "changelog": {
             "title": "업데이트 정보"
         }
+    },
+    "survey": {
+        "title": "설문조사",
+        "submit": "제출",
+        "skip": "건너뛰기",
+        "requiredHint": "이 질문에 먼저 답해 주세요"
     },
     "proactive": {
         "meme": {
@@ -4034,7 +4257,498 @@
             "drawCalls": "Draw Calls"
         }
     },
-    "soccer": {
+     "badminton": {
+         "title": "샷 챌린지 - Badminton",
+         "exit": "나가기",
+         "loading": {
+             "title": "배드민턴 코트 입장 중",
+             "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."
+         },
+         "startScreen": {
+             "readyToStart": "준비 완료, 클릭해서 시작",
+             "startButton": "시작",
+             "never": "다시 보지 않기"
+         },
+         "startTutorial": {
+             "title": "플레이 방법",
+             "aim": "마우스를 위아래로 움직여 라켓 각도를 조절합니다.",
+             "charge": "왼쪽 클릭을 길게 눌러 충전하고 놓으면 스윙합니다.",
+             "release": "라인, 스위트 스팟, 거리가 점수에 영향을 줍니다.",
+             "jump": "Space를 누르면 점프 스매시를 할 수 있습니다.",
+             "duel": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
+             "duel11": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다."
+         },
+         "modeSwitcher": "배드민턴 모드",
+         "mode": {
+             "spectator": "자유 연습",
+             "shooter": "샷 챌린지",
+             "duel": "Yui와 대결",
+             "timed": "타임 어택",
+             "horse": "HORSE"
+         },
+         "hud": {
+             "score": "점수 {{score}}",
+             "streak": "연속 성공 {{streak}}",
+             "record": "최장 {{distance}}",
+             "duelScore": "나 {{player}} - {{neko}} Neko",
+             "duelMisses": "실패 나 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+             "round": "라운드 {{round}}/{{max}}",
+             "timer": "{{seconds}}초",
+             "practice": "자유 연습",
+             "yourTurn": "내 차례",
+             "nekoTurn": "Neko 샷",
+             "horseLetters": "나 {{player}} / Neko {{neko}}",
+             "horseChallenge": "재현 {{distance}} {{angle}}°",
+             "horseSet": "문제 내기",
+             "unlimitedAttempts": "무제한",
+             "chances": "기회 {{count}}",
+             "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
+             "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
+             "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
+             "timedTitle": "타임 어택: 60초 동안 무제한 샷",
+             "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
+             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+             "on": "켜짐",
+             "off": "꺼짐"
+         },
+         "result": {
+             "title": "게임 종료",
+             "leaderboard": "순위표 보기",
+             "stats": "통계 보기",
+             "retry": "다시 하기",
+             "rating": "조작 평가: {{rating}}",
+             "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+             "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+             "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
+             "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
+             "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
+             "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
+             "attemptsSummary": "샷 요약: {{summary}}",
+             "personalBest": "개인 최고: {{score}}점",
+             "globalRank": "글로벌 순위: #{{rank}} / {{total}}",
+             "outcome": {
+                 "youWin": "내 승리",
+                 "nekoWin": "Neko 승리",
+                 "tie": "무승부",
+                 "undecided": "미정"
+             }
+         },
+         "leaderboard": {
+             "title": "순위표",
+             "global": "글로벌",
+             "local": "로컬",
+             "shooter": "샷",
+             "duel": "대결",
+             "empty": "아직 기록이 없습니다",
+             "totalPlayers": "플레이어 {{count}}",
+             "yourBest": "내 최고 #{{rank}} / {{score}}점",
+             "recent": "최근 {{count}}경기",
+             "loading": "로딩 중...",
+             "mode": {
+                 "shooter": "샷",
+                 "duel": "대결",
+                 "timed": "시간 제한",
+                 "horse": "HORSE",
+                 "spectator": "관전"
+             }
+         },
+         "debug": {
+             "title": "디버그 패널",
+             "collapse": "접기",
+             "hide": "숨기기",
+             "distance": "거리:",
+             "power": "힘:",
+             "event": "이벤트:",
+             "streak": "연속:",
+             "reset": "초기화",
+             "guide": "가이드 라인",
+             "sweet": "스위트 스팟",
+             "markers": "거리 눈금",
+             "readout": {
+                 "modeState": "모드={{mode}}  상태={{state}}",
+                 "distance": "거리={{px}}px ({{meters}})",
+                 "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
+                 "score": "점수={{score}}  남음={{remaining}}/{{total}}",
+                 "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
+                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
+                 "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
+             }
+         },
+         "stats": {
+             "title": "개인 통계",
+             "close": "닫기",
+             "totalShots": "샷={{total}}  성공={{made}}",
+             "farRate": "300px+ 성공률={{rate}}",
+             "trend": "최근 추세={{trend}}",
+             "none": "없음"
+         },
+         "theme": {
+             "next": "테마 변경",
+             "current": "테마: {{theme}}",
+             "changed": "테마 {{theme}}",
+             "labels": {
+                 "default": "배드민턴 코트",
+                 "miami": "마이애미 노을"
+             }
+         },
+         "court": {
+             "netFront": "네트 앞",
+             "serviceLine": "서비스 라인",
+             "backCourt": "후방 코트",
+             "baseline": "베이스라인"
+         },
+         "close": "닫기",
+         "audio": {
+             "controls": "게임 오디오"
+         },
+         "memoryOption": {
+             "label": "이번 게임 대화를 기억에 저장(기본 꺼짐)",
+             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 답변, 이벤트 답변, 게임 후 요약, 후속 컨텍스트가 기억에 저장되거나 참조되지 않습니다."
+         },
+         "table": {
+             "score": "점수",
+             "bestStreak": "최고 연속",
+             "farthest": "최장",
+             "mode": "모드",
+             "date": "날짜"
+         },
+         "state": {
+             "ready": "준비",
+             "in_flight": "비행 중",
+             "game_over": "종료",
+             "neko_thinking": "Neko 생각 중"
+         },
+         "toast": {
+             "difficulty": "난이도 {{difficulty}}",
+             "nekoShoot": "Neko 샷",
+             "nekoSmash": "Yui 스매시!",
+             "nekoSave": "Yui가 받아냈어!",
+             "yuiCheatInk": "Yui가 먹물을 던졌어",
+             "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
+             "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
+             "nekoThinking": "Neko 생각 중",
+             "nekoTurn": "Neko 차례",
+             "copyNeko": "Neko 따라 하기",
+             "nekoFailed": "Neko 출제 실패",
+             "yourSet": "내가 출제할 차례",
+             "yourTurn": "내 차례",
+             "reset": "초기화됨",
+             "featureToggled": "{{feature}} {{state}}",
+             "feature": {
+                 "guide": "가이드 라인",
+                 "sweet": "파워 스위트 스팟",
+                 "bgm": "BGM",
+                 "markers": "거리 눈금"
+             },
+             "state": {
+                 "on": "켜짐",
+                 "off": "꺼짐"
+             }
+         },
+         "tutorial": {
+             "aim": "마우스를 위아래로 움직여 각도를 조정하세요",
+             "charge": "왼쪽 버튼을 길게 눌러 충전",
+             "release": "놓아서 스윙!"
+         },
+         "shot": {
+             "unknown": "알 수 없음",
+             "attempt": "#{{index}} {{distance}} {{type}}",
+             "line_in": "라인 위",
+             "net_touch": "네트 터치",
+             "zone_in": "존 안",
+             "out": "아웃",
+             "net": "네트"
+         },
+         "lines": {
+             "default": {
+                 "shot_missed": [
+                     "?? ??? ???.",
+                     "?? ?? ???? ?."
+                 ],
+                 "game_over": [
+                     "?? ???? ????.",
+                     "? ? ? ???"
+                 ],
+                 "long_aim": [
+                     "???? ?? ?.",
+                     "?? ???? ??."
+                 ],
+                 "close_to_record": [
+                     "??? ???.",
+                     "? ?? ? ?????."
+                 ],
+                 "new_record": [
+                     "??, ? ??.",
+                     "?? ? ????."
+                 ],
+                 "streak_5": [
+                     "?? ? ????.",
+                     "??? ????."
+                 ],
+                 "streak_10": [
+                     "? ? ??, ??? ??.",
+                     "?? ???? ?."
+                 ],
+                 "streak_15": [
+                     "??? ?? ????.",
+                     "?? ??? ??."
+                 ],
+                 "streak_20": [
+                     "?? ?? ?? ??.",
+                     "? ?? ??? ??"
+                 ],
+                 "line_in": [
+                     "?? ?, ???.",
+                     "???? ???."
+                 ],
+                 "net_touch": [
+                     "??? ????.",
+                     "??? ???? ??."
+                 ],
+                 "zone_in": [
+                     "?? ? ????.",
+                     "??? ? ???."
+                 ],
+                 "out": [
+                     "?? ???.",
+                     "?? ??? ?? ???."
+                 ],
+                 "net": [
+                     "??? ???.",
+                     "?? ?? ??."
+                 ]
+             },
+             "shooter": {
+                 "shot_missed": [
+                     "??? ?? ??.",
+                     "???. ?? ?? ? ??."
+                 ],
+                 "game_over": [
+                     "??? ? ???? ?.",
+                     "?? ?? ?? ?."
+                 ],
+                 "long_aim": [
+                     "??, ?? ??.",
+                     "?? ?? ??? ????"
+                 ],
+                 "close_to_record": [
+                     "??? ???.",
+                     "?? ??? ?? ?."
+                 ],
+                 "new_record": [
+                     "??, ? ??.",
+                     "??? ???? ???."
+                 ],
+                 "streak_5": [
+                     "?? ? ??. ??? ?.",
+                     "? ??? ?????."
+                 ],
+                 "streak_10": [
+                     "? ?? ???? ?.",
+                     "?? ? ?????."
+                 ],
+                 "streak_15": [
+                     "???? ???? ?.",
+                     "?? ? ? ???."
+                 ],
+                 "streak_20": [
+                     "?? ?? ??? ??",
+                     "?? ??? ? ?????."
+                 ],
+                 "line_in": [
+                     "??, ????.",
+                     "?? ?? ? ???."
+                 ],
+                 "net_touch": [
+                     "??? ???.",
+                     "??? ??? ???."
+                 ],
+                 "zone_in": [
+                     "?? ?. ?? ???.",
+                     "???? ? ???."
+                 ],
+                 "out": [
+                     "?? ??? ?.",
+                     "??? ????."
+                 ],
+                 "net": [
+                     "??? ???? ???",
+                     "?? ?? ??."
+                 ]
+             },
+             "duel": {
+                 "shot_missed": [
+                     "아직 기회가 있어.",
+                     "아직 기회가 있어.",
+                     "방금 반 박자 늦었어",
+                     "당황하지 마. 다음 공도 기다릴게"
+                 ],
+                 "game_over": [
+                     "?? ???? ????.",
+                     "?? ?? ???? ?.",
+                     "?? ??? ??? ??.",
+                     "???? ?? ?? ?."
+                 ],
+                 "long_aim": [
+                    "이제 쳐 보자.",
+                    "이제 쳐 보자.",
+                    "바람이라도 기다리는 거야?",
+                    "빨리 안 치면 물 마시러 간다"
+                 ],
+                 "close_to_record": [
+                     "기록까지 거의 다 왔어.",
+                     "기록까지 거의 다 왔어.",
+                     "기록이 라켓 끝에 걸렸어",
+                     "한 번만 더 안정적으로 치면 갱신이야"
+                 ],
+                 "new_record": [
+                     "신기록!",
+                     "신기록!",
+                     "좋아, 그 공은 예뻤어",
+                     "신기록은 네 것. 다음 점수는 내 것"
+                 ],
+                 "streak_5": [
+                     "5연속 성공!",
+                     "5연속 성공!",
+                     "다섯 번 이어졌네. 나쁘지 않아",
+                     "드디어 리듬이 맞기 시작했어"
+                 ],
+                 "streak_10": [
+                     "10연속? 대단해.",
+                     "10연속? 대단해.",
+                     "열 번 연속? 이제 제대로 볼게",
+                     "이 랠리 좀 재미있어졌네"
+                 ],
+                 "streak_15": [
+                     "15연속은 너무 대단해.",
+                     "15연속은 너무 대단해.",
+                     "열다섯 번인데도 안 끊기네",
+                     "계속 그렇게 안정적일 순 없을걸"
+                 ],
+                 "streak_20": [
+                     "20연속? 믿기 힘들어.",
+                     "20연속? 믿기 힘들어.",
+                     "스무 번 연속이면 코트도 기억하겠다",
+                     "이 랠리 이제 완전히 이상해졌어"
+                 ],
+                 "clutch": "……이건 꼭 넣어야 해.",
+                 "excuse": [
+                     "아, 팔이 조금 피곤해.",
+                     "오늘 손맛이 별로야. 다음 공은 진심으로 갈게.",
+                     "방금 건 무효야. 바람을 보고 있었어",
+                     "줄이 좀 느슨했을 뿐이야. 내 실수 아니야"
+                 ],
+                 "difficultyLv2": [
+                     "워밍업은 끝났어. 이제 더 빠르게 갈게.",
+                     "장난치는 시간은 끝났어.",
+                     "이제 제대로 받아칠게. 눈 깜박이지 마.",
+                     "다음 공은 더 빨라. 단단히 받아"
+                 ],
+                 "difficultyMax": [
+                     "이제 진심으로 할게.",
+                     "지금부터 하늘 아래 땅 위에선 내가 최고야.",
+                     "이제 네가 도전자야.",
+                     "미래가 네 것이라면, 증명해 봐!",
+                     "이 한 타부터는 봐주지 않아.",
+                     "코트는 내 것, 점수는 실력이 정해."
+                 ],
+                 "line_in": [
+                     "깔끔하게 들어갔어!",
+                     "깔끔하게 들어갔어!",
+                     "라인까지 네 편이네",
+                     "그 공 라인에 정확히 걸쳤어"
+                 ],
+                 "net_touch": [
+                     "네트를 스쳐도 성공.",
+                     "네트를 스쳐도 성공.",
+                     "네트 맞고 넘어가다니, 얄밉네",
+                     "조금만 더 가까웠으면 위험했어"
+                 ],
+                 "zone_in": [
+                     "튕겨서 들어갔어!",
+                     "튕겨서 들어갔어!",
+                     "낙점이 일부러 그런 것처럼 날카로워",
+                     "한 발만 더 갔으면 닿았는데"
+                 ],
+                 "out": [
+                     "아깝다.",
+                     "아깝다.",
+                     "내 인내심보다 멀리 날아갔네",
+                     "아웃이야. 못 본 척하지 마"
+                 ],
+                 "net": [
+                     "네트에 걸렸어.",
+                     "네트에 걸렸어.",
+                     "네트가 대신 막아 줬네",
+                     "그 스윙 너무 급했어"
+                 ]
+             },
+             "fallback": [
+                 "한 판 더 하자."
+             ],
+             "pressure": {
+                 "lastTied": "결정구야. 눈 깜빡이지 마.",
+                 "lastAhead": "흥, 아직 안 끝났어.",
+                 "lastBehind": "이걸 넣으면 이겨.",
+                 "playerAhead": "제법인데...",
+                 "playerBehind": "더 밀어붙여."
+             },
+             "horse": {
+                 "nekoMiss": "못 따라 했네. {{letters}} 추가.",
+                 "playerMiss": "너도 {{letters}} 추가."
+             },
+             "mindGame": [
+                 "손 떨리는 거 봤어.",
+                 "천천히 생각하고 던져.",
+                 "이 거리는 가깝지 않아.",
+                 "너 사이드라인 노리는 얼굴이야.",
+                 "라켓 면은 이미 읽었어.",
+                 "너무 오래 보면 손이 굳어."
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "발밑 조심해, 바나나 껍질 간다.",
+                     "밟지 마. 내가 던져 뒀어.",
+                     "이번 걸음은 잘 보고 움직여.",
+                     "뛰어넘으면 네가 잘한 걸로 해 줄게."
+                 ],
+                 "octopus": [
+                     "먹물 간다. 아직 보여?",
+                     "시야 좀 잠깐 가릴게.",
+                     "깜빡이지 마. 이미 늦었어.",
+                     "안 보여도 받아야 해."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "그 걸음 너무 미끄러웠지. 이 점수는 내 거야.",
+                     "바나나 껍질 어시스트 성공, 히히.",
+                     "한 번 미끄러지면 점수는 내 쪽으로 와.",
+                     "바닥 조심해. Yui가 한 점 더 가져갈게."
+                 ],
+                 "octopus": [
+                     "먹물이 딱 알맞게 가렸네. 이 점수는 내 거야.",
+                     "안 보여도 셔틀은 받아야지.",
+                     "시야가 막힌 사이에 벌써 득점했어.",
+                     "이 먹물 작전, 꽤 잘 먹혔지?"
+                 ]
+             },
+             "easterEgg": {
+                 "lateNight": "이 시간에도 샷을 쳐?",
+                 "xmas": "종도 달았는데 아직도 던질 거야?",
+                 "newYear": "새해 복 많이 받아!",
+                 "lineIn3": "혹시 치트 쓰는 거야?",
+                 "lineIn5": "……라인을 확인해 봐야겠어.",
+                 "net3": "……잠깐 쉬는 게 어때?"
+             }
+         },
+         "mood": {
+             "happySuffix": " ♪",
+             "sadPrefix": "……",
+             "surprisedPrefix": "어?! "
+         }
+    },
+   "soccer": {
         "exitGame": {
             "button": "게임 종료",
             "ending": "라운드를 종료하는 중…",

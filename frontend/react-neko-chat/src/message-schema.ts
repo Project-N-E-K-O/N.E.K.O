@@ -48,77 +48,11 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
-const compactHistoryDropImageSchema = z.object({
-  url: z.string().min(1),
-  alt: z.string().optional(),
-  width: z.number().finite().positive().optional(),
-  height: z.number().finite().positive().optional(),
-});
-
-const compactHistoryDropPayloadSchema = z.object({
-  text: z.string().optional(),
-  images: z.array(compactHistoryDropImageSchema).optional(),
-  requestId: z.string().min(1).optional(),
-  sourceMessageId: z.string().min(1).optional(),
-  dragType: z.enum(['image', 'bubble']).optional(),
-  compactHistoryDragSessionId: z.string().min(1).optional(),
-}).strict();
-
-const compactHistoryDragRectSchema = z.object({
-  left: z.number().finite(),
-  top: z.number().finite(),
-  right: z.number().finite(),
-  bottom: z.number().finite(),
-  width: z.number().finite(),
-  height: z.number().finite(),
-}).strict();
-
-const compactHistoryDragPointSchema = z.object({
-  clientX: z.number().finite(),
-  clientY: z.number().finite(),
-}).strict();
-
-const compactHistoryDragInactiveStateSchema = z.object({
-  active: z.literal(false),
-  sessionId: z.string().min(1).optional(),
-  phase: z.enum(['idle', 'cancelled']).optional(),
-  timestamp: z.number().finite(),
-}).strict();
-
-const compactHistoryDragActiveStateSchema = z.object({
-  active: z.literal(true),
-  sessionId: z.string().min(1),
-  seq: z.number().int().nonnegative(),
-  phase: z.enum(['dragging', 'returning', 'sending']),
-  dragType: z.enum(['image', 'bubble']),
-  messageId: z.string().min(1),
-  blockIndex: z.number().int().nonnegative().optional(),
-  pointerClient: compactHistoryDragPointSchema,
-  sourceFrameRect: compactHistoryDragRectSchema,
-  dragVisualRect: compactHistoryDragRectSchema,
-  connectionVisualRect: compactHistoryDragRectSchema.nullable(),
-  dragHitRect: compactHistoryDragRectSchema,
-  overTarget: z.boolean(),
-  needsDesktopBounds: z.boolean(),
-  reducedMotion: z.boolean().optional(),
-  timestamp: z.number().finite(),
-}).strict();
-
-export const compactHistoryDragStatePayloadSchema = z.discriminatedUnion('active', [
-  compactHistoryDragInactiveStateSchema,
-  compactHistoryDragActiveStateSchema,
-]);
-
-const chatSurfaceModeSchema = z.enum(['compact', 'minimized']);
-// Mixed-version hosts (or any direct NekoChatWindow.mount consumer) may still
-// pass the legacy three-state value 'full' from before the home chat collapsed
-// to compact/minimized. Accept it at the parse boundary and migrate to
-// 'compact' — mirroring the localStorage migration — so the chat window keeps
-// mounting instead of throwing a ZodError. The public output stays two-state.
-const chatSurfaceModeInputSchema = z.preprocess(
-  (value) => (value === 'full' ? 'compact' : value),
-  chatSurfaceModeSchema,
-);
+// `full` is the frozen legacy surface (full chat window) revived alongside the
+// active `compact` floating bar and `minimized` ball. The host dispatcher routes
+// `full` to the isolated FullChatSurface; `compact`/`minimized` stay on the
+// active App. Keep all three valid at the parse boundary.
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
 const galgameOptionSchema = z.object({
@@ -132,6 +66,7 @@ const galgameOptionSchema = z.object({
 //   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
 //                           保留 BC，本框架不替换它，作为渐进迁移目标）
 //   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
+//   - 'new_user_icebreaker'：七日教程结束后的预置破冰二选项
 //
 // 未来扩展：
 //   - 'tutorial_step' / 'plugin_action' / ...
@@ -145,11 +80,48 @@ const choiceOptionSchema = z.object({
   label: z.string().min(1),   // 显示文本
 });
 
+const choicePromptSourceSchema = z.enum(['galgame', 'mini_game_invite', 'new_user_icebreaker']);
+
 const choicePromptSchema = z.object({
-  source: z.enum(['galgame', 'mini_game_invite']),
+  source: choicePromptSourceSchema,
   options: z.array(choiceOptionSchema).min(1),
   sessionId: z.string().optional(),
   gameType: z.string().optional(),
+}).nullable();
+
+const avatarToolMenuOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+const compactToolFanOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+const compactHistoryOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
+export const COMPACT_TOOL_WHEEL_POSITIONS = 7;
+
+const compactToolWheelRotateRequestSchema = z.object({
+  id: z.string().min(1),
+  // 1 rotates clockwise, -1 rotates counter-clockwise.
+  direction: z.union([z.literal(1), z.literal(-1)]),
+  stepCount: z.number().int().positive().max(COMPACT_TOOL_WHEEL_POSITIONS),
+  reason: z.string().optional(),
+  forceFast: z.boolean().optional(),
+}).nullable();
+
+const compactToolWheelIndexRequestSchema = z.object({
+  id: z.string().min(1),
+  index: z.number().int().min(0).max(COMPACT_TOOL_WHEEL_POSITIONS - 1),
+  reason: z.string().optional(),
 }).nullable();
 
 const avatarInteractionPayloadBaseSchema = z.object({
@@ -198,6 +170,10 @@ const avatarToolDescriptorSchema = z.object({
   cursorImagePathAlt2: z.string().optional(),
   cursorHotspotX: z.number().finite().optional(),
   cursorHotspotY: z.number().finite().optional(),
+  cursorNaturalWidth: z.number().finite().positive().optional(),
+  cursorNaturalHeight: z.number().finite().positive().optional(),
+  cursorDisplayWidth: z.number().finite().positive().optional(),
+  cursorDisplayHeight: z.number().finite().positive().optional(),
   menuIconScale: z.number().finite().positive().optional(),
 }).strict();
 
@@ -211,6 +187,10 @@ export const avatarToolStatePayloadSchema = z.object({
   withinAvatarRange: z.boolean().optional(),
   overCompactZone: z.boolean().optional(),
   insideHostWindow: z.boolean().optional(),
+  cursorClientX: z.number().finite().optional(),
+  cursorClientY: z.number().finite().optional(),
+  cursorScreenX: z.number().finite().optional(),
+  cursorScreenY: z.number().finite().optional(),
   tool: avatarToolDescriptorSchema.nullable().optional(),
   textContext: z.string().optional(),
   timestamp: z.number().finite(),
@@ -224,12 +204,20 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   buttonGroupBlockSchema,
 ]);
 
+const turnIdSchema = z.preprocess((value) => {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+  return value;
+}, z.string().min(1).optional());
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   author: z.string().min(1),
   time: z.string(),
   createdAt: z.number().finite().optional(),
+  turnId: turnIdSchema,
   avatarLabel: z.string().optional(),
   avatarUrl: z.string().optional(),
   blocks: z.array(messageBlockSchema),
@@ -273,10 +261,20 @@ export const chatWindowPropsSchema = z.object({
   exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
-  chatSurfaceMode: chatSurfaceModeInputSchema.optional(),
+  compactInputLocked: z.boolean().optional(),
+  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
+  // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。
+  // 逻辑上是单调递增的非负整数计数（host 从 0 起 += 1），加 int/nonnegative 作边界防御
+  // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
+  compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)
+    .returns(z.void())
+    .optional(),
+  onCompactMinimizeRequest: z.function()
+    .args()
     .returns(z.void())
     .optional(),
   translateEnabled: z.boolean().optional(),
@@ -288,6 +286,11 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
+  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
+  compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
+  compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
+  compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -306,14 +309,6 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   onComposerSubmit: z.function()
     .args(composerSubmitSchema)
-    .returns(z.void())
-    .optional(),
-  onCompactHistoryDrop: z.function()
-    .args(compactHistoryDropPayloadSchema)
-    .returns(z.unknown())
-    .optional(),
-  onCompactHistoryDragStateChange: z.function()
-    .args(compactHistoryDragStatePayloadSchema)
     .returns(z.void())
     .optional(),
   onAvatarInteraction: z.function()
@@ -353,7 +348,7 @@ export const chatWindowPropsSchema = z.object({
   onChoiceSelect: z.function()
     // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
     // 任意 z.string() 会让 zod 验证变松。
-    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
+    .args(choiceOptionSchema, choicePromptSourceSchema)
     .returns(z.void())
     .optional(),
 });
@@ -366,8 +361,6 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
-export type CompactHistoryDropPayload = z.infer<typeof compactHistoryDropPayloadSchema>;
-export type CompactHistoryDragStatePayload = z.infer<typeof compactHistoryDragStatePayloadSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;

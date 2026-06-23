@@ -55,6 +55,8 @@ class TestKeybookSaveLoad:
         'assistApiKeyDoubao': 'ASSIST_API_KEY_DOUBAO',
         'assistApiKeyMinimax': 'ASSIST_API_KEY_MINIMAX',
         'assistApiKeyMinimaxIntl': 'ASSIST_API_KEY_MINIMAX_INTL',
+        'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
+        'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
     }
 
@@ -99,7 +101,8 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_QWEN_INTL',
-                       'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL']:
+                       'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
+                       'ASSIST_API_KEY_MIMO']:
             assert cfg[upper] == '', (
                 f'{upper} 未被选中，不应 fallback 到 CORE_API_KEY'
             )
@@ -182,6 +185,48 @@ class TestKeybookSaveLoad:
         assert cfg['OPENROUTER_URL'] == 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
 
     @pytest.mark.unit
+    def test_mimo_token_plan_overrides_only_when_mimo_assist_selected(self, config_manager):
+        """MiMo Token Plan is scoped to assistApi=mimo and uses its own tp key."""
+        token_plan_url = 'https://token-plan-sgp.xiaomimimo.com/v1'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-regular-mimo',
+            'useMimoTokenPlan': True,
+            'assistApiKeyMimoTokenPlan': 'tp-mimo-token-plan',
+            'resolvedProviderUrls': {
+                'assist:mimo_token_plan': token_plan_url,
+            },
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['OPENROUTER_URL'] == token_plan_url
+        assert cfg['OPENROUTER_API_KEY'] == 'tp-mimo-token-plan'
+        assert cfg['AUDIO_API_KEY'] == 'tp-mimo-token-plan'
+        assert cfg['ASSIST_API_KEY_MIMO'] == 'sk-regular-mimo'
+        assert cfg['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] == 'tp-mimo-token-plan'
+
+    @pytest.mark.unit
+    def test_mimo_token_plan_toggle_does_not_affect_other_assist_api(self, config_manager):
+        """Leaving MiMo disables Token Plan routing even if the toggle/key remain saved."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+            'useMimoTokenPlan': True,
+            'assistApiKeyMimo': 'sk-regular-mimo',
+            'assistApiKeyMimoTokenPlan': 'tp-mimo-token-plan',
+            'resolvedProviderUrls': {
+                'assist:mimo_token_plan': 'https://token-plan-sgp.xiaomimimo.com/v1',
+            },
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['assistApi'] == 'qwen'
+        assert cfg['OPENROUTER_URL'] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        assert cfg['OPENROUTER_API_KEY'] == 'sk-assist-qwen'
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('assist_api', ['minimax', 'minimax_intl'])
     def test_minimax_never_fallbacks(self, config_manager, assist_api):
         """MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
@@ -242,10 +287,12 @@ class TestCustomApiToggle:
 
     @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
-        """enableCustomApi=true → all 8 model types can be overridden."""
+        """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
             ('summary', 'SUMMARY_MODEL'),
+            ('gameMain', 'GAME_MAIN_MODEL'),
+            ('gameSummary', 'GAME_SUMMARY_MODEL'),
             ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
             ('vision', 'VISION_MODEL'),
@@ -258,6 +305,8 @@ class TestCustomApiToggle:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameSummaryModelProvider': 'custom',
         }
         for camel_prefix, _ in model_types:
             payload[f'{camel_prefix}ModelUrl'] = f'https://{camel_prefix}.test/v1'
@@ -276,6 +325,161 @@ class TestCustomApiToggle:
                 f'{upper_url} not applied'
             assert cfg[upper_key] == f'sk-{camel_prefix}', \
                 f'{upper_key} not applied'
+
+    @pytest.mark.unit
+    def test_game_models_follow_conversation_and_summary_by_default(self, config_manager):
+        """Mini-game model slots default to the main text and summary model configs."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'https://conversation.custom.test/v1',
+            'conversationModelId': 'conversation-custom-model',
+            'conversationModelApiKey': 'sk-conversation-custom',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'https://summary.custom.test/v1',
+            'summaryModelId': 'summary-custom-model',
+            'summaryModelApiKey': 'sk-summary-custom',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert game_main['model'] == 'conversation-custom-model'
+        assert game_main['base_url'] == 'https://conversation.custom.test/v1'
+        assert game_main['api_key'] == 'sk-conversation-custom'
+        assert game_summary['model'] == 'summary-custom-model'
+        assert game_summary['base_url'] == 'https://summary.custom.test/v1'
+        assert game_summary['api_key'] == 'sk-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_main_explicit_custom_override(self, config_manager):
+        """Mini-game main model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'custom',
+            'gameMainModelUrl': 'https://game-main.custom.test/v1',
+            'gameMainModelId': 'game-main-custom-model',
+            'gameMainModelApiKey': 'sk-game-main-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_main')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-main-custom-model'
+        assert result['base_url'] == 'https://game-main.custom.test/v1'
+        assert result['api_key'] == 'sk-game-main-custom'
+
+    @pytest.mark.unit
+    def test_game_summary_explicit_custom_override(self, config_manager):
+        """Mini-game summary model can be overridden independently when custom API is enabled."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameSummaryModelProvider': 'custom',
+            'gameSummaryModelUrl': 'https://game-summary.custom.test/v1',
+            'gameSummaryModelId': 'game-summary-custom-model',
+            'gameSummaryModelApiKey': 'sk-game-summary-custom',
+        })
+
+        result = config_manager.get_model_api_config('game_summary')
+
+        assert result['is_custom'] is True
+        assert result['model'] == 'game-summary-custom-model'
+        assert result['base_url'] == 'https://game-summary.custom.test/v1'
+        assert result['api_key'] == 'sk-game-summary-custom'
+
+    @pytest.mark.unit
+    def test_game_follow_conversation_and_summary_preserve_empty_api_keys(self, config_manager):
+        """Mini-game followers preserve legitimate no-auth keys from followed custom slots."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'http://localhost:8080/v1',
+            'conversationModelId': 'local-conversation-model',
+            'conversationModelApiKey': '',
+            'summaryModelProvider': 'custom',
+            'summaryModelUrl': 'http://localhost:8081/v1',
+            'summaryModelId': 'local-summary-model',
+            'summaryModelApiKey': '',
+            'gameMainModelProvider': 'follow_conversation',
+            'gameSummaryModelProvider': 'follow_summary',
+        })
+
+        cfg = config_manager.get_core_config()
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+
+        assert cfg['GAME_MAIN_MODEL_API_KEY'] == ''
+        assert cfg['GAME_SUMMARY_MODEL_API_KEY'] == ''
+        assert game_main['api_key'] == ''
+        assert game_summary['api_key'] == ''
+
+    @pytest.mark.unit
+    def test_game_follow_assist_derives_model_id_from_assist_profile(self, config_manager):
+        """Mini-game follow-assist slots keep model/url/key from the same assist provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'gemini',
+            'assistApiKeyGemini': 'sk-gemini',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_assist',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_assist',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        core_config = config_manager.get_core_config()
+
+        assert game_main['model'] == core_config['CONVERSATION_MODEL']
+        assert game_main['base_url'] == core_config['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-gemini'
+        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['base_url'] == core_config['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-gemini'
+
+    @pytest.mark.unit
+    def test_game_follow_core_derives_model_id_from_core_profile(self, config_manager):
+        """Mini-game follow-core slots keep model/url/key from the same core provider."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-openai',
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'gameMainModelProvider': 'follow_core',
+            'gameMainModelId': 'stale-game-main-model',
+            'gameSummaryModelProvider': 'follow_core',
+            'gameSummaryModelId': 'stale-game-summary-model',
+        })
+
+        game_main = config_manager.get_model_api_config('game_main')
+        game_summary = config_manager.get_model_api_config('game_summary')
+        from utils.api_config_loader import get_assist_api_profiles
+        openai_profile = get_assist_api_profiles()['openai']
+
+        assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
+        assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_main['api_key'] == 'sk-core-openai'
+        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
+        assert game_summary['api_key'] == 'sk-core-openai'
 
     @pytest.mark.unit
     def test_custom_api_key_empty_string_valid(self, config_manager):
@@ -342,6 +546,33 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
+        """Legacy file with only coreApi=free and no saved assistApi: assist follows free.
+
+        The template default assistApi='qwen' swallows the "key missing" signal
+        during merge; without the special case, assist lands on qwen with no
+        API key (voice works, but text/memory etc. all fail auth).
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'free',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    def test_non_free_core_keeps_template_assist_when_key_missing(self, config_manager):
+        """coreApi=qwen with assistApi key missing keeps template default qwen."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'qwen'
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {
@@ -371,6 +602,49 @@ class TestAssistFollowsCore:
 
         assert cfg['assistApi'] == 'silicon'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+
+
+# ---------------------------------------------------------------------------
+# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
+# ---------------------------------------------------------------------------
+class TestEmptyCoreApiFallsBackToDefaultQwen:
+
+    @pytest.mark.unit
+    def test_empty_core_api_falls_back_to_qwen(self, config_manager):
+        """coreApi/assistApi='' → 兜底到默认 qwen。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': '',
+            'assistApi': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
+        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
+        _write_core_config(config_manager, {'coreApiKey': 'free-access'})
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert cfg['assistApi'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
+
+    @pytest.mark.unit
+    def test_explicit_paid_provider_still_honored(self, config_manager):
+        """用户显式选了 qwen 必须被尊重。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-real-qwen',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_TYPE'] == 'qwen'
+        assert 'dashscope.aliyuncs.com' in (cfg.get('CORE_URL') or '')
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +985,33 @@ class TestAgentUrlRegionRouting:
 
 
 # ---------------------------------------------------------------------------
+# 7c. Free API URL region routing: 海外统一走 www.lanlan.app（含 /tts）
+# ---------------------------------------------------------------------------
+class TestFreeApiUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 海外：lanlan.tech → lanlan.app，/tts 不再降级到裸 lanlan.app，
+            # 统一停在 www.lanlan.app（透传 voice 到 Gemini）。
+            (True, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.app/tts'),
+            (True, 'wss://www.lanlan.tech/core', 'wss://www.lanlan.app/core'),
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：原样保留。
+            (False, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.tech/tts'),
+            # 非 lanlan.tech 自定义 URL 不受影响。
+            (True, 'wss://api.stepfun.com/v1/realtime/audio', 'wss://api.stepfun.com/v1/realtime/audio'),
+        ],
+    )
+    def test_adjust_free_api_url_keeps_tts_on_www_lanlan_app(
+        self, config_manager, non_mainland, url_in, expected,
+    ):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._adjust_free_api_url(url_in, True) == expected
+
+
+# ---------------------------------------------------------------------------
 # 8. MiniMax / Qwen voice clone key resolution
 # ---------------------------------------------------------------------------
 class TestVoiceCloneKeyResolution:
@@ -752,6 +1053,54 @@ class TestVoiceCloneKeyResolution:
         # Should be None (not CORE_API_KEY!)
         assert key is None, \
             'MiniMax TTS key should be None when not configured, not fall back to core key'
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_from_keybook(self, config_manager):
+        """get_tts_api_key('mimo') reads from ASSIST_API_KEY_MIMO."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-mimo-tts-key',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key == 'sk-mimo-tts-key'
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_uses_token_plan_key_when_enabled(self, config_manager):
+        """MiMo Token Plan locks normal MiMo key and routes TTS key lookup to tp key."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-regular-mimo',
+            'useMimoTokenPlan': True,
+            'assistApiKeyMimoTokenPlan': 'tp-mimo-token-plan',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key == 'tp-mimo-token-plan'
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_empty_returns_none(self, config_manager):
+        """No MiMo key configured → get_tts_api_key returns None."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-should-not-leak',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key is None
+
+    @pytest.mark.unit
+    def test_mimo_tts_key_does_not_fallback_when_selected(self, config_manager):
+        """Selected MiMo assist API still requires an explicit MiMo key."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'mimo',
+        })
+        key = config_manager.get_tts_api_key('mimo')
+        assert key is None
 
     @pytest.mark.unit
     def test_cosyvoice_tts_key_from_custom_config(self, config_manager):
@@ -932,6 +1281,443 @@ class TestFollowProviderNotLocal:
         assert rt['api_type'] == 'local', \
             "provider=custom 时应保留 'local' api_type 标记（自定义 realtime 部署）"
         assert rt['is_custom'] is True
+
+
+# ---------------------------------------------------------------------------
+# PR #1764 reviews #3403710558 / #3404339374: get_core_config() 必须把
+# vLLM-Omni TTS raw camelCase key 透传到 normalized snapshot，否则
+# main_logic/core.py 的路由检测和 runtime key 拿不到用户保存字段。
+# ---------------------------------------------------------------------------
+class TestVllmOmniRawKeyPassthrough:
+
+    @pytest.mark.unit
+    def test_ttsModelProvider_passes_through_to_snapshot(self, config_manager):
+        """When the user writes ttsModelProvider=vllm_omni in core_config.json,
+        the snapshot must carry the same raw key."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'http://localhost:8091',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == 'vllm_omni', \
+            f"snapshot 应透传 ttsModelProvider=vllm_omni，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == 'http://localhost:8091', \
+            f"snapshot 应透传 ttsModelUrl，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == 'Qwen3-TTS', \
+            f"snapshot 应透传 ttsModelId，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == 'Puck', \
+            f"snapshot 应透传 ttsVoiceId=Puck，实际={cfg.get('ttsVoiceId')!r}"
+
+    @pytest.mark.unit
+    def test_missing_raw_keys_default_to_empty_string(self, config_manager):
+        """Legacy core_config.json files lack vLLM raw TTS keys; the
+        snapshot must still expose them with empty-string defaults
+        (backward compatibility)."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"缺失时应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 关键：这些 key 必须存在于 dict 中（即使值为空串），
+        # 否则 _is_vllm_omni_tts_enabled 的 .get() 会返回 None 触发 .strip() 链路异常
+        assert 'ttsModelProvider' in cfg
+        assert 'ttsModelUrl' in cfg
+        assert 'ttsModelId' in cfg
+        assert 'ttsVoiceId' in cfg
+
+    @pytest.mark.unit
+    def test_none_value_in_raw_config_normalized_to_empty_string(self, config_manager):
+        """When core_config.json is hand-edited to a null value, the snapshot
+        must coerce None to an empty string so downstream .strip() does not
+        raise AttributeError."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': None,
+            'ttsModelUrl': None,
+            'ttsModelId': None,
+            'ttsVoiceId': None,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg.get('ttsModelProvider') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelProvider')!r}"
+        assert cfg.get('ttsModelUrl') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelUrl')!r}"
+        assert cfg.get('ttsModelId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsModelId')!r}"
+        assert cfg.get('ttsVoiceId') == '', \
+            f"None 应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
+        # 验证下游真实消费方不会抛 AttributeError
+        from main_logic.core import LLMSessionManager
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+    @pytest.mark.unit
+    def test_snapshot_drives_is_vllm_omni_tts_enabled(self, config_manager):
+        """End-to-end: when core_config.json has ttsModelProvider=vllm_omni and
+        enableCustomApi=True, the snapshot returned by get_core_config() must
+        make _is_vllm_omni_tts_enabled return True. This is the core contract
+        from codex review #3403710558."""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is True, \
+            "snapshot 透传 ttsModelProvider 后，_is_vllm_omni_tts_enabled 应返回 True"
+
+    @pytest.mark.unit
+    def test_snapshot_disabled_when_custom_api_off(self, config_manager):
+        """When enableCustomApi is off, ttsModelProvider=vllm_omni still stays disabled."""
+        from main_logic.core import LLMSessionManager
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': False,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsVoiceId': 'Puck',
+        })
+        cfg = config_manager.get_core_config()
+        assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
+
+    @pytest.mark.unit
+    def test_vllm_omni_selection_uses_strict_boolean_parsing(self):
+        from utils.config_manager import ConfigManager
+
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'false',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': '0',
+            'ttsModelProvider': 'vllm_omni',
+        }) is False
+        assert ConfigManager._is_vllm_omni_tts_selected({
+            'ENABLE_CUSTOM_API': 'true',
+            'ttsModelProvider': 'vllm_omni',
+        }) is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_voice_ids_are_valid_while_provider_selected(self, config_manager):
+        """vLLM voice names are provider-local strings and are not stored clone IDs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_keeps_custom_tts_adapter_rejections(self, config_manager, monkeypatch):
+        """Provider-local voices are allowed only after custom TTS prefixes are rejected or accepted."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        monkeypatch.setattr(
+            'utils.config_manager.check_custom_tts_voice_allowed',
+            lambda voice_id, _getter: False if voice_id == 'gsv:missing' else None,
+        )
+
+        assert config_manager.validate_voice_id('gsv:missing') is False
+        assert config_manager.validate_voice_id('speaker-from-vllm-server') is True
+
+    @pytest.mark.unit
+    def test_vllm_omni_does_not_expose_or_delete_local_tts_storage(self, config_manager, monkeypatch):
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        config_manager.save_voice_storage({
+            '__LOCAL_TTS__': {
+                'local-speaker': {'name': 'Local Speaker'},
+            },
+        })
+
+        def _fake_model_config(model_type):
+            assert model_type == 'tts_custom'
+            return {'is_custom': True, 'base_url': 'ws://localhost:8091/v1', 'api_key': ''}
+
+        monkeypatch.setattr(config_manager, 'get_model_api_config', _fake_model_config)
+
+        assert 'local-speaker' not in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.delete_voice_for_current_api('local-speaker') is False
+        assert 'local-speaker' in config_manager.load_voice_storage()['__LOCAL_TTS__']
+
+    @pytest.mark.unit
+    def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):
+        """cleanup_invalid_voice_ids must not clear provider-local vLLM voices."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+        })
+        character_data = {
+            '猫娘': {
+                'YUI': {
+                    '昵称': 'YUI',
+                    '_reserved': {'voice_id': 'speaker-from-vllm-server'},
+                }
+            }
+        }
+        saved = {}
+        monkeypatch.setattr(config_manager, 'load_characters', lambda: character_data)
+        monkeypatch.setattr(config_manager, 'save_characters', lambda data: saved.setdefault('data', data))
+
+        cleaned, legacy = config_manager.cleanup_invalid_voice_ids()
+
+        assert cleaned == 0
+        assert legacy == []
+        assert character_data['猫娘']['YUI']['_reserved']['voice_id'] == 'speaker-from-vllm-server'
+        assert saved == {}
+
+    @pytest.mark.unit
+    def test_vllm_omni_tts_slot_does_not_feed_cosyvoice_clone_runtime(self, config_manager):
+        """CosyVoice clone should require Qwen/CosyVoice credentials, not reuse vLLM TTS."""
+        _write_core_config(config_manager, {
+            'coreApi': 'gemini',
+            'assistApi': 'gemini',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsModelApiKey': 'sk-vllm-should-not-be-used',
+        })
+
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+
+        assert runtime['api_key'] == ''
+        assert runtime['base_url'] != 'ws://localhost:8091/v1'
+        assert config_manager.get_tts_api_key('cosyvoice') is None
+
+
+# ---------------------------------------------------------------------------
+# GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉单一真相：snapshot 在
+# get_core_config() 这一处把下拉（与 pre-#1830 存量旧 gptsovitsEnabled 开关）派生进
+# GPTSOVITS_ENABLED，13 个下游读点全部不动。派生语义：ttsModelProvider 非空即唯一
+# 真相，仅缺失/空串时才回落旧开关——不用纯 OR，避免存量切走下拉后旧 true 粘住。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledDerivation:
+
+    @pytest.mark.unit
+    def test_dropdown_provider_only_enables(self, config_manager):
+        """Dropdown only: ttsModelProvider=gptsovits (no legacy flag) -> GPTSOVITS_ENABLED=True."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_legacy_flag_only_enables(self, config_manager):
+        """Legacy flag only: a pre-#1830 stored config (gptsovitsEnabled=true, no
+        ttsModelProvider) still derives GPTSOVITS_ENABLED=True, so existing GSV
+        users are not silently dropped."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_neither_signal_disabled(self, config_manager):
+        """Neither signal: no dropdown and no legacy flag -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_dropdown_other_provider_disabled(self, config_manager):
+        """Dropdown picked another provider: ttsModelProvider=vllm_omni -> GPTSOVITS_ENABLED=False."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_explicit_provider_authoritative_over_stale_legacy_flag(self, config_manager):
+        """An explicit (non-follow) provider wins over a stale legacy flag. After a
+        user switches the dropdown to e.g. vllm_omni, the file may still carry
+        gptsovitsEnabled=true (the frontend retired that field and the backend merges
+        partially). An explicit provider is the single source of truth and must derive
+        False — a naive OR would let the stale true stick and leave GSV stuck on."""
+        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，显式选别家也切不掉。
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': 'vllm_omni',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_follow_default_provider_falls_back_to_legacy_flag(self, config_manager):
+        """⚠️ Codex PR#1850 P1 regression: a pre-#1830 user who enabled GSV via the
+        old checkbox has gptsovitsEnabled=true AND the TTS dropdown left at its default
+        'follow_assist'/'follow_core' (the older save path submitted every provider
+        dropdown). follow_* is a 'follow assist/core' sentinel — NOT an explicit
+        provider — so it must fall back to the legacy flag and keep GSV enabled, not
+        be misread as 'switched to another provider' and disabled."""
+        for follow in ('follow_assist', 'follow_core'):
+            _write_core_config(config_manager, {
+                'coreApi': 'qwen',
+                'assistApi': 'qwen',
+                'gptsovitsEnabled': True,
+                'ttsModelProvider': follow,
+            })
+            cfg = config_manager.get_core_config()
+            assert cfg['GPTSOVITS_ENABLED'] is True, f"{follow} 应回落旧 flag 保住存量 GSV"
+
+    @pytest.mark.unit
+    def test_empty_provider_falls_back_to_legacy_flag(self, config_manager):
+        """An empty ttsModelProvider (treated as unselected) falls back to the
+        legacy flag, preserving existing configs."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'gptsovitsEnabled': True,
+            'ttsModelProvider': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+
+    @pytest.mark.unit
+    def test_enabled_snapshot_self_heals_is_custom(self, config_manager):
+        """End-to-end: dropdown=gptsovits + a GSV URL -> snapshot GPTSOVITS_ENABLED=True,
+        and get_model_api_config('tts_custom') self-heals is_custom=True (no separate
+        enableCustomApi needed), which is what dispatch's _gptsovits_is_selected requires."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881',
+            'ttsVoiceId': 'gsv:my_voice',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['GPTSOVITS_ENABLED'] is True
+        tts_cfg = config_manager.get_model_api_config('tts_custom')
+        assert tts_cfg['is_custom'] is True
+
+
+# ---------------------------------------------------------------------------
+# save choke point 惰性迁移：gptsovitsEnabled 退役后，用户经下拉显式切到非 gptsovits
+# provider（含 follow_*）保存时，把残留旧 flag 落 False——否则 get_core_config 的
+# follow_* 回落分支会把旧 true 兜回来，导致切到 follow_assist 也关不掉 GSV。对偶 #1842
+# voice_id 的 access-choke-point 惰性迁移思路。
+# ---------------------------------------------------------------------------
+class TestGptsovitsEnabledSaveMigration:
+
+    @staticmethod
+    def _neutralize_side_effects(monkeypatch):
+        """Stub out the heavy post-save side effects of update_core_config so the
+        test exercises only the persisted-config logic."""
+        import asyncio
+        from main_routers import config_router
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(config_router, 'get_session_manager', lambda: {})
+        monkeypatch.setattr(config_router, 'get_initialize_character_data', lambda: _noop)
+        monkeypatch.setattr(config_router, 'ensure_default_yui_voice_for_free_api', _noop)
+        monkeypatch.setattr(config_router, '_auto_resolve_provider_urls_for_save', _noop)
+        return config_router, asyncio
+
+    class _FakeRequest:
+        def __init__(self, payload):
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+    @pytest.mark.unit
+    def test_save_non_gptsovits_provider_clears_stale_flag(self, config_manager, monkeypatch):
+        """Stored gptsovitsEnabled=true; the user explicitly switches the dropdown to
+        follow_assist and saves -> the stale flag is set to False, and the derived
+        GPTSOVITS_ENABLED becomes False (GSV is actually turned off)."""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'follow_assist',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved.get('gptsovitsEnabled') is False
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is False
+
+    @pytest.mark.unit
+    def test_save_gptsovits_provider_keeps_flag_enabled(self, config_manager, monkeypatch):
+        """Saving while the dropdown stays on/returns to gptsovits does not clear the
+        legacy flag; GSV remains enabled."""
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+            'gptsovitsEnabled': True, 'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen',
+            'ttsModelProvider': 'gptsovits',
+            'ttsModelUrl': 'http://127.0.0.1:9881', 'ttsVoiceId': 'gsv:v',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        # 切到/保持 gptsovits 不触发惰性清理，存量 true 原样保留。
+        assert saved.get('gptsovitsEnabled') is True
+        config_manager._core_config_cache = None
+        assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
 
 
 if __name__ == '__main__':

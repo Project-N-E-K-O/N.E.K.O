@@ -302,9 +302,9 @@ html #chat-container {
 
 /* ===== 暗色模式：字幕显示区域 ===== */
 [data-theme="dark"] #subtitle-display {
-  background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
+  background: linear-gradient(135deg, rgba(18, 29, 45, 0.95) 0%, rgba(22, 45, 68, 0.91) 52%, rgba(30, 74, 108, 0.95) 100%);
   border-color: rgba(255, 255, 255, 0.25);
-  box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
+  box-shadow: 0 8px 32px rgba(6, 12, 24, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.2) inset;
 }
 
@@ -609,25 +609,6 @@ html #chat-container {
   color: var(--neko-popup-text);
 }
 
-/* ===== 暗色模式：教程引导（driver.js） ===== */
-[data-theme="dark"] .driver-popover {
-  background: #2d2d2d !important;
-  color: #e0e0e0 !important;
-}
-
-[data-theme="dark"] .driver-popover-title {
-  color: #ffffff !important;
-}
-
-[data-theme="dark"] .driver-popover-description {
-  color: #e0e0e0 !important;
-}
-
-[data-theme="dark"] .driver-popover-footer button {
-  background: #2a7bc4 !important;
-  color: #fff !important;
-}
-
 [data-theme="dark"] #neko-tutorial-skip-btn{
   color: #b1b1b1 ;
   border: 3px solid rgb(178, 178, 178);
@@ -668,6 +649,13 @@ html #chat-container {
     background: rgba(40, 40, 40, 0.55);
     border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
+}
+
+/* 独立字幕窗口是透明 BrowserWindow；暗色移动端黑底规则会因 600px 窗口宽度命中。
+   这里在黑底规则之后重新钉住 html/body 透明，避免字幕翻译窗口露出整块黑底。 */
+html[data-theme="dark"].subtitle-window-host,
+html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
+  background: transparent !important;
 }
 
 /* ===========================================================
@@ -1032,6 +1020,21 @@ html #chat-container {
   background: #2d2d2d;
 }
 
+[data-theme="dark"] .nested-model-config-container {
+  background: rgba(42, 123, 196, 0.12);
+  border-color: #365a72;
+}
+
+[data-theme="dark"] .nested-model-header {
+  background: rgba(42, 123, 196, 0.22);
+  border-bottom-color: #365a72;
+}
+
+[data-theme="dark"] .nested-model-header .model-title,
+[data-theme="dark"] .nested-model-header .toggle-icon {
+  color: #8ac7ff;
+}
+
 [data-theme="dark"] .model-content .field-row {
   border-bottom-color: #333;
 }
@@ -1194,6 +1197,18 @@ html #chat-container {
 }
 
 [data-theme="dark"] .gsv-refresh-btn:hover {
+  background: #3a9fd8 !important;
+  color: #fff !important;
+}
+
+/* GPT-SoVITS 教程文档按钮 */
+[data-theme="dark"] .gsv-tutorial-link {
+  background: #2d2d2d !important;
+  color: #3a9fd8 !important;
+  border-color: #3a9fd8 !important;
+}
+
+[data-theme="dark"] .gsv-tutorial-link:hover {
   background: #3a9fd8 !important;
   color: #fff !important;
 }
@@ -1403,6 +1418,34 @@ html #chat-container {
 [data-theme="dark"] .tutorial-reset-btn:disabled:hover {
   background: #1a1a1a;
   border-color: #2a2a2a;
+}
+
+[data-theme="dark"] .storage-location-mini-label,
+[data-theme="dark"] .storage-location-mini-status {
+  color: #4aa3df;
+}
+[data-theme="dark"] .storage-location-mini-value {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #e0e0e0;
+}
+[data-theme="dark"] .storage-location-open-btn {
+  background: #2d2d2d;
+  border-color: #3a5a6e;
+  color: #4aa3df;
+}
+[data-theme="dark"] .storage-location-open-btn:not(:disabled):hover {
+  background: #383838;
+  border-color: #4aa3df;
+  box-shadow: 0 4px 12px rgba(74, 163, 223, 0.2);
+}
+[data-theme="dark"] .storage-location-open-btn:disabled,
+[data-theme="dark"] .storage-location-manage-btn:disabled {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
+  color: #666;
+  opacity: 0.5;
+  box-shadow: none;
 }
 
 /* ===== 子页面：当前角色栏 ===== */

@@ -59,6 +59,7 @@ dependencies = [
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
+  "playwright>=1.58.0",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
   # token budgeting (o200k_base encoding). PR-1 pins the dep; PR-3 ships
   # utils/tokenize.py and wires render-time counting.
@@ -66,8 +67,8 @@ dependencies = [
   "cachetools>=5.3",
   # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer. CPU
   # SIMD detection reads numpy's __cpu_features__ (compiled-C probe) — we do
-  # NOT use py-cpuinfo, whose CPUID probe runs VirtualAlloc+shellcode in a
-  # multiprocessing child that Huorong quarantines as Trojan.ShellLoader.
+  # NOT use py-cpuinfo, whose low-level CPU probe runs a generated native
+  # routine in a child process that Huorong's heuristic flags as a trojan.
   "onnxruntime",
   "tokenizers",
   # Cross-platform screen capture used by galgame_plugin and potentially other
@@ -158,8 +159,8 @@ override-dependencies = [
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.100",
     "nest-asyncio>=1.6.0",
-    "playwright>=1.58.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",

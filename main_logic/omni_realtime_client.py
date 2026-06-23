@@ -1,4 +1,18 @@
 # -- coding: utf-8 --
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import asyncio
 import uuid
@@ -8,6 +22,7 @@ import base64
 import time
 import wave
 import numpy as np
+import soxr
 from pathlib import Path
 
 from typing import Optional, Callable, Dict, Any, Awaitable, List
@@ -45,9 +60,9 @@ _GEMINI_IMPORT_ERROR = None
 
 
 def _ensure_gemini_sdk() -> bool:
-    """首次调用时 import google-genai，缓存结果；失败时落一份 SSL 诊断。
+    """Import google-genai on first call and cache the result; emit an SSL diagnostic on failure.
 
-    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
+    Returns whether the SDK is available. Under a concurrent race the worst case is one duplicate import (Python's module cache makes it idempotent).
     """
     global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
     # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
@@ -80,6 +95,8 @@ def _ensure_gemini_sdk() -> bool:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+_IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
 
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
@@ -115,7 +132,7 @@ class TurnDetectionMode(Enum):
 _config_manager = get_config_manager()
 
 def _emit_gemini_import_diagnostic(import_error) -> None:
-    """genai SDK 首次 import 失败时落一份 SSL 诊断（带 24h 节流去重）。"""
+    """Emit an SSL diagnostic when the first genai SDK import fails (deduplicated with a 24h throttle)."""
     diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
     sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
     throttle_window_seconds = 24 * 60 * 60
@@ -312,7 +329,7 @@ class OmniRealtimeClient:
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
         self._image_being_analyzed = False
-        self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
         self._proactive_injecting = False  # True while prompt_ephemeral is injecting audio — suppresses mic input
@@ -341,7 +358,27 @@ class OmniRealtimeClient:
             noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
-        
+
+        # ── Uplink (client→provider) sample rate ──────────────────────
+        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k、主动
+        # 注入 WAV 也是 16k）。绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
+        # Grok/free）都吃 16kHz PCM —— 唯独 OpenAI Realtime 的 PCM 输入
+        # *只* 接受 24kHz（GA 文档：audio/pcm 的 rate 固定 24000，不能声明
+        # 16000）。否则服务端会把我们的 16k 字节当 24k 解，等于喂模型 1.5×
+        # 变速变调的音频，拖累 ASR 与 server VAD。
+        # 因此只为 GPT 在「发送前的最后一刻」把 16k 上采到 24k；其余各家
+        # _uplink_sample_rate 保持 16000，_uplink_resampler 为 None → 整条
+        # 重采样彻底短路，行为与改动前完全一致。
+        self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
+        # 持续型流式重采样器：连续麦克风流必须维持 FIR 状态，否则每个 chunk
+        # 边界都会引入伪影（与 AudioProcessor 的 downsample stream 同理）。
+        # 一次性的预录 WAV（prompt_ephemeral）走整段无状态重采样，不复用它。
+        self._uplink_resampler = (
+            soxr.ResampleStream(16000, self._uplink_sample_rate, 1, dtype='float32', quality='HQ')
+            if self._uplink_sample_rate != 16000
+            else None
+        )
+
         # 静音重置事件异步队列（RNNoise 4秒静音回调用）
         self._silence_reset_pending = False
         # 按“上次语音时间”做静音清 buffer：无 RNNoise 时也生效，与 RESET_TIMEOUT 一致
@@ -451,6 +488,7 @@ class OmniRealtimeClient:
         self._gemini_context_manager = None  # For proper cleanup
         self._gemini_current_transcript = ""  # Current response transcript for Gemini
         self._gemini_user_transcript = ""  # Accumulated user input transcript
+        self._gemini_user_transcript_after_interrupt = False
 
         # ── Tool calling state ────────────────────────────────────────
         # ``_tool_definitions`` is the canonical list (ToolDefinition);
@@ -533,8 +571,8 @@ class OmniRealtimeClient:
         return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
 
     def _tools_for_qwen(self) -> List[Dict[str, Any]]:
-        """Qwen-Omni-Realtime schema — nested under ``function``，与
-        StepFun 同形（参考 Aliyun client-events 文档示例）。"""
+        """Qwen-Omni-Realtime schema — nested under ``function``, same shape
+        as StepFun (see the example in the Aliyun client-events docs)."""
         return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
 
     def _tools_for_gemini_live(self) -> List[Any]:
@@ -593,6 +631,40 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
+    def _clear_uplink_resampler(self) -> None:
+        """Drop the uplink resampler's pending FIR tail (soxr holds ~21ms of
+        algorithmic delay at 16k→24k HQ).
+
+        Called at every server-buffer clear/commit boundary so a finished
+        turn's residual samples are not carried into — and prepended to —
+        the next turn. Discard (not flush-and-send) is the right semantics:
+        on ``input_audio_buffer.clear`` the server is throwing that audio
+        away anyway, and on a MANUAL commit the trailing ~21ms is end-of-turn
+        tail. Mirrors AudioProcessor's downsample-resampler ``.clear()`` on
+        reset. No-op for every 16kHz-native provider (resampler is None).
+        """
+        if self._uplink_resampler is not None:
+            self._uplink_resampler.clear()
+
+    def _resample_uplink(self, pcm16_bytes: bytes) -> bytes:
+        """Upsample 16kHz PCM16 mic/cache audio to the provider's uplink rate.
+
+        No-op for every provider that accepts 16kHz (``_uplink_resampler``
+        is None) — returns the bytes unchanged. Only OpenAI Realtime needs
+        24kHz, in which case the persistent stream resampler converts each
+        chunk while carrying FIR state across calls (no boundary clicks).
+
+        Returns ``b''`` if the resampler is still buffering and produced no
+        output for this chunk; callers should skip sending empty frames.
+        """
+        if self._uplink_resampler is None or not pcm16_bytes:
+            return pcm16_bytes
+        samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        out = self._uplink_resampler.resample_chunk(samples)
+        if len(out) == 0:
+            return b''
+        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -612,7 +684,7 @@ class OmniRealtimeClient:
             )
 
     async def _check_silence_timeout(self):
-        """定期检查是否超过静默超时时间，如果是则触发超时回调"""
+        """Periodically check whether the silence timeout has been exceeded; if so, trigger the timeout callback"""
         # 如果未启用静默超时（Qwen 或 Step），直接返回
         if not self._enable_silence_timeout:
             logger.debug(f"静默超时检测已禁用（API类型: {self._api_type}）")
@@ -658,24 +730,25 @@ class OmniRealtimeClient:
             logger.error(f"静默检测任务出错: {e}")
     
     def _on_silence_reset(self):
-        """当音频处理器检测到4秒静音并重置缓存时调用。标记待发送clear事件。"""
+        """Called when the audio processor detects 4 seconds of silence and resets its cache. Marks a pending clear event."""
         self._silence_reset_pending = True
     
     def _should_clear_audio_buffer_on_silence(
         self, current_time: float, use_rnnoise_path: bool
     ) -> bool:
-        """是否应在静音时清空 input_audio_buffer。
+        """Whether the input_audio_buffer should be cleared on silence.
         
-        有 RNNoise 且当前走 RNNoise 路径：以 RNNoise 为准（内部 4 秒静音回调置 _silence_reset_pending）。
-        无 RNNoise（或未走 RNNoise 路径）：以 VAD + 连续本地静音为准。
+        With RNNoise and currently on the RNNoise path: RNNoise is authoritative (its internal 4s-silence callback sets _silence_reset_pending).
+        Without RNNoise (or not on the RNNoise path): VAD + sustained local silence is authoritative.
         
-        连续静音判定标准：
-        - 时长：最近 _local_quiet_seconds 秒（默认 2 秒）内无“大音量”；
-        - 大音量：原始 PCM 的 RMS > _client_vad_threshold（默认 500，int16 范围）。
-        即：每帧用原始输入算 RMS，超过阈值则更新 _last_local_loud_time；只有
-        (current_time - _last_local_loud_time) >= _local_quiet_seconds 才认为连续静音。
+        Criteria for sustained silence:
+        - duration: no "loud" frame within the last _local_quiet_seconds seconds (default 2);
+        - loud: raw PCM RMS > _client_vad_threshold (default 500, int16 range).
+        I.e.: compute RMS on the raw input each frame and update _last_local_loud_time when
+        above threshold; sustained silence only holds when
+        (current_time - _last_local_loud_time) >= _local_quiet_seconds.
         
-        返回 True 时，调用方统一置 _silence_reset_pending=False。
+        When this returns True, the caller always sets _silence_reset_pending=False.
         """
         if use_rnnoise_path:
             return self._silence_reset_pending
@@ -703,11 +776,14 @@ class OmniRealtimeClient:
         return True
     
     async def clear_audio_buffer(self):
-        """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
+        """Send an input_audio_buffer.clear event to clear the server-side buffer."""
         if self._is_gemini:
             logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
             return
         await self.send_event({"type": "input_audio_buffer.clear"})
+        # The server is discarding this buffer; drop the uplink resampler's
+        # held tail too so it isn't prepended to the next utterance.
+        self._clear_uplink_resampler()
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
@@ -741,6 +817,9 @@ class OmniRealtimeClient:
         self._ai_recent_activity_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
+        # Flush uplink resampler FIR history so a previous session's tail
+        # samples don't bleed into the new connection's first frames.
+        self._clear_uplink_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
@@ -850,6 +929,11 @@ class OmniRealtimeClient:
                 "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                 "audio": {
                     "input": {
+                        # OpenAI Realtime PCM 输入只支持 24kHz；显式声明以匹配
+                        # 我们 _resample_uplink 上采后的实际采样率。复用
+                        # _uplink_sample_rate（此分支恒为 24000）作单一数据源，
+                        # 避免声明与实际两处来源漂移。
+                        "format": {"type": "audio/pcm", "rate": self._uplink_sample_rate},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": None if is_manual else {
                             "type": "semantic_vad",
@@ -915,6 +999,12 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
+            # 海外免费（lanlan.app，Gemini 代理）建 session 时一次性指定
+            # language_code，与 TTS server 路对偶；lanlan.tech（StepFun）不发，
+            # 沿用其自动识别 / voice_label 语义。
+            if 'lanlan.app' in (self.base_url or ''):
+                from utils.language_utils import get_tts_language_code
+                free_session["language_code"] = get_tts_language_code()
             free_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 free_tools.extend(self._tools_for_step())
@@ -1008,6 +1098,8 @@ class OmniRealtimeClient:
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
             self._fatal_error_occurred = False
+            self._gemini_user_transcript = ""
+            self._gemini_user_transcript_after_interrupt = False
 
             self._last_speech_time = time.time()
             self.instructions = instructions
@@ -1283,11 +1375,18 @@ class OmniRealtimeClient:
             self._silence_reset_pending = False
             await self.clear_audio_buffer()
 
-        # Gemini uses different API
+        # Gemini uses different API (16kHz, no uplink resample needed)
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
             return
-        
+
+        # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
+        # mobile-native, or hot-swap-cache replay). Upsample to the provider
+        # uplink rate as the very last step (24kHz for OpenAI; no-op others).
+        audio_chunk = self._resample_uplink(audio_chunk)
+        if not audio_chunk:
+            return  # resampler still buffering — nothing to send this frame
+
         audio_b64 = base64.b64encode(audio_chunk).decode()
 
         append_event = {
@@ -1351,6 +1450,9 @@ class OmniRealtimeClient:
                     self._fatal_error_occurred = True
             return
         await self.send_event({"type": "input_audio_buffer.commit"})
+        # The committed buffer excludes the ~21ms tail soxr still holds in the
+        # uplink resampler; drop it so it isn't prepended to the next turn.
+        self._clear_uplink_resampler()
         await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
@@ -1371,21 +1473,26 @@ class OmniRealtimeClient:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = "[实时屏幕截图或相机画面]: 画面分析失败或暂时无法识别。"
-                self._image_recognized_this_turn = True
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._image_recognized_this_turn = False
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
                 return ""
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self.image_recognized_this_turn = True
-            self._image_being_analyzed = False
-            self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._latest_image_b64 = None
+            self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
-            return "图片识别发生严重错误！"
+            return ""
+        finally:
+            self._image_being_analyzed = False
     
     async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """Stream raw image data to the API.
@@ -1403,6 +1510,11 @@ class OmniRealtimeClient:
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
+                # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
+                async with self._image_lock:
+                    if self._image_recognized_this_turn or self._image_being_analyzed:
+                        return
+                    self._image_being_analyzed = True
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
@@ -1546,17 +1658,19 @@ class OmniRealtimeClient:
     async def prime_context(self, text: str, skipped: bool = False) -> None:
         """Inject context during hot-swap.
 
-        行为取决于 skipped 参数和提供商：
+        Behaviour depends on the skipped parameter and the provider:
 
-        - ``skipped=True`` (或 Qwen)：通过 ``session.update`` 追加到
-          系统指令，不触发模型响应。
-        - ``skipped=False`` (GPT/GLM/Step)：通过 ``create_response``
-          注入一条一次性 user 消息并触发模型响应（用于任务结果主动
-          汇报）。注意：此路径不写入 session instructions，文本是
-          瞬态的，不要改为持久化到 instructions。
-        - Gemini：无论 skipped 值，均通过 ``send_client_content``
-          注入（SDK 限制，无 session.update 机制）。skipped=True 时
-          通过 ``_skip_until_next_response`` 静默丢弃响应。
+        - ``skipped=True`` (or Qwen): appended to the system instructions
+          via ``session.update``, without triggering a model response.
+        - ``skipped=False`` (GPT/GLM/Step): injects a one-shot user message
+          via ``create_response`` and triggers a model response (used for
+          proactively reporting task results). Note: this path does not
+          write to session instructions; the text is transient — do not
+          change it to persist into instructions.
+        - Gemini: injected via ``send_client_content`` regardless of
+          skipped (SDK limitation, no session.update mechanism). When
+          skipped=True the response is silently discarded via
+          ``_skip_until_next_response``.
 
         Args:
             text: Context to inject (incremental cache + summary/ready).
@@ -1571,9 +1685,11 @@ class OmniRealtimeClient:
             # Gemini Live API 没有 session.update 机制，只能通过
             # send_client_content 注入上下文（会创建 user turn）。
             # on_response_done 由 _handle_messages_gemini 自然触发。
-            if skipped:
-                self._skip_until_next_response = True
-            await self._create_response_gemini(text)
+            await self._create_response_gemini_with_skip_guard(
+                text,
+                skipped=skipped,
+                raise_on_error=True,
+            )
             return
 
         if not skipped and "qwen" not in self._model_lower:
@@ -1583,18 +1699,32 @@ class OmniRealtimeClient:
             await self.create_response(text)
         else:
             # skipped=True 或 Qwen：仅追加到 session instructions
-            await self.update_session({"instructions": self.instructions + '\n' + text})
+            lock = getattr(self, "_prime_context_lock", None)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._prime_context_lock = lock
+            async with lock:
+                current_instructions = str(self.instructions or "")
+                next_instructions = (
+                    current_instructions + "\n" + text
+                    if current_instructions
+                    else text
+                )
+                await self.update_session({"instructions": next_instructions})
+                self.instructions = next_instructions
             logger.info("prime_context: updated session instructions")
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Inject a persistent user message and trigger an LLM response.
 
-        与 ``prime_context`` (追加到系统指令) 不同，此方法会创建一条
-        user 角色的会话消息并触发模型响应。适用于需要模型立即回复的
-        mid-conversation 场景。
+        Unlike ``prime_context`` (which appends to the system instructions),
+        this method creates a user-role conversation message and triggers a
+        model response. Suited to mid-conversation scenarios where an
+        immediate model reply is needed.
 
-        注意：需要会话中已有 user 消息或所用 API 支持
-        ``conversation.item.create``，否则可能触发 1007 错误。
+        Note: requires that the session already contains a user message, or
+        that the API in use supports ``conversation.item.create``; otherwise
+        a 1007 error may be triggered.
 
         Behaviour varies by provider:
           - **OpenAI / GLM / Step**: ``conversation.item.create(role=user)``
@@ -1610,9 +1740,11 @@ class OmniRealtimeClient:
             if not instructions or not instructions.strip():
                 logger.info("Gemini: skipping empty content in create_response")
                 return
-            if skipped:
-                self._skip_until_next_response = True
-            await self._create_response_gemini(instructions)
+            await self._create_response_gemini_with_skip_guard(
+                instructions,
+                skipped=skipped,
+                raise_on_error=True,
+            )
             return
 
         # 跳过空内容的发送，避免触发 API 错误
@@ -1648,7 +1780,7 @@ class OmniRealtimeClient:
 
         This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
         ``conversation.item.create(role=user) + response.create``. Shared by
-        ``_create_response_gemini`` (hot-swap priming — tolerates errors) and
+        ``_create_response_gemini`` (callers choose error policy) and
         ``inject_text_and_request_response`` (proactive — must propagate
         errors so the caller can re-queue). Errors propagate here; callers
         that need to swallow wrap it.
@@ -1664,10 +1796,12 @@ class OmniRealtimeClient:
             turn_complete=True,
         )
 
-    async def _create_response_gemini(self, instructions: str) -> None:
+    async def _create_response_gemini(self, instructions: str, *, raise_on_error: bool = False) -> None:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
+            if raise_on_error:
+                raise RuntimeError("Gemini session not available for create_response")
             return
 
         # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
@@ -1680,6 +1814,28 @@ class OmniRealtimeClient:
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
+            if raise_on_error:
+                raise
+
+    async def _create_response_gemini_with_skip_guard(
+        self,
+        instructions: str,
+        *,
+        skipped: bool = False,
+        raise_on_error: bool = False,
+    ) -> None:
+        """Set Gemini skip state only for a successfully-started skipped turn."""
+        if not skipped:
+            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+            return
+
+        previous_skip = self._skip_until_next_response
+        self._skip_until_next_response = True
+        try:
+            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+        except Exception:
+            self._skip_until_next_response = previous_skip
+            raise
 
     def is_active_response(self) -> bool:
         """Return True iff the realtime session is currently producing a response.
@@ -2076,6 +2232,15 @@ class OmniRealtimeClient:
                 logger.warning("prompt_ephemeral: no audio file found for %s", filename)
                 return False
 
+        # Proactive WAVs are stored at 16kHz; for OpenAI's 24kHz-only uplink,
+        # upsample the whole clip once (stateless — it's a complete signal, so
+        # no chunk-boundary artifacts and no need to touch the mic-stream
+        # resampler). No-op for every 16kHz-native provider.
+        if self._uplink_sample_rate != 16000:
+            _clip = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            _clip = soxr.resample(_clip, 16000, self._uplink_sample_rate, quality='HQ')
+            pcm_data = (_clip * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
         # ── Non-native vision: inject text description before audio ───
         # step / lanlan.tech+free can't receive raw images; send the
         # VISION_MODEL text analysis so the model has visual context.
@@ -2094,8 +2259,9 @@ class OmniRealtimeClient:
         self._proactive_injecting = True
 
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
-        # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
-        chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
+        # 10 ms @16-bit mono = (rate/100)*2 bytes, ×5 multiplier → 50 ms/chunk.
+        # Rate-derived so pacing stays 50 ms/chunk after the 24kHz upsample.
+        chunk_size = (self._uplink_sample_rate // 100) * 2 * 5  # 50 ms of audio
         sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
 
         logger.info(
@@ -2262,13 +2428,16 @@ class OmniRealtimeClient:
         send tool result via ``conversation.item.create`` of type
         ``function_call_output``, then ``response.create``.
 
-        ⚠️ Provider 差异：
-        - OpenAI gpt / StepFun / Qwen / Free：``call_id`` 必传，
-          server 用它把结果绑回对应的 function_call。
-        - GLM：文档示例显示 function_call_output **只有 output 字段**，
-          且服务端的 ``function_call_arguments.done`` 也不带 call_id。
-          我们在 done 事件处合成的 ``glm_<rid>_<idx>`` 仅用于 registry
-          内部追踪，绝对不能回传给 server，否则容易被拒。
+        ⚠️ Provider differences:
+        - OpenAI gpt / StepFun / Qwen / Free: ``call_id`` is required;
+          the server uses it to bind the result back to the corresponding
+          function_call.
+        - GLM: the documented example shows function_call_output with
+          **only an output field**, and the server's
+          ``function_call_arguments.done`` carries no call_id either. The
+          ``glm_<rid>_<idx>`` we synthesize at the done event is solely for
+          internal registry tracking and must never be sent back to the
+          server, or the request is likely to be rejected.
         """
         item: Dict[str, Any] = {
             "type": "function_call_output",
@@ -2308,8 +2477,8 @@ class OmniRealtimeClient:
     
     async def _check_repetition(self, response: str) -> bool:
         """
-        检查回复是否与近期回复高度重复。
-        如果连续3轮都高度重复，返回 True 并触发回调。
+        Check whether the reply is highly repetitive of recent replies.
+        Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
         """
         
         # 与最近的回复比较相似度
@@ -2535,6 +2704,33 @@ class OmniRealtimeClient:
                     else:
                         self._last_response_transcript = ""
                         print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
+                    # response.audio_transcript.delta、从不发 response.audio_transcript.done，
+                    # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
+                    # 但带工具调用的一轮里，工具调用那一轮的 response.done 会把
+                    # _print_input_transcript 置 False（见下方），紧随其后的真回复转录便走
+                    # buffer 分支累积进 _output_transcript_buffer，没有 transcript.done 来 flush，
+                    # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
+                    # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
+                    # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
+                    if (
+                        self._output_transcript_buffer
+                        and self.on_output_transcript
+                        and self._audio_delta_count > 0
+                    ):
+                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
+                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
+                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
+                        logger.debug(
+                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+                            len(self._output_transcript_buffer),
+                            self._audio_delta_count,
+                            self._is_first_transcript_chunk,
+                        )
+                        await self.on_output_transcript(
+                            self._output_transcript_buffer, self._is_first_transcript_chunk
+                        )
+                        self._is_first_transcript_chunk = False
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
@@ -2886,6 +3082,8 @@ class OmniRealtimeClient:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
                         self._gemini_user_transcript += input_trans.text
+                        if self._interrupted:
+                            self._gemini_user_transcript_after_interrupt = True
                 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
                 has_ai_content = (
@@ -2913,19 +3111,28 @@ class OmniRealtimeClient:
                         <= self._ai_recent_activity_window
                     )
                     _is_new_turn = _user_spoke_after_ai or not _still_within_ai_window
+                    _can_clear_interrupted = (
+                        not self._interrupted
+                        or self._gemini_user_transcript_after_interrupt
+                        or not _still_within_ai_window
+                    )
                     self._is_responding = True
-                    if _is_new_turn:
+                    if _is_new_turn and _can_clear_interrupted:
+                        # Gemini has no response.created event; clear stale interrupt state only
+                        # after SDK transcription or a quiet gap proves this is not a canceled tail.
+                        self._interrupted = False
                         # 在AI开始响应前，发送累积的用户输入
                         if self._gemini_user_transcript and self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
                             self._gemini_user_transcript = ""  # 清空累积
+                        self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
                         if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
-                            "Gemini: late content after premature turn_complete (%.2fs ago), treating as continuation",
+                            "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",
                             time.time() - self._ai_recent_activity_time,
                         )
 
@@ -2984,8 +3191,10 @@ class OmniRealtimeClient:
                     self._interrupted = True
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
-                    if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
+                    if self._gemini_user_transcript:
+                        self._gemini_user_transcript_after_interrupt = True
+                        if self.on_input_transcript:
+                            await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         

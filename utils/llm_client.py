@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Lightweight LLM client layer using the ``openai`` SDK directly.
 
 Provides:
@@ -5,18 +19,24 @@ Provides:
     the old langchain interface
   - ChatOpenAI wrapper with streaming, invoke, and resource management
   - ``create_chat_llm()`` factory that auto-resolves provider-specific config
+  - ``create_chat_llm_async()`` async factory for offloaded client construction
   - Serialization helpers (messages_to_dict, messages_from_dict, convert_to_messages)
   - OpenAIEmbeddings / SQLChatMessageHistory for memory subsystem
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json as _json
+import os
 import re
+import ssl
+import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
 
 # ────────────────────────────────────────────────────────────────
@@ -59,6 +79,67 @@ def strip_thinking_segments(text: str | None) -> str:
     return s.strip()
 
 
+class ThinkingStreamStripper:
+    """Streaming-safe sibling of :func:`strip_thinking_segments`.
+
+    ``strip_thinking_segments`` only runs on a *whole* non-streaming reply.
+    Focus (thinking-on) turns stream token-by-token straight into TTS + the UI, so a
+    provider that leaks chain-of-thought into ``content`` would speak its
+    reasoning aloud. Only the Qwen3.5/3.6/3.7 hybrids do this: they dump the
+    whole CoT into ``content`` terminated by a lone ``</think>`` (clean
+    providers route reasoning to the separate ``reasoning_content`` field,
+    which the streaming loop already withholds). So this holds **all** content
+    until the first ``</think>`` (or a paired ``<think>...</think>``) is seen —
+    dropping everything up to and including it — then passes the real answer
+    through untouched, chunk by chunk.
+
+    Engage it ONLY for ``thinking_on`` turns on a leak-prone model
+    (``config.providers.leaks_thinking_in_content``): for clean providers the
+    close tag never arrives, so holding-until-``</think>`` would withhold the
+    whole answer until ``flush``. If a leak-prone model didn't think this turn
+    (no close tag), ``flush`` returns the held buffer intact so nothing is lost.
+    Split tags across chunks are safe — the buffer accumulates until matched.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._passthrough = False
+
+    def feed(self, text: str) -> str:
+        """Return the emittable slice of ``text`` (``""`` while still buffering)."""
+        if self._passthrough:
+            return text
+        if not text:
+            return ""
+        self._buf += text
+        m = _THINK_ANY_CLOSE_RE.search(self._buf)
+        if m:
+            # Everything up to and including the first close tag is the leaked
+            # CoT (covers both the dangling shape and a paired <think>...</think>,
+            # whose opening tag sits earlier in the buffer). Release the tail and
+            # stream freely from here on.
+            tail = self._buf[m.end():]
+            self._buf = ""
+            self._passthrough = True
+            return tail
+        return ""
+
+    def flush(self) -> str:
+        """Drain any held content at stream end (no close tag ever arrived)."""
+        if self._passthrough:
+            return ""
+        residual = self._buf
+        self._buf = ""
+        return residual
+
+    def reset(self) -> None:
+        """Forget held state — used at a tool-round boundary, where the next
+        segment is a fresh semantic unit and the one-shot CoT preamble (if any)
+        is already behind us."""
+        self._buf = ""
+        self._passthrough = False
+
+
 # ────────────────────────────────────────────────────────────────
 # Active-character context — used by ChatOpenAI._params to substitute
 # ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders that originated from
@@ -74,6 +155,83 @@ def strip_thinking_segments(text: str | None) -> str:
 _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvars.ContextVar(
     "_neko_active_character_master_lanlan", default=None
 )
+
+_DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
+_DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
+_PENDING_CLIENT_CLOSE_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _create_httpx_default_ssl_context() -> ssl.SSLContext:
+    """Create the same default verify context httpx uses without its deprecated helper."""
+    import certifi
+
+    if os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    if os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _get_default_ssl_context() -> ssl.SSLContext:
+    """Return the process-wide default TLS context for short-lived LLM clients."""
+    global _DEFAULT_SSL_CONTEXT
+    if _DEFAULT_SSL_CONTEXT is not None:
+        return _DEFAULT_SSL_CONTEXT
+
+    with _DEFAULT_SSL_CONTEXT_LOCK:
+        if _DEFAULT_SSL_CONTEXT is None:
+            _DEFAULT_SSL_CONTEXT = _create_httpx_default_ssl_context()
+        return _DEFAULT_SSL_CONTEXT
+
+
+async def _close_async_openai_client_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        await aclient.close()
+    except Exception:
+        # Finalizer-triggered cleanup must never surface async close failures.
+        pass
+
+
+def _schedule_async_openai_client_close_best_effort(
+    aclient: AsyncOpenAI,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+    close_coro = _close_async_openai_client_best_effort(aclient)
+    try:
+        task = loop.create_task(close_coro)
+    except Exception:
+        close_coro.close()
+        # The loop may be closing; explicit aclose() remains the deterministic path.
+    else:
+        _PENDING_CLIENT_CLOSE_TASKS.add(task)
+        task.add_done_callback(_PENDING_CLIENT_CLOSE_TASKS.discard)
+
+
+def _close_async_openai_client_from_sync_best_effort(aclient: AsyncOpenAI) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_close_async_openai_client_best_effort(aclient))
+        except Exception:
+            pass
+        return
+    _schedule_async_openai_client_close_best_effort(aclient, loop=loop)
+
+
+def _close_chat_openai_clients_best_effort(client: OpenAI, aclient: AsyncOpenAI) -> None:
+    try:
+        client.close()
+    except Exception:
+        # Destructors/finalizers must never raise during GC or interpreter shutdown.
+        pass
+    _schedule_async_openai_client_close_best_effort(aclient)
 
 
 def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
@@ -302,9 +460,10 @@ class ToolCallAggregate:
 def _normalize_messages(messages: Any) -> list[dict]:
     """Convert various message formats to openai-compatible dicts.
 
-    ``BaseMessage`` 子类透传 ``tool_calls`` / ``tool_call_id`` 字段（如果存在）
-    给 OpenAI Chat Completions —— 这两个字段是 tool calling 多轮对话回填时
-    必须的：assistant 角色带 tool_calls + tool 角色带 tool_call_id。"""
+    ``BaseMessage`` subclasses pass their ``tool_calls`` / ``tool_call_id`` fields (when
+    present) through to OpenAI Chat Completions — both fields are required when
+    backfilling multi-turn tool-calling conversations: the assistant role carries
+    tool_calls + the tool role carries tool_call_id."""
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
     out: list[dict] = []
@@ -392,8 +551,17 @@ class ChatOpenAI:
             client_kw["timeout"] = _timeout
         if default_headers:
             client_kw["default_headers"] = default_headers
+        ssl_context = _get_default_ssl_context()
+        client_kw["http_client"] = DefaultAsyncHttpxClient(verify=ssl_context)
         self._aclient = AsyncOpenAI(**client_kw)
+        client_kw["http_client"] = DefaultHttpxClient(verify=ssl_context)
         self._client = OpenAI(**client_kw)
+        self._client_finalizer = weakref.finalize(
+            self,
+            _close_chat_openai_clients_best_effort,
+            self._client,
+            self._aclient,
+        )
 
     def _is_anthropic(self) -> bool:
         return bool(self.base_url) and "api.anthropic.com" in str(self.base_url)
@@ -622,10 +790,11 @@ class ChatOpenAI:
         Multiple parallel calls are kept distinct via ``index`` (the OpenAI
         Chat Completions schema guarantees one ``index`` per call).
 
-        ⚠️ 空 ``name`` 的聚合槽位会被丢弃 —— SDK bug / 流提前中断 / 部分
-        小模型偶发产出的残缺碎片，如果不过滤直接写进 ``tool_calls`` 历史，
-        下一轮调用会被 server 以 schema invalid 拒掉。这里直接 drop，
-        让上层走"模型这一轮没成功调用任何工具"的常规分支。
+        ⚠️ Aggregation slots with an empty ``name`` are dropped — broken fragments
+        produced by SDK bugs / prematurely interrupted streams / some small models.
+        Written into the ``tool_calls`` history unfiltered, the next round's call
+        would be rejected by the server as schema invalid. Dropping here lets the
+        upper layer take the normal "the model called no tool this round" branch.
         """
         import logging as _logging
         _logger = _logging.getLogger(__name__)
@@ -667,10 +836,13 @@ class ChatOpenAI:
         """Close underlying httpx clients (async path)."""
         await self._aclient.close()
         self._client.close()
+        self._client_finalizer.detach()
 
     def close(self) -> None:
         """Close underlying httpx clients (sync path)."""
         self._client.close()
+        _close_async_openai_client_from_sync_best_effort(self._aclient)
+        self._client_finalizer.detach()
 
     async def __aenter__(self):
         return self
@@ -760,6 +932,30 @@ def create_chat_llm(
         **cache_kw,
         **kw,
     )
+
+
+async def create_chat_llm_async(*args: Any, **kwargs: Any) -> ChatOpenAI:
+    """Create a ChatOpenAI without blocking the running event loop."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(asyncio.to_thread(create_chat_llm, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(
+            lambda done: loop.create_task(_close_cancelled_chat_llm_result(done))
+        )
+        raise
+
+
+async def _close_cancelled_chat_llm_result(task: asyncio.Task[ChatOpenAI]) -> None:
+    try:
+        llm = task.result()
+    except Exception:
+        return
+    try:
+        await llm.aclose()
+    except Exception:
+        return
 
 
 # ────────────────────────────────────────────────────────────────

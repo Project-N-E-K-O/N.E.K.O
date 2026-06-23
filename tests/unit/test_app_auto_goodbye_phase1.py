@@ -155,7 +155,17 @@ def test_app_auto_goodbye_phase1_harness():
           win.document = doc;
           win.location = {{ pathname }};
           win.appConst = {{}};
-          win.appState = {{ socket: {{ readyState: 0 }} }};
+          const sentMessages = [];
+          win.appState = {{ socket: {{
+            readyState: 0,
+            send(payload) {{
+              try {{
+                sentMessages.push(JSON.parse(payload));
+              }} catch (_) {{
+                sentMessages.push(payload);
+              }}
+            }},
+          }} }};
           win.live2dManager = {{ _goodbyeClicked: false }};
           win.vrmManager = {{ _goodbyeClicked: false }};
           win.mmdManager = {{ _goodbyeClicked: false }};
@@ -227,6 +237,7 @@ def test_app_auto_goodbye_phase1_harness():
             win,
             doc,
             goodbyeEvents,
+            sentMessages,
             advance(ms) {{
               now += ms;
             }},
@@ -404,12 +415,14 @@ def test_app_auto_goodbye_phase1_harness():
           dragEnd();
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'first CAT3 drag should keep CAT3');
+          home.win.dispatchEvent(new CustomEventLike('neko:return-ball-manual-move', {{
+            detail: {{ reason: 'return-ball-drag-end', movedDistancePx: 0, dragCancelled: true }}
+          }}));
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'cancelled CAT3 drag should not count toward drag demotion');
           dragEnd();
           home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'second CAT3 drag should keep CAT3');
-          dragEnd();
-          home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'third CAT3 drag should step back to CAT2');
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'second CAT3 drag should step back to CAT2');
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'CAT3 drag demotion should not refresh idle baseline');
 
           dragEnd();
@@ -579,6 +592,37 @@ def test_app_auto_goodbye_phase1_harness():
           assert(manualState.autoGoodbyeTriggered === false, 'manual goodbye should not set auto flag');
           assert(manualState.lastReason === 'manual-goodbye', 'manual goodbye should preserve manual reason');
 
+          // Fresh-page priming reconciles stale backend goodbye_silent: a model/pet window that is
+          // not in goodbye sends goodbye_state:false once on first prime, clearing leftover silence
+          // from a previous "请她离开" so greeting / proactive are not永久 suppressed after a reload.
+          const reconcile = createHarness('/', {{ barrierResolved: true }});
+          await reconcile.flush();
+          assert(reconcile.sentMessages.length === 0, 'reconcile should not fire before websocket open');
+          reconcile.setSocketOpen(true);
+          reconcile.tickAll();
+          const reconcileSends = reconcile.sentMessages.filter((m) => m && m.action === 'goodbye_state');
+          assert(reconcileSends.length === 1, 'fresh prime should send exactly one goodbye_state reconcile');
+          assert(reconcileSends[0].active === false, 'reconcile should clear stale goodbye silence');
+          assert(reconcileSends[0].reason === 'fresh-connect-reconcile', 'reconcile should be tagged');
+          // A subsequent same-session reconnect already has the in-memory state → no duplicate send.
+          reconcile.setSocketOpen(false);
+          reconcile.tickAll();
+          reconcile.setSocketOpen(true);
+          reconcile.tickAll();
+          const reconcileSendsAfter = reconcile.sentMessages.filter((m) => m && m.action === 'goodbye_state');
+          assert(reconcileSendsAfter.length === 1, 'reconnect with cached state should not re-send reconcile');
+
+          // A window already in goodbye must NOT have its silence cleared by the prime reconcile.
+          const stillGoodbye = createHarness('/', {{ barrierResolved: true }});
+          await stillGoodbye.flush();
+          stillGoodbye.win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+          stillGoodbye.setSocketOpen(true);
+          stillGoodbye.tickAll();
+          const clearedWhileGoodbye = stillGoodbye.sentMessages.filter(
+            (m) => m && m.action === 'goodbye_state' && m.active === false
+          );
+          assert(clearedWhileGoodbye.length === 0, 'prime must not clear silence while still in goodbye');
+
           console.log('app-auto-goodbye phase1 harness passed');
         }})().catch((error) => {{
           console.error(error && error.stack ? error.stack : error);
@@ -622,6 +666,210 @@ def test_app_interpage_relays_idle_return_ball_state_to_chat_window():
     assert "case 'idle_return_ball_state':" in source
     assert "function dispatchIdleReturnBallState(detail)" in source
     assert "new CustomEvent('neko:idle-return-ball-state'" in source
+
+
+def test_goodbye_composer_hidden_syncs_to_chat_window():
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    standalone_block = interpage_source.split("function isStandaloneChatPage()", 1)[1].split(
+        "function dispatchCrossWindowIdleActivity",
+        1,
+    )[0]
+    goodbye_handler_block = interpage_source.split(
+        "function handleGoodbyeChatComposerHiddenMessage(data, via)",
+        1,
+    )[1].split("function postGoodbyeChatComposerHiddenState", 1)[0]
+    goodbye_read_block = interpage_source.split(
+        "function readGoodbyeChatComposerHidden()",
+        1,
+    )[1].split("function applyGoodbyeChatComposerHidden", 1)[0]
+    goodbye_filter_block = interpage_source.split(
+        "function isGoodbyeChatComposerHiddenMessageForCurrentLanlan(data)",
+        1,
+    )[1].split("function handleGoodbyeChatComposerHiddenMessage", 1)[0]
+    goodbye_request_block = interpage_source.split(
+        "function requestGoodbyeChatComposerHiddenState(reason)",
+        1,
+    )[1].split("function isGoodbyeChatComposerHiddenMessageForCurrentLanlan", 1)[0]
+    goodbye_post_block = interpage_source.split(
+        "function postGoodbyeChatComposerHiddenState(hidden, reason)",
+        1,
+    )[1].split("function pruneVoiceConfigSwitchOps", 1)[0]
+    goodbye_initial_request_block = interpage_source.split(
+        "var postGoodbyeComposerRequest = function ()",
+        1,
+    )[1].split("postAvatarRequest();", 1)[0]
+
+    assert "function applyGoodbyeChatComposerHidden(hidden, reason)" in interpage_source
+    assert "function getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
+    assert "function postGoodbyeChatComposerHiddenElectron(payload)" in interpage_source
+    assert "function handleGoodbyeChatComposerHiddenMessage(data, via)" in interpage_source
+    assert "function postGoodbyeChatComposerHiddenState(hidden, reason)" in interpage_source
+    assert "window.nekoElectronGoodbyeChatComposerHidden" in interpage_source
+    assert "neko:electron-goodbye-chat-composer-hidden" in interpage_source
+    assert "action: 'goodbye_chat_composer_hidden'" in interpage_source
+    assert "case 'goodbye_chat_composer_hidden':" in interpage_source
+    assert "case 'request_goodbye_chat_composer_hidden':" in interpage_source
+    assert "pathname === '/chat_full'" in standalone_block
+    assert "pathname === '/chat_full/'" in standalone_block
+    assert (
+        "typeof window.isNekoGoodbyeModeActive === 'function'\n"
+        "                && window.isNekoGoodbyeModeActive()"
+        in goodbye_read_block
+    )
+    assert "window.__nekoGoodbyeChatComposerHidden.hidden === true" in goodbye_read_block
+    assert "window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true" in goodbye_read_block
+    assert "if (!data || !data.lanlan_name) return false;" in goodbye_filter_block
+    assert "return !!currentName && data.lanlan_name === currentName;" in goodbye_filter_block
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_post_block
+    assert "if (!lanlanName) return;" in goodbye_post_block
+    assert "lanlan_name: lanlanName" in goodbye_post_block
+    assert "window.appState && typeof window.appState.lanlan_name === 'string'" in interpage_source
+    assert "var lanlanName = getCurrentLanlanName();" in goodbye_request_block
+    assert "if (!lanlanName) return false;" in goodbye_request_block
+    assert "reason: reason || 'request-goodbye-chat-composer-hidden'" in goodbye_request_block
+    assert "lanlan_name: lanlanName" in goodbye_request_block
+    assert "requestGoodbyeChatComposerHiddenState('standalone-chat-state-request')" in goodbye_initial_request_block
+    assert "GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS[goodbyeComposerRequestRetryIndex++]" in interpage_source
+    assert "scheduleGoodbyeComposerRequest(0);" in interpage_source
+    assert "if (isStandaloneChatPage()) return true;" in goodbye_handler_block
+    assert (
+        "postGoodbyeChatComposerHiddenState(undefined, 'request-goodbye-chat-composer-hidden');"
+        in goodbye_handler_block
+    )
+    assert "nekoBroadcastChannel || getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
+    assert "postGoodbyeChatComposerHiddenPayload({" in interpage_source
+    assert "postGoodbyeComposerRequest();" in interpage_source
+    # config 注入后只通过 postStandaloneChatStateRequests 统一补发，不再单独注册 once 监听，避免重复请求
+    assert (
+        "window.addEventListener('neko:config-injected', postGoodbyeComposerRequest"
+        not in interpage_source
+    )
+    assert (
+        "window.addEventListener('neko:config-injected', postAvatarRequest"
+        not in interpage_source
+    )
+    assert "window.addEventListener('neko:config-injected', postStandaloneChatStateRequests);" in interpage_source
+    assert "window.addEventListener('neko:request-goodbye-chat-composer-hidden-state'" in interpage_source
+    assert "window.addEventListener('focus', function ()" in interpage_source
+    assert "document.addEventListener('visibilitychange', function ()" in interpage_source
+    assert (
+        "mod.postGoodbyeChatComposerHiddenElectron = postGoodbyeChatComposerHiddenElectron;"
+        in interpage_source
+    )
+    assert (
+        "mod.handleGoodbyeChatComposerHiddenMessage = handleGoodbyeChatComposerHiddenMessage;"
+        in interpage_source
+    )
+    assert "mod.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "mod.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "window.postGoodbyeChatComposerHiddenState = postGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "window.requestGoodbyeChatComposerHiddenState = requestGoodbyeChatComposerHiddenState;" in interpage_source
+    assert "postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click')" in app_ui_source
+    assert "postGoodbyeChatComposerHiddenState(false, 'return-click')" in app_ui_source
+
+
+def test_app_interpage_initializes_goodbye_bridge_exports_with_tutorial_bridge_fallback():
+    script = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const source = fs.readFileSync(__APP_INTERPAGE_PATH__, 'utf8');
+        const listeners = {};
+        const storage = {
+          getItem() { return null; },
+          setItem() {},
+          removeItem() {}
+        };
+        const quietConsole = {
+          log() {},
+          warn() {},
+          error() {}
+        };
+        const windowStub = {
+          appState: { lanlan_name: 'Yui' },
+          appConst: {},
+          lanlan_config: { lanlan_name: 'Yui' },
+          location: { origin: 'http://localhost', pathname: '/chat' },
+          addEventListener(type, handler) { (listeners[type] ||= []).push(handler); },
+          removeEventListener() {},
+          dispatchEvent() {},
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          localStorage: storage,
+          console: quietConsole
+        };
+        windowStub.window = windowStub;
+
+        const documentStub = {
+          hidden: false,
+          body: { classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } } },
+          head: { appendChild() {} },
+          documentElement: { appendChild() {} },
+          createElement() {
+            return {
+              hidden: false,
+              style: {},
+              classList: { add() {}, remove() {} },
+              setAttribute() {},
+              appendChild() {}
+            };
+          },
+          getElementById() { return null; },
+          querySelector() { return null; },
+          querySelectorAll() { return []; },
+          addEventListener(type, handler) { (listeners[`document:${type}`] ||= []).push(handler); },
+          removeEventListener() {}
+        };
+
+        class CustomEvent {
+          constructor(type, init) {
+            this.type = type;
+            this.detail = init && init.detail;
+          }
+        }
+        class BroadcastChannel {
+          constructor(name) { this.name = name; }
+          postMessage() {}
+          close() {}
+        }
+
+        const context = {
+          window: windowStub,
+          document: documentStub,
+          localStorage: storage,
+          console: quietConsole,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          CustomEvent,
+          BroadcastChannel,
+          URL,
+          location: windowStub.location
+        };
+
+        try {
+          vm.runInNewContext(source, context, { filename: 'static/app-interpage.js' });
+        } catch (error) {
+          console.error(error && (error.stack || error.message) || error);
+          process.exit(1);
+        }
+
+        if (!windowStub.appInterpage || typeof windowStub.postGoodbyeChatComposerHiddenState !== 'function') {
+          process.exit(2);
+        }
+        windowStub.postGoodbyeChatComposerHiddenState(true, 'harness-goodbye');
+        if (!windowStub.__nekoGoodbyeChatComposerHidden || windowStub.__nekoGoodbyeChatComposerHidden.hidden !== true) {
+          process.exit(3);
+        }
+        """
+    ).replace("__APP_INTERPAGE_PATH__", json.dumps(str(APP_INTERPAGE_PATH)))
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():

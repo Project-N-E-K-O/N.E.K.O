@@ -1,5 +1,19 @@
 # -*- coding: utf-8 -*-
-"""config 包对外暴露的配置常量。"""
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Configuration constants exposed by the config package."""
 
 from copy import deepcopy
 import json
@@ -13,7 +27,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -50,6 +64,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "mmd_idle_animation",
     "mmd_idle_animations",
     "touch_set",
+    "_field_order",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -70,15 +85,19 @@ CHARACTER_RESERVED_FIELDS = tuple(
 
 
 def get_character_reserved_fields() -> tuple[str, ...]:
-    """返回角色档案保留字段（去重后、有序）。"""
+    """Return the reserved character-profile fields (deduplicated, ordered)."""
     return CHARACTER_RESERVED_FIELDS
 
 
 # 角色保留字段 schema（v2）
 # 所有系统保留字段统一收口到 `_reserved`，并按 avatar/live2d/vrm 分层。
 RESERVED_FIELD_SCHEMA = {
-    "voice_id": str,
+    # voice_id 兼容两形态：旧扁平串 + 声音来源统一架构的结构对象 {source,provider,ref}
+    # （并查集式惰性迁移，用户设音色时逐条迁移）。否则已迁移的角色每次 load 都被
+    # validate_reserved_schema 误报 _reserved.voice_id 结构异常。
+    "voice_id": (str, dict),
     "system_prompt": str,
+    "field_order": list,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,
@@ -221,9 +240,11 @@ def _read_list_env(var_name: str) -> tuple[str, ...]:
 def _read_str_env(
     var_name: str, default: str, *, allowed: tuple[str, ...] | None = None,
 ) -> str:
-    """字符串型配置的 env 覆盖。键序同端口：``NEKO_<NAME>`` 优先，裸 ``<NAME>``
-    兼容。``allowed`` 非空时，越界值被忽略并 warning（回退 default），避免一个
-    typo 把功能整块带挂。空串视为未设置。"""
+    """Env override for string-typed config values. Key precedence matches the port
+    settings: ``NEKO_<NAME>`` wins, bare ``<NAME>`` is kept for compatibility.
+    When ``allowed`` is non-empty, out-of-range values are ignored with a warning
+    (falling back to default) so a single typo cannot take the whole feature down.
+    An empty string counts as unset."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -242,8 +263,8 @@ def _read_str_env(
 
 
 def _read_bool_env(var_name: str, default: bool) -> bool:
-    """布尔型配置的 env 覆盖。1/true/yes/on → True；0/false/no/off → False；
-    其余/未设置 → default。键序同上。"""
+    """Env override for boolean config values. 1/true/yes/on → True; 0/false/no/off → False;
+    anything else / unset → default. Key precedence as above."""
     for key in (f"NEKO_{var_name}", var_name):
         raw = os.getenv(key)
         if raw is None:
@@ -462,7 +483,7 @@ VRM_LIGHTING_RANGES = {
 
 
 def get_default_vrm_lighting() -> dict[str, float]:
-    """获取默认VRM打光配置的副本"""
+    """Get a copy of the default VRM lighting config"""
     return dict(DEFAULT_VRM_LIGHTING)
 
 
@@ -524,7 +545,7 @@ MMD_CURSOR_FOLLOW_RANGES = {
 
 
 def get_default_mmd_settings() -> dict:
-    """获取默认MMD设置的副本"""
+    """Get a copy of the default MMD settings"""
     return {
         "lighting": dict(DEFAULT_MMD_LIGHTING),
         "rendering": dict(DEFAULT_MMD_RENDERING),
@@ -583,19 +604,19 @@ _VALUE_TRANSLATIONS = {
 
 def get_localized_default_characters(language: str | None = None) -> dict:
     """
-    获取本地化的默认角色配置。
-    
-    根据 Steam 语言设置翻译内容值（如"哥哥"→"Brother"）。
-    注意：键名保持中文不变，因为系统内部依赖这些键名。
-    仅在首次创建 characters.json 时使用。
-    
+    Get the localized default character configuration.
+
+    Translates content values based on the Steam language setting (e.g. "哥哥"→"Brother").
+    Note: key names stay in Chinese because internal code depends on them.
+    Only used when characters.json is created for the first time.
+
     Args:
-        language: 语言代码 ('en', 'ja', 'zh', 'zh-CN', 'zh-TW')。
-                  如果为 None，则从 Steam 获取或默认为 'zh-CN'。
-    
+        language: Language code ('en', 'ja', 'zh', 'zh-CN', 'zh-TW').
+                  If None, fetched from Steam or defaults to 'zh-CN'.
+
     Returns:
-        本地化后的 DEFAULT_CHARACTERS_CONFIG 副本
-    """
+        Localized copy of DEFAULT_CHARACTERS_CONFIG
+    """  # noqa: DOCSTRING_CJK
     # 获取语言代码
     if language is None:
         try:
@@ -641,7 +662,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         return result
     
     def translate_value(val):
-        """翻译值（仅翻译字符串类型）"""
+        """Translate a value (only string types are translated)"""
         if isinstance(val, str):
             return value_trans.get(val, val)
         return val
@@ -686,6 +707,9 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGemini": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyMimo": "",
+    "useMimoTokenPlan": False,
+    "assistApiKeyMimoTokenPlan": "",
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
@@ -867,6 +891,21 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "doubao-seed-2-0-lite-260215",
         'AGENT_MODEL': "doubao-seed-2-0-pro-260215",
     },
+    'mimo': {
+        'OPENROUTER_URL': "https://api.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URL': "https://token-plan-cn.xiaomimimo.com/v1",
+        'MIMO_TOKEN_PLAN_OPENROUTER_URLS': [
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "https://token-plan-sgp.xiaomimimo.com/v1",
+            "https://token-plan-ams.xiaomimimo.com/v1",
+        ],
+        'CONVERSATION_MODEL': "mimo-v2.5",
+        'SUMMARY_MODEL': "mimo-v2.5",
+        'CORRECTION_MODEL': "mimo-v2.5",
+        'EMOTION_MODEL': "mimo-v2.5",
+        'VISION_MODEL': "mimo-v2.5",
+        'AGENT_MODEL': "mimo-v2.5",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -879,6 +918,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'kimi': 'ASSIST_API_KEY_KIMI',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'mimo': 'ASSIST_API_KEY_MIMO',
     'elevenlabs': 'ASSIST_API_KEY_ELEVENLABS',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
@@ -985,8 +1025,8 @@ MAX_KNOWN_POOL_FACTS = 30
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
-PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
-REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
+PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算
+REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
@@ -1028,7 +1068,9 @@ HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSea
 #                                         （≈ 1.3-1.5 CJK char / 4 EN char）
 #   *_TRIGGER_TOKENS                   → 触发某个动作的 token 阈值（不是硬上限）
 #   *_MAX_ITEMS / *_MAX                → 条数（消息 / deque maxlen / list[-N:]）
-#   *_MAX_CHARS                        → 字符数（仅遗留 char-based 流程用）
+#   *_MAX_CHARS                        → 字符数（仅非 prompt-facing 的 UI /
+#                                         payload 防爆流程用，不作为 LLM input
+#                                         budget 证据）
 #   *_BYTES                            → 字节
 #   *_MS                               → 毫秒
 #
@@ -1074,6 +1116,22 @@ RECENT_PER_MESSAGE_MAX_TOKENS = 500
   截断（utils.tokenize.truncate_head_tail_tokens，head=tail=250）。
 - 上游：用户/AI 的原始对话文本，正常一轮 30-500 token，长贴可能数 KB。
 - 截断策略：保留头尾各 250 token，中段用 "…[省略中段]…" 替换。"""
+
+RECENT_COMPRESS_INPUT_BUDGET_TOKENS = 8000
+"""后台 best-effort 压缩的单段输入 token 预算（分段阈值）。
+- 用途：待压积压渲染成文本后若超过此值，compress_history 走分段
+  map-reduce——切成每段 ≤ 此值的小段分别压成中间摘要，再 reduce 成最终
+  备忘录，减小单次 LLM 输入、避免输入过大导致超时。未超此值的正常压缩
+  走原一次性路径，行为不变。
+- 上游：积压对话渲染文本的 token 数。"""
+
+RECENT_HARD_CAP_TOKENS = 60000
+"""recent 历史的硬上限（最终兜底，平时不触发）。
+- 用途：压缩持续失败（如持续 429，best-effort 后台也救不回）导致历史
+  一直压不掉、无限膨胀时，update_history 保留完整历史前若总 token 超过
+  此值，丢弃最旧的未压缩对话原文，保留近期若干条 + 备忘录，保证 prompt
+  有界。设得很大，只作最后防线。
+- 上游：未被压缩而累积的 recent 历史 token 数。"""
 
 # ---- Memory: reflection ----
 REFLECTION_TEXT_MAX_TOKENS = 150
@@ -1241,7 +1299,7 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 用途：_allm_call_promotion_merge 把同 entity 的所有 confirmed/promoted
   persona 和 reflection 全拼进 prompt，本 cap 防止该池失控。
 - 上游：同一 entity 长期累积的 persona/reflection。
-- 注意：这条不复用 PERSONA_RENDER_TOKEN_BUDGET（render 是给主对话看的，
+- 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
@@ -1263,6 +1321,37 @@ MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
 - 覆盖：reflection synthesis / persona correction / memory_refine /
   recent review_history 等所有后台跑的 LLM 调用。
 - 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+
+LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
+"""变长输出 LLM 调用的 max_completion_tokens **runaway guard**（不是紧 budget）。
+- 用途：那些输出长度天然变动、没有紧的 task-specific budget 的调用——memory
+  的结构化 JSON（reflection / recall / persona / facts / refine / dedup recheck）、
+  fact dedup、card-assist、window-title 关键词等。
+- 取值：4096。**必须保持在主流 provider 的输出上限之内**——`max_completion_tokens`
+  是上限不是目标，但很多 provider（OpenAI 及兼容端点）会在请求时就校验它 >
+  模型 max output 而直接 400，而不是退回默认值。这正是 `omni_offline_client.
+  _budget_to_max_tokens` 对 unlimited 直接 **omit 字段**（"large fixed values get
+  rejected as out-of-range by some providers"）的原因。8000 会打爆 max output<8000
+  的自建/老模型；4096 是绝大多数 summary/correction/agent tier 模型都接受的安全档，
+  同时对这些任务的正常输出（含 thinking reasoning）仍是宽裕兜底。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 token budget；本常量是
+  "无紧 budget 但仍需有上限"这类调用的统一来源（见 docs/design/llm-prompt-budget.md §0）。
+- 不适用：有明确紧 budget 的调用（emotion / translation / vision / plugin 粗筛等）
+  仍用各自的 *_MAX_TOKENS 常量，不要图省事换成本 guard。
+- 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
+  彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
+
+DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
+"""主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
+- 用途：OmniOfflineClient 的 streaming chat client（stream_text /
+  prompt_ephemeral 共用同一个 self.llm）。SDK 的 timeout 是整次请求上限，
+  对流式即"出完整条回复"的时间。
+- 取值：刻意取大（180s）——正常 TTS 短回复 / summary 3000-token 长回复
+  都远低于此，不会被截；只在上游真正卡死（既不出 token 也不断流）时兜底
+  释放连接。比 MEMORY_LLM_HARD_TIMEOUT_SECONDS 大，因为主对话是用户面前
+  路径，宁可多等也不能误截正常回复。
+- 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
+  主对话流式路径的统一来源。"""
 
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
@@ -1368,6 +1457,39 @@ TASK_ERROR_MAX_TOKENS = 350
 """任务错误消息字段的 token 上限。
 - 用途：_emit_task_result 的 error 档位。
 - 上游：异常 stack / API 错误响应。"""
+
+AGENT_CALLBACK_TEXT_MAX_TOKENS = 1000
+"""单条 agent callback 的 summary/detail 注入 LLM 的 token 上限（per-item）。
+- 用途：`Core.enqueue_agent_callback` 落队前对每条 callback 的 summary/detail
+  截断。task_result 类回流已在 _emit_task_result 用 TASK_*_MAX_TOKENS 截过
+  （≤1000），本档对齐 TASK_LARGE_DETAIL 不会误伤；真正的兜底对象是
+  **push_message / proactive_message** 这条 plugin 事件流——proactive_bridge
+  直接聚合 text parts 写进 summary/detail，此前没有任何 cap。
+- 上游：plugin SDK push_message() 的 text parts / 外部通知。"""
+
+AGENT_CALLBACK_TOTAL_MAX_TOKENS = 3000
+"""一次注入 LLM 的 agent callback 指令总和 token 上限（total）。
+- 用途：`_build_callback_instruction`（文本轮 system_prefix / proactive 触发）
+  和 `_render_pending_extra_replies_by_origin`（语音 hot-swap final_prime_text）
+  渲染完成后对整段做兜底截断。防 N 条 callback 累加撑爆本轮 prompt。
+- 与 per-item 配合：单条 cap 防长贴，total cap 防大量短条累加（见
+  docs/design/llm-prompt-budget.md §2.1 三层防护）。"""
+
+AGENT_CALLBACK_QUEUE_MAX_ITEMS = 50
+"""pending_agent_callbacks / pending_extra_replies 队列长度上限（flood guard）。
+- 用途：`enqueue_agent_callback` 落队后裁到最近 N 条，防 plugin 事件流灌爆
+  内存（队列此前无容量上限，drain 时全量 snapshot）。丢最旧的（最新事件
+  最相关）。
+- 与 AGENT_TASK_TRACKER_MAX_RECORDS=50 同口径。"""
+
+AGENT_DEDUP_CANDIDATES_MAX = 50
+"""task deduper 单次比对的 existing-task 候选条数上限。
+- 用途：`brain/deduper.py:_build_prompt` 只取前 N 条 candidate 拼 prompt，
+  防 backlog/flood 下 `_collect_existing_task_descriptions` 把上百条任务全量
+  塞进 dedup prompt。配合 per-item 头尾截断（TASK_DETAIL_MAX_TOKENS）给输入
+  一个真实总上限。
+- 与 FACT_DEDUP_BATCH_LIMIT=20 类似（LLM 配对决策的舒适 batch）；dedup 只做
+  一次 N×1 比对，放宽到 50。"""
 
 # ---- Agent: defensive char-caps (NOT token caps) ----
 # 下面这些是"防御性 char-cap"——在异常文本 / cancel reason / plugin reply
@@ -1505,6 +1627,22 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 - 用途：返回 plugin_id + plugin_args + reason。
 - 上游：LLM 输出。"""
 
+AGENT_ACTION_GATE_ENABLED = True
+"""廉价前置闸总开关（默认开）。
+- 用途：开 = 用 master-emotion 在 input-time 顺带产出的 action_intent，在 agent
+  侧 turn_end 评估前做一道零成本前置判断：若这一轮被自信地读成「非操作意图」，且零
+  LLM 的确定性 shortcut（magic word 规则 + 插件关键词）也全静默，就跳过那 1~2 次
+  大模型评估，省掉闲聊轮的 analyzer 开销。关掉则每个 turn 照常全量评估。
+- 闸是非对称的：action_intent 缺失（None）或确定性命中都不刹车，所以最坏只是多花
+  一次评估，绝不漏真任务。
+- 上游：DirectTaskExecutor._analyze_and_execute_inner 的前置判定。"""
+
+AGENT_ACTION_GATE_THRESHOLD = 0.2
+"""action_intent 刹车阈值（0~1）。
+- 用途：action_intent < 此值才视为「自信闲聊」、进入刹车候选；>= 此值或为 None 一律放行。
+- 取保守低位（默认 0.2）：小模型只需可靠认出「显然在闲聊」这 90% 的易判 case，
+  模棱两可的全 fail-open 到准确的大评估。调高 = 更激进省钱但漏判风险上升。"""
+
 PLUGIN_INPUT_DESC_MAX_TOKENS = 1000
 """_ensure_short_descriptions 输入的 plugin manifest description 上限。
 - 用途：生成 short_description 时把原始 description 截断后再送入 prompt
@@ -1598,6 +1736,21 @@ ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
 - 用途：避免"嗯。"、"好"这种短回复被错杀。
 - 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
 
+ANTI_REPEAT_EXEMPT_SOURCE_TAGS = frozenset({"MUSIC", "MEME"})
+"""主动搭话里"复读判定从台词切到素材维度"的来源标签。
+- 动机：BM25 防的是"话题/措辞复读"，但素材推送类 channel 的开场白天生模板
+  化（推歌"换首歌 / 这旋律 / 听听看"、表情包"看这个 / 笑死"），台词长一个
+  样、而推送的素材（曲目 / 表情包搜索关键词）却不同；用台词 BM25 判它属于
+  天生误杀——博士连点几首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推
+  歌全被 drop，表现为"放音乐频率极低"。
+- 语义：这类 channel 的复读按"素材本身"去重——MUSIC 看曲目、MEME 看搜索
+  关键词（不是图片）。本轮素材与近期不雷同时，豁免台词级硬拦截（字面相似
+  度 + BM25 regen/drop）直接放行；素材雷同（反复推同一曲目 / 同一关键词）
+  才回落到正常台词判定，台词没雷同则依然能发。
+- 另：这类 channel 的台词不录进 anti-repeat corpus（见 finish_proactive_
+  delivery），免得模板化 intro 污染 FG 窗、漂移其它 channel 的复读基线；
+  素材标识的近期去重走 system_router 的 _proactive_material_history。"""
+
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
 - 用途：去重已处理的 avatar 交互 ID。
@@ -1689,6 +1842,240 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
+# ── Master 情绪画像（基建）─────────────────────────────────────────────
+# 用 emotion-tier 小模型即时分析「用户自己说的话」的情绪，产出二维 valence-arousal
+# 瞬时读数（效价 -1~+1、唤醒 0~1）。这是一条独立基建：单一权威源，凝神（FocusScorer
+# 的 emotion 信号）是第一个消费者，后续记忆/UI/主动反应可接同一个 state。绝不复用
+# lanlan 头像那条 outward-emotion 管线（那是角色的脸，不是用户的情绪）。privacy-
+# independent：输入是对话不是屏幕，不受隐私模式门控（同凝神，见 developer-notes 规则 6）。
+MASTER_EMOTION_ENABLED = True
+"""Master 情绪画像总开关（默认开）。
+- 用途：开 = 每条用户消息（节流后）异步跑一次 VA 情绪分析、更新瞬时读数；关掉则
+  不分析、读数恒空，凝神的 emotion 信号自动消失，退回 keyword+cadence。
+- 上游：_note_user_turn 的 fire-and-forget 触发；FocusScorer.emotion 信号的可用性。"""
+
+MASTER_EMOTION_MIN_INTERVAL_SEC = 6.0
+"""两次 VA 分析的最小间隔（秒），节流防连发消息打爆 emotion tier。
+- 用途：MasterEmotionTracker 内部按上次分析时间戳早退。
+- 调小 = 更即时但更费 token；调大 = 更省但读数更陈。"""
+
+MASTER_EMOTION_TIMEOUT_SEC = 8.0
+"""单次 VA 分析的 emotion-tier 调用超时（秒）。
+- 用途：传给 _invoke_emotion_tier 的 timeout；超时则本轮不更新读数、保留上一次。
+- 注意：用的是独立的 emotion tier 模型，不是主对话模型，所以不受 Gemini Live 慢拖累。"""
+
+MASTER_EMOTION_MAX_INPUT_CHARS = 500
+"""送进 VA 分析的用户文本上限（字符），超出截断。
+- 用途：情绪判断只需开头一段；截断防用户粘贴长文时把整段塞进 emotion tier
+  （token / 成本 / 输入预算）。
+- 上游：MasterEmotionTracker._invoke 拼 prompt 前截断。"""
+
+MASTER_EMOTION_READING_TTL_SEC = 120.0
+"""情绪读数的有效期（秒），超期视为过期、latest 返回 None。
+- 用途：emotion 信号能单轮独立触发凝神，若读数无限有效，长停顿后一条中性消息
+  会读到几分钟前的旧 distress 读数、误重入/维持 Focus。TTL 让陈旧读数失效，
+  正常对话（turn 间隔几秒~几十秒）不受影响。
+- 设 0 关闭老化。上游：MasterEmotionTracker.latest。"""
+
+# ── Focus mode 凝神 (docs/design/focus-truename-mode.md) ───────────────
+# 信号触发、用户无感的「这一轮开思考 + 换强模型」机制，兑现 90/10 产品命题
+# 里的 10% 神明降临。以下全是 A/B 可调旋钮，集中在此便于灰度调参；情绪关键词
+# 这类多语言词表按 i18n 规约放 config/prompts/prompts_focus.py，不在这里。
+FOCUS_MODE_ENABLED = True
+"""凝神总开关（默认开）。
+- 用途：开 = FocusScorer 正常评分、SM 按累加电荷进入/退出 FOCUS，命中那一轮 inline
+  升档开思考、proactive 路径按情节冷却；关掉则两条触发路径都退化回常规
+  （proactive 仍 disable_thinking、stream_text 不升档），逐字节零行为变化。
+- 历史：曾默认关「先 inert 落地」，因阈值未用真实信号分布调过、且 thinking-on 的
+  端到端行为（内联推理文本在流式 content 里的泄露、各 provider 思考开销）未对真模型
+  验证过。现转默认开，进入真实信号实测 + 调参阶段。详见 docs/design/focus-truename-mode.md。
+- 上游：FocusScorer / SessionStateMachine 入口的早退判定。"""
+
+# ── 累积进入模型（leaky 累加器）─────────────────────────────────────
+# 进入不是「单轮分数越线」而是「逐轮累加的电荷值越线」：每轮
+#   charge = charge × FOCUS_CHARGE_RETENTION + 本轮score
+# charge ≥ ENTER 进入、< EXIT 退出（迟滞带）。这样零散漏出的脆弱信号能攒够进入，
+# 而转中性后 charge 每轮按 retention 漏掉、自然退出（替代旧的「连续 K 轮低分」
+# streak——streak 会被噪音单轮顶回而卡死，见 PR 实测）。
+FOCUS_CHARGE_RETENTION = 0.5
+"""电荷每轮的保留率（0~1）。
+- 用途：charge = charge × 此值 + 本轮score。0.5 = 每轮留 50%、漏 50%。
+- 调高（如 0.7/0.8）= 记性更长、零散信号更易累积进入、进去后更黏；
+  调低（如 0.3）= 漏得快、难累积、退得利落。
+- 稳态：持续每轮 score=s 时 charge → s/(1-retention)（如 retention=0.5、s=0.5 → 趋近 1.0）。
+- 这是「敏感度」主旋钮。仅用于 inline（用户发声）路径。"""
+
+# idle（proactive 主动搭话）冷却——proactive 绝不抬升 charge，只衰减；进入/维持凝神
+# 只由 inline（用户自己说的话）驱动。原先分「开口/沉默」两档（开口更耗专注），现统一
+# 为同一保留率：无论这一轮 proactive 有没有把话说出来，凝神都按同一速度温和降温，持续
+# 长短由 proactive 触发频率主导而非单纯时间流逝。两个旋钮保留以便日后再拆，但须都 > 0、
+# < 1，且 replied <= silent。
+FOCUS_IDLE_SILENT_RETENTION = 0.8
+"""proactive 本轮没把话说出来时的电荷保留率。
+- 涵盖：action != chat（被 guard/接管挡下、内容空、[PASS]），以及 Phase 2 思考
+  超时 / 流式异常导致 aborted（最终也归 action=pass）——开了思考模式却没能在限时内
+  接住，同样按此档降温。
+- 用途：charge = charge × 此值。0.8 = 每轮温和降温。当前与 replied 统一为 0.8，
+  开口与沉默同速冷却。
+- 调低 = 沉默 / 超时更快冷却。"""
+
+FOCUS_IDLE_REPLIED_RETENTION = 0.8
+"""proactive 本轮真开口了（action == chat：投递了主动搭话）时的电荷保留率。
+- 用途：charge = charge × 此值。0.8 = 每开口一次温和消耗——cap=1.0(满电)起约需 6 次
+  主动搭话才漏到 EXIT(0.3) 以下退出，凝神逗留更久。
+- 须 <= FOCUS_IDLE_SILENT_RETENTION：开口不比沉默退得更慢。当前两档统一为 0.8。
+- 上游：SM.update_focus 的 retention_override（idle 收尾按 action 选这两档之一）。"""
+
+# 调参护栏：把两档冷却的约定变成 fail-fast 的硬校验，避免后续误配把语义反转——
+# >= 1.0 会让 idle tick 不降反升（破坏「绝不抬升」），replied > silent 会让「开口」
+# 比「沉默」退得更慢（快慢档颠倒）。允许两档相等（当前统一 0.8，开口/沉默同速）。
+# 模块加载即校验，配错直接报错而非静默跑坏。
+if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION <= FOCUS_IDLE_SILENT_RETENTION < 1.0):
+    raise ValueError(
+        "Focus idle retentions must satisfy 0 < replied <= silent < 1 "
+        f"(got replied={FOCUS_IDLE_REPLIED_RETENTION}, "
+        f"silent={FOCUS_IDLE_SILENT_RETENTION})"
+    )
+
+FOCUS_CHARGE_ENTER = 0.6
+"""进入凝神的电荷阈值，也是「完全激活」点。
+- 用途：charge ≥ 此值 → REGULAR→FOCUS，同时前端边缘辉光在此处非线性跃升 + 起呼吸。
+- 单个强信号即可单轮秒进：强 distress 情绪读数（emotion 满格 0.7、≥~0.86 时越阈）或
+  满格复杂提问（question 1.0×0.6=0.6）。脆弱词单独不足以单轮进（keyword 满格 0.5 < 此阈，
+  有意——词表是廉价信号），须叠加 emotion 或跨轮累积；零散信号靠 charge 累积逼近此值后进入。
+  注：score 现为各信号加权和（无分母，见 FOCUS_SIGNAL_WEIGHTS）。
+- charge 不再 cap 在此值——见 FOCUS_CHARGE_CAP，0.6 以上继续累积到 1.0（更亮更持久）。
+- 时间衰减以此为界：charge < ENTER 衰减快（FOCUS_TIME_DECAY_PER_SEC），≥ ENTER（完全激活）
+  衰减减半（FOCUS_TIME_DECAY_PER_SEC_ACTIVATED）→ 0.6 以上自然更持久。"""
+
+FOCUS_CHARGE_CAP = 1.0
+"""电荷上限（封顶）。
+- 用途：charge 累积的天花板。ENTER(0.6) 是进入/完全激活点，0.6→CAP 只是「更深」——
+  前端边缘辉光峰值随 charge 继续抬高直到此处封顶。
+- 须 ≥ ENTER。"""
+
+FOCUS_TIME_DECAY_PER_SEC = 0.02
+"""未完全激活（charge < ENTER）时电荷的每秒时间衰减量。
+- 用途：与按轮 retention 叠加的「双重衰减」之时间分量——即便没有新 turn，charge 也随
+  wall-clock 真实流逝（惰性在 update_focus 计算、前端按同速率本地外推辉光）。
+- 0.02/s ⇒ 从 0.6 漏到 0（如无新证据）约 30s 量级；调高 = 凉得更快。"""
+
+FOCUS_TIME_DECAY_PER_SEC_ACTIVATED = 0.01
+"""完全激活（charge ≥ ENTER）后的每秒时间衰减量（减半，更持久）。
+- 用途：进入凝神后时间衰减放慢一半，「她降临后多停留一会」；charge 越高离 ENTER 越远、
+  停留越久（0.6 以上更持久即源于此）。
+- 地板：激活后时间衰减最多只能把 charge 降到 ENTER（0.6）为止，**绝不靠时间降到 0.6 以下**——
+  退出激活必须靠一轮对话的 retention（见 _decay_charge_over_time）。0.6 以下才会被时间衰减到 0。
+- 须 < FOCUS_TIME_DECAY_PER_SEC（激活后必须比激活前慢）。"""
+
+if not (FOCUS_TIME_DECAY_PER_SEC_ACTIVATED < FOCUS_TIME_DECAY_PER_SEC):
+    raise ValueError(
+        "FOCUS_TIME_DECAY_PER_SEC_ACTIVATED must be < FOCUS_TIME_DECAY_PER_SEC "
+        f"(got activated={FOCUS_TIME_DECAY_PER_SEC_ACTIVATED}, "
+        f"base={FOCUS_TIME_DECAY_PER_SEC})"
+    )
+
+FOCUS_CHARGE_EXIT = 0.3
+"""退出凝神的电荷阈值（迟滞低门，须 < ENTER）。
+- 用途：FOCUS 期间 charge < 此值 → 退出。
+- 转中性后从 cap 处按 retention 漏：retention=0.5/cap=ENTER(0.6) 时约 1~2 轮漏到 <0.3 退出
+  （即「她降临后追一两轮才放下」）。调低 = 更黏、追更久。"""
+
+FOCUS_HARD_CAP_TURNS = 8
+"""单次凝神最多持续轮数 M（硬顶 backstop）。
+- 用途：即使 charge 一直在 EXIT 以上（用户持续重话），满 M 轮也强制退出收个尾，
+  防单个情节无限拖长。
+- 上游：SM 的 focus_turn_count 计数器。"""
+
+FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
+    "keyword": 0.5,       # 用户消息命中脆弱情绪词（词表）
+    "cadence": 0.2,       # 回复字数相对基线骤跌（仅在有 distress 证据时计入）
+    "emotion": 0.7,       # master 情绪画像（主信号，**带符号**）：负效价 distress 为正、正效价 joy 为负，见 MasterEmotionTracker
+    "question": 0.6,      # master 模型判定「正在问复杂客观问题（数学/逻辑/推理）」的认知加分项
+}
+"""FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
+- 用途：scorer 对适用信号按权重**直接加权求和（不归一、无分母）** → 该轮 score（喂给
+  累加器）。权重即每个信号的绝对贡献：present 信号加 weight×value 进 score，缺席信号贡献 0。
+- 信号语义分两类：
+  · keyword / emotion / question 是触发信号——缺席返回 None、不计入（贡献 0，不稀释别的）。
+    emotion 是 keyword 词表的真模型升级（故词表权重 0.5 < 模型情绪 0.7），且**带符号**：
+    负效价 distress 为正、正效价 joy 为负（neutral 返回 None）——开心会把 score/charge
+    往下拉。question 是认知轴加分项（问复杂客观题——数学/逻辑/推理——也值得 thinking-on），
+    与 distress 正交但并入同一 charge。
+  · cadence 是行为信号——只在样本足够且**有 distress 证据**（keyword / question / emotion>0）
+    时才计入（否则一句短的开心话会让 cadence 误推 focus）。无分母后它的 0.0（「字数没骤降」）
+    贡献 0、等价于缺席，只有字数真的骤降才往 score 加分。
+- ⚠️ 无分母 ⇒ score 不再封顶在 1.0：全信号满格 = 各权重之和（当前 0.5+0.2+0.7+0.6=2.0），
+  下游由 FOCUS_CHARGE_CAP 截。调权重 = 直接调每信号绝对推力，也间接改相对 ENTER 的触发难度。
+- ⚠️ 单信号能否单轮进 ENTER 取决于「权重×满格值 ≥ ENTER」：去分母后 keyword 满格仅 0.5、
+  cadence 0.2，单独都越不过 ENTER(0.6)——脆弱词必须叠加 emotion 或跨轮累积才进（有意：词表
+  是廉价信号）；只有 emotion（≥~0.86）与满格 question（1.0×0.6）能单信号单轮进。
+- emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
+  distress = max(0,-valence) × (FOCUS_EMOTION_AROUSAL_FLOOR + (1-floor)×arousal)——
+  负效价主导、arousal 带下限放大（见 FOCUS_EMOTION_AROUSAL_FLOOR）。**滞后一拍**
+  （画像异步算，inline 拿上一轮读数）；
+  MASTER_EMOTION_ENABLED 关或无读数/无 distress 时返回 None、自动退回 keyword+cadence。
+- idle（proactive）路径不评分：它只用 FOCUS_IDLE_SILENT/REPLIED_RETENTION 让 charge
+  衰减，绝不抬升，故不在此表里（凝神的进入/维持只由 inline 驱动）。
+- 上游：各子信号各自归一化到 [0,1]。
+- 设计依据：keyword/emotion 是最强的两个情绪信号故权重最高。改这里直接改触发性格，慎调。"""
+
+FOCUS_KEYWORD_SATURATION = 3
+"""脆弱情绪关键词命中数的饱和点。
+- 用途：scan_vulnerability_keywords 返回的命中数 / 此值后截到 1.0 作为 keyword
+  子信号——单个「累」是轻推，「撑不住 + 一个人 + 没意思」叠加才是满格。
+- 上游：config/prompts/prompts_focus.scan_vulnerability_keywords 的命中计数。"""
+
+FOCUS_EMOTION_AROUSAL_FLOOR = 0.5
+"""emotion 信号里 arousal（唤醒度）作为放大器的下限。
+- 映射：distress = max(0,-valence) × (floor + (1-floor) × arousal)。
+- 语义：distress 由「负效价」主导触发，arousal 只在 [floor, 1] 区间缩放强度，
+  不再当与门。脆弱/倾诉常是「低唤醒 + 强负效价」（默默难过、丧），旧的纯乘积
+  distress = arousal × negativity 会被低 arousal 压到接近 0、漏掉这类安静型 distress；
+  给 arousal 一个下限后，强负效价即使唤醒度低也能透过大部分分值。
+- 取值：=0 退回旧的纯乘积（arousal 仍是与门）；=1 完全忽略 arousal、纯看 valence；
+  0.5 折中——低唤醒保底过半、高唤醒满额放大。须 ∈ [0,1]。
+- 上游：FocusScorer._signal_emotion。仅作用于 emotion 子信号，keyword/cadence 不受影响。"""
+
+FOCUS_EMOTION_POSITIVE_SCALE = 0.5
+"""正效价（用户开心）时 emotion 信号的「反凝神」幅度系数。
+- emotion 信号现在是**带符号**的：负效价 → 正 distress（推进凝神，上限 +1）；正效价 → 负值
+  （把 charge 往下拉、别打扰好心情），幅度上限为此系数。
+- 映射（正效价侧）：emotion = -(positivity × m × 此系数)，其中 positivity=max(0,valence)，
+  m = AROUSAL_FLOOR + (1-AROUSAL_FLOOR)×arousal（与 distress 侧同一 arousal 放大器，∈[0.5,1]）。
+- 取 0.5 ⇒ 正效价侧最深为 -0.5（valence=+1、arousal=1，m=1）；valence=+1、arousal=0.3 时
+  m=0.65 → emotion=-0.5×0.65=-0.325。即正效价拉力天花板只有负效价 distress 的一半。
+- 须 ∈ [0,1]；=0 关闭「开心反凝神」、退回「正效价不投票（None）」。"""
+
+FOCUS_CADENCE_BASELINE_WINDOW = 6
+"""cadence 信号的基线窗口：取最近 N 条用户消息长度算中位数做基线。
+- 用途：FocusScorer 内 per-session 滚动 buffer 的 maxlen。
+- 上游：每条真用户消息的字符长度。"""
+
+FOCUS_CADENCE_MIN_SAMPLES = 3
+"""cadence 信号生效所需的最小样本数。
+- 用途：buffer 内样本不足 N 时 cadence 子信号判为「不适用」（不进归一化），
+  避免会话刚开头基线不稳就乱触发。
+- 上游：滚动 buffer 当前长度。"""
+
+FOCUS_CADENCE_DROP_RATIO = 0.4
+"""cadence 满格所需的「当前长度 / 基线中位数」下跌比。
+- 用途：当前消息长度 ≤ 此比 × 基线中位数 → cadence 子信号 = 1.0；≥ 基线 → 0.0；
+  中间线性。例：基线 30 字、ratio 0.4，则 ≤12 字（「嗯。」「知道了。」）算满格。
+- 上游：当前消息长度与基线中位数之比。"""
+
+# NOTE: silence / open_thread 信号已移除——idle（proactive）路径不再评分，改为只用
+# FOCUS_IDLE_SILENT/REPLIED_RETENTION 让 charge 衰减（凝神进入/维持只由 inline 驱动）。
+# 故 FOCUS_SILENCE_MIN_SECONDS / FOCUS_SILENCE_FULL_SECONDS 一并退役，避免死配置。
+
+# NOTE: FOCUS_IDLE_THRESHOLD_MULTIPLIER（凝神态下调低 idle 触发阈值「她降临一次后
+# 主动追一两轮」）属 Path B 的 idle-threshold-drop 子特性，该特性尚未接线，故旋钮
+# 暂不引入，待实现该 feature 时再随它一起加，避免留下死配置。设计见 blueprint。
+
+# NOTE: FOCUS_EPISODE_MEMORY_ENABLED（凝神退出顺便批量整理 reflection/persona/
+# facts/ban-list 的开关）同理暂不引入——FOCUS_EXIT → memory 订阅者特性尚未接线，
+# 旋钮待该 PR 实现时随它加回，避免死配置。设计见 docs/design/focus-truename-mode.md。
+
 MINI_GAME_INVITE_ENABLED = True
 """Mini-game 邀请短路通道总开关（默认开）。
 - 用途：proactive_chat 在过完 propensity / skip_probability / restricted_screen_only
@@ -1727,12 +2114,12 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
   从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
 - 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
 
-MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer", "badminton")
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
   config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
-- 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
-  分发逻辑无须改动。
+- 当前只有 soccer；badminton 后端与文案在本 PR 预埋，但实际邀请入口需要等
+  页面路由和 Electron 窗口注册在后续 PR 落地后再启用。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
@@ -1751,6 +2138,7 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
     'soccer': '/soccer_demo',
+    'badminton': '/badminton_demo',
 }
 """game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
 ``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
@@ -1806,13 +2194,13 @@ TRANSLATION_OUTPUT_MAX_TOKENS = 1000
 - 用途：单 chunk 翻译输出上限。
 - 上游：LLM 输出。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_SHORT = 5000
-"""翻译短文本路径的分块字符数上限（chars，遗留 char-based）。
-- 用途：单次翻译调用的输入字符数；长文本被切成多块串行翻译。
+TRANSLATION_CHUNK_MAX_TOKENS_SHORT = 2000
+"""翻译短文本路径的分块 token 上限。
+- 用途：单次翻译调用的输入 token 数；长文本被切成多块串行翻译。
 - 上游：用户/系统传入的待翻译原文。"""
 
-TRANSLATION_CHUNK_MAX_CHARS_LONG = 15000
-"""翻译长文本路径的分块字符数上限（chars，遗留 char-based）。
+TRANSLATION_CHUNK_MAX_TOKENS_LONG = 5000
+"""翻译长文本路径的分块 token 上限。
 - 用途：长文本翻译路径下的更大 chunk size。
 - 上游：用户/系统传入的待翻译原文。"""
 
@@ -1883,6 +2271,8 @@ from config.providers import (  # noqa: E402, F401
     MODELS_EXTRA_BODY_MAP,
     get_extra_body,
     get_agent_extra_body,
+    focus_extra_body,
+    leaks_thinking_in_content,
 )
 
 
@@ -1928,6 +2318,8 @@ __all__ = [
     'MODELS_EXTRA_BODY_MAP',
     'get_extra_body',
     'get_agent_extra_body',
+    'focus_extra_body',
+    'leaks_thinking_in_content',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
     'EXTRA_BODY_GEMINI',
@@ -2014,14 +2406,16 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
-    'PERSONA_RENDER_TOKEN_BUDGET',
-    'REFLECTION_RENDER_TOKEN_BUDGET',
+    'PERSONA_RENDER_MAX_TOKENS',
+    'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
     # §3.7 LLM Context & Output Budget
     'RECENT_HISTORY_MAX_ITEMS',
     'RECENT_COMPRESS_THRESHOLD_ITEMS',
     'RECENT_SUMMARY_MAX_TOKENS',
     'RECENT_PER_MESSAGE_MAX_TOKENS',
+    'RECENT_COMPRESS_INPUT_BUDGET_TOKENS',
+    'RECENT_HARD_CAP_TOKENS',
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
@@ -2032,6 +2426,8 @@ __all__ = [
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'LLM_OUTPUT_GUARD_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
@@ -2051,6 +2447,10 @@ __all__ = [
     'TASK_SUMMARY_MAX_TOKENS',
     'TASK_LARGE_DETAIL_MAX_TOKENS',
     'TASK_ERROR_MAX_TOKENS',
+    'AGENT_CALLBACK_TEXT_MAX_TOKENS',
+    'AGENT_CALLBACK_TOTAL_MAX_TOKENS',
+    'AGENT_CALLBACK_QUEUE_MAX_ITEMS',
+    'AGENT_DEDUP_CANDIDATES_MAX',
     'AGENT_TASK_TRACKER_MAX_RECORDS',
     'AGENT_RECENT_CTX_PER_ITEM_TOKENS',
     'AGENT_RECENT_CTX_TOTAL_TOKENS',
@@ -2059,6 +2459,8 @@ __all__ = [
     'AGENT_PLUGIN_COARSE_MAX_TOKENS',
     'AGENT_UNIFIED_ASSESS_MAX_TOKENS',
     'AGENT_PLUGIN_FULL_MAX_TOKENS',
+    'AGENT_ACTION_GATE_ENABLED',
+    'AGENT_ACTION_GATE_THRESHOLD',
     'PLUGIN_INPUT_DESC_MAX_TOKENS',
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',
@@ -2075,6 +2477,7 @@ __all__ = [
     'ANTI_REPEAT_BM25_K1',
     'ANTI_REPEAT_BM25_B',
     'ANTI_REPEAT_MIN_DRAFT_TOKENS',
+    'ANTI_REPEAT_EXEMPT_SOURCE_TAGS',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',
@@ -2106,8 +2509,8 @@ __all__ = [
     'EMOTION_ANALYSIS_MAX_TOKENS',
     'PLUGIN_USER_CONTEXT_MAX_ITEMS',
     'TRANSLATION_OUTPUT_MAX_TOKENS',
-    'TRANSLATION_CHUNK_MAX_CHARS_SHORT',
-    'TRANSLATION_CHUNK_MAX_CHARS_LONG',
+    'TRANSLATION_CHUNK_MAX_TOKENS_SHORT',
+    'TRANSLATION_CHUNK_MAX_TOKENS_LONG',
     'VISION_ANALYSIS_MAX_TOKENS',
     'CONNECTIVITY_TEST_MAX_TOKENS',
     'MCP_TOOL_RESULT_MAX_TOKENS',

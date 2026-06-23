@@ -224,6 +224,7 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
   mode: string
   entry: string
   source: string
+  dependencies?: Array<{ path: string; source: string }>
   source_locale?: string
   translations?: Record<string, Record<string, string>>
   warnings?: PluginUiWarning[]
@@ -255,6 +256,7 @@ export function getPluginHostedSurfaceContext(pluginId: string, params: {
 export function callPluginHostedSurfaceAction(pluginId: string, actionId: string, args?: Record<string, any>, surface?: {
   kind: PluginUiSurface['kind']
   id: string
+  locale?: string
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -266,6 +268,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
+    locale: surface?.locale,
   })
 }
 

@@ -237,3 +237,49 @@ def test_music_playing_hint_with_braced_track_name_survives_outer_format(lang: s
     )
     final = _simulate_outer_format(prompt)
     assert weird_track in final, f"lang={lang} 歌名 {weird_track!r} 丢失：{final!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 猫咪专属问候（从猫咪形态变回猫娘 / 请她回来时触发）—— 同样过反物化护栏。
+# 与 trigger_cat_greeting 一致：模板含 {reason_hint}/{elapsed}/{time_hint}/{master}，
+# reason_hint 先 .format(master=...) 再注入主模板，整体再 .format()。
+# ─────────────────────────────────────────────────────────────────────────────
+
+from config.prompts.prompts_proactive import (  # noqa: E402
+    get_cat_greeting_prompt,
+    get_cat_greeting_reason_hint,
+)
+
+# (behavior, duration_seconds) 覆盖清醒/打盹/熟睡三行为 × 短/久两档（> 3min 门槛）
+_CAT_GREETING_CASES = [
+    ('awake', 300), ('awake', 1000),
+    ('nap', 300), ('nap', 2000),
+    ('sleep', 300), ('sleep', 2000),
+]
+
+
+def _format_cat_greeting(behavior: str, duration: int, was_auto: bool, lang: str, master: str) -> str:
+    template = get_cat_greeting_prompt(behavior, duration, lang)
+    assert template is not None, f"{behavior}/{duration}/{lang} 不应静默"
+    reason = get_cat_greeting_reason_hint(was_auto, lang).format(master=master)
+    return template.format(
+        reason_hint=reason, elapsed='10 分钟', name='奈々', master=master,
+        time_hint='(time hint)',
+    )
+
+
+@pytest.mark.parametrize('lang', LOCALES)
+@pytest.mark.parametrize('behavior,duration', _CAT_GREETING_CASES)
+@pytest.mark.parametrize('was_auto', [True, False])
+def test_cat_greeting_no_dehumanize_and_expands_master(lang, behavior, duration, was_auto) -> None:
+    out = _format_cat_greeting(behavior, duration, was_auto, lang, MASTER)
+    assert '{' not in out and '}' not in out, f"lang={lang} 残留占位符: {out!r}"
+    assert MASTER in out, f"lang={lang} 实名未注入: {out!r}"
+    _assert_no_forbidden(out, ctx=f"cat_greeting {behavior}/{duration}/{lang}/auto={was_auto}")
+
+
+def test_cat_greeting_silent_below_threshold() -> None:
+    """猫咪时长 < 3min 应静默（返回 None），不触发问候。"""
+    for lang in LOCALES:
+        assert get_cat_greeting_prompt('awake', 179, lang) is None
+        assert get_cat_greeting_prompt('nap', 0, lang) is None

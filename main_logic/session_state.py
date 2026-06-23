@@ -1,20 +1,38 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Per-session event-driven state machine.
 
-此模块把散落在 ``LLMSessionManager`` / ``OmniOfflineClient`` 中的若干"谁在占用
-当前轮次"信号（``current_speech_id`` 轮换、``session._is_responding``、
-``_proactive_expected_sid`` contextvar、``last_user_activity_time``）收拢到一个
-单点状态机。目的：
+This module gathers the various "who owns the current turn" signals previously
+scattered across ``LLMSessionManager`` / ``OmniOfflineClient``
+(``current_speech_id`` rotation, ``session._is_responding``,
+``_proactive_expected_sid`` contextvar, ``last_user_activity_time``) into a
+single-point state machine. Goals:
 
-1. 主动搭话（proactive）流水线的 phase1/phase2 可以**零成本**（O(1) 读，无锁）
-   频繁询问 ``is_proactive_preempted(claim_token)`` —— 即使在每个 LLM chunk
-   之间 check，也不会引入可观测开销。
-2. 把 "用户接管" / "AI 开始回复" 等信号以事件形式发布，各消费者（TTS worker、
-   日志、前端 sync）可以订阅而不必直读多个字段。
-3. per-catgirl（未来可扩展为 per-catgirl+user）独立实例，状态互不干扰。
+1. The proactive-chat pipeline's phase1/phase2 can poll
+   ``is_proactive_preempted(claim_token)`` at **zero cost** (O(1) read, no lock)
+   — even checking between every LLM chunk introduces no observable overhead.
+2. Signals like "user takes over" / "AI starts replying" are published as
+   events; consumers (TTS worker, logging, frontend sync) can subscribe instead
+   of reading multiple fields directly.
+3. Independent per-catgirl instances (extensible to per-catgirl+user later),
+   with no state interference between them.
 
-本模块在 Stage 1 引入时作为 facade：事件发射点写在既有的 sid 轮换 / proactive
-生命周期处，旧字段（``current_speech_id`` / ``_is_responding``）继续存在，
-消费者逐步迁移（见 Stage 2）。
+Introduced in Stage 1 as a facade: event emission points sit at the existing
+sid rotation / proactive lifecycle spots, the old fields
+(``current_speech_id`` / ``_is_responding``) remain, and consumers migrate
+incrementally (see Stage 2).
 """
 
 from __future__ import annotations
@@ -22,13 +40,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Union
 
 
 class TurnOwner(Enum):
-    """谁在占用当前 turn。"""
+    """Who owns the current turn."""
 
     NONE = "none"
     USER = "user"          # 用户输入中 / AI 正在为用户回复
@@ -36,7 +54,7 @@ class TurnOwner(Enum):
 
 
 class ProactivePhase(Enum):
-    """主动搭话流水线当前阶段（text mode；voice fudge 不走这里）。"""
+    """Current phase of the proactive-chat pipeline (text mode; voice fudge does not go through here)."""
 
     IDLE = "idle"
     PHASE1 = "phase1"            # fetch + unified LLM
@@ -44,8 +62,25 @@ class ProactivePhase(Enum):
     COMMITTING = "committing"    # finish_proactive_delivery 内
 
 
+class CognitionMode(Enum):
+    """How hard the companion is thinking *right now* (docs/design/focus-truename-mode.md).
+
+    Orthogonal to ``TurnOwner`` / ``ProactivePhase`` (which track *who owns
+    the turn*). ``REGULAR`` is the everyday 90% light-hearted baseline
+    (thinking globally disabled). ``FOCUS`` is the signal-triggered,
+    user-invisible "thinking-on + stronger model" state that delivers the
+    10% "arrival" moment. ``TRUE_NAME`` is the v2 destructive tier
+    (persona/memory rewrite + sub-model dispatch) — declared here for
+    boundary clarity but not driven by any v1 transition.
+    """
+
+    REGULAR = "regular"
+    FOCUS = "focus"
+    TRUE_NAME = "true_name"   # v2 — no v1 transition reaches this
+
+
 class SessionEvent(Enum):
-    """写路径事件。发射方通过 ``fire()``，读路径只读 state 字段。"""
+    """Write-path events. Emitters go through ``fire()``; the read path only reads state fields."""
 
     USER_INPUT = "user_input"                  # 用户新一轮输入触发的 sid 轮换
     USER_ACTIVITY = "user_activity"            # 不轮换 sid 的用户活动（transcript 等）
@@ -54,6 +89,8 @@ class SessionEvent(Enum):
     PROACTIVE_PHASE2 = "proactive_phase2"      # 进入流式 TTS
     PROACTIVE_COMMITTING = "proactive_committing"  # 进入 finish_proactive_delivery
     PROACTIVE_DONE = "proactive_done"          # 主动搭话退出（成功 / pass / abort）
+    FOCUS_ENTER = "focus_enter"                # REGULAR → FOCUS（凝神进入）
+    FOCUS_EXIT = "focus_exit"                  # FOCUS → REGULAR（凝神退出，附带 episode 切片定位）
 
 
 Subscriber = Callable[[SessionEvent, dict], Union[None, Awaitable[None]]]
@@ -61,11 +98,13 @@ Subscriber = Callable[[SessionEvent, dict], Union[None, Awaitable[None]]]
 
 @dataclass
 class SessionStateMachine:
-    """单个 ``(lanlan_name, user)`` 会话的事件驱动状态机。
+    """Event-driven state machine for a single ``(lanlan_name, user)`` session.
 
-    写路径（``fire``）持 ``_write_lock``；读路径（``is_proactive_preempted``、
-    ``can_start_proactive``、``snapshot``）只读字段，无锁无 await。发射方可以
-    在任意 async 上下文里 fire，订阅回调会在 apply 之后异步派发，不阻塞事件流。
+    The write path (``fire``) holds ``_write_lock``; the read path
+    (``is_proactive_preempted``, ``can_start_proactive``, ``snapshot``) only reads
+    fields, with no locks and no awaits. Emitters may fire from any async context;
+    subscriber callbacks are dispatched asynchronously after apply, without blocking
+    the event flow.
     """
 
     lanlan_name: str
@@ -75,6 +114,17 @@ class SessionStateMachine:
     user_sid: Optional[str] = None
     last_user_activity: float = 0.0
     _preempted: bool = False
+    # ── Focus mode 凝神（docs/design/focus-truename-mode.md）─────────────
+    # ``mode`` is read on the O(1) lock-free path (callers building the LLM
+    # check ``sm.mode is CognitionMode.FOCUS`` before deciding thinking-on).
+    # The hysteresis counters are mutated only inside ``update_focus`` under
+    # ``_write_lock``.
+    mode: CognitionMode = CognitionMode.REGULAR
+    _focus_episode_id: Optional[str] = None
+    _focus_episode_started_at: float = 0.0
+    _focus_turn_count: int = 0
+    _focus_charge: float = 0.0  # leaky accumulator: charge*retention + score each scored turn
+    _focus_charge_at: float = 0.0  # wall-clock (time.time()) of last charge change, for time decay
     _subscribers: "dict[Union[SessionEvent, str], list[Subscriber]]" = field(
         default_factory=lambda: defaultdict(list)
     )
@@ -82,18 +132,22 @@ class SessionStateMachine:
 
     # ── 读路径（O(1)，热路径）─────────────────────────────────────────
     def is_proactive_preempted(self, claim_token: Optional[str] = None) -> bool:
-        """主动搭话路径是否应立刻 abort。
+        """Whether the proactive-chat path should abort immediately.
 
         Args:
-            claim_token: 调用段起点 snapshot 的 sid。
-                - phase1 前还没 claim 时传 ``None``，此时仅看 sticky preempt flag。
-                - phase2 起传 ``prepare_proactive_delivery`` 发出的 sid。
+            claim_token: the sid snapshotted at the start of the calling section.
+                - Pass ``None`` before phase1 has claimed; only the sticky preempt
+                  flag is checked then.
+                - From phase2 onward, pass the sid issued by
+                  ``prepare_proactive_delivery``.
 
-        规则：
-            1) ``_preempted`` sticky flag —— 任何 proactive 阶段期间 USER_INPUT
-               事件被记下时立刻翻为 True，直到 ``PROACTIVE_DONE`` 清零。
-            2) ``claim_token`` 非 None 且与当前 ``proactive_sid`` 不一致 ——
-               防御性兜底，正常情况 sticky flag 已先触发。
+        Rules:
+            1) ``_preempted`` sticky flag — flipped to True as soon as a USER_INPUT
+               event is recorded during any proactive phase, until ``PROACTIVE_DONE``
+               clears it.
+            2) ``claim_token`` is non-None and differs from the current
+               ``proactive_sid`` — defensive fallback; normally the sticky flag has
+               already fired first.
         """
         if self._preempted:
             return True
@@ -104,46 +158,56 @@ class SessionStateMachine:
         return False
 
     def mark_user_input_preempt(self) -> None:
-        """同步翻起 ``_preempted`` sticky flag（仅当 proactive 处于活动阶段）。
+        """Synchronously flip the ``_preempted`` sticky flag (only while proactive is in an active phase).
 
-        用于 ``handle_new_message`` / ``stream_text`` 等 sid 轮换路径在持有
-        ``self.lock``（保护 ``current_speech_id`` 的锁）的同一临界区内原子地
-        翻起抢占标记。否则以下 race 成立喵：
+        Used by sid-rotation paths such as ``handle_new_message`` / ``stream_text`` to
+        atomically raise the preempt flag inside the same critical section that holds
+        ``self.lock`` (the lock protecting ``current_speech_id``). Otherwise the
+        following race holds:
 
-        T1 持 self.lock 写新 user sid → 释放 lock → 去 await fire(USER_INPUT) …
-        T2 正好这个窗口里拿到 self.lock（走 prepare_proactive_delivery 的 lock
-           内 preempt 复查），看到 ``_preempted=False`` 继续往下，把刚写好的
-           user sid 再覆盖成 proactive sid，用户这轮回复的 chunk/TTS 全带错 sid。
+        T1 holds self.lock, writes the new user sid → releases the lock → goes to
+           await fire(USER_INPUT) …
+        T2 grabs self.lock exactly in this window (via the in-lock preempt re-check
+           of prepare_proactive_delivery), sees ``_preempted=False``, proceeds, and
+           overwrites the freshly written user sid with the proactive sid — every
+           chunk/TTS of the user's reply this turn now carries the wrong sid.
 
-        本方法不走 ``_write_lock``：同步布尔写 + 只读判定无需跨协程同步；并且允许
-        调用方在 ``self.lock`` 内无 await 完成"写 sid + 翻 flag"两步合一。完整的
-        ``SessionEvent.USER_INPUT`` 仍然需要在锁外 fire，以更新 owner/user_sid/
-        last_user_activity 并派发订阅者。
+        This method does not take ``_write_lock``: a synchronous boolean write plus a
+        read-only check needs no cross-coroutine synchronization, and this lets the
+        caller complete "write sid + flip flag" as one step inside ``self.lock``
+        without awaiting. The full ``SessionEvent.USER_INPUT`` must still be fired
+        outside the lock to update owner/user_sid/last_user_activity and dispatch
+        subscribers.
         """
         if self.phase in _PROACTIVE_ACTIVE_PHASES:
             self._preempted = True
 
     async def reset(self, *, force: bool = False) -> None:
-        """Teardown hook：把 SM 复位到初始态，清掉可能泄漏的 proactive 残留。
+        """Teardown hook: reset the SM to its initial state, clearing any leaked proactive residue.
 
-        ``LLMSessionManager`` 跨多次 ``start_session()`` / ``end_session()`` 复用
-        同一个 SM 实例。若上一轮 proactive 在 PHASE1/PHASE2 时 WebSocket 意外
-        断开、``PROACTIVE_DONE`` 来不及 fire，``phase`` 和 ``_preempted`` 会
-        粘到下一轮会话，导致 ``can_start_proactive`` 永远返回 False。本方法
-        由 ``_init_renew_status`` 调用，保证新会话拿到干净 SM。
+        ``LLMSessionManager`` reuses the same SM instance across multiple
+        ``start_session()`` / ``end_session()`` calls. If the previous proactive run
+        was in PHASE1/PHASE2 when the WebSocket dropped unexpectedly and
+        ``PROACTIVE_DONE`` never fired, ``phase`` and ``_preempted`` would stick into
+        the next session, making ``can_start_proactive`` return False forever. This
+        method is called by ``_init_renew_status`` to guarantee a clean SM for the
+        new session.
 
-        保留 ``_subscribers`` 和 ``last_user_activity`` —— 前者是应用层注册的
-        钩子不该无故吹飞，后者跨会话单调递增有诊断价值。
+        ``_subscribers`` and ``last_user_activity`` are preserved — the former are
+        application-level hooks that should not be blown away for no reason, and the
+        latter is monotonically increasing across sessions and has diagnostic value.
 
         Args:
-            force: 若为 ``False``（默认），在 proactive 活动阶段（PHASE1/PHASE2/
-                COMMITTING）本方法是 **no-op**，由活动中的 proactive 自身负责
-                ``PROACTIVE_DONE`` 清理——这是保护 ``prepare_proactive_delivery``
-                在某些并发场景（例如 auto-start 期间偶发错误回收）下不被误清。
-                若为 ``True``，**强制**复位一切状态，不管当前 phase。真正的会话
-                teardown（WS 断开、``end_session``）必须用 ``force=True``——否则
-                活动中的 proactive 卡死导致的 phase/preempt 泄漏会堵死下一轮
-                ``can_start_proactive``。
+            force: if ``False`` (default), this method is a **no-op** while proactive
+                is in an active phase (PHASE1/PHASE2/COMMITTING); the active proactive
+                run is responsible for its own ``PROACTIVE_DONE`` cleanup — this
+                protects ``prepare_proactive_delivery`` from being wrongly cleared in
+                certain concurrent scenarios (e.g. sporadic error recovery during
+                auto-start). If ``True``, **forcibly** reset everything regardless of
+                the current phase. Real session teardown (WS disconnect,
+                ``end_session``) must use ``force=True`` — otherwise phase/preempt
+                leaks from a stuck active proactive would block the next round's
+                ``can_start_proactive``.
         """
         async with self._write_lock:
             if not force and self.phase in _PROACTIVE_ACTIVE_PHASES:
@@ -154,24 +218,29 @@ class SessionStateMachine:
             self.proactive_sid = None
             self.user_sid = None
             self._preempted = False
+            # Focus is session-scoped: a new session always starts REGULAR
+            # (restart / teardown never restores an elevated mode).
+            self._clear_focus_state()
 
     def can_start_proactive(self, session: Any = None) -> bool:
-        """能否发起新一轮主动搭话（入口 409 前置判定用）。
+        """Whether a new proactive-chat round can start (used as the entry-point 409 pre-check).
 
         Args:
-            session: 可选，当前 session（OmniOfflineClient / OmniRealtimeClient）。
-                若传入且 ``_is_responding == True``，说明 AI 正在为用户回复，
-                应拒绝 proactive。这一步把原来散在 router 里直读 session 字段
-                的检查收拢到 SM。
+            session: optional, the current session (OmniOfflineClient /
+                OmniRealtimeClient). If provided and ``_is_responding == True``, the
+                AI is currently replying to the user and proactive should be refused.
+                This consolidates the checks that used to read session fields directly
+                in the router into the SM.
 
-        返回 False 的两种情况：
-            - phase != IDLE（另一轮 proactive 在跑 / 正在 commit）
-            - session._is_responding == True（AI 正在为用户回复）
+        Returns False in two cases:
+            - phase != IDLE (another proactive round is running / committing)
+            - session._is_responding == True (the AI is replying to the user)
 
-        注意：**不**基于 ``owner == USER`` 判拒。USER_INPUT 事件把 owner 翻到
-        USER 之后没有 AI_RESPONSE_END 事件将其复位（Stage 2 未做该项迁移），
-        若此处卡 owner == USER 会导致用户发第一条消息后所有 proactive 都被
-        永久 409 掉。owner 目前只用于 sticky preempt 的语义，不用于 gating。
+        Note: we do **not** reject based on ``owner == USER``. After USER_INPUT flips
+        owner to USER there is no AI_RESPONSE_END event to reset it (that migration
+        was not done in Stage 2); gating on owner == USER here would permanently 409
+        every proactive after the user's first message. owner is currently only used
+        for sticky-preempt semantics, not for gating.
         """
         if self.phase is not ProactivePhase.IDLE:
             return False
@@ -180,14 +249,15 @@ class SessionStateMachine:
         return True
 
     async def try_start_proactive(self, session: Any = None) -> bool:
-        """原子地"检查 + 占坑"：仅当 ``can_start_proactive`` 返回 True 时才翻
-        ``IDLE → PHASE1``，避免两次无锁检查之间的 TOCTOU 窗口导致两路并发 proactive
-        同时进入 PHASE1。
+        """Atomic "check + claim": only flips ``IDLE → PHASE1`` when ``can_start_proactive``
+        returns True, avoiding the TOCTOU window between two lock-free checks that
+        would let two concurrent proactive paths enter PHASE1 simultaneously.
 
-        返回 True 表示本次调用抢到了 turn 所有权（已翻 PHASE1，订阅者已收到
-        ``PROACTIVE_START``）；返回 False 表示另一路 proactive 抢先或 AI 正在响应，
-        调用方应直接返回 409（不需要再 fire ``PROACTIVE_DONE``，因为 ``PROACTIVE_START``
-        没发出）。
+        Returns True if this call won turn ownership (PHASE1 is set and subscribers
+        have received ``PROACTIVE_START``); returns False if another proactive path
+        got there first or the AI is responding, in which case the caller should
+        return 409 directly (no need to fire ``PROACTIVE_DONE``, since
+        ``PROACTIVE_START`` was never emitted).
         """
         async with self._write_lock:
             if self.phase is not ProactivePhase.IDLE:
@@ -202,8 +272,138 @@ class SessionStateMachine:
         _dispatch_subscribers(snap_subs, SessionEvent.PROACTIVE_START, {})
         return True
 
+    # ── Focus mode 凝神 ─────────────────────────────────────────────
+    async def update_focus(
+        self, score: float, *, topic_changed: bool = False,
+        retention_override: float | None = None,
+        count_turn: bool = True,
+    ) -> CognitionMode:
+        """Apply one Focus hysteresis tick for a just-scored turn; return the resulting mode.
+
+        Called once per turn by BOTH trigger paths. The INLINE path
+        (``stream_text``, a real user message) feeds the ``FocusScorer`` score
+        ∈ [0, 1] and is the ONLY path that can raise the charge / enter Focus.
+        The IDLE path (``proactive_chat``) feeds ``score=0`` with
+        ``retention_override`` set to the slower idle retention: a proactive
+        turn never props Focus up, it only lets an active episode cool down a
+        notch. Drives the ``REGULAR ⇄ FOCUS`` transition with asymmetric
+        thresholds + a hard turn cap (``config.FOCUS_*``). ``topic_changed=True``
+        forces an immediate exit regardless of score.
+
+        ``retention_override`` (when not None) replaces ``FOCUS_CHARGE_RETENTION``
+        for this tick only — used by the idle cooldown so proactive turns decay
+        the charge more slowly than inline turns.
+
+        The transition itself is a pure function (``_focus_decide``); this
+        method only wires config thresholds, mutates state under
+        ``_write_lock``, and dispatches ``FOCUS_ENTER`` / ``FOCUS_EXIT``
+        outside the lock. Returns the post-tick ``mode`` so the caller can
+        immediately build the LLM thinking-on (FOCUS) or off (REGULAR).
+
+        ``count_turn=False`` (idle cooldown) decays the charge without spending
+        a ``FOCUS_HARD_CAP_TURNS`` slot — the cap bounds real inline turns, not
+        proactive cooldown ticks.
+
+        ``FOCUS_EXIT`` carries ``episode_id`` + ``episode_started_at`` so a
+        future memory-side subscriber can slice the emotional episode out of
+        recent history and run the additive maintenance batch (deferred; see
+        docs/design/focus-truename-mode.md).
+        """
+        th = _focus_thresholds_from_config()
+        if retention_override is not None:
+            th = replace(th, retention=float(retention_override))
+        emit_event: Optional[SessionEvent] = None
+        emit_payload: dict = {}
+        snap_subs: "list[Subscriber]" = []
+        async with self._write_lock:
+            if not th.enabled:
+                # Master switch off: clear ALL focus residue unconditionally —
+                # not just when mode==FOCUS. The leaky accumulator can sit in
+                # REGULAR with _focus_charge just under the enter bar; if the
+                # flag is flipped off there, leaving the charge frozen would let
+                # an unrelated mild cue enter Focus on stale pre-disable evidence
+                # once re-enabled. _clear_focus_state is idempotent when already
+                # clean.
+                self._clear_focus_state()
+                return self.mode
+
+            # Double decay, time component: bleed the charge for the wall-clock
+            # seconds since it last changed, BEFORE this turn's retention+score.
+            # Lazy (no ticker) — silence between turns still ages the charge, and
+            # the frontend extrapolates the same curve for a smooth glow.
+            now = time.time()
+            if self._focus_charge > 0.0 and self._focus_charge_at > 0.0:
+                self._focus_charge = _decay_charge_over_time(
+                    self._focus_charge, now - self._focus_charge_at, th,
+                )
+            self._focus_charge_at = now
+
+            decision = _focus_decide(
+                mode=self.mode,
+                focus_turn_count=self._focus_turn_count,
+                charge=self._focus_charge,
+                score=score,
+                topic_changed=topic_changed,
+                th=th,
+                count_turn=count_turn,
+            )
+            if decision.action is _FocusAction.ENTER:
+                self.mode = CognitionMode.FOCUS
+                self._focus_episode_id = f"{self.lanlan_name}-{int(time.time() * 1000)}"
+                self._focus_episode_started_at = time.time()
+                self._focus_turn_count = decision.turn_count
+                self._focus_charge = decision.charge
+                emit_event = SessionEvent.FOCUS_ENTER
+                emit_payload = {"episode_id": self._focus_episode_id, "score": score,
+                                "charge": decision.charge}
+            elif decision.action is _FocusAction.EXIT:
+                emit_event = SessionEvent.FOCUS_EXIT
+                emit_payload = {
+                    "episode_id": self._focus_episode_id,
+                    "episode_started_at": self._focus_episode_started_at,
+                    "reason": decision.reason,
+                    "turns": self._focus_turn_count,
+                }
+                self._clear_focus_state()
+            else:  # STAY — update accumulator only, no transition event
+                self._focus_turn_count = decision.turn_count
+                self._focus_charge = decision.charge
+
+            if emit_event is not None:
+                snap_subs = list(self._subscribers.get(emit_event, ())) + list(
+                    self._subscribers.get(_WILDCARD, ())
+                )
+            result_mode = self.mode
+
+        if emit_event is not None:
+            _dispatch_subscribers(snap_subs, emit_event, emit_payload)
+        return result_mode
+
+    async def clear_focus(self) -> None:
+        """Drop all Focus state to the REGULAR baseline WITHOUT emitting FOCUS_EXIT.
+
+        For lifecycle resets where the conversation context itself is wiped
+        (e.g. repetition recovery clears ``_conversation_history``): the
+        emotional episode's evidence is gone, so charge / mode / turn count must
+        not carry into the emptied conversation. No ``FOCUS_EXIT`` is fired
+        because there is no coherent episode to hand to memory synthesis — this
+        mirrors ``reset``, which also clears Focus silently. (The disabled /
+        privacy gates use ``update_focus`` instead, which self-clears too.)
+        """
+        async with self._write_lock:
+            self._clear_focus_state()
+
+    def _clear_focus_state(self) -> None:
+        """Reset all Focus fields to the REGULAR baseline. Caller holds ``_write_lock``."""
+        self.mode = CognitionMode.REGULAR
+        self._focus_episode_id = None
+        self._focus_episode_started_at = 0.0
+        self._focus_turn_count = 0
+        self._focus_charge = 0.0
+        self._focus_charge_at = 0.0
+
     def snapshot(self) -> dict:
-        """供日志 / 诊断使用的一致性快照。"""
+        """Consistent snapshot for logging / diagnostics."""
         return {
             "lanlan_name": self.lanlan_name,
             "owner": self.owner.value,
@@ -212,13 +412,19 @@ class SessionStateMachine:
             "user_sid": self.user_sid,
             "preempted": self._preempted,
             "last_user_activity": self.last_user_activity,
+            "mode": self.mode.value,
+            "focus_turn_count": self._focus_turn_count,
+            "focus_charge": round(self._focus_charge, 3),
+            "focus_charge_at": self._focus_charge_at,
+            "focus_episode_id": self._focus_episode_id,
         }
 
     # ── 写路径 ──────────────────────────────────────────────────────
     async def fire(self, event: SessionEvent, **payload: Any) -> None:
-        """发射事件；在 ``_write_lock`` 内 apply，随后在锁外异步派发订阅。
+        """Fire an event; applied inside ``_write_lock``, then dispatched to subscribers asynchronously outside the lock.
 
-        订阅者在 apply 之后观察到的状态必然是"事件生效后"的状态。
+        The state subscribers observe after apply is guaranteed to be the
+        "post-event" state.
         """
         async with self._write_lock:
             self._apply(event, payload)
@@ -229,7 +435,7 @@ class SessionStateMachine:
         _dispatch_subscribers(snap_subs, event, payload)
 
     def _apply(self, event: SessionEvent, payload: dict) -> None:
-        """内部状态转移。调用方已持 ``_write_lock``。"""
+        """Internal state transition. Caller already holds ``_write_lock``."""
         if event is SessionEvent.USER_INPUT:
             # 任何 proactive 阶段遇到 USER_INPUT 都 sticky preempt
             if self.phase in _PROACTIVE_ACTIVE_PHASES:
@@ -274,7 +480,7 @@ class SessionStateMachine:
 
     # ── 订阅 ────────────────────────────────────────────────────────
     def subscribe(self, event: Optional[SessionEvent], cb: Subscriber) -> None:
-        """订阅事件；``event=None`` 表示订阅全部。"""
+        """Subscribe to events; ``event=None`` means subscribe to all."""
         key = _WILDCARD if event is None else event
         self._subscribers[key].append(cb)
 
@@ -292,9 +498,10 @@ def _dispatch_subscribers(
     event: SessionEvent,
     payload: dict,
 ) -> None:
-    """统一派发订阅者：同步抛异常静默；返回 awaitable（包括 coroutine、Task、
-    Future、自定义 awaitable）统一 ``ensure_future`` 包装并挂 done-callback，
-    避免 Task/Future 类型的异常绕过吞噬逻辑泄漏到事件循环。
+    """Unified subscriber dispatch: sync exceptions are swallowed silently; any returned
+    awaitable (coroutine, Task, Future, custom awaitable) is wrapped via
+    ``ensure_future`` with a done-callback attached, so Task/Future-type exceptions
+    cannot bypass the swallowing logic and leak into the event loop.
     """
     for cb in subs:
         try:
@@ -315,11 +522,12 @@ def _dispatch_subscribers(
 
 
 def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
-    """异步订阅者抛异常时静默（只取一次结果避免 warning），由订阅者自行负责上报。
+    """Silently swallow async subscriber exceptions (retrieve the result once to avoid the warning); subscribers are responsible for their own reporting.
 
-    ``asyncio.CancelledError`` 是 ``BaseException`` 子类，不被 ``except Exception``
-    捕获；进程关停 / 任务 cancel 路径下若不单独捕获会绕过 done-callback 继续冒泡
-    触发 "Task exception was never retrieved" warning。
+    ``asyncio.CancelledError`` is a ``BaseException`` subclass and is not caught by
+    ``except Exception``; on process shutdown / task-cancel paths, failing to catch it
+    separately would let it bypass the done-callback and bubble up, triggering the
+    "Task exception was never retrieved" warning.
     """
     try:
         task.result()
@@ -329,6 +537,148 @@ def _swallow_subscriber_exc(task: "asyncio.Task") -> None:
         # 故意吞：避免订阅者异常冒泡污染事件流，也避免 "Task exception was
         # never retrieved" 刷屏。订阅者自己负责在 callback 内部落日志。
         return
+
+
+# ── Focus hysteresis: pure transition core ──────────────────────────
+# Kept as a free function (no SM state, no lock, no config import) so the
+# REGULAR ⇄ FOCUS logic is unit-testable in isolation with explicit
+# thresholds. ``SessionStateMachine.update_focus`` wires config + locking
+# + event dispatch around it.
+
+class _FocusAction(Enum):
+    STAY = "stay"
+    ENTER = "enter"
+    EXIT = "exit"
+
+
+@dataclass(frozen=True)
+class FocusThresholds:
+    """Snapshot of the Focus tuning knobs for one decision (from ``config.FOCUS_*``)."""
+
+    enabled: bool
+    retention: float       # leaky-accumulator retention per turn (0..1)
+    enter: float           # charge >= enter ⇒ REGULAR → FOCUS (also "full activation")
+    exit: float            # charge < exit (while FOCUS) ⇒ FOCUS → REGULAR
+    hard_cap_turns: int
+    cap: float = 1.0               # charge ceiling (enter is entry, climbs past it to cap)
+    time_decay: float = 0.0        # per-second wall-clock decay while charge < enter
+    time_decay_activated: float = 0.0  # per-second decay while charge >= enter (slower)
+
+
+@dataclass(frozen=True)
+class _FocusDecision:
+    action: _FocusAction
+    turn_count: int        # focus_turn_count to store if this decision is applied
+    charge: float          # post-tick charge to store if this decision is applied
+    reason: str = ""       # exit cause: "charge"/"topic_switch"/"hard_cap"/"decayed"
+
+
+def _focus_decide(
+    *,
+    mode: CognitionMode,
+    focus_turn_count: int,
+    charge: float,
+    score: float,
+    topic_changed: bool,
+    th: FocusThresholds,
+    count_turn: bool = True,
+) -> _FocusDecision:
+    """Pure leaky-accumulator transition for one scored turn.
+
+    Each turn integrates the score into a leaky charge:
+    ``new_charge = clamp(charge * retention + score, 0, cap)``. ``score`` can be
+    NEGATIVE (a positive/happy emotion votes Focus down), so the result is
+    clamped at 0 — a good mood drains charge but never goes below empty; the
+    ``cap`` (≥ ``enter``) lets sustained strong evidence climb past the entry bar
+    for a brighter/longer glow. Entry: ``REGULAR`` + ``new_charge >= enter`` ⇒
+    ENTER — scattered mild cues accumulate over several turns, one strong message
+    enters at once. A ``topic_changed`` turn drops the old accumulator and reseeds
+    from this turn's score alone. Exit while ``FOCUS``: explicit topic switch,
+    hard turn cap, or ``new_charge < exit``. Otherwise STAY. ``TRUE_NAME`` (v2)
+    inert. (Wall-clock time decay is applied separately in ``update_focus`` before
+    this; see ``_decay_charge_over_time``.)
+
+    The leak replaces the old "K consecutive low turns" streak, which a single
+    noisy mid-score turn could reset and thereby stick focus on indefinitely.
+    """
+    if topic_changed:
+        # An explicit subject switch ends the OLD emotional thread — no charge
+        # leaks across the pivot. But the new topic may itself be vulnerable
+        # ("对了，我撑不住了" / "btw I'm overwhelmed"), so the current turn's
+        # score still seeds the new topic from a clean slate (a topic-switch
+        # opener must not make Focus deaf to the new topic's own evidence).
+        if mode is CognitionMode.FOCUS:
+            # Pivot away from the active episode ends it; the new topic
+            # re-accumulates from REGULAR starting next turn.
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="topic_switch")
+        new_charge = max(0.0, min(score, th.cap))
+        if new_charge >= th.enter:
+            return _FocusDecision(_FocusAction.ENTER, turn_count=1, charge=new_charge, reason="charge")
+        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=new_charge)
+
+    # score can be NEGATIVE now (a positive/happy emotion votes Focus down), so
+    # clamp the accumulator at 0 — a good mood drains charge but never goes below empty.
+    new_charge = max(0.0, min(charge * th.retention + score, th.cap))
+
+    if mode is CognitionMode.REGULAR:
+        if new_charge >= th.enter:
+            return _FocusDecision(_FocusAction.ENTER, turn_count=1, charge=new_charge, reason="charge")
+        return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=new_charge)
+
+    if mode is CognitionMode.FOCUS:
+        if focus_turn_count >= th.hard_cap_turns:
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="hard_cap")
+        if new_charge < th.exit:
+            return _FocusDecision(_FocusAction.EXIT, turn_count=0, charge=0.0, reason="decayed")
+        # ``count_turn=False`` (idle cooldown) decays the charge WITHOUT spending
+        # a hard-cap turn slot — the cap bounds real inline conversation turns,
+        # not proactive cooldown ticks (a silent scheduler poll must not age the
+        # episode toward the hard cap).
+        return _FocusDecision(
+            _FocusAction.STAY,
+            turn_count=focus_turn_count + (1 if count_turn else 0),
+            charge=new_charge,
+        )
+
+    # TRUE_NAME (v2) or any future mode — focus machine does not act.
+    return _FocusDecision(_FocusAction.STAY, turn_count=focus_turn_count, charge=charge)
+
+
+def _decay_charge_over_time(charge: float, elapsed_s: float, th: FocusThresholds) -> float:
+    """Wall-clock time decay of the charge over ``elapsed_s`` seconds.
+
+    The TIME component of the double decay (the per-turn ``retention`` in
+    ``_focus_decide`` is the other). Floored at the "full activation" line
+    (``enter``): once activated (charge >= enter) time decay can only bleed the
+    charge DOWN TO ``enter`` at the slower ``time_decay_activated`` rate, never
+    below — dropping out of activation requires a conversation turn (retention),
+    not mere silence. Below ``enter`` the charge bleeds to 0 at the faster
+    ``time_decay`` rate. Clamped — decay never raises charge.
+    """
+    if elapsed_s <= 0 or charge <= 0:
+        return max(0.0, charge)
+    if charge >= th.enter:
+        if th.time_decay_activated <= 0:
+            return charge
+        return max(th.enter, charge - th.time_decay_activated * elapsed_s)
+    if th.time_decay <= 0:
+        return charge
+    return max(0.0, charge - th.time_decay * elapsed_s)
+
+
+def _focus_thresholds_from_config() -> FocusThresholds:
+    """Read the live Focus knobs from ``config`` (call-time read so tests can monkeypatch)."""
+    import config
+    return FocusThresholds(
+        enabled=bool(config.FOCUS_MODE_ENABLED),
+        retention=float(config.FOCUS_CHARGE_RETENTION),
+        enter=float(config.FOCUS_CHARGE_ENTER),
+        exit=float(config.FOCUS_CHARGE_EXIT),
+        hard_cap_turns=int(config.FOCUS_HARD_CAP_TURNS),
+        cap=float(getattr(config, "FOCUS_CHARGE_CAP", 1.0)),
+        time_decay=float(getattr(config, "FOCUS_TIME_DECAY_PER_SEC", 0.0)),
+        time_decay_activated=float(getattr(config, "FOCUS_TIME_DECAY_PER_SEC_ACTIVATED", 0.0)),
+    )
 
 
 # 不对外导出 —— 内部哨兵，用于 ``subscribe(None, ...)``
@@ -341,6 +691,8 @@ _PROACTIVE_ACTIVE_PHASES = frozenset(
 
 
 __all__ = [
+    "CognitionMode",
+    "FocusThresholds",
     "ProactivePhase",
     "SessionEvent",
     "SessionStateMachine",

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Reconciler apply-handlers for the three evidence event types
 (memory-evidence-rfc §3.3.6).
@@ -209,9 +223,10 @@ def make_persona_evidence_handler(persona_manager):
 def make_persona_entry_handler(persona_manager):
     """Build the `persona.entry_updated` apply handler.
 
-    RFC §3.3.6: text 不在 payload；通过 rewrite_text_sha256 核对 view 是否
-    已 apply。mismatch → raise，让 reconciler 暂停等人工。PR-1 只处理
-    evidence 字段；PR-3 的 merge-on-promote 会实际改写 text。
+    RFC §3.3.6: text is not in the payload; rewrite_text_sha256 verifies whether
+    the view has already applied it. Mismatch → raise, pausing the reconciler
+    for manual intervention. PR-1 only handles evidence fields; PR-3's
+    merge-on-promote will actually rewrite the text.
     """
 
     def _apply(name: str, payload: dict) -> bool:
@@ -357,11 +372,12 @@ def make_reflection_archive_handler(reflection_engine):
 def make_persona_archive_handler(persona_manager):
     """Build the `persona.fact_added` apply handler for archive events.
 
-    RFC §3.5.6: persona archive 复用 fact_added 事件，用 payload 里的
-    `archive_shard_path` 字段区分主路径的 fact_added（该路径未来可能由
-    PR-3 emit，但当前代码未使用）。PR-2 handler 只对带 archive_shard_path
-    的 payload 做归档。不带该字段的 payload 当前视为 no-op — 正向
-    fact_added 还没走事件路径。
+    RFC §3.5.6: persona archiving reuses the fact_added event; the
+    `archive_shard_path` field in the payload distinguishes it from the
+    main-path fact_added (that path may be emitted by PR-3 in the future, but
+    current code doesn't use it). The PR-2 handler only archives payloads
+    carrying archive_shard_path. Payloads without that field are currently a
+    no-op — forward fact_added doesn't go through the event path yet.
 
     Self-healing semantics (coderabbit PR #934 round-2 Major #3 — twin
     of `make_reflection_archive_handler`):

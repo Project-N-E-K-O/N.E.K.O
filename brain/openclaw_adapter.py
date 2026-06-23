@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 OpenClaw Agent adapter.
 
@@ -20,7 +34,7 @@ import httpx
 
 from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
-from utils.llm_client import create_chat_llm, strip_thinking_segments
+from utils.llm_client import create_chat_llm_async, strip_thinking_segments
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -352,7 +366,7 @@ class OpenClawAdapter:
 
         llm = None
         try:
-            llm = create_chat_llm(
+            llm = await create_chat_llm_async(
                 model=model,
                 base_url=base_url,
                 api_key=api_key or None,
@@ -360,6 +374,7 @@ class OpenClawAdapter:
                 max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
                 extra_body=None,
+                timeout=10,  # quick magic-intent classification on the user path
             )
             response = await llm.ainvoke(
                 [
@@ -416,6 +431,18 @@ class OpenClawAdapter:
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}
+
+    @staticmethod
+    def rule_magic_command(user_text: str) -> Optional[str]:
+        """Public zero-LLM magic-command detector: the command a rule match would
+        dispatch, or None. Wraps the rule classifier so callers that need a
+        no-LLM magic-word check (e.g. the analyzer pre-gate) need not reach into
+        the private helper or pay the LLM path. Covers both exact magic words and
+        the natural-language phrase list (cancel-task, change-topic, approve, …)."""
+        result = OpenClawAdapter._classify_magic_intent_with_rules(user_text)
+        if isinstance(result, dict) and result.get("is_magic_intent"):
+            return result.get("command")
+        return None
 
     async def classify_magic_intent(self, user_text: str) -> Dict[str, Any]:
         text = str(user_text or "").strip()

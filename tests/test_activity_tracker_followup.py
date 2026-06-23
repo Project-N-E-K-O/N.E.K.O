@@ -14,12 +14,14 @@ to avoid touching the real user_preferences.json, and feeds a fabricated
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 
 import pytest
 
 from main_logic.activity.snapshot import (
     ActivitySnapshot,
+    UnfinishedThread,
     derive_skip_probability,
     derive_tone,
     format_activity_state_section,
@@ -357,8 +359,8 @@ def test_count_thresholds_reject_non_integer_floats():
     """``window_switch_transition_threshold`` and
     ``unfinished_thread_max_followups`` are count-shaped — floats like
     ``0.9`` or ``1.7`` must NOT silently truncate to 0 / 1 (which would
-    break transitioning detection or cap unfinished_thread at 1 instead
-    of the user's intended 2). Loader-side validation only checks
+    break transitioning detection or turn a typo into an unintended
+    unfinished_thread override). Loader-side validation only checks
     "positive number"; the integer guard lives in ActivityStateMachine.
 
     Verify by direct ActivityPreferences construction (bypasses the
@@ -375,8 +377,8 @@ def test_count_thresholds_reject_non_integer_floats():
         f'non-integer float must fall back to default 5; '
         f'got {sm._window_switch_transition_threshold}'
     )
-    assert sm._unfinished_thread_max_followups == 2, (
-        f'non-integer float must fall back to default 2; '
+    assert sm._unfinished_thread_max_followups == 1, (
+        f'non-integer float must fall back to default 1; '
         f'got {sm._unfinished_thread_max_followups}'
     )
 
@@ -478,6 +480,42 @@ def test_non_witty_tone_has_no_quality_bar():
     )
     out = format_activity_state_section(snap, lang='zh')
     assert '[PASS]' not in out
+
+
+@pytest.mark.unit
+def test_activity_state_renders_open_threads_in_state_section():
+    snap = ActivitySnapshot(
+        state='idle', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='playful',
+        open_threads=['AI 答应等会帮看测试还没看'],
+    )
+
+    out = format_activity_state_section(snap, lang='zh')
+
+    assert '开放话题:' in out
+    assert '- AI 答应等会帮看测试还没看' in out
+
+
+@pytest.mark.unit
+def test_activity_state_unfinished_thread_hides_followup_count():
+    snap = ActivitySnapshot(
+        state='focused_work', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='restricted_screen_only', tone='concise',
+        unfinished_thread=UnfinishedThread(
+            text='主人，你今天准备几点出发?',
+            age_seconds=60.0,
+            follow_up_count=0,
+            max_follow_ups=1,
+        ),
+    )
+
+    out = format_activity_state_section(snap, lang='zh')
+
+    assert '未收尾话题：「…主人，你今天准备几点出发?」(60s前)' in out
+    assert '已跟进' not in out
+    assert '/1' not in out
 
 
 # ── #1 / skip_probability ───────────────────────────────────────────
@@ -681,6 +719,374 @@ def test_loader_returns_defaults_when_no_activity_section(tmp_path):
     assert p.user_app_overrides == {}
 
 
+def test_conversation_turn_dispatcher_sends_messages_to_background_topic_pool():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='我想买凯迪拉克，但预算有点顶不住', now=1.0)
+    dispatcher.note_ai_message(text='别急着破釜沉舟，先看看预算。', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', '我想买凯迪拉克，但预算有点顶不住', 'zh-CN'),
+        ('ai', 'test_lanlan', '别急着破釜沉舟，先看看预算。', 'zh-CN'),
+    ]
+
+
+def test_conversation_turn_dispatcher_uses_global_language_for_background_topic_pool(monkeypatch):
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+    from utils import language_utils
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    monkeypatch.setattr(language_utils, 'get_global_language', lambda: 'en-US')
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.note_user_message(text='I want a new phone but I am not sure about the price.', now=1.0)
+    dispatcher.note_ai_message(text='Fair, let us slow down before your wallet files a complaint.', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', 'I want a new phone but I am not sure about the price.', 'en'),
+        ('ai', 'test_lanlan', 'Fair, let us slow down before your wallet files a complaint.', 'en'),
+    ]
+
+
+def test_conversation_turn_dispatcher_uses_session_language_for_background_topic_pool(monkeypatch):
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+    from utils import language_utils
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append(('ai', lanlan_name, text, lang))
+
+    monkeypatch.setattr(language_utils, 'get_global_language', lambda: 'en-US')
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.set_language('ja-JP')
+    dispatcher.note_user_message(text='転職について少し迷っています。', now=1.0)
+    dispatcher.note_ai_message(text='焦らず、次の条件を一緒に整理しよう。', now=2.0)
+
+    assert calls == [
+        ('user', 'test_lanlan', '転職について少し迷っています。', 'ja'),
+        ('ai', 'test_lanlan', '焦らず、次の条件を一緒に整理しよう。', 'ja'),
+    ]
+
+
+def test_conversation_turn_dispatcher_preserves_traditional_chinese_topic_locale():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    calls = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            calls.append((lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher('test_lanlan', privacy_check=lambda: False)
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+    dispatcher.set_language('zh-TW')
+    dispatcher.note_user_message(text='我想用繁體中文聊最近的生活選擇', now=1.0)
+
+    assert calls == [('test_lanlan', '我想用繁體中文聊最近的生活選擇', 'zh-TW')]
+
+
+def test_conversation_turn_dispatcher_keeps_topic_text_in_privacy_mode():
+    from main_logic.conversation_turns import (
+        ActivityTrackerTurnSink,
+        ConversationTurnDispatcher,
+        TopicHookTurnSink,
+    )
+
+    activity_calls = []
+    topic_calls = []
+
+    class FakeActivityTracker:
+        def on_user_message(self, *, text=None, now=None):
+            activity_calls.append(('user', text, now))
+
+        def on_ai_message(self, *, text=None, now=None):
+            activity_calls.append(('ai', text, now))
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('ai', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(ActivityTrackerTurnSink(FakeActivityTracker()))
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+    dispatcher.note_ai_message(text='secret ai turn?', now=2.0)
+
+    assert activity_calls == [
+        ('user', None, 1.0),
+        ('ai', None, 2.0),
+    ]
+    assert topic_calls == [
+        ('user', 'test_lanlan', 'secret user turn', 'zh-CN'),
+        ('ai', 'test_lanlan', 'secret ai turn?', 'zh-CN'),
+    ]
+
+
+def test_conversation_turn_dispatcher_redacts_when_privacy_check_fails():
+    from main_logic.conversation_turns import (
+        ActivityTrackerTurnSink,
+        ConversationTurnDispatcher,
+        TopicHookTurnSink,
+    )
+
+    activity_calls = []
+    topic_calls = []
+
+    class FakeActivityTracker:
+        def on_user_message(self, *, text=None, now=None):
+            activity_calls.append(('user', text, now))
+
+        def on_ai_message(self, *, text=None, now=None):
+            activity_calls.append(('ai', text, now))
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('user', lanlan_name, text, lang))
+
+        def note_ai_message(self, lanlan_name, text, *, lang='zh'):
+            topic_calls.append(('ai', lanlan_name, text, lang))
+
+    def broken_privacy_check():
+        raise RuntimeError("preference store unavailable")
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=broken_privacy_check,
+    )
+    dispatcher.add_sink(ActivityTrackerTurnSink(FakeActivityTracker()))
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert activity_calls == [('user', None, 1.0)]
+    assert topic_calls == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
+
+
+def test_conversation_turn_dispatcher_sends_redacted_turns_to_topic_store():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    notes = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert notes == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
+
+
+def test_topic_turn_sink_ignores_activity_private_for_signal_store():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    notes = []
+
+    class FakeTopicPool:
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            pool_factory=lambda: FakeTopicPool(),
+            activity_private_check=lambda: True,
+        )
+    )
+
+    dispatcher.note_user_message(text='private foreground turn', now=1.0)
+
+    assert notes == [('user', 'test_lanlan', 'private foreground turn', 'zh-CN')]
+
+
+def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in source
+    assert "await self._purge_topic_candidates_for_privacy()" not in source
+    assert source.index("self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)") < source.index("if rule_snap.state == 'private':")
+    assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
+
+
+def test_narration_suppressed_check_defaults_and_injection():
+    from main_logic.activity.tracker import UserActivityTracker
+
+    tracker = UserActivityTracker('test_lanlan')
+
+    # No predicate injected → never suppressed (old behavior preserved).
+    assert tracker._is_narration_suppressed() is False
+
+    # Predicate returning True → suppressed.
+    tracker.set_narration_suppressed_check(lambda: True)
+    assert tracker._is_narration_suppressed() is True
+
+    # Predicate returning False → not suppressed.
+    tracker.set_narration_suppressed_check(lambda: False)
+    assert tracker._is_narration_suppressed() is False
+
+    # Raising predicate → fail-open (don't suppress, don't crash the heartbeat).
+    def _boom():
+        raise RuntimeError('boom')
+
+    tracker.set_narration_suppressed_check(_boom)
+    assert tracker._is_narration_suppressed() is False
+
+    # Cleared → back to never suppressed.
+    tracker.set_narration_suppressed_check(None)
+    assert tracker._is_narration_suppressed() is False
+
+
+def test_activity_guess_loop_skips_llm_when_narration_suppressed():
+    """The narration-suppressed gate sits with the other no-consumer skips:
+    after the proactive-disabled gate, before the away bail, and uses the
+    fail-open helper rather than calling the predicate inline."""
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    assert "if self._is_narration_suppressed():" in source
+    assert (
+        source.index("if not _proactive_chat_enabled():")
+        < source.index("if self._is_narration_suppressed():")
+    )
+    assert (
+        source.index("if self._is_narration_suppressed():")
+        < source.index("if rule_snap.state == 'away':")
+    )
+
+
+def test_activity_guess_signature_excludes_idle_bucket():
+    """idle seconds growing must not flip the dedup signature.
+
+    While AFK, system_idle_seconds keeps climbing; the old code folded
+    idle//30 into the signature, flipping it every ~30s, defeating dedup
+    and burning one emotion-tier LLM call every ~40s during pure idle.
+    The signature now keys only on "what the user is doing" (state +
+    window + subcategory); the active->idle->away transition is still
+    caught by state (away bails anyway).
+    """
+    from main_logic.activity.tracker import UserActivityTracker
+
+    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
+    # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
+    # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
+    # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
+    assert "idle_bucket" not in source
+    assert "sig = (" in source
+
+
+def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    notes = []
+
+    class FakeTopicPool:
+        def purge_all_accumulated_signals(self):
+            purges.append("*")
+
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: True,
+    )
+    dispatcher.add_sink(TopicHookTurnSink(pool_factory=lambda: FakeTopicPool()))
+
+    dispatcher.note_user_message(text='secret user turn', now=1.0)
+
+    assert purges == []
+    assert notes == [('user', 'test_lanlan', 'secret user turn', 'zh-CN')]
+
+
+def test_topic_turn_sink_keeps_current_character_when_activity_is_private():
+    from main_logic.conversation_turns import ConversationTurnDispatcher, TopicHookTurnSink
+
+    purges = []
+    notes = []
+
+    class FakeTopicPool:
+        def purge_accumulated_signals(self, lanlan_name):
+            purges.append(lanlan_name)
+
+        def note_user_message(self, lanlan_name, text, *, lang='zh'):
+            notes.append(('user', lanlan_name, text, lang))
+
+    dispatcher = ConversationTurnDispatcher(
+        'test_lanlan',
+        language='zh-CN',
+        privacy_check=lambda: False,
+    )
+    dispatcher.add_sink(
+        TopicHookTurnSink(
+            pool_factory=lambda: FakeTopicPool(),
+            activity_private_check=lambda: True,
+        )
+    )
+
+    dispatcher.note_user_message(text='private foreground turn', now=1.0)
+
+    assert purges == []
+    assert notes == [('user', 'test_lanlan', 'private foreground turn', 'zh-CN')]
+
+
 # ── Hot-reload (Codex P2) ───────────────────────────────────────────
 
 
@@ -807,7 +1213,7 @@ def test_update_window_collapses_on_canonical_but_invalidates_on_intensity_chang
 
 def test_mark_unfinished_thread_used_honors_threshold_override():
     """When prefs set max_followups=3, the cap retires the thread on the
-    third call (not the second — the module constant default)."""
+    third call, proving explicit integer overrides still win over the default."""
     prefs = ActivityPreferences(
         thresholds={'unfinished_thread_max_followups': 3.0},
     )

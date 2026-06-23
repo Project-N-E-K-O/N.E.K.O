@@ -212,7 +212,7 @@ class STEAMWORKS(object):
         if not os.path.isfile(app_id_file):
             raise FileNotFoundError(f'steam_appid.txt missing from {app_root}')
 
-        with open(app_id_file, 'r') as f:
+        with open(app_id_file, 'r', encoding='utf-8') as f:
             self.app_id	= int(f.read())
 
         try:

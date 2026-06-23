@@ -1,13 +1,27 @@
-"""
-统一 Cookie 登录与凭证管理模块 (安全加固版)
-=========================================================
-用于获取并保存各平台的认证 Cookie，包含系统级安全防护。
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-【核心安全特性】
-1. 凭证脱敏显示：终端输入和日志记录均对核心 Token 进行遮罩处理 (Masking)。
-2. 系统级文件锁：明文 JSON 保存后，自动锁定文件权限 (仅限所有者读写 0o600)。
-3. 凭证有效性校验：保存前强制校验是否包含平台核心字段 (如 SESSDATA, SUB)。
-4. 深度环境伪装：增加完整的 Origin/Referer 请求头，防止触发账号环境风控。
+"""
+Unified cookie login and credential management module (security-hardened edition)
+=========================================================
+Fetches and saves authentication cookies for each platform, with system-level protections.
+
+[Core security features]
+1. Credential masking: core tokens are masked in both terminal input and log records.
+2. System-level file lock: after saving plaintext JSON, file permissions are locked automatically (owner read/write only, 0o600).
+3. Credential validity check: before saving, mandatory check that platform core fields (e.g. SESSDATA, SUB) are present.
+4. Deep environment camouflage: full Origin/Referer request headers to avoid triggering account-environment risk control.
 """
 
 import json
@@ -47,7 +61,7 @@ class LoginStatus:
 # 🛡️ 安全模块：脱敏、校验与文件锁
 # ==========================================
 def mask_string(s: str) -> str:
-    """对敏感凭证进行打码处理，防止屏幕偷窥或日志泄露"""
+    """Mask sensitive credentials to prevent shoulder-surfing or log leaks"""
     if not s:
         return ""
     if len(s) < 8:
@@ -55,7 +69,7 @@ def mask_string(s: str) -> str:
     return f"{s[:4]}...{s[-4:]}"
 
 def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
-    """核心凭证防伪校验，防止残缺 Cookie 导致账号异常或风控"""
+    """Core credential integrity check, preventing incomplete cookies from causing account anomalies or risk control"""
     required_keys = {
         'netease': ['MUSIC_U'],
         'bilibili': ['SESSDATA'],
@@ -74,7 +88,7 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     return True
 
 def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
-    """保存Cookie，包含规范化校验与加密逻辑"""
+    """Save cookies, with normalization checks and encryption logic"""
     try:
         if platform not in COOKIE_FILES:
             return False
@@ -146,9 +160,9 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
 
 def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]:
     """
-    规范化 Cookie 结构：
-    - 强制要求键和值必须全部为字符串类型
-    - 杜绝 int/bool/None 等非字符串值被意外转换为非空字符串（如 "False"）
+    Normalize the cookie structure:
+    - Require all keys and values to be strings
+    - Prevent int/bool/None and other non-string values from being accidentally converted to non-empty strings (e.g. "False")
     """
     valid_cookies: Dict[str, str] = {}
     
@@ -170,7 +184,7 @@ def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]
     return valid_cookies
 
 def load_cookies_from_file(platform: str) -> Dict[str, str]:
-    """从文件加载Cookie，自动检测是否加密"""
+    """Load cookies from file, auto-detecting whether they are encrypted"""
     try:
         if platform not in COOKIE_FILES:
             return {}
@@ -255,7 +269,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
         return {}
 
 def parse_cookie_string(cookie_string: str) -> Dict[str, str]:
-    """解析纯文本 Cookie"""
+    """Parse plaintext cookies"""
     cookies = {}
     if not cookie_string:
         return cookies
@@ -361,7 +375,7 @@ class PlatformLoginManager:
         return None
     
     def get_supported_platforms(self) -> Dict[str, Dict[str, Any]]:
-        """获取支持的平台及其登录方式"""
+        """Get supported platforms and their login methods"""
         result = {}
         for platform, info in self.platforms.items():
             result[platform] = {

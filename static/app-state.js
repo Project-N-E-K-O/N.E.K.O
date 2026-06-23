@@ -18,6 +18,8 @@
         MAX_MIC_GAIN_DB: 25,                 // 麦克风增益上限 (dB ≈ 18x)
         MIN_MIC_GAIN_DB: -5,                 // 麦克风增益下限 (dB ≈ 0.56x)
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
+        MAX_SPEAKER_VOLUME: 200,             // 扬声器音量上限（200% ≈ +6 dB 增益）
+        SPEAKER_VOLUME_KNEE_RATIO: 0.75,     // 100% 锚点落在轨道 75% 处：前 3/4 给 0-100%，后 1/4 给 100-200% 增强区
         DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
         SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
         SPATIAL_AUDIO_MAX_PAN: 0.6,          // pan 绝对值上限（防止完全单声道，另一边留 ~31% 信号）
@@ -109,6 +111,12 @@
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        // 本次正在 await session_started 的启动请求模式（'audio' / 'text'）。
+        // session_started 处理用它校验到达的 input_mode 是否与用户请求的一致：
+        // 不一致（典型是 proactive/greeting 并发自起的 text 会话发来的 ack）时
+        // 忽略，避免错误模式的 ack 收口用户的启动 promise / 翻转会话状态。
+        _pendingSessionStartMode: null,
+        voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
@@ -182,6 +190,9 @@
 
         // --- UI / 杂项 ---
         focusModeEnabled: false,
+        // 凝神（cognition focus）per-user 总开关，默认开；关掉后端进不了 focus 态。
+        // 注意与上面的 focusModeEnabled（=麦克风静音/允许打断）是两回事。
+        focusCognitionEnabled: true,
         avatarReactionBubbleEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
@@ -197,6 +208,40 @@
     };
 
     window.appState = S;
+
+    window.isNekoGoodbyeModeActive = function () {
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+        );
+    };
+
+    window.makeNekoSessionAbortError = function (reason) {
+        var error = new Error(reason || 'Session aborted');
+        error.sessionStartCancelled = true;
+        error.voiceStartCancelled = true;
+        return error;
+    };
+
+    window.cancelPendingSessionStart = function (reason) {
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        S.voiceSessionStartEpoch += 1;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+
+        if (S.sessionStartedRejecter) {
+            try {
+                S.sessionStartedRejecter(window.makeNekoSessionAbortError(reason));
+            } catch (_) { }
+        }
+        S.sessionStartedResolver = null;
+        S.sessionStartedRejecter = null;
+        S._pendingSessionStartMode = null;
+    };
 
     // ======================== 工具函数 ========================
     /** 分贝转线性增益 */
@@ -215,8 +260,23 @@
     function isMobile() {
         return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
+    /**
+     * 带膝点的非线性滑块：轨道位置(0..1) → 数值。
+     * knee 比例处映射到 base（标准锚点），右端到 max（增强区），左段与右段各自线性。
+     */
+    function kneeTrackToValue(pos, base, max, knee) {
+        if (pos <= knee) return knee > 0 ? (pos / knee) * base : base;
+        // knee >= 1 时无右段（增强区），整条轨道都是 [0, base]，膝点即终点
+        return knee < 1 ? base + ((pos - knee) / (1 - knee)) * (max - base) : max;
+    }
+    /** kneeTrackToValue 的逆映射：数值 → 轨道位置(0..1)。 */
+    function valueToKneeTrack(value, base, max, knee) {
+        if (value <= base) return base > 0 ? (value / base) * knee : 0;
+        // max <= base 时无增强区，超过 base 的值一律钉在轨道末端
+        return max > base ? knee + ((value - base) / (max - base)) * (1 - knee) : 1;
+    }
 
-    window.appUtils = { dbToLinear, linearToDb, mapRenderQualityToFollowPerf, isMobile };
+    window.appUtils = { dbToLinear, linearToDb, mapRenderQualityToFollowPerf, isMobile, kneeTrackToValue, valueToKneeTrack };
 
     // ======================== 向后兼容的全局双向绑定 ========================
     // 使用 defineProperty 使 window.xxx 始终和 S.xxx 同步
@@ -224,7 +284,7 @@
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-        'mergeMessagesEnabled', 'focusModeEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];

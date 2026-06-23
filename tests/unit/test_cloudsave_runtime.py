@@ -96,6 +96,30 @@ def _write_runtime_state(cm, *, character_name="小满"):
 
 
 @pytest.mark.unit
+def test_ui_language_override_uses_raw_global_preference_only(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.ensure_config_directory()
+    atomic_write_json(
+        cm.get_runtime_config_path("user_preferences.json"),
+        [
+            {
+                "model_path": "__global_conversation__",
+                "userLanguage": "en",
+                "uiLanguage": "zh-TW",
+            }
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    import utils.preferences as preferences
+
+    with patch.object(preferences, "_config_manager", cm):
+        assert preferences.load_ui_language_override() == "zh-TW"
+        assert "uiLanguage" not in preferences.load_global_conversation_settings()
+
+
+@pytest.mark.unit
 def test_resolve_managed_target_path_rejects_traversal(tmp_path):
     from utils.cloudsave_runtime import _resolve_managed_target_path
 
@@ -161,6 +185,23 @@ def test_bootstrap_creates_manifest_and_legacy_state(tmp_path):
     assert manifest["schema_version"] == 1
     assert root_state["current_root"] == str(cm.app_docs_dir)
     assert root_state["last_migration_result"] in {"no_legacy_root_found", "bootstrap_initialized"}
+
+
+@pytest.mark.unit
+def test_bootstrap_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.write_text("not a directory", encoding="utf-8")
+
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        bootstrap_local_cloudsave_environment(cm)
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before preparing local cloudsave state" in message
+    assert f"anchor_root={cm.anchor_root.resolve()}" in message
+    assert "not a directory" in message
 
 
 @pytest.mark.unit
@@ -734,6 +775,87 @@ def test_cloud_apply_fence_blocks_core_writes(tmp_path):
                 cm.save_workshop_config({"default_workshop_folder": "/tmp/workshop", "auto_create_folder": True})
             with pytest.raises(MaintenanceModeError):
                 preferences.save_global_conversation_settings({"userLanguage": "en-US"})
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_reports_local_state_directory_diagnostic(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.anchor_root.mkdir(parents=True, exist_ok=True)
+    cm.local_state_dir.write_text("not a directory", encoding="utf-8")
+
+    from utils.cloudsave_runtime import cloud_apply_fence
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        with cloud_apply_fence(cm):
+            pass
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before entering cloud_apply_fence" in message
+    assert f"local_state_dir={cm.local_state_dir.resolve()}" in message
+    assert "not a directory" in message
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_reports_root_state_file_blocker(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.local_state_dir.mkdir(parents=True, exist_ok=True)
+    cm.root_state_path.mkdir()
+
+    from utils.cloudsave_runtime import cloud_apply_fence
+    from utils.config_manager import LocalStateDirectoryError
+
+    with pytest.raises(LocalStateDirectoryError) as exc_info:
+        with cloud_apply_fence(cm):
+            pass
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state file before loading root_state" in message
+    assert f"failed_path={cm.root_state_path.resolve()}" in message
+    assert "state file target exists but is not a file" in message
+
+
+@pytest.mark.unit
+def test_cloudsave_disabled_mode_disables_provider_and_write_fence(monkeypatch, tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.local_state_dir.mkdir(parents=True, exist_ok=True)
+    cm.root_state_path.mkdir()
+
+    from utils.cloudsave_runtime import (
+        CLOUDSAVE_DISABLED_ENV,
+        assert_cloudsave_writable,
+        is_cloudsave_provider_available,
+    )
+
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
+
+    assert is_cloudsave_provider_available(cm) is False
+    assert_cloudsave_writable(cm, operation="save", target="characters.json")
+
+    from utils.cloudsave_runtime import build_cloudsave_summary
+
+    summary = build_cloudsave_summary(cm)
+    assert summary["success"] is True
+    assert summary["provider_available"] is False
+
+
+@pytest.mark.unit
+def test_non_local_state_cloudsave_disabled_reason_does_not_bypass_write_fence(monkeypatch, tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        CLOUDSAVE_DISABLED_ENV,
+        MaintenanceModeError,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        assert_cloudsave_writable,
+        set_root_mode,
+    )
+
+    set_root_mode(cm, ROOT_MODE_MAINTENANCE_READONLY)
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "manual_disabled")
+
+    with pytest.raises(MaintenanceModeError):
+        assert_cloudsave_writable(cm, operation="save", target="characters.json")
 
 
 @pytest.mark.unit

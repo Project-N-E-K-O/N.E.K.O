@@ -1,0 +1,59 @@
+from pathlib import Path
+
+
+def test_avatar_model_manager_popup_opens_fullscreen():
+    source = Path("static/avatar-ui-popup.js").read_text(encoding="utf-8")
+
+    assert "function buildAvatarFullscreenWindowFeatures()" in source
+    assert "screenRef.availWidth || screenRef.width" in source
+    assert "screenRef.availHeight || screenRef.height" in source
+    assert "features = buildAvatarFullscreenWindowFeatures();" in source
+    assert "openModelManagerWindow(finalUrl, windowName, features);" in source
+    assert "window.handleHideMainUI()" not in source
+
+
+def test_yui_model_manager_handoff_opens_fullscreen():
+    source = Path("static/tutorial/yui-guide/page-handoff.js").read_text(encoding="utf-8")
+
+    assert "function buildFullscreenWindowFeatures()" in source
+    assert "function isModelManagerPageUrl(openUrl)" in source
+    assert "if (isModelManagerPageUrl(openUrl))" in source
+    assert "return buildFullscreenWindowFeatures();" in source
+    start = source.index("function openModelManagerPage(")
+    end = source.index("\n    function ", start + len("function openModelManagerPage("))
+    model_manager_block = source[start:end]
+    assert "buildFullscreenWindowFeatures()" in model_manager_block
+    assert "{ keepMainUIVisible: true }" in model_manager_block
+
+
+def test_model_manager_hide_show_cross_page_messages_are_removed():
+    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    assert "hide_main_ui" not in model_manager_source
+    assert "show_main_ui" not in model_manager_source
+    assert "hide_main_ui" not in interpage_source
+    assert "show_main_ui" not in interpage_source
+
+
+def test_voice_clone_api_settings_uses_shared_named_window():
+    source = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
+    common_source = Path("static/common_dialogs.js").read_text(encoding="utf-8")
+    open_api_settings = source[source.index("function openApiSettings("):source.index("function openApiSettingsKeyBook(")]
+    open_api_settings_key_book = source[source.index("function openApiSettingsKeyBook("):source.index("// 安全地解析 fetch 响应")]
+
+    assert "function buildApiKeySettingsWindowFeatures(width = 1240, height = 940)" in common_source
+    assert "window.buildApiKeySettingsWindowFeatures = buildApiKeySettingsWindowFeatures;" in common_source
+    assert "const focusKeyBook = !!(options && options.focusKeyBook);" in open_api_settings
+    assert "const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';" in open_api_settings
+    assert "const windowName = 'neko_api_key';" in open_api_settings
+    assert "window.buildApiKeySettingsWindowFeatures()" in open_api_settings
+    assert "window.openOrFocusWindow(url, windowName, features)" in open_api_settings
+    assert "window.open(url, windowName, features)" in open_api_settings
+    assert "win.focus()" in open_api_settings
+    assert "function notifyApiSettingsKeyBookFocus(win)" in source
+    assert "win.postMessage({ type: 'focus_api_key_book' }, window.location.origin);" in source
+    assert "notifyApiSettingsKeyBookFocus(win);" in open_api_settings
+    assert "openApiSettings({ focusKeyBook: true });" in open_api_settings_key_book
+    assert "'apiSettings'" not in open_api_settings
+    assert "width=820,height=700" not in source

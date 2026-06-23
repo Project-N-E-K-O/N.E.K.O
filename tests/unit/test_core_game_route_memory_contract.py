@@ -1,10 +1,11 @@
 import asyncio
 from collections import deque
 import queue
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
+import main_logic.cross_server as cross_server_module
 import main_logic.core as core_module
 
 
@@ -55,6 +56,22 @@ class _FakeQueue:
         return self.messages.pop(0)
 
 
+class _ConnectedClientState:
+    CONNECTED = "connected"
+
+    def __eq__(self, other):
+        return other == self.CONNECTED
+
+
+class _FakeConnectedWebSocket:
+    def __init__(self):
+        self.client_state = _ConnectedClientState()
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
 class _FakeActivityTracker:
     def __init__(self):
         self.voice_rms_count = 0
@@ -65,6 +82,27 @@ class _FakeActivityTracker:
 
     def on_user_message(self, text):
         self.user_messages.append(text)
+
+
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.primed = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
+class _FakeGeminiVoiceBridgeSession(core_module.OmniRealtimeClient):
+    def __init__(self):
+        self._is_gemini = True
+        self.primed = []
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
 
 
 class _FakeAliveThread:
@@ -89,6 +127,8 @@ def _make_manager():
     mgr._tts_done_pending_until_ready = False
     mgr.state = _FakeState()
     mgr._active_text_request_id = None
+    mgr._magic_command_image_drop_request_ids = set()
+    mgr._magic_command_image_drop_request_order = deque()
     mgr._pending_turn_meta = None
     mgr._current_ai_turn_text = ""
     mgr._recent_ai_voice_echo_text = ""
@@ -110,8 +150,11 @@ def _make_manager():
     mgr.tts_handler_task = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
+    mgr._bg_tasks = set()
     mgr.sent_responses = []
     mgr.user_activity = []
+    mgr.last_user_activity_time = None
+    mgr.last_user_message_time = None
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -132,6 +175,16 @@ def _make_manager():
     mgr.send_lanlan_response = send_lanlan_response
     mgr.ensure_tts_pipeline_alive = ensure_tts_pipeline_alive
     return mgr
+
+
+@pytest.mark.unit
+def test_clean_frontend_memory_text_strips_c0_and_c1_controls():
+    mgr = _make_manager()
+
+    assert core_module.LLMSessionManager._clean_frontend_memory_text(
+        mgr,
+        " hello\x00 \x85world\x9f ",
+    ) == "hello world"
 
 
 def _make_transcript_manager():
@@ -336,6 +389,806 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
         "type": "user",
         "data": {"input_type": "transcript", "data": "普通语音"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_plugin_observer_noop_preserves_user_context_side_effects():
+    mgr = _make_transcript_manager()
+    routed = []
+
+    async def fake_voice_broadcast(text):
+        routed.append(text)
+        return None
+
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+    await asyncio.sleep(0)
+
+    assert routed == ["f(x)=x^3 derivative answer is 3x^2"]
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  f(x)=x^3 derivative answer is 3x^2  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "f(x)=x^3 derivative answer is 3x^2"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
+    mgr = _make_transcript_manager()
+    original_session = mgr.session
+    replacement_session = object()
+    routed = []
+
+    async def fake_voice_broadcast(text):
+        routed.append(text)
+        mgr.session = replacement_session
+        return None
+
+    mgr._broadcast_voice_transcript_observed = fake_voice_broadcast
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  Yui explain this step  ",
+        is_voice_source=True,
+    )
+    await asyncio.sleep(0)
+
+    assert routed == ["Yui explain this step"]
+    assert original_session is not replacement_session
+    assert mgr.session is replacement_session
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  Yui explain this step  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  Yui explain this step  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "Yui explain this step"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_observer_broadcast_failure_continues_ordinary_transcript_flow(monkeypatch):
+    mgr = _make_transcript_manager()
+    mgr.session = _FakeVoiceBridgeSession()
+    called = asyncio.Event()
+
+    async def fake_publish(*_args, **_kwargs):
+        called.set()
+        raise RuntimeError("broadcast failed")
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_observed_best_effort",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+    await asyncio.wait_for(called.wait(), timeout=1)
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  continue this transcript  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "continue this transcript"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_observer_does_not_prime_gemini_context_from_main(monkeypatch):
+    mgr = _make_transcript_manager()
+    session = _FakeGeminiVoiceBridgeSession()
+    mgr.session = session
+
+    async def fake_publish(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_observed_best_effort",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager._broadcast_voice_transcript_observed(
+        mgr,
+        "explain this screen",
+    )
+
+    assert session.primed == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
+    """语音口头回应 mini-game 邀请必须和打字 / 点按钮一样过关键词匹配器——否则
+    语音用户说"现在不想玩"永远触发不了 decline 冷却，会被下一个 proactive tick
+    当成隐式 dismiss（只抑制 5min），邀请反复重来。回归：handle_input_transcript
+    必须把原话喂给 dispatch_text_user_message（与文本路径对偶）。"""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "  现在不想玩  ", is_voice_source=True,
+    )
+
+    # 传原话（未 strip），matcher 内部自己 lower+strip；与文本路径一致
+    assert seen == [("Lan", "  现在不想玩  ")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypatch):
+    """关键词命中时，语音路径推 mini_game_invite_resolved 让前端 dismiss
+    ChoicePrompt（accept 兼带 game_url 当 launch 信号）。"""
+    mgr = _make_transcript_manager()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: {
+            "action": "open_game",
+            "session_id": "sid-1",
+            "game_url": "/soccer_demo?x=1",
+            "game_type": "soccer",
+        },
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "好啊一起玩", is_voice_source=True,
+    )
+
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload == {
+        "type": "mini_game_invite_resolved",
+        "session_id": "sid-1",
+        "action": "open_game",
+        "game_url": "/soccer_demo?x=1",
+        "game_type": "soccer",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_voice_transcript_skips_mini_game_invite_keyword(monkeypatch):
+    """Non-voice transcript reuse skips invite keywords already handled by text input."""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "现在不想玩", is_voice_source=False,
+    )
+
+    assert seen == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_input_transcript_callback_uses_non_voice_path(monkeypatch):
+    """Text-mode session callbacks must not emit voice-only side effects."""
+    mgr = _make_transcript_manager()
+    seen = []
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message",
+        lambda name, text: seen.append((name, text)),
+    )
+
+    await core_module.LLMSessionManager.handle_text_input_transcript(
+        mgr, "现在不想玩",
+    )
+
+    assert seen == []
+    assert mgr._activity_tracker.voice_rms_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "现在不想玩"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
+    """Text-mode screenshots must stay available to turn-end analysis."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "screen", "data": "raw-image"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "screen",
+            "data": "data:image/jpeg;base64,img-b64",
+            "has_image": True,
+            "mime_type": "image/jpeg",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(monkeypatch):
+    """Avatar Drop images must not put full base64 payloads into the sync queue."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="img-b64"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "avatar_drop_image", "data": "raw-image", "request_id": "req-img"},
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "avatar_drop_image",
+            "data": "",
+            "has_image": True,
+            "mime_type": "image/jpeg",
+            "request_id": "req-img",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_skips_local_text_stream(monkeypatch):
+    """Namespaced OpenClaw slash commands use the manual-control fast path only."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+    fired = []
+
+    def fake_fire_task(coro):
+        fired.append(coro)
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
+    )
+
+    assert len(fired) == 1
+    mgr.session.stream_text.assert_not_called()
+    assert mgr.sync_message_queue.messages == [
+        {
+            "type": "user",
+            "data": {
+                "input_type": "mirror_text",
+                "data": "/openclaw stop",
+                "source": "openclaw",
+                "metadata": {
+                    "source": "openclaw",
+                    "kind": "magic_command",
+                    "command": "/stop",
+                },
+                "request_id": "req-1",
+            },
+        },
+        {
+            "type": "system",
+            "data": "turn end agent_callback",
+            "request_id": "req-1",
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeypatch):
+    """A stale OpenClaw flag must not swallow local text replies."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": False}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stale"},
+    )
+
+    mgr._fire_task.assert_not_called()
+    mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_reuses_adapter_aliases(monkeypatch):
+    """The immediate fast path must map namespaced aliases to OpenClaw commands."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+    fired = []
+
+    def fake_fire_task(coro):
+        fired.append(coro)
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw APPROVE", "request_id": "req-approve"},
+    )
+
+    assert len(fired) == 1
+    mgr.session.stream_text.assert_not_called()
+    assert mgr.sync_message_queue.messages[0]["data"]["metadata"]["command"] == "/daemon approve"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bare_openclaw_magic_words_do_not_short_circuit_text_stream(monkeypatch):
+    """Generic slash commands are left for normal text/action handling."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/stop", "request_id": "req-stop"},
+    )
+
+    mgr._fire_task.assert_not_called()
+    mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkeypatch):
+    """Magic-command handoff must not leak queued screenshots into the next text turn."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = ["old-screen"]
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw new", "request_id": "req-new"},
+    )
+
+    assert mgr.session._pending_images == []
+    assert mgr.session.stream_text.await_count == 0
+    assert mgr.sync_message_queue.messages[-1]["data"] == "turn end agent_callback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_magic_command_screenshot_is_discarded(monkeypatch):
+    """Late screenshots for a magic-command request must not leak into later text turns."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+    monkeypatch.setattr(core_module, "process_screen_data", AsyncMock(return_value="late-img"))
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stop"},
+    )
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "screen", "data": "raw-image", "request_id": "req-stop"},
+    )
+
+    mgr.session.stream_image.assert_not_awaited()
+    assert mgr.session._pending_images == []
+    assert all(
+        msg.get("data", {}).get("input_type") != "screen"
+        for msg in mgr.sync_message_queue.messages
+        if isinstance(msg.get("data"), dict)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_explicit_openclaw_magic_command_emits_websocket_turn_end(monkeypatch):
+    """Magic-command fast path must clear the matching frontend request."""
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": True}
+
+    def fake_fire_task(coro):
+        coro.close()
+
+    mgr._fire_task = fake_fire_task
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-stop"},
+    )
+
+    assert mgr.websocket.sent == [{
+        "type": "system",
+        "data": "turn end agent_callback",
+        "request_id": "req-stop",
+    }]
+    assert mgr.sync_message_queue.messages[-1] == mgr.websocket.sent[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openclaw_magic_command_publish_failure_reports_status(monkeypatch):
+    """Manual OpenClaw command dispatch failures must be visible to users."""
+    mgr = _make_transcript_manager()
+    sent_statuses = []
+
+    async def fake_send_status(message):
+        sent_statuses.append(core_module.json.loads(message))
+
+    mgr.send_status = fake_send_status
+    monkeypatch.setattr(
+        core_module,
+        "publish_analyze_request_reliably",
+        AsyncMock(return_value=False),
+    )
+
+    await core_module.LLMSessionManager._publish_openclaw_magic_command(
+        mgr,
+        "/stop",
+    )
+
+    assert sent_statuses == [{
+        "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
+        "details": {"command": "/stop"},
+    }]
+
+
+@pytest.mark.unit
+def test_late_text_mode_screenshot_does_not_attach_to_next_turn():
+    """Request-tagged screenshots must not leak into a later analyzer turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_turn(pending, "req-current")
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "what now"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+    ]
+    attachments = recent[-1]["attachments"]
+    urls = [item["url"] for item in attachments]
+    assert urls == ["data:image/jpeg;base64,current"]
+    assert "data:image/jpeg;base64,old" not in urls
+    assert "data:image/jpeg;base64,legacy" not in urls
+
+
+@pytest.mark.unit
+def test_live_screen_frame_without_request_id_attaches_to_tagged_turn():
+    """Live screen-share frames without request ids still belong to the active turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_turn(pending, "req-current")
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "what is on screen"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+    ]
+    urls = [item["url"] for item in recent[-1]["attachments"]]
+    assert urls == ["data:image/jpeg;base64,live"]
+
+
+@pytest.mark.unit
+def test_turn_image_partition_retains_later_request_images():
+    """An earlier turn end must not clear screenshots already tagged for a later turn."""
+    pending = [
+        {"data": "data:image/jpeg;base64,first", "request_id": "req-first"},
+        {"data": "data:image/jpeg;base64,next", "request_id": "req-next"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected, remaining = cross_server_module._partition_pending_user_images_for_turn(pending, "req-first")
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,first", "request_id": "req-first"},
+        {"data": "data:image/jpeg;base64,live", "request_id": ""},
+    ]
+    assert remaining == [
+        {"data": "data:image/jpeg;base64,next", "request_id": "req-next"},
+    ]
+
+
+@pytest.mark.unit
+def test_turn_image_partition_retains_untagged_images_without_user_input():
+    """Agent/proactive turn ends must not steal image-only screenshots before the user's text."""
+    pending = [
+        {"data": "data:image/jpeg;base64,screen", "request_id": ""},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected, remaining = cross_server_module._partition_pending_user_images_for_turn(
+        pending,
+        None,
+        consume_untagged=False,
+    )
+
+    assert selected == []
+    assert remaining == pending
+
+
+@pytest.mark.unit
+def test_cross_server_avatar_drop_image_queue_skips_metadata_only_entries():
+    """Cross-server sync may carry real image data, but not metadata-only Avatar Drop placeholders."""
+    pending = []
+
+    appended = cross_server_module._append_pending_user_image(
+        pending,
+        "data:image/jpeg;base64,current",
+        "req-current",
+        "user_image",
+    )
+    skipped = cross_server_module._append_pending_user_image(
+        pending,
+        "",
+        "req-current",
+        "avatar_drop_image",
+    )
+
+    assert appended is True
+    assert skipped is False
+    assert pending == [{
+        "data": "data:image/jpeg;base64,current",
+        "request_id": "req-current",
+        "input_type": "user_image",
+    }]
+
+
+@pytest.mark.unit
+def test_session_end_request_tagged_screenshot_selection_falls_back_to_latest_request():
+    """Session-end cleanup may not carry request_id, but must not drop tagged images."""
+    pending = [
+        {"data": "data:image/jpeg;base64,old", "request_id": "req-old"},
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+        "data:image/jpeg;base64,legacy",
+    ]
+
+    selected = cross_server_module._select_pending_user_images_for_session_end(pending, None)
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{"role": "user", "content": [{"type": "text", "text": "bye"}]}],
+        selected,
+        allow_attach_to_last_user=True,
+    )
+
+    assert selected == [
+        {"data": "data:image/jpeg;base64,current", "request_id": "req-current"},
+    ]
+    urls = [item["url"] for item in recent[-1]["attachments"]]
+    assert urls == ["data:image/jpeg;base64,current"]
+    assert "data:image/jpeg;base64,old" not in urls
+    assert "data:image/jpeg;base64,legacy" not in urls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatch):
+    """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
+    后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "今天天气不错", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypatch):
+    """关键回归：AI 念邀请台词被麦克风录回的回声会刷 last_user_activity_time
+    （顶部无条件），但**不能**刷 last_user_message_time——否则语音模式下用户还
+    没点「现在不想玩」按钮，隐式 dismiss 就因回声误判用户已回应、把 pending 邀请
+    清掉撤按钮，用户随后点击落到 expired、邀请 5min 后反复重来。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr._recent_ai_voice_echo_text = "要不要现在跟我一起踢一会儿足球小游戏？"
+    mgr._recent_ai_voice_echo_at = FIXED_TS
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "要不要现在跟我一起踢一会儿足球小游戏", is_voice_source=True,
+    )
+
+    # 回声照样污染 last_user_activity_time（说明旧字段为何不能用于邀请判定）
+    assert mgr.last_user_activity_time == FIXED_TS
+    # 但真消息时间戳保持干净
+    assert mgr.last_user_message_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
+    """空转录（VAD 误触发 / 转录失败）刷 activity 但不刷真消息时间戳。"""
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "   ", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
+    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
+    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
+    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
+    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    mgr = _make_transcript_manager()
+    calls = {"n": 0}
+
+    def _ticking_time():
+        calls["n"] += 1
+        return 100.0 + calls["n"]
+
+    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    async def _dispatcher(name, text, request_id=None):
+        core_module.time.time()  # 模拟 await 期间时钟流逝
+        return False             # 未处理 → 继续普通流程走到真消息块
+
+    mgr._takeover_input_dispatcher = _dispatcher
+    mgr.session = object()
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "你好呀", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == 101.0
+    assert mgr.last_user_message_time == 101.0
 
 
 @pytest.mark.unit

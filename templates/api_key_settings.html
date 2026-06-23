@@ -11,7 +11,6 @@
     <link rel="stylesheet" href="/static/css/api_key_settings.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
@@ -61,7 +60,7 @@
     <!-- 主内容容器 - 直接显示原有UI，通过遮罩层半透明覆盖 -->
     <div id="main-content">
         <div class="container">
-            <div class="container-header">
+            <div class="container-header page-title-bar">
                 <h2 data-i18n="api.settings" data-text="API Key Settings">API Key 设置</h2>
                 <div class="neko-window-controls">
                     <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
@@ -187,10 +186,17 @@
                             <label for="assistApiSelect">
                                 <span data-i18n="api.assistApiSelectLabel">辅助API服务商</span>
                             </label>
-                            <select id="assistApiSelect" class="api-provider-select"
-                                style="width: 100%; max-width: 600px;">
-                                <!-- 选项将通过 JavaScript 动态加载 -->
-                            </select>
+                            <div class="mimo-assist-select-row">
+                                <select id="assistApiSelect" class="api-provider-select"
+                                    style="width: 100%; max-width: 600px;">
+                                    <!-- 选项将通过 JavaScript 动态加载 -->
+                                </select>
+                                <label id="mimoTokenPlanToggleRow" class="disable-tts-toggle mimo-token-plan-toggle" style="display: none;">
+                                    <input type="checkbox" id="useMimoTokenPlan">
+                                    <span class="disable-tts-slider"></span>
+                                    <span data-i18n="api.useMimoTokenPlan">MiMo Token Plan</span>
+                                </label>
+                            </div>
                         </div>
                         <div class="field-row">
                             <label for="assistApiKeyInput">
@@ -201,6 +207,16 @@
                                 placeholder="留空使用管理簿对应 Key" value=""
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.assistApiAutoFillHint" style="font-weight: normal; color: #888; font-size: 0.85em;">留空时自动使用管理簿中的Key，手动输入则独立保存</em>
+                        </div>
+                        <div id="mimoTokenPlanKeyRow" class="field-row" style="display: none;">
+                            <label for="mimoTokenPlanKeyInput">
+                                <span data-i18n="api.mimoTokenPlanKeyLabel">MiMo Token Plan Key</span>
+                            </label>
+                            <input type="text" id="mimoTokenPlanKeyInput"
+                                data-i18n-placeholder="api.mimoTokenPlanKeyPlaceholder"
+                                placeholder="tp-xxxxx" value=""
+                                style="max-width: 600px; width: 100%;">
+                            <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">
@@ -349,6 +365,93 @@
                                                 data-i18n-placeholder="api.summaryModelApiKeyPlaceholder"
                                                 placeholder="Enter Summary API Key" value=""
                                                 style="max-width: 600px;">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 小游戏模型配置 -->
+                                <div class="model-config-container">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('game')" aria-expanded="false" aria-controls="game-model-content">
+                                        <span class="model-title">
+                                            <img src="/static/icons/correction_model_icon.png"
+                                                data-i18n-alt="api.gameModelsConfig"
+                                                class="model-title-icon">
+                                            <span data-i18n="api.gameModelsConfig">小游戏模型配置</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </button>
+                                    <div id="game-model-content" class="model-content">
+                                        <div class="nested-model-config-container">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-main')" aria-expanded="false" aria-controls="game-main-model-content">
+                                                <span class="model-title">
+                                                    <span data-i18n="api.gameMainModelConfig">小游戏主模型配置</span>
+                                                </span>
+                                                <span class="toggle-icon">▼</span>
+                                            </button>
+                                            <div id="game-main-model-content" class="model-content nested-model-content">
+                                                <div class="field-row">
+                                                    <label for="gameMainModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                                    <select id="gameMainModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                                    </select>
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                                    <input type="text" id="gameMainModelUrl"
+                                                        data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                        placeholder="e.g., https://api.openai.com/v1" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelId" data-i18n="api.modelId">模型ID</label>
+                                                    <input type="text" id="gameMainModelId"
+                                                        data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                        placeholder="e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameMainModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                                    <input type="text" id="gameMainModelApiKey"
+                                                        data-i18n-placeholder="api.gameMainModelApiKeyPlaceholder"
+                                                        placeholder="Enter Mini-game Main Model API Key" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="nested-model-config-container">
+                                            <button type="button" class="model-header nested-model-header" onclick="toggleModelConfig('game-summary')" aria-expanded="false" aria-controls="game-summary-model-content">
+                                                <span class="model-title">
+                                                    <span data-i18n="api.gameSummaryModelConfig">小游戏摘要模型配置</span>
+                                                </span>
+                                                <span class="toggle-icon">▼</span>
+                                            </button>
+                                            <div id="game-summary-model-content" class="model-content nested-model-content">
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                                    <select id="gameSummaryModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                                    </select>
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                                    <input type="text" id="gameSummaryModelUrl"
+                                                        data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                        placeholder="e.g., https://api.openai.com/v1" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelId" data-i18n="api.modelId">模型ID</label>
+                                                    <input type="text" id="gameSummaryModelId"
+                                                        data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                        placeholder="e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                                <div class="field-row">
+                                                    <label for="gameSummaryModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                                    <input type="text" id="gameSummaryModelApiKey"
+                                                        data-i18n-placeholder="api.gameSummaryModelApiKeyPlaceholder"
+                                                        placeholder="Enter Mini-game Summary Model API Key" value=""
+                                                        style="max-width: 600px;">
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -570,6 +673,9 @@
                                             <select id="ttsModelProvider" class="api-provider-select" style="max-width: 600px;">
                                             </select>
                                         </div>
+                                        <!-- 标准 TTS 端点字段：仅在所选 provider 用标准 url/model/key/voice
+                                             时显示；GPT-SoVITS 走下方自己的字段（由 onCustomModelProviderChange 切换） -->
+                                        <div id="tts-standard-fields">
                                         <div class="field-row">
                                             <label for="ttsModelUrl" data-i18n="api.apiUrl">API URL</label>
                                             <input type="text" id="ttsModelUrl"
@@ -600,41 +706,28 @@
                                                 placeholder="e.g., Chinese Female, alloy" value=""
                                                 style="max-width: 600px;">
                                         </div>
-                                    </div>
-                                </div>
-                                <!-- GPT-SoVITS 配置 -->
-                                <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('gptsovits')">
-                                        <span class="model-title">
-                                            <img src="/static/icons/tts_model_icon.png"
-                                                data-i18n-alt="api.gptsovitsConfig" class="model-title-icon">
-                                            <span data-i18n="api.gptsovitsConfig">GPT-SoVITS 配置</span>
-                                        </span>
-                                        <span class="toggle-icon">▼</span>
-                                    </div>
-                                    <div id="gptsovits-model-content" class="model-content">
-                                        <!-- 启用开关 -->
-                                        <div class="field-row"
-                                            style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
-                                            <label for="gptsovitsEnabled" style="margin-bottom: 0;">
-                                                <span data-i18n="api.gptsovitsEnabled">启用 GPT-SoVITS</span>
-                                                <em style="font-weight: normal; color: #888;"
-                                                    data-i18n="api.gptsovitsEnabledHint">（启用后将替代上方的 TTS 配置）</em>
-                                            </label>
-                                            <label class="switch" style="margin-left: 16px;">
-                                                <input type="checkbox" id="gptsovitsEnabled"
-                                                    onchange="toggleGptSovitsConfig()">
-                                                <span class="slider round"></span>
-                                            </label>
                                         </div>
+                                        <!-- GPT-SoVITS 专属字段：选 ttsModelProvider=='gptsovits' 时显示。
+                                             GSV 不再用独立启用开关，「是否启用」= 下拉是否选中 gptsovits。 -->
                                         <div id="gptsovits-config-fields" style="display: none;">
                                             <div
-                                                style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin: 12px 16px; font-size: 0.85em; color: #996600; line-height: 1.5;">
+                                                style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin: 12px 0; font-size: 0.85em; color: #996600; line-height: 1.5;">
                                                 <strong data-i18n="api.gptsovitsDescription">GPT-SoVITS
                                                     说明：</strong><br>
                                                 <span data-i18n="api.gptsovitsDescriptionText">本地部署的语音克隆模型，需要先启动
                                                     GPT-SoVITS v3 API 服务。声音配置（参考音频、模型权重等）在 v3 的 voices/*.toml
                                                     文件中管理，此处只需填写声音配置 ID。</span>
+                                            </div>
+
+                                            <!-- 教程文档跳转：中文/其它语言走不同文档，href 由
+                                                 updateGptSovitsTutorialLink() 按当前语言设置（默认中文） -->
+                                            <div style="margin: 0 0 12px;">
+                                                <a id="gptsovitsTutorialLink"
+                                                    href="https://docs.qq.com/aio/DQ1dDcU9rdURQTWJE?p=RLq03bnCUOGEIa8YwBS58H&amp;client_hint=0"
+                                                    target="_blank" rel="noopener noreferrer"
+                                                    class="gsv-tutorial-link">
+                                                    📄 <span data-i18n="api.gptsovitsTutorialDoc">教程文档</span>
+                                                </a>
                                             </div>
 
                                             <!-- API 配置 -->
@@ -743,19 +836,47 @@
 
     <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}"></script>
 
-    <!-- Driver.js 库 -->
-    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
 
-    <script src="/static/yui-guide-steps.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-overlay.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-page-handoff.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-interaction-takeover.js?v={{ static_asset_version }}"></script>
-    <script src="/static/yui-guide-director.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-skip-controller.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial-avatar-reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/target-geometry-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/chat-window-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/command-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/script-normalizer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day1-home-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day2-screen-voice-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day3-interaction-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day4-companion-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day5-personalization-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day6-agent-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/days/day7-graduation-guide.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/interaction-takeover.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/yui-standin.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/standin-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/spotlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/ghost-cursor-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/petal-transition-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/highlight-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/visual/resistance-controllers.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/operation-registry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/settings-tour-flow.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/scene-orchestrator.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/yui-guide/director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
     <script>

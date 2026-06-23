@@ -17,27 +17,31 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
-    // 实验组把主动搭话里的「屏幕分享来源」（proactiveVisionChatEnabled）首启默认翻成
-    // 关；隐私模式默认值不动（仍按地区分流）。屏幕分享来源只在隐私关（vision 开）时才
-    // 有意义，海外默认隐私开 → 对该实验天然 no-op，A/B 差异主要体现在国内。
-    const _VISION_CHAT_AB_BRANCH = 'vision_chat_default_off';
-    // 海外专属 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
-    // 把主动搭话间隔（proactiveChatInterval）首启默认从控制组的 15s 拉长到 20s，看更慢的
-    // 搭话节奏对海外用户的影响；不动隐私 / 屏幕分享来源默认值，也没有弹窗。方向与
-    // vision_chat_default_off 相反——只在海外（_isUserRegionChina() 为 false）才覆写，
-    // 国内落到本组天然 no-op。两组抽签互斥（同设备只落一个 branch），但目标地区不重叠
-    // （vision 差异在国内、本组只影响海外），可同时在线。曾改测 25s（proactive_interval_25s，
-    // 20s→25s），因数据没能通过 A/A 测试已下线、回退本组；详见 token_tracker.py 退役清单。
-    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_20s';
-    // 实验组的主动搭话间隔默认值（秒）。控制组默认见 app-state.js 的
-    // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。
-    const _PROACTIVE_INTERVAL_AB_VALUE = 20;
-    // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
-    // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
+    // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
+    // 「1」，branch 决议后清掉。用 marker 在不在判断「是否仍在等待首次决议」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
+    const _SHARED_SETTINGS_KEYS = [
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled',
+        'focusModeEnabled',
+        'focusCognitionEnabled',
+        'avatarReactionBubbleEnabled',
+        'proactiveChatInterval',
+        'proactiveVisionInterval',
+        'textGuardMaxLength',
+        'renderQuality',
+        'targetFrameRate'
+    ];
 
     function getDefaultRenderQuality() {
         return S.renderQuality || 'medium';
@@ -60,6 +64,7 @@
             proactiveMiniGameInviteEnabled: S.proactiveMiniGameInviteEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
+            focusCognitionEnabled: S.focusCognitionEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
@@ -71,6 +76,77 @@
             settings.userLanguage = S.userLanguage;
         }
         return settings;
+    }
+
+    function applySharedRuntimeSettings(settings) {
+        if (!settings || typeof settings !== 'object') return false;
+        let changed = false;
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+            if (S[key] !== settings[key]) {
+                S[key] = settings[key];
+                changed = true;
+            }
+        });
+        if (
+            Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
+            S.userLanguage !== settings.userLanguage
+        ) {
+            S.userLanguage = settings.userLanguage;
+            changed = true;
+        }
+        if (changed && S.renderQuality) {
+            window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
+        }
+        return changed;
+    }
+
+    function isManualScreenShareActive() {
+        try {
+            const button = document.getElementById('screenButton');
+            return !!(button && button.classList.contains('active'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function stopVisionAfterPrivacyEnabled() {
+        if (S.proactiveVisionEnabled !== false) return;
+
+        try {
+            if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                window.stopProactiveVisionDuringSpeech();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止语音主动视觉失败:', error);
+        }
+
+        if (isManualScreenShareActive()) return;
+
+        try {
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止屏幕发送循环失败:', error);
+        }
+
+        try {
+            if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
+                S.screenCaptureStream.getTracks().forEach((track) => {
+                    try { track.stop(); } catch (_) { }
+                });
+            }
+        } catch (error) {
+            console.warn('[app-settings] 释放隐私模式屏幕流失败:', error);
+        } finally {
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+            if (S.screenCaptureStreamIdleTimer) {
+                clearTimeout(S.screenCaptureStreamIdleTimer);
+                S.screenCaptureStreamIdleTimer = null;
+            }
+        }
     }
 
     /**
@@ -136,10 +212,10 @@
     /**
      * 启动定期同步到服务器
      *
-     * branch 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic POST：
-     * 否则会把首启控制组默认值推到服务器，下次 GET 拿到 branch 后读到自家 echo
-     * 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 清掉。用户主动改
-     * 设置走的 saveSettings 不受影响（那条路径就是要持久化用户显式选择）。
+     * 首启 settings/telemetry 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic
+     * POST：否则会把首启本地默认值抢先推到服务器，下次 GET 读到自家 echo 误判「云端已有
+     * 偏好」、干扰设置合并与首启决议时序。用户主动改设置走的 saveSettings 不受影响（那条
+     * 路径就是要持久化用户显式选择）。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
@@ -186,9 +262,8 @@
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
      *
      * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
-     *   首启分支用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前
-     *   就把控制组默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」从而
-     *   永远跳过 A/B 实验组覆写
+     *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
+     *   默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」，干扰首启决议时序
      */
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
@@ -214,6 +289,9 @@
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : S.focusModeEnabled;
+        const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
+            ? window.focusCognitionEnabled
+            : S.focusCognitionEnabled;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -281,6 +359,7 @@
             proactiveMiniGameInviteEnabled: currentMiniGameInviteChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
+            focusCognitionEnabled: currentFocusCognition,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
@@ -308,12 +387,14 @@
         S.proactiveMiniGameInviteEnabled = currentMiniGameInviteChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
+        S.focusCognitionEnabled = currentFocusCognition;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
+        stopVisionAfterPrivacyEnabled();
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
@@ -398,6 +479,7 @@
                 S.proactiveMiniGameInviteEnabled = settings.proactiveMiniGameInviteEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
+                S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
@@ -465,10 +547,10 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
-                // 地区默认关闭）。实验组（privacy_default_off_v2）的「国内默认打开隐私」
-                // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
-                // 异步合并块。
+                // 首次启动：隐私模式按用户地区分流（仅中国地区默认关闭隐私 / vision 开）。
+                // 历史上这里挂过隐私默认值实验（privacy_default_off_v2，已退役）和屏幕分享
+                // 来源默认值实验（vision_chat_default_off，已合并进 main、默认回到「开」），
+                // 现都不再做首启覆写，仅保留地区分流。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
                 }
@@ -488,13 +570,13 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
-                // 首启专属 marker：告诉下方异步合并块「这次需要等 branch 决议后套 A/B
-                // 覆写」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误覆写
+                // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
+                // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
                 try { localStorage.setItem(_FIRST_LAUNCH_PENDING_KEY, '1'); } catch (_) {}
                 // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
                 // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
-                // 这时把控制组默认值上行会被自家 GET 当作「云端已有偏好」回读，让 A/B
-                // 实验组覆写永远跳过。等 branch 解析后再做一次完整 saveSettings 推送
+                // 这时把首启本地默认值上行会被自家 GET 当作「云端已有偏好」回读、干扰设置
+                // 合并与首启决议时序。等 branch 解析后再做一次完整 saveSettings 推送
                 saveSettings({ skipServerSync: true });
             }
 
@@ -512,6 +594,12 @@
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
 
+        // 凝神总开关镜像到 window：设置弹窗（avatar-ui-popup.js）只读 window 全局，
+        // 而 window.focusCognitionEnabled 否则仅在 server-merge 命中时才赋值——用户存了
+        // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
+        // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
+        window.focusCognitionEnabled = S.focusCognitionEnabled;
+
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
         const subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
@@ -521,10 +609,6 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
-        // 捕获 fetch 发起时的屏幕分享来源值：若用户在 fetch 返回前手动切了 toggle，
-        // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
-        const _visionChatAtFetchStart = S.proactiveVisionChatEnabled;
-        const _proactiveIntervalAtFetchStart = S.proactiveChatInterval;
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
@@ -535,67 +619,19 @@
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
 
-                // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
-                // 分支 = 实验组 + 服务器没有云端屏幕分享来源偏好 + 用户没在 fetch 间隙手动
-                // 切 toggle + 本地值仍等于控制组默认（即用户也没在之前的 offline session
-                // 里改过），才套实验组默认。实验组把屏幕分享来源默认翻成「关」
-                // （proactiveVisionChatEnabled=false）。控制组默认是「开」（true，见
-                // app-state.js:145 / loadSettings 的 ?? true），与地区无关；屏幕分享来源
-                // 只在隐私关时才有意义，海外默认隐私开 → 翻不翻都 no-op，A/B 差异在国内
-                // 体现。升级用户没有 pending marker 不会被误覆写；offline 首启把 marker
-                // 留在 localStorage，下次在线启动再补；offline 期间用户改过 toggle 时本地
-                // 值会跟控制组默认拉开差距，保留用户选择
-                const noServerVisionChatPref = !serverSettings ||
-                    serverSettings.proactiveVisionChatEnabled === undefined;
-                const userToggledDuringFetch = S.proactiveVisionChatEnabled !== _visionChatAtFetchStart;
-                const localVisionChatMatchesControlDefault =
-                    S.proactiveVisionChatEnabled === true;
-                if (_firstLaunchPending
-                        && telemetryBranch === _VISION_CHAT_AB_BRANCH
-                        && noServerVisionChatPref
-                        && !userToggledDuringFetch
-                        && localVisionChatMatchesControlDefault) {
-                    if (S.proactiveVisionChatEnabled !== false) {
-                        S.proactiveVisionChatEnabled = false;
-                        hasUpdate = true;
-                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：屏幕分享来源默认关闭');
-                    }
-                }
-                // A/B test 覆写（海外专属）：与上方 vision 实验对称，但目标地区相反——只在
-                // 海外（!_isUserRegionChina()）真·首启时，把主动搭话间隔默认值从控制组的
-                // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）拉长到 _PROACTIVE_INTERVAL_AB_VALUE
-                // （20s）。守卫与 vision 同款：服务器无云端间隔偏好 + 用户没在 fetch 间隙手
-                // 动改 + 本地值仍等于控制组默认（即也没在之前 offline session 里改过）。国内
-                // 落到本组天然 no-op；与 vision_chat_default_off（差异在国内）目标地区不重
-                // 叠，可同时在线。本组只改默认值、无弹窗。
-                const noServerIntervalPref = !serverSettings ||
-                    serverSettings.proactiveChatInterval === undefined;
-                const userChangedIntervalDuringFetch =
-                    S.proactiveChatInterval !== _proactiveIntervalAtFetchStart;
-                const localIntervalMatchesControlDefault =
-                    S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
-                if (_firstLaunchPending
-                        && telemetryBranch === _PROACTIVE_INTERVAL_AB_BRANCH
-                        && !_isUserRegionChina()
-                        && noServerIntervalPref
-                        && !userChangedIntervalDuringFetch
-                        && localIntervalMatchesControlDefault) {
-                    if (S.proactiveChatInterval !== _PROACTIVE_INTERVAL_AB_VALUE) {
-                        S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
-                        hasUpdate = true;
-                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒（海外）');
-                    }
-                }
-                // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
-                // 不管是否实际触发覆写），清掉 pending marker；下次启动不再尝试。
-                // GET 失败则 marker 留着，下次在线启动重新决议
+                // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
+                // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
+                // 对实验组 vision_chat_default_off 把屏幕分享来源（proactiveVisionChatEnabled）
+                // 首启默认翻成「关」，现该实验已合并进 main、默认回到控制组「开」（见
+                // app-state.js / loadSettings 的 ?? true），故不再做首启覆写；仅保留 marker
+                // 决议时序——情境弹窗 app-context-prompt.js 靠下方 neko:telemetry-branch-resolved
+                // 广播判断 settings 已就绪。
                 const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
                 if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
-                    // 首启 branch 决议完后强制 POST 一次：控制组没有 server merge、也没
-                    // 触发 A/B 覆写时 hasUpdate 仍是 false，若用户在 60s periodic 之前关掉
-                    // app，首启的本地默认值就永远到不了服务器。这里 hasUpdate=true 让下方
-                    // saveSettings 走完整路径推一次
+                    // 首启决议完后强制 POST 一次：没有 server merge 时 hasUpdate 仍是 false，
+                    // 若用户在 60s periodic 之前关掉 app，首启的本地默认值就永远到不了服务器。
+                    // 这里 hasUpdate=true 让下方 saveSettings 走完整路径推一次
                     hasUpdate = true;
                 }
 
@@ -630,6 +666,7 @@
                     window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
+                    window.focusCognitionEnabled = S.focusCognitionEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
@@ -644,12 +681,11 @@
                     }
                 }
 
-                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播——必须放在
-                // 所有设置合并（A/B 覆写 + server merge + saveSettings）之后。否则被缓存的
-                // context 在 branch-resolved 重放时，_isActionable 会读到覆写前的旧
-                // proactiveVisionChatEnabled，误判该不该弹（Codex P2）。GET 失败
-                // telemetryBranch 为 null 时不挂，弹窗模块拿不到实验组标识默认不弹
-                // （fail-closed，宁可漏弹也不要弹给控制组）。
+                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播 settings-ready
+                // 信号——必须放在所有设置合并（server merge + saveSettings）之后。否则被缓存的
+                // context 在重放时，_isActionable 会读到合并前的旧 proactiveVisionChatEnabled，
+                // 误判该不该弹（Codex P2）。GET 失败 telemetryBranch 为 null 时不挂、不广播，弹窗
+                // 模块拿不到「就绪」信号默认不弹（fail-closed，宁可漏弹也不拿未合并设置误弹）。
                 if (telemetryBranch) {
                     window.nekoTelemetryBranch = telemetryBranch;
                     window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
@@ -657,10 +693,9 @@
                     }));
                 }
             }).finally(() => {
-                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能
-                // 比 GET 先到，把首启控制组默认值写到服务器；GET 回来读到自家 echo
-                // 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 还落上，
-                // cohort 直接污染。GET 走 finally 后周期同步才安全
+                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能比 GET 先到，
+                // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
+                // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
                 startPeriodicSync();
             });
         } catch (error) {
@@ -672,6 +707,20 @@
     }
 
     // ======================== 初始化调用 ========================
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== 'project_neko_settings' || !event.newValue) return;
+        try {
+            const settings = JSON.parse(event.newValue);
+            const changed = applySharedRuntimeSettings(settings);
+            stopVisionAfterPrivacyEnabled();
+            if (changed && typeof window.scheduleProactiveChat === 'function') {
+                window.scheduleProactiveChat();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 跨窗口设置同步失败:', error);
+        }
+    });
 
     // 加载设置
     loadSettings();

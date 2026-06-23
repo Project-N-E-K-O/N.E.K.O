@@ -1,21 +1,49 @@
 import asyncio
+import json
+import sqlite3
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
+from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
     mark_game_started as _mark_game_started,
+    reset_game_route_state,
     set_soccer_game_memory_policy as _set_soccer_game_memory_policy,
 )
 from main_routers import game_router
+from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from main_logic.core import LLMSessionManager
+from utils import game_log
+from utils.llm_client import AIMessage, HumanMessage
 
 
 class _FakeRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, *, mutation_headers=True, path="/api/game/test"):
         self._payload = payload
+        self.base_url = "http://127.0.0.1:8000/"
+        self.url = SimpleNamespace(path=path)
+        self.method = "POST"
+        self.headers = {}
+        if mutation_headers:
+            self.headers = {
+                "origin": "http://127.0.0.1:8000",
+                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+            }
 
     async def json(self):
         return self._payload
+
+
+def _assert_not_icebreaker_game_route_error(exc: HTTPException, expected_route: str) -> None:
+    assert exc.status_code == 400
+    assert exc.detail == {
+        "ok": False,
+        "reason": "not_a_game_route",
+        "route": expected_route,
+    }
 
 
 def _put_game_session(lanlan_name, game_type, session_id, session):
@@ -32,6 +60,590 @@ def _put_game_session(lanlan_name, game_type, session_id, session):
     return key
 
 
+def _allow_badminton_score_session(lanlan_name, session_id, mode="shooter"):
+    state = {
+        "game_type": "badminton",
+        "session_id": session_id,
+        "lanlan_name": lanlan_name,
+        "game_route_active": False,
+        "mode": mode,
+    }
+    _mark_game_started(state)
+    game_router._game_route_states[game_router._route_state_key(lanlan_name, "badminton")] = state
+    game_router._remember_badminton_score_session(lanlan_name, session_id, mode)
+    return state
+
+
+@pytest.fixture(autouse=True)
+def _clear_game_session_debug_logs():
+    game_log._game_session_debug_logs.clear()
+    yield
+    game_log._game_session_debug_logs.clear()
+
+
+@pytest.mark.unit
+def test_badminton_removed_modes_are_not_public_or_scored():
+    assert game_router._normalize_badminton_mode("horse") == "spectator"
+    assert game_router._normalize_badminton_mode("HORSE") == "spectator"
+    assert game_router._is_badminton_scoring_mode("horse") is False
+    assert game_router._normalize_badminton_mode("timed") == "spectator"
+    assert game_router._normalize_badminton_mode("TIMED") == "spectator"
+    assert game_router._is_badminton_scoring_mode("timed") is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["neko_initiated"] is False
+        return game_router._default_badminton_pregame_context(mode="shooter"), "lightweight", ""
+
+    monkeypatch.setattr(game_router, "_build_badminton_pregame_context", fake_pregame_context)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "badminton",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "shooter"}),
+        )
+
+        assert result["ok"] is True
+        assert result["state"]["game_type"] == "badminton"
+        assert result["state"]["session_id"] == "debug-badminton"
+        assert result["state"]["mode"] == "shooter"
+        assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
+        debug_log = await game_router.game_logs(session_id="debug-badminton", game_type="badminton")
+        assert debug_log["ok"] is True
+        assert debug_log["missing"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["game_type"] == "soccer"
+        return game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "soccer",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log"}),
+        )
+
+    assert result["ok"] is True
+    debug_log = await game_router.game_logs(session_id="soccer-auto-log", game_type="soccer")
+    assert debug_log["ok"] is True
+    assert debug_log["log"]["status"] == "active"
+    assert [item["event"] for item in debug_log["log"]["entries"]] == [
+        "session_active",
+        "route_start_requested",
+        "route_start_completed",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soccer_route_start_enables_session_debug_log_under_route_locks(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["game_type"] == "soccer"
+        return game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
+
+    lock_observation = {}
+    original_enable = game_router._enable_game_session_debug_log
+
+    def observed_enable(game_type, session_id, *, lanlan_name=""):
+        lock_observation["supersede_locked"] = game_router._get_supersede_lock(lanlan_name).locked()
+        lock_observation["route_locked"] = game_router._get_route_lock(lanlan_name, game_type).locked()
+        return original_enable(game_type, session_id, lanlan_name=lanlan_name)
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+    monkeypatch.setattr(game_router, "_enable_game_session_debug_log", observed_enable)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "soccer",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log-locks"}),
+        )
+
+    assert result["ok"] is True
+    assert lock_observation == {"supersede_locked": True, "route_locked": True}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_route_start(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_route_start(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/route/start")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_project_speak(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_project_speak(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1", "line": "hello"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/speak")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_route_end(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_route_end(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/route/end")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_and_query():
+    enable_result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-1",
+            "game_type": "soccer",
+            "lanlan_name": "Lan",
+            "source": "test",
+            "reason": "unit",
+        }, path="/api/game/logs/enable"),
+    )
+    assert enable_result["ok"] is True
+
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-1",
+            "game_type": "soccer",
+            "lanlan_name": "Lan",
+            "level": "error",
+            "category": "frontend",
+            "event": "window_error",
+            "message": "boom",
+            "details": {"filename": "soccer_demo.html", "line": 12},
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["seq"] == 2
+    queried = await game_router.game_logs(session_id="soccer-debug-1", game_type="soccer")
+    assert queried["ok"] is True
+    assert queried["log"]["lanlan_name"] == "Lan"
+    assert queried["log"]["entries"][0]["event"] == "session_log_enabled"
+    assert queried["log"]["entries"][1]["event"] == "window_error"
+    assert queried["log"]["entries"][1]["details"]["filename"] == "soccer_demo.html"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_does_not_create_session_before_enable():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-disabled",
+            "game_type": "soccer",
+            "message": "ignored",
+        }, path="/api/game/logs"),
+    )
+
+    assert result["ok"] is False
+    assert result["seq"] is None
+    assert game_log.find_game_session_debug_log("soccer-debug-disabled", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_enable_requires_local_mutation_csrf():
+    result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-enable-csrf",
+            "game_type": "soccer",
+        }, mutation_headers=False, path="/api/game/logs/enable"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert game_log.find_game_session_debug_log("soccer-debug-enable-csrf", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_requires_local_mutation_csrf():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-csrf",
+            "game_type": "soccer",
+            "message": "blocked",
+        }, mutation_headers=False, path="/api/game/logs"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert game_log.find_game_session_debug_log("soccer-debug-csrf", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate():
+    enable_result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-truncate",
+            "game_type": "soccer",
+        }, path="/api/game/logs/enable"),
+    )
+    assert enable_result["ok"] is True
+
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-truncate",
+            "game_type": "soccer",
+            "message": "m" * 1500,
+            "details": {"long": "d" * 2500},
+            "preserve_message": "false",
+            "preserve_details": "false",
+            "no_truncate": True,
+        }, path="/api/game/logs"),
+    )
+
+    assert result["ok"] is True
+    queried = await game_router.game_logs(session_id="soccer-debug-truncate", game_type="soccer")
+    entry = queried["log"]["entries"][1]
+    assert len(entry["message"]) < 1500
+    assert "<truncated" in entry["message"]
+    assert len(entry["details"]["long"]) < 2500
+    assert "<truncated" in entry["details"]["long"]
+
+
+@pytest.mark.unit
+def test_game_debug_logs_keep_latest_completed_session_until_next_active_session():
+    for index in range(3):
+        session_id = f"soccer-old-{index}"
+        game_log.enable_game_session_debug_log("soccer", session_id, lanlan_name="Lan")
+        game_log.mark_game_session_debug_log_ended("soccer", session_id, lanlan_name="Lan", reason="test")
+
+    summaries_before_new_session = game_log.list_game_session_debug_log_summaries("soccer")
+    assert {item["session_id"] for item in summaries_before_new_session} == {"soccer-old-2"}
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-new", lanlan_name="Lan")
+    summaries = game_log.list_game_session_debug_log_summaries("soccer")
+
+    session_ids = {item["session_id"] for item in summaries}
+    assert session_ids == {"soccer-new"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_drop_ended_session_when_active_session_exists():
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.enable_game_session_debug_log("soccer", "soccer-new", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="superseded")
+
+    summaries = game_log.list_game_session_debug_log_summaries("soccer")
+
+    assert {item["session_id"] for item in summaries} == {"soccer-new"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_new_active_session_drops_old_active_session():
+    game_log.enable_game_session_debug_log("soccer", "soccer-old-active", lanlan_name="LanA")
+
+    assert game_log.find_game_session_debug_log("soccer-old-active", "soccer") is not None
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-new-active", lanlan_name="LanB")
+
+    assert game_log.find_game_session_debug_log("soccer-old-active", "soccer") is None
+    assert {item["session_id"] for item in game_log.list_game_session_debug_log_summaries()} == {"soccer-new-active"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_drop_idle_active_session_after_ttl():
+    now = 1_000_000.0
+    game_log.enable_game_session_debug_log("soccer", "soccer-idle-active", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("soccer-idle-active", "soccer")
+    assert entry is not None
+    entry["updated_at"] = now - game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS - 1
+
+    game_log.cleanup_game_session_debug_logs(now)
+
+    assert game_log.find_game_session_debug_log("soccer-idle-active", "soccer") is None
+
+
+@pytest.mark.unit
+def test_game_debug_logs_append_refreshes_active_idle_ttl():
+    now = game_log.time.time()
+    game_log.enable_game_session_debug_log("soccer", "soccer-active-refresh", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("soccer-active-refresh", "soccer")
+    assert entry is not None
+    stale_updated_at = now - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
+    entry["updated_at"] = stale_updated_at
+
+    item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-active-refresh",
+        lanlan_name="Lan",
+        event="still_active",
+        message="still active",
+    )
+
+    assert item is not None
+    assert game_log.find_game_session_debug_log("soccer-active-refresh", "soccer") is not None
+    assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+def test_game_debug_logs_reactivation_clears_ended_metadata():
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-reactivate", lanlan_name="Lan", reason="test")
+    ended_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+    assert ended_entry is not None
+    assert ended_entry["ended_at"] is not None
+    assert ended_entry["ended_time"]
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    reactivated_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+
+    assert reactivated_entry is not None
+    assert reactivated_entry["status"] == "active"
+    assert reactivated_entry["ended_at"] is None
+    assert reactivated_entry["ended_time"] is None
+
+
+@pytest.mark.unit
+def test_game_debug_logs_do_not_append_after_session_ended():
+    game_log.enable_game_session_debug_log("soccer", "soccer-ended", lanlan_name="Lan")
+    first_item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-ended",
+        lanlan_name="Lan",
+        event="before_end",
+        message="before end",
+    )
+    assert first_item is not None
+
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended", lanlan_name="Lan", reason="test")
+    entry = game_log.find_game_session_debug_log("soccer-ended", "soccer")
+    assert entry is not None
+    entry_count_after_end = len(entry["entries"])
+
+    late_item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-ended",
+        lanlan_name="Lan",
+        event="after_end",
+        message="after end",
+    )
+
+    assert late_item is None
+    assert entry["status"] == "ended"
+    assert len(entry["entries"]) == entry_count_after_end
+    assert [item["event"] for item in entry["entries"]] == [
+        "before_end",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+def test_game_debug_logs_mark_ended_is_idempotent():
+    game_log.enable_game_session_debug_log("soccer", "soccer-ended-idempotent", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="first")
+    entry = game_log.find_game_session_debug_log("soccer-ended-idempotent", "soccer")
+    assert entry is not None
+    first_ended_at = entry["ended_at"]
+    first_ended_time = entry["ended_time"]
+    first_events = [item["event"] for item in entry["entries"]]
+
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="second")
+
+    assert entry["status"] == "ended"
+    assert entry["ended_at"] == first_ended_at
+    assert entry["ended_time"] == first_ended_time
+    assert [item["event"] for item in entry["entries"]] == first_events == ["session_ended"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_records_completed_before_session_ended(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-route-end", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-route-end", lanlan_name="Lan")
+
+        result = await game_router._complete_game_end_from_payload(
+            "soccer",
+            {
+                "session_id": "soccer-route-end",
+                "lanlan_name": "Lan",
+                "gameStarted": True,
+            },
+            default_reason="route_end",
+        )
+
+    assert result["ok"] is True
+    entry = game_log.find_game_session_debug_log("soccer-route-end", "soccer")
+    assert entry is not None
+    assert entry["status"] == "ended"
+    assert [item["event"] for item in entry["entries"]] == [
+        "route_end_requested",
+        "route_end_completed",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_resets_defer_flag_when_postgame_fails(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        raise RuntimeError("postgame failed")
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-postgame-fails", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-postgame-fails", lanlan_name="Lan")
+
+        with pytest.raises(RuntimeError, match="postgame failed"):
+            await game_router._complete_game_end_from_payload(
+                "soccer",
+                {
+                    "session_id": "soccer-postgame-fails",
+                    "lanlan_name": "Lan",
+                    "gameStarted": True,
+                },
+                default_reason="route_end",
+            )
+
+        assert state.get("_exit_defer_debug_log_close") is False
+
+    entry = game_log.find_game_session_debug_log("soccer-postgame-fails", "soccer")
+    assert entry is not None
+    assert entry["status"] == "active"
+    assert [item["event"] for item in entry["entries"]] == ["route_end_requested"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_defers_concurrent_heartbeat_close(monkeypatch):
+    release_finalize = asyncio.Event()
+
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-route-race", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-route-race", lanlan_name="Lan")
+
+        async def existing_finalize_task():
+            await release_finalize.wait()
+            return {
+                "archive": {
+                    "game_type": "soccer",
+                    "session_id": "soccer-route-race",
+                    "lanlan_name": "Lan",
+                    "game_started": True,
+                },
+                "archive_memory": {"ok": True, "status": "submitted"},
+                "game_session_closed": False,
+                "debug_log_ended": False,
+                "exit_reason": "heartbeat_timeout",
+                "postgame_context_snapshot": {},
+            }
+
+        heartbeat_task = asyncio.create_task(existing_finalize_task())
+        state["_exit_task"] = heartbeat_task
+        state["_exit_close_debug_log_request"] = True
+
+        end_task = asyncio.create_task(game_router._complete_game_end_from_payload(
+            "soccer",
+            {
+                "session_id": "soccer-route-race",
+                "lanlan_name": "Lan",
+                "gameStarted": True,
+            },
+            default_reason="route_end",
+        ))
+        for _ in range(20):
+            if state.get("_exit_defer_debug_log_close"):
+                break
+            await asyncio.sleep(0)
+        assert state.get("_exit_defer_debug_log_close") is True
+
+        release_finalize.set()
+        heartbeat_result = await heartbeat_task
+        result = await end_task
+
+    assert heartbeat_result["debug_log_ended"] is True
+    assert result["ok"] is True
+    entry = game_log.find_game_session_debug_log("soccer-route-race", "soccer")
+    assert entry is not None
+    assert entry["status"] == "ended"
+    assert [item["event"] for item in entry["entries"]] == [
+        "route_end_requested",
+        "route_end_completed",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+def test_game_debug_logs_retention_is_not_partitioned_by_type_or_lanlan():
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="LanA")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="LanA", reason="test")
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is not None
+
+    game_log.enable_game_session_debug_log("badminton", "badminton-new", lanlan_name="LanB")
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is None
+    assert {item["session_id"] for item in game_log.list_game_session_debug_log_summaries()} == {"badminton-new"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_drop_completed_session_after_retention_ttl():
+    now = 1_000_000.0
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="test")
+    entry = game_log.find_game_session_debug_log("soccer-old", "soccer")
+    assert entry is not None
+    entry["ended_at"] = now - game_log.GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS - 1
+    entry["updated_at"] = entry["ended_at"]
+
+    game_log.cleanup_game_session_debug_logs(now)
+
+    assert game_log.find_game_session_debug_log("soccer-old", "soccer") is None
+
+
 @pytest.mark.unit
 def test_parse_control_instructions_extracts_json_line():
     result = game_router._parse_control_instructions(
@@ -42,6 +654,1429 @@ def test_parse_control_instructions_extracts_json_line():
         "line": "这球我拿下了喵",
         "control": {"mood": "happy", "difficulty": "lv2"},
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_llm_session_manager_appends_generic_context_to_session_history():
+    class FakeSession:
+        def __init__(self):
+            self._conversation_history = []
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.session = FakeSession()
+    mgr.message_cache_for_new_session = []
+    mgr.session_ready = True
+
+    first = await mgr.append_context(source="icebreaker", role="assistant", text=" hi ")
+    second = await mgr.append_context(source="icebreaker", role="user", text=" choice ")
+    assert first.appended is True
+    assert second.appended is True
+    assert isinstance(mgr.session._conversation_history[0], AIMessage)
+    assert mgr.session._conversation_history[0].content == "hi"
+    assert isinstance(mgr.session._conversation_history[1], HumanMessage)
+    assert mgr.session._conversation_history[1].content == "choice"
+
+
+@pytest.mark.unit
+def test_parse_control_instructions_sanitizes_visible_line_leaks():
+    result = game_router._parse_control_instructions(
+        'glog_0040: 哼，那我认真一点咯。 (mood=angry, difficulty=lv2)\n'
+        'reason="balance tuning"\n'
+        '{"mood":"angry","difficulty":"lv2","reason":"压一压节奏"}'
+    )
+
+    assert result == {
+        "line": "哼，那我认真一点咯。",
+        "control": {"mood": "angry", "difficulty": "lv2", "reason": "压一压节奏"},
+    }
+
+
+@pytest.mark.unit
+def test_parse_control_instructions_drops_internal_advice_lines_from_visible_line():
+    result = game_router._parse_control_instructions(
+        '根据系统建议降低难度。\n'
+        '看你追得这么急，我就稍微认真一点点。'
+    )
+
+    assert result == {
+        "line": "看你追得这么急，我就稍微认真一点点。",
+        "control": {},
+    }
+
+
+@pytest.mark.unit
+def test_badminton_prompt_and_control_contract():
+    prompt = game_router._build_game_prompt(
+        "badminton",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+    )
+
+    assert "羽毛球挑战小游戏" in prompt
+    assert "有效区域或目标落点" in prompt
+    assert "line_in、net_touch、zone_in、out、net" in prompt
+    assert "expression" in prompt
+    assert "intensity" in prompt
+    assert "final_streak" in prompt
+    assert ">=15" in prompt
+
+    parsed = game_router._parse_control_instructions(
+        '破纪录了喵！\n{"mood":"surprised","expression":"hype","intensity":"high","difficulty":"max"}',
+        game_type="badminton",
+    )
+    assert parsed == {
+        "line": "破纪录了喵！",
+        "control": {"mood": "surprised", "expression": "hype", "intensity": "high", "difficulty": "max"},
+    }
+
+
+@pytest.mark.unit
+def test_badminton_shooter_prompt_contract():
+    prompt = game_router._build_game_prompt(
+        "badminton",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+        mode="shooter",
+    )
+
+    assert "被玩家操控挥拍" in prompt
+    assert "挥拍的是 Yui" in prompt
+    assert "评价的是玩家操控 Yui 控拍的技术" in prompt
+    assert "shooterEvaluation" in prompt
+    assert "shooterRating" in prompt
+
+
+@pytest.mark.unit
+def test_badminton_duel_prompt_contract():
+    prompt = game_router._build_game_prompt(
+        "badminton",
+        "Lan",
+        "傲娇但会认真看比赛。",
+        language="zh",
+        mode="duel",
+    )
+
+    assert "羽毛球对拉回合" in prompt
+    assert "label / duel 字段" in prompt
+    assert "player_duel_shot" in prompt
+    assert "duel.player_score" in prompt
+    assert "duel_outcome" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+def test_badminton_duel_prompts_use_duel_outcome_for_winner(lang):
+    prompt = game_router.get_badminton_system_prompt(lang, mode="duel")
+
+    assert "duel_outcome" in prompt
+    assert "duel.active_shooter" in prompt
+
+
+@pytest.mark.unit
+def test_badminton_control_drops_invalid_values():
+    parsed = game_router._parse_control_instructions(
+        '嗯？\n{"mood":"evil","expression":"explode","intensity":"extreme"}',
+        game_type="badminton",
+    )
+
+    assert parsed == {"line": "嗯？", "control": {}}
+
+
+@pytest.mark.unit
+def test_badminton_event_sanitizer_keeps_current_state_and_drops_invalid_fields():
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "shot_result",
+        "result": "scored",
+        "shot_type": "line_in",
+        "streak": "7",
+        "distance": "380",
+        "currentState": {
+            "game": "badminton",
+            "streak": "7",
+            "distance": "380",
+            "record_distance": "520",
+            "final_streak": "7",
+            "final_distance": "380",
+            "last_shot_type": "line_in",
+            "score": {
+                "score": "42",
+                "best_streak": "7",
+                "made_count": "9",
+                "maxDistancePx": "380",
+                "mode": "timed",
+                "unsafe": "<tag>",
+            },
+            "unsafe": "<tag>",
+        },
+        "score": "42",
+        "was_perfect": True,
+        "badmintonGameMemoryEnabled": False,
+        "gameMemoryEnabled": False,
+        "debugBlob": "x" * 5000,
+    })
+
+    assert error == ""
+    assert event["streak"] == 7
+    assert event["distance"] == 380
+    assert event["score"] == 42
+    assert event["was_perfect"] is True
+    assert event["badmintonGameMemoryEnabled"] is False
+    assert event["badmintonGameMemoryEnabled"] is False
+    assert event["gameMemoryEnabled"] is False
+    assert "debugBlob" not in event
+    assert event["shot_type"] == "line_in"
+    assert event["currentState"] == {
+        "game": "badminton",
+        "last_shot_type": "line_in",
+        "streak": 7,
+        "distance": 380,
+        "record_distance": 520,
+        "final_streak": 7,
+        "final_distance": 380,
+        "score": {
+            "score": 42,
+            "best_streak": 7,
+            "made_count": 9,
+            "max_distance_px": 380.0,
+            "mode": "spectator",
+        },
+    }
+
+    invalid, invalid_error = game_router._sanitize_badminton_event({
+        "kind": "bad_kind",
+        "shot_type": "explode",
+    })
+    assert invalid is None
+    assert invalid_error == "invalid kind"
+
+
+@pytest.mark.unit
+def test_badminton_event_sanitizer_keeps_duel_state_and_shot_missed():
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "shot_missed",
+        "mode": "duel",
+        "duel_outcome": "player_win",
+        "duel": {
+            "playerScore": "2",
+            "neko_score": "3",
+            "playerMisses": "1",
+            "neko_misses": "2",
+            "maxMisses": "3",
+            "round": "4",
+            "activeShooter": "neko",
+        },
+        "currentState": {
+            "game": "badminton",
+            "mode": "duel",
+            "duel": {
+                "player_score": "2",
+                "nekoScore": "3",
+                "player_misses": "1",
+                "nekoMisses": "2",
+                "max_misses": "3",
+                "round": "4",
+                "active_shooter": "neko",
+            },
+        },
+    })
+
+    assert error == ""
+    assert event["kind"] == "shot_missed"
+    assert event["mode"] == "duel"
+    assert event["duel_outcome"] == "player_win"
+    assert event["duel"] == {
+        "player_score": 2,
+        "neko_score": 3,
+        "player_misses": 1,
+        "neko_misses": 2,
+        "max_misses": 3,
+        "round": 4,
+        "active_shooter": "neko",
+    }
+    assert event["currentState"]["duel"] == {
+        "player_score": 2,
+        "neko_score": 3,
+        "player_misses": 1,
+        "neko_misses": 2,
+        "max_misses": 3,
+        "round": 4,
+        "active_shooter": "neko",
+    }
+
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "shot_missed",
+        "mode": "duel",
+        "duel": {
+            "playerMisses": "Infinity",
+            "nekoMisses": "-Infinity",
+            "maxMisses": "NaN",
+            "playerScore": "5",
+        },
+    })
+
+    assert error == ""
+    assert event["duel"] == {"player_score": 5}
+
+
+@pytest.mark.unit
+def test_badminton_event_sanitizer_drops_removed_horse_state():
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "shot_missed",
+        "mode": "horse",
+        "horse": {
+            "word": "HORSE",
+            "lettersPlayer": "2",
+            "letters_neko": "1",
+            "phase": "player_reply",
+            "turnOwner": "player",
+            "challenge": {
+                "distance": "220",
+                "angle": "58",
+                "sweet": ["38", "44"],
+                "owner": "neko",
+                "unsafe": "<tag>",
+            },
+        },
+        "currentState": {
+            "game": "badminton",
+            "mode": "horse",
+            "horse": {
+                "letters_player": 2,
+                "lettersNeko": 1,
+                "phase": "player_reply",
+                "turn_owner": "player",
+                "challenge": None,
+            },
+        },
+    })
+
+    assert error == ""
+    assert event["mode"] == "spectator"
+    assert "horse" not in event
+    assert "horse" not in event["currentState"]
+
+
+@pytest.mark.unit
+def test_badminton_event_sanitizer_keeps_bounded_current_state_attempts():
+    attempts = [
+        {
+            "shooter": "player",
+            "shot_type": "line_in",
+            "distance": str(100 + index),
+            "distance_m": "3.5",
+            "scored": index % 2 == 0,
+            "score": "2",
+            "round": str(index),
+            "angle": "44.5",
+            "power": "82.1",
+            "unsafe": "<tag>",
+        }
+        for index in range(14)
+    ]
+
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "game_over",
+        "mode": "duel",
+        "currentState": {
+            "game": "badminton",
+            "mode": "duel",
+            "attempts_results": attempts,
+        },
+    })
+
+    assert error == ""
+    sanitized_attempts = event["currentState"]["attempts_results"]
+    assert len(sanitized_attempts) == 12
+    assert sanitized_attempts[0]["round"] == 2
+    assert sanitized_attempts[-1] == {
+        "shooter": "player",
+        "shot_type": "line_in",
+        "scored": False,
+        "score": 2,
+        "round": 13,
+        "distance": 113,
+        "distance_m": 3.5,
+        "angle": 44.5,
+        "power": 82.1,
+    }
+    assert "unsafe" not in sanitized_attempts[-1]
+
+
+@pytest.mark.unit
+def test_badminton_shooter_helper_boundaries():
+    assert game_router._compute_distance_tier(80) == "close"
+    assert game_router._compute_distance_tier(150) == "mid"
+    assert game_router._compute_distance_tier(300) == "far"
+    assert game_router._compute_distance_tier(451) == "deep"
+
+    assert game_router._compute_streak_tier(0) == "cold"
+    assert game_router._compute_streak_tier(1) == "cold"
+    assert game_router._compute_streak_tier(2) == "neutral"
+    assert game_router._compute_streak_tier(3) == "warming"
+    assert game_router._compute_streak_tier(4) == "warming"
+    assert game_router._compute_streak_tier(5) == "on_fire"
+
+    assert game_router._compute_shooter_rating({"final_streak": 15}) == "S"
+    assert game_router._compute_shooter_rating({"final_streak": 10}) == "A"
+    assert game_router._compute_shooter_rating({"final_streak": 5}) == "B"
+    assert game_router._compute_shooter_rating({"final_streak": 2}) == "C"
+    assert game_router._compute_shooter_rating({"final_streak": 1}) == "D"
+    assert game_router._compute_shooter_rating({"final_streak": 0}) == "D"
+
+
+@pytest.mark.unit
+def test_badminton_shooter_evaluation_and_sanitizer_fields():
+    event, error = game_router._sanitize_badminton_event({
+        "kind": "shot_result",
+        "mode": "shooter",
+        "result": "scored",
+        "shot_type": "line_in",
+        "streak": 3,
+        "distance": 180,
+        "shot_angle": 50,
+        "shot_power": 34,
+        "aim_duration_seconds": 61,
+        "currentState": {"mode": "shooter", "streak": 3, "distance": 180},
+    })
+
+    assert error == ""
+    assert event["mode"] == "shooter"
+    assert event["aim_duration_seconds"] == 60.0
+    assert event["currentState"]["mode"] == "shooter"
+
+    evaluation = game_router._compute_shooter_evaluation(event)
+    assert evaluation["best_angle"] == 58.0
+    assert evaluation["sweet_power"] == {"min": 38.0, "max": 44.0}
+    assert evaluation["angle_deviation"] == 8.0
+    assert evaluation["power_deviation"] == 4.0
+    assert evaluation["aim_duration_seconds"] == 60.0
+    assert evaluation["distance_tier"] == "mid"
+    assert evaluation["streak_tier"] == "warming"
+
+    weak = game_router._compute_shooter_evaluation({
+        "distance": 180,
+        "shot_angle": 40,
+        "shot_power": 25,
+        "aim_duration": -2,
+    })
+    assert weak["angle_deviation"] == 18.0
+    assert weak["power_deviation"] == 13.0
+    assert weak["aim_duration_seconds"] == 0.0
+
+    invalid_mode, invalid_error = game_router._sanitize_badminton_event({
+        "kind": "shot_result",
+        "mode": "invalid",
+    })
+    assert invalid_error == ""
+    assert invalid_mode["mode"] == "spectator"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_quick_lines_returns_fallback_on_llm_failure(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "傲娇。",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    def fail_llm(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-1"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert "line_in" in result["lines"]
+    assert "shot_missed" in result["lines"]
+    assert "game_over" in result["lines"]
+    assert "close_to_record" in result["lines"]
+    assert "streak_15" in result["lines"]
+    assert "streak_20" in result["lines"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_quick_lines_fallback_uses_request_language(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "Tsundere but focused.",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    def fail_llm(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-1", "i18n_language": "en-US"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert result["lines"]["line_in"][0] == "On the line!"
+    assert result["lines"]["shot_missed"][0] == "Still in it"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_quick_lines_uses_requested_character(monkeypatch):
+    game_router._badminton_quick_lines_cache.clear()
+    captured = {}
+
+    def fake_character_info(lanlan_name=None):
+        name = str(lanlan_name or "CurrentLan")
+        return {
+            "lanlan_name": name,
+            "lanlan_prompt": "Requested persona." if name == "InviteLan" else "Current persona.",
+            "user_language": "en",
+            "model": "fake",
+            "base_url": "http://fake",
+            "api_key": "fake",
+        }
+
+    class _FakeResult:
+        content = '{"line_in":["Nice arc"]}'
+
+    class _FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def ainvoke(self, messages):
+            captured["system"] = messages[0].content
+            return _FakeResult()
+
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: fake_character_info("CurrentLan"))
+    monkeypatch.setattr(game_router, "_get_character_info", fake_character_info)
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda *_args, **_kwargs: _FakeLLM())
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bd-1", "mode": "shooter"}),
+    )
+
+    assert result["ok"] is True
+    assert result["character"] == "InviteLan"
+    assert result["lines"]["line_in"] == ["Nice arc"]
+    assert "game_over" not in result["lines"]
+    assert "Requested persona." in captured["system"]
+    assert "Current persona." not in captured["system"]
+
+
+@pytest.mark.unit
+def test_badminton_template_contract():
+    from pathlib import Path
+
+    html = Path(__file__).resolve().parents[2].joinpath("templates/badminton_demo.html").read_text(encoding="utf-8")
+
+    assert "/api/game/badminton/route/start" in html
+    assert "/api/game/badminton/chat" in html
+    assert "/api/game/badminton/quick-lines" in html
+    assert "/api/game/badminton/speak" in html
+    assert "/api/game/badminton/mirror-assistant" in html
+    assert "/api/game/badminton/route/drain" in html
+    assert "/api/game/badminton/route/heartbeat" in html
+    assert "/api/game/badminton/route/end" in html
+    assert "pageVisible: pageVisible" in html
+    assert "visibilityState: document.visibilityState" in html
+    assert "var drainSessionId = sessionId" in html
+    assert "if (sessionId !== drainSessionId || currentMode !== drainMode) return" in html
+    assert "/api/game/badminton/character" in html
+    assert "/api/game/badminton/leaderboard" in html
+    assert "initNekoAvatar" in html
+    assert "activeAvatarType" in html
+    assert "model_type" in html
+    assert "live3d_sub_type" in html
+    assert "async function initVRMAvatar(vrmPath)" in html
+    assert "async function initMMDAvatar(mmdPath)" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "window.lanlan_config.model_type = 'live2d';" in html
+    assert "window.lanlan_config.live3d_sub_type = '';" in html
+    assert "await initLive2DAvatar(live2dPath);" in html
+    assert "await initVRMAvatar(vrmPath);" not in html
+    assert "initPIXI('neko-l2d-canvas', 'neko-l2d-container'" in html
+    assert "loadModel(modelPath)" in html
+    assert "var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json'" in html
+    assert "当前 Live2D 路径缺失" in html
+    assert "角色接口不可用或未返回 model_type" not in html
+    assert "modelType === 'live3d' && subType === 'vrm'" not in html
+    assert "modelType === 'live3d' && subType === 'mmd'" not in html
+    assert "MMD audience embed is waiting for a safe independent manager API" in html
+    assert "not loading Live2D fallback for MMD" in html
+    assert "var modelPath = '/static/mao_pro/mao_pro.model3.json'" not in html
+    assert "focusController" in html
+    assert "BADMINTON_COURT_METERS" in html
+    assert "checkShuttleLanding" in html
+    assert "drawNetPosts" in html
+    assert "netTouched" in html
+    assert "score-label" in html
+    assert "leaderboard-panel" in html
+    assert "leaderboard-button" in html
+    assert "leaderboard-tabs" in html
+    assert "leaderboard-body" in html
+    assert "pxToMeters" in html
+    assert "calcShotScore" in html
+    assert 'id="aiming-canvas"' in html
+    assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
+    assert "function drawCourt()" in html
+    assert "function drawNet()" in html
+    assert "function drawAiming()" in html
+    assert "drawDistanceMarkers" in html
+    assert "drawFreeThrowLine" not in html
+    assert "drawThreePointLine" not in html
+    assert "bd_last_final_streak" in html
+    assert "navigator.sendBeacon" in html
+    assert ".textContent" in html
+    assert ".innerHTML" not in html
+    assert "ctx.lineTo(px + Math.cos(radians) * 54, py - Math.sin(radians) * 54);" not in html
+    keydown = html[
+        html.index("window.addEventListener('keydown'"):
+        html.index("if (bgmVolumeInput)", html.index("window.addEventListener('keydown'"))
+    ]
+    assert "key === 'g'" not in keydown
+    assert "key === 's'" not in keydown
+    assert "key === 'm'" in keydown
+    assert "key === ' ' || ev.code === 'Space'" in keydown
+    assert "var baseX = getPlayerX() + 10;" not in html
+    assert "var SWING_IMPACT_DELAY_MS = 120;" in html
+    assert "var SHUTTLE_MASS_KG = 0.005;" in html
+    assert "function buildSwingImpulse(angle, power, shooter, incomingBall)" in html
+    assert "shuttle.massKg = SHUTTLE_MASS_KG;" in html
+    assert "currentMode" in html
+    assert "function isPracticeMode()" in html
+    assert "var currentMode = 'duel';" in html
+    assert "function isPracticeMode() {\n    return false;\n  }" in html
+    assert "不限次数" in html
+    assert "自由练习：不限挥拍次数，不记录排行榜分数" not in html
+    assert "自由练习：不记录排行榜分数" not in html
+    assert "if (!isPracticeMode()) game.attemptsRemaining" in html
+    assert "if (!isPracticeMode()) game.totalScore += shotScore" in html
+    assert "var newRecord = !isPracticeMode() && previousDistance > game.recordDistance" in html
+    assert "async function initPlayerAvatar()" in html
+    assert "playerSenseiLoading = true" in html
+    assert "game.power = 0;" in html
+    assert 'id="mode-switcher"' not in html
+    assert 'data-mode="spectator"' not in html
+    assert 'data-mode="shooter"' not in html
+    assert 'data-mode="duel"' not in html
+    assert "function updateModeSwitcher()" not in html
+    assert "function switchBadmintonMode(nextMode)" not in html
+    assert "url.searchParams.set('mode', mode)" not in html
+    assert "queueNekoDuelTurnVoice" in html
+    assert "voice_deadline_ms" in html
+    assert "--neko-expression-y" in html
+    assert "yui-neko-tease" in html
+    assert "updateYuiPosition" in html
+    assert "shouldCallLLMShooter" not in html
+    assert "shouldCallLLMDuel" in html
+    assert "function shouldCallLLMDuel(event) {\n    return false;" not in html
+    assert "YUI_PASSIVE_LINES_SHOOTER" not in html
+    assert "YUI_PASSIVE_LINES_DUEL" in html
+    assert "mode: currentMode" in html
+    assert "launchedFromInvite" not in html
+    assert "badmintonInviteRequired" not in html
+    assert "var currentMode = requestedMode === 'shooter' ? 'shooter' : 'spectator';" not in html
+    assert "if (requestedMode === 'duel') currentMode = 'duel';" not in html
+    assert "await initLive2DAvatar(live2dPath);" in html
+    assert "aim_duration_seconds" in html
+    assert "latestShooterRating" in html
+    assert "控拍评级" not in html
+    assert "function getRequestLanguage()" in html
+    assert "i18n_language: getRequestLanguage()" in html
+    assert "function applyCharacterIdentity(charData)" in html
+    assert "function applyResolvedLanlanName(resolvedName)" in html
+    assert "function applyRouteIdentity(state)" in html
+    assert "lanlanName = resolvedName" in html
+    assert "lanlan_name: queryLanlan || ''" in html
+    assert "lanlan_name: queryLanlan || 'badminton_demo'" not in html
+    assert "var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';" in html
+    assert "var routeLanlanName = getRouteLanlanName();" in html
+    assert "lanlan_name: routeLanlanName" in html
+    assert "character_name: routeLanlanName" in html
+    assert "applyRouteIdentity(res.state);" in html
+    assert "lanlan_name: lanlanName, source: 'badminton_demo'" not in html
+    assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
+    assert "var badmintonCharacterPromise = null;" in html
+    assert "loadBadmintonCharacter().finally(function () { startRoute(); });" in html
+    startup = html[html.rindex("startRouteAfterCharacterReady();"):]
+    assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
+    assert "voiceArbiter" in html
+    assert "mirror_text: false" in html
+    assert "post('/mirror-assistant'" in html
+    assert "post('/speak'" in html
+    assert "if (pending && pending.priority <= entry.priority) return" in html
+    assert "if (voiceArbiter.pending.priority <= entry.priority) return" in html
+    assert "label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot'" in html
+
+
+@pytest.mark.unit
+def test_badminton_leaderboard_query_contract():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2].joinpath("main_routers/game_router.py").read_text(encoding="utf-8")
+
+    assert "BEGIN IMMEDIATE" in source
+    assert "LIMIT ? OFFSET ?" in source
+    assert "WHERE lanlan_name = ?" in source
+    assert "WHERE session_id = ?" in source
+    assert "_badminton_score_order_clause" not in source
+
+
+@pytest.mark.unit
+def test_strip_ssml_like_tags_only_removes_known_ssml_tags():
+    line = game_router._strip_ssml_like_tags(
+        'a < b > c &#160; <break time="200ms"/>'
+        ' <prosody rate="slow">慢一点</prosody> <not-ssml>保留</not-ssml>'
+    )
+
+    assert "a < b > c" in line
+    assert "&#160;" in line
+    assert "慢一点" in line
+    assert "<not-ssml>保留</not-ssml>" in line
+    assert "<break" not in line
+    assert "<prosody" not in line
+    assert "</prosody>" not in line
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_post_and_get_sorting(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan A", "s1", "shooter")
+        first = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "s1",
+            "lanlan_name": "Lan A",
+            "score": 15,
+            "streak": 4,
+            "max_distance_px": 200,
+            "line_in_count": 1,
+            "net_touch_count": 0,
+            "zone_in_count": 0,
+            "mode": "shooter",
+        }))
+        _allow_badminton_score_session("Lan B", "s2", "shooter")
+        second = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "s2",
+            "lanlan_name": "Lan B",
+            "score": 20,
+            "streak": 3,
+            "max_distance_px": 300,
+            "line_in_count": 0,
+            "net_touch_count": 1,
+            "zone_in_count": 0,
+            "mode": "shooter",
+        }))
+        _allow_badminton_score_session("Lan A", "s3", "duel")
+        third = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "s3",
+            "lanlan_name": "Lan A",
+            "score": 20,
+            "streak": 5,
+            "max_distance_px": 250,
+            "line_in_count": 2,
+            "net_touch_count": 0,
+            "zone_in_count": 1,
+            "mode": "duel",
+        }))
+
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert third["ok"] is True
+        assert third["rank"] == 1
+        assert third["is_personal_best"] is True
+
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
+            session_id="s3",
+            lanlan_name="Lan A",
+        )
+
+        assert leaderboard["ok"] is True
+        assert leaderboard["total_players"] == 2
+        assert leaderboard["your_best"] == {"rank": 1, "score": 20}
+        assert leaderboard["top"][0]["name"] == "Lan A"
+        assert leaderboard["top"][0]["score"] == 20
+        assert leaderboard["top"][0]["streak"] == 5
+        assert leaderboard["top"][0]["max_distance_m"] == "6.3"
+        assert leaderboard["top"][1]["name"] == "Lan B"
+        assert leaderboard["top"][1]["score"] == 20
+        assert leaderboard["top"][1]["streak"] == 3
+        assert leaderboard["top"][1]["max_distance_m"] == "7.6"
+
+        unsupported = await game_router.game_badminton_leaderboard("football")
+        assert unsupported["ok"] is True
+        assert unsupported["top"] == []
+
+
+@pytest.mark.unit
+def test_badminton_leaderboard_distance_uses_client_court_scale():
+    assert game_router._BADMINTON_PX_PER_METER == pytest.approx(12 * 3.28084)
+    assert game_router._format_badminton_distance_meters(300) == "7.6"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_migrates_legacy_table_without_new_columns(tmp_path, monkeypatch):
+    db_path = tmp_path / "badminton_scores.db"
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE badminton_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                lanlan_name TEXT NOT NULL DEFAULT '',
+                score INTEGER NOT NULL,
+                streak INTEGER NOT NULL,
+                max_distance_px REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Legacy", "legacy-session", "shooter")
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "legacy-session",
+            "lanlan_name": "Lan Legacy",
+            "score": 24,
+            "streak": 3,
+            "max_distance_px": 300,
+            "mode": "shooter",
+        }))
+
+        assert result["ok"] is True
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+
+    assert leaderboard["top"][0]["mode"] == "shooter"
+    with sqlite3.connect(str(db_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(badminton_scores)").fetchall()}
+    assert {"mode", "line_in_count", "net_touch_count", "zone_in_count"} <= columns
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_get_paginates_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        for index in range(12):
+            _allow_badminton_score_session(f"Lan {index}", f"s{index}", "shooter")
+            await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+                "session_id": f"s{index}",
+                "lanlan_name": f"Lan {index}",
+                "score": 120 - index,
+                "streak": 1,
+                "max_distance_px": 200,
+                "line_in_count": 0,
+                "net_touch_count": 0,
+                "zone_in_count": 0,
+                "mode": "shooter",
+            }))
+
+        page = await game_router.game_badminton_leaderboard(
+            "badminton",
+            limit=5,
+            offset=5,
+        )
+
+        assert page["limit"] == 5
+        assert page["offset"] == 5
+        assert page["total_scores"] == 12
+        assert page["has_more"] is True
+        assert [row["score"] for row in page["top"]] == [115, 114, 113, 112, 111]
+        assert [row["rank"] for row in page["top"]] == [6, 7, 8, 9, 10]
+
+        last_page = await game_router.game_badminton_leaderboard(
+            "badminton",
+            limit=5,
+            offset=10,
+        )
+
+        assert last_page["has_more"] is False
+        assert [row["score"] for row in last_page["top"]] == [110, 109]
+        assert [row["rank"] for row in last_page["top"]] == [11, 12]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan C", "session-9", "shooter")
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "  session-9  ",
+            "lanlan_name": "  Lan C  ",
+            "score": "-7",
+            "streak": "4.9",
+            "max_distance_px": "nan",
+            "line_in_count": "-2",
+            "net_touch_count": "2.8",
+            "zone_in_count": "3.2",
+            "mode": "shooter",
+        }))
+
+        assert result["ok"] is True
+        assert result["rank"] == 1
+        assert result["total_players"] == 1
+        assert result["is_personal_best"] is True
+
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
+            session_id="session-9",
+            lanlan_name="Lan C",
+        )
+
+        assert leaderboard["top"][0]["name"] == "Lan C"
+        assert leaderboard["top"][0]["score"] == 0
+        assert leaderboard["top"][0]["streak"] == 4
+        assert leaderboard["top"][0]["mode"] == "shooter"
+        assert leaderboard["your_best"] == {"rank": 1, "score": 0}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_unknown_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "fake-session",
+            "lanlan_name": "Lan Fake",
+            "score": 999999,
+            "mode": "shooter",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_spectator_score_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        game_router._remember_badminton_score_session("Lan Practice", "practice-session", "spectator")
+
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "practice-session",
+            "lanlan_name": "Lan Practice",
+            "score": 999999,
+            "mode": "spectator",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        assert game_router._badminton_recent_score_sessions == {}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_route_end_uses_server_mode_for_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "practice-session", "Lan Practice")
+        state["mode"] = "spectator"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "badminton",
+            {
+                "session_id": "practice-session",
+                "lanlan_name": "Lan Practice",
+                "mode": "shooter",
+                "gameStarted": True,
+                "finalScore": {"mode": "shooter", "score": 999999},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert game_router._badminton_recent_score_sessions == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_route_end_requires_completed_round_for_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "early-exit-session", "Lan Early")
+        state["mode"] = "shooter"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "badminton",
+            {
+                "session_id": "early-exit-session",
+                "lanlan_name": "Lan Early",
+                "mode": "shooter",
+                "gameStarted": True,
+                "finalScore": {"mode": "shooter", "score": 999999},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert game_router._badminton_recent_score_sessions == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_route_end_remembers_completed_round_score_session(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "completed-session", "Lan Done")
+        state["mode"] = "shooter"
+        _mark_game_started(state)
+
+        result = await game_router._complete_game_end_from_payload(
+            "badminton",
+            {
+                "session_id": "completed-session",
+                "lanlan_name": "Lan Done",
+                "mode": "shooter",
+                "gameStarted": True,
+                "round_completed": True,
+                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 4, "max_distance_px": 240},
+            },
+            default_reason="route_end",
+        )
+
+        assert result["ok"] is True
+        assert result["route_closed"] is True
+        assert result["state"]["lanlan_name"] == "Lan Done"
+        score_session = game_router._badminton_recent_score_sessions[("Lan Done", "completed-session")]
+        assert score_session["mode"] == "shooter"
+        assert score_session["score_totals"] == {"score": 12, "streak": 4, "max_distance_px": 240.0}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp_path, monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "bound-session", "Lan Bound")
+        state["mode"] = "shooter"
+        _mark_game_started(state)
+
+        await game_router._complete_game_end_from_payload(
+            "badminton",
+            {
+                "session_id": "bound-session",
+                "lanlan_name": "Lan Bound",
+                "mode": "shooter",
+                "gameStarted": True,
+                "round_completed": True,
+                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 3, "max_distance_px": 240},
+            },
+            default_reason="route_end",
+        )
+
+        tampered = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "bound-session",
+            "lanlan_name": "Lan Bound",
+            "score": 999999,
+            "streak": 3,
+            "max_distance_px": 240,
+            "mode": "shooter",
+        }))
+
+        assert tampered == {"ok": False, "reason": "invalid_session"}
+        assert "reserved" not in game_router._badminton_recent_score_sessions[("Lan Bound", "bound-session")]
+
+        accepted = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "bound-session",
+            "lanlan_name": "Lan Bound",
+            "score": 12,
+            "streak": 3,
+            "max_distance_px": 240,
+            "mode": "shooter",
+        }))
+
+        assert accepted["ok"] is True
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 1
+        assert leaderboard["top"][0]["score"] == 12
+        assert leaderboard["top"][0]["streak"] == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_live_active_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        state = {
+            "game_type": "badminton",
+            "session_id": "live-session",
+            "lanlan_name": "Lan Live",
+            "game_route_active": True,
+            "mode": "shooter",
+        }
+        _mark_game_started(state)
+        game_router._game_route_states[game_router._route_state_key("Lan Live", "badminton")] = state
+
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "live-session",
+            "lanlan_name": "Lan Live",
+            "score": 999999,
+            "mode": "shooter",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_allows_recently_ended_route_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        state = _allow_badminton_score_session("Lan Ended", "ended-session", "shooter")
+        state["game_route_active"] = False
+        game_router._remember_badminton_score_session("Lan Ended", "ended-session", "shooter")
+
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "ended-session",
+            "lanlan_name": "Lan Ended",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "shooter",
+        }))
+
+        assert result["ok"] is True
+        assert result["rank"] == 1
+
+        duplicate = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "ended-session",
+            "lanlan_name": "Lan Ended",
+            "score": 99,
+            "streak": 9,
+            "max_distance_px": 500,
+            "mode": "shooter",
+        }))
+
+        assert duplicate == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_removed_horse_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Horse", "horse-session", "horse")
+
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "horse-session",
+            "lanlan_name": "Lan Horse",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "horse",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_rejects_removed_timed_mode_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Timed", "timed-session", "timed")
+
+        result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "timed-session",
+            "lanlan_name": "Lan Timed",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "timed",
+        }))
+
+        assert result == {"ok": False, "reason": "invalid_session"}
+        leaderboard = await game_router.game_badminton_leaderboard("badminton")
+        assert leaderboard["total_scores"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_keeps_score_session_when_insert_fails(monkeypatch):
+    calls = 0
+
+    def flaky_insert(_data, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return 1, 1, True
+
+    monkeypatch.setattr(game_router, "_badminton_insert_score", flaky_insert)
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Retry", "retry-session", "shooter")
+        payload = {
+            "session_id": "retry-session",
+            "lanlan_name": "Lan Retry",
+            "score": 42,
+            "streak": 2,
+            "max_distance_px": 180,
+            "mode": "shooter",
+        }
+
+        with pytest.raises(sqlite3.OperationalError):
+            await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
+
+        assert game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "shooter"
+        assert "reserved" not in game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]
+
+        retry = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
+
+        assert retry == {"ok": True, "rank": 1, "total_players": 1, "is_personal_best": True}
+        assert ("Lan Retry", "retry-session") not in game_router._badminton_recent_score_sessions
+        assert calls == 2
+
+
+@pytest.mark.unit
+def test_badminton_scores_default_path_uses_runtime_state_dir(tmp_path, monkeypatch):
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    path = game_router._get_badminton_scores_db_path()
+
+    assert path == tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
+    assert "main_routers" not in str(path)
+
+
+@pytest.mark.unit
+def test_badminton_scores_default_path_uses_separate_runtime_db(tmp_path, monkeypatch):
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    path = game_router._get_badminton_scores_db_path("badminton")
+
+    assert path == tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_leaderboard_uses_separate_scores_db(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    fake_config = type("FakeConfig", (), {"app_docs_dir": runtime_root})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    if hasattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted"):
+        monkeypatch.delattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted")
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    with reset_game_route_state():
+        _allow_badminton_score_session("Lan Badminton", "bd-session", "shooter")
+        submitted = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
+            "session_id": "bd-session",
+            "lanlan_name": "Lan Badminton",
+            "score": 12,
+            "streak": 3,
+            "max_distance_px": 180,
+            "mode": "shooter",
+        }))
+        leaderboard = await game_router.game_badminton_leaderboard(
+            "badminton",
+            session_id="bd-session",
+            lanlan_name="Lan Badminton",
+        )
+
+    scores_dir = runtime_root / "state" / "game_scores"
+    assert submitted == {"ok": True, "rank": 1, "total_players": 1, "is_personal_best": True}
+    assert leaderboard["top"][0]["name"] == "Lan Badminton"
+    assert (scores_dir / "badminton_scores.db").exists()
+
+
+@pytest.mark.unit
+def test_badminton_scores_legacy_db_migrates_to_runtime_path(tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy" / "badminton_scores.db"
+    runtime_path = tmp_path / "runtime" / "state" / "game_scores" / "badminton_scores.db"
+    legacy_path.parent.mkdir(parents=True)
+    with sqlite3.connect(str(legacy_path)) as conn:
+        conn.execute("CREATE TABLE marker (value TEXT)")
+        conn.execute("INSERT INTO marker (value) VALUES ('legacy-score')")
+
+    fake_config = type("FakeConfig", (), {"app_docs_dir": tmp_path / "runtime"})()
+    monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", None)
+    monkeypatch.setattr(game_router, "_BADMINTON_LEGACY_SCORES_DB_PATH", legacy_path)
+    if hasattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted"):
+        monkeypatch.delattr(game_router._prepare_badminton_scores_db_path, "_migration_attempted")
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
+
+    prepared = game_router._prepare_badminton_scores_db_path()
+
+    assert prepared == runtime_path
+    assert runtime_path.exists()
+    with sqlite3.connect(str(runtime_path)) as conn:
+        row = conn.execute("SELECT value FROM marker").fetchone()
+    assert row[0] == "legacy-score"
+
+
+class _FakeConfigManager:
+    def __init__(self, characters, *, project_root=None, vrm_dir=None):
+        self._characters = characters
+        self.project_root = project_root
+        self.vrm_dir = vrm_dir
+
+    def load_characters(self):
+        return self._characters
+
+
+def _characters_with_avatar(name, avatar):
+    return {
+        "当前猫娘": name,
+        "猫娘": {
+            name: {
+                "_reserved": {
+                    "avatar": avatar,
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_live2d_path(monkeypatch):
+    import main_routers.characters_router as characters_router
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("Lan", {
+            "model_type": "live2d",
+            "live2d": {"model_path": "/user_live2d/Lan/model.model3.json"},
+        })
+    ))
+
+    async def fake_current_live2d_model(name):
+        assert name == "Lan"
+        return JSONResponse({"model_info": {"path": "/user_live2d/Lan/model.model3.json"}})
+
+    monkeypatch.setattr(characters_router, "get_current_live2d_model", fake_current_live2d_model)
+
+    result = await game_router.game_character("badminton")
+
+    assert result["lanlan_name"] == "Lan"
+    assert result["model_type"] == "live2d"
+    assert result["live2d_path"] == "/user_live2d/Lan/model.model3.json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_vrm_path_for_live3d_vrm(monkeypatch, tmp_path):
+    static_vrm = tmp_path / "static" / "vrm" / "hero.vrm"
+    static_vrm.parent.mkdir(parents=True)
+    static_vrm.write_text("vrm", encoding="utf-8")
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("VrmLan", {
+            "model_type": "live3d",
+            "live3d_sub_type": "vrm",
+            "vrm": {"model_path": "hero.vrm"},
+        }),
+        project_root=tmp_path,
+        vrm_dir=tmp_path / "user_vrm",
+    ))
+
+    result = await game_router.game_character("badminton")
+
+    assert result["lanlan_name"] == "VrmLan"
+    assert result["model_type"] == "live3d"
+    assert result["live3d_sub_type"] == "vrm"
+    assert result["vrm_path"] == "/static/vrm/hero.vrm"
+    assert result["mmd_path"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_character_returns_mmd_path_for_live3d_mmd(monkeypatch, tmp_path):
+    user_vrm = tmp_path / "user_vrm" / "ignored-but-direct.vrm"
+    user_vrm.parent.mkdir(parents=True)
+    user_vrm.write_text("vrm", encoding="utf-8")
+
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: _FakeConfigManager(
+        _characters_with_avatar("MmdLan", {
+            "model_type": "live3d",
+            "live3d_sub_type": "mmd",
+            "mmd": {"model_path": "Miku/Miku.pmx"},
+            "vrm": {"model_path": "/user_vrm/ignored-but-direct.vrm"},
+        }),
+        project_root=tmp_path,
+        vrm_dir=tmp_path / "user_vrm",
+    ))
+
+    result = await game_router.game_character("badminton")
+
+    assert result["lanlan_name"] == "MmdLan"
+    assert result["model_type"] == "live3d"
+    assert result["live3d_sub_type"] == "mmd"
+    assert result["mmd_path"] == "/static/mmd/Miku/Miku.pmx"
+    assert result["vrm_path"] == "/user_vrm/ignored-but-direct.vrm"
 
 
 @pytest.mark.unit
@@ -522,6 +2557,36 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
 
 
 @pytest.mark.unit
+def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
+    archive = {
+        "game_type": "badminton",
+        "session_id": "horse_1",
+        "lanlan_name": "Neko",
+        "summary": "badminton 小游戏结束。",
+        "finalScore": {
+            "player": 3,
+            "ai": 0,
+            "score_text": "HORSE HOR : HORSE",
+            "winner": "player",
+            "outcome": "player_win",
+        },
+        "last_state": {"score": {"player": 3, "ai": 0}},
+        "badminton_game_memory_enabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
+        "full_dialogues": [],
+    }
+
+    messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
+    system_text = messages[-1]["content"][0]["text"]
+
+    assert "官方结果：HORSE HOR : HORSE。口头让步不改官方结果。" in system_text
+    assert "玩家 3 : 0 Neko" not in system_text
+
+
+@pytest.mark.unit
 def test_game_archive_tail_respects_independent_soccer_memory_policy():
     archive = {
         "game_type": "soccer",
@@ -635,7 +2700,7 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
     })
 
     assert "只有“玩家：...”行是玩家亲口说的话" in source
-    assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
+    assert "“事件原文”是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
     assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in source
     assert "固定顺序是玩家在前、当前角色在后" in source
     assert "官方结果，来源优先级为 finalScore / last_state.score" in source
@@ -667,12 +2732,34 @@ def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypat
         ],
     })
 
-    assert 'literal marker "玩家："' in source
-    assert '"事件原文" inside "游戏事件" lines' in source
-    assert "玩家：I almost caught up" in source
-    assert "游戏事件 goal-conceded" in source
-    assert "Player:" not in source
-    assert "Game event" not in source
+    assert 'literal marker "Player:"' in source
+    assert '"event text" inside "Game event" lines' in source
+    assert "Player: I almost caught up" in source
+    assert "Game event goal-conceded" in source
+
+
+@pytest.mark.unit
+def test_archive_memory_fallback_highlights_use_requested_locale(monkeypatch):
+    monkeypatch.setattr(game_router, "_archive_prompt_language", lambda _archive: "en")
+
+    highlights = game_router._fallback_game_archive_memory_highlights({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "last_full_dialogues": [
+            {"type": "user", "text": "That was close"},
+            {"type": "assistant", "line": "Almost."},
+        ],
+        "key_events": [],
+    })
+
+    assert highlights["important_records"] == [
+        'The player last said "That was close", and you replied "Almost.".'
+    ]
+    assert "玩家最后" not in highlights["important_records"][0]
 
 
 @pytest.mark.unit
@@ -726,7 +2813,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "http://summary.test/v1",
@@ -755,10 +2842,40 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_route_helper_llm_info_allows_no_auth_summary_tier(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "game_summary"
+            return {
+                "model": "local-summary-model",
+                "base_url": "http://localhost:8081/v1",
+                "api_key": "",
+                "api_type": "local",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["model"] == "local-summary-model"
+    assert info["base_url"] == "http://localhost:8081/v1"
+    assert info["api_key"] == ""
+    assert info["api_type"] == "local"
+
+
+@pytest.mark.unit
 def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
     class FakeConfigManager:
         def get_model_api_config(self, tier):
-            assert tier == "summary"
+            assert tier == "game_summary"
             return {
                 "model": "summary-model",
                 "base_url": "",
@@ -782,6 +2899,172 @@ def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypa
     assert info["base_url"] == "http://conversation.test/v1"
     assert info["api_key"] == "conversation-key"
     assert info["api_type"] == "conversation-api"
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_soccer_internal_fields():
+    event = {
+        "kind": "mailbox-batch",
+        "lanlan_name": "Lan",
+        "soccerGameMemoryEnabled": True,
+        "soccer_game_memory_enabled": True,
+        "soccerGameMemoryPlayerInteractionEnabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccerGameMemoryEventReplyEnabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccerGameMemoryArchiveEnabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccerGameMemoryPostgameContextEnabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
+        "gameMemoryEnabled": True,
+        "game_memory_enabled": True,
+        "gameMemoryPlayerInteractionEnabled": True,
+        "game_memory_player_interaction_enabled": True,
+        "gameMemoryEventReplyEnabled": True,
+        "game_memory_event_reply_enabled": True,
+        "balanceHint": {"message": "keep this pending judgment"},
+        "angerPressureCap": {"message": "keep this pending judgment", "reason": "internal-ish but undecided"},
+        "currentState": {
+            "round": 12,
+            "score": {"player": 1, "ai": 3},
+            "aiFreezeSec": 0.2,
+            "playerKickStartleWindowSec": 0.5,
+            "playerKickWallBounceForStartle": True,
+            "startle": {"directCdSec": 1},
+            "startleDirectCdSec": 1,
+            "startleGrazeCdSec": 2,
+            "startleMutualLockSec": 3,
+            "zoneoutCooldownSec": 4,
+            "ballGhost": True,
+        },
+        "pendingItems": [{
+            "kind": "goal-scored",
+            "priority": 8,
+            "source": "voice_input_gate",
+            "builtinFallback": "备用台词",
+            "snapshot": {
+                "round": 11,
+                "score": {"player": 1, "ai": 2},
+                "aiFreezeSec": 0.1,
+                "ballGhost": False,
+            },
+        }],
+    }
+
+    visible = game_router._build_game_llm_visible_event("soccer", event)
+
+    assert "lanlan_name" not in visible
+    assert "soccerGameMemoryEnabled" not in visible
+    assert "soccer_game_memory_enabled" not in visible
+    assert "gameMemoryEnabled" not in visible
+    assert "game_memory_enabled" not in visible
+    assert visible["balanceHint"] == event["balanceHint"]
+    assert visible["angerPressureCap"] == event["angerPressureCap"]
+    assert visible["pendingItems"][0]["priority"] == 8
+    assert visible["pendingItems"][0]["source"] == "voice_input_gate"
+    assert visible["pendingItems"][0]["builtinFallback"] == "备用台词"
+    for state in (visible["currentState"], visible["pendingItems"][0]["snapshot"]):
+        assert "aiFreezeSec" not in state
+        assert "playerKickStartleWindowSec" not in state
+        assert "playerKickWallBounceForStartle" not in state
+        assert "startle" not in state
+        assert "zoneoutCooldownSec" not in state
+        assert "ballGhost" not in state
+    assert event["currentState"]["aiFreezeSec"] == 0.2
+    assert event["pendingItems"][0]["snapshot"]["ballGhost"] is False
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_badminton_memory_flags_from_camel_case():
+    event = {
+        "kind": "shot-made",
+        "badmintonGameMemoryEnabled": True,
+        "badminton_game_memory_enabled": True,
+        "badmintonGameMemoryPlayerInteractionEnabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badmintonGameMemoryEventReplyEnabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badmintonGameMemoryArchiveEnabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badmintonGameMemoryPostgameContextEnabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+
+    visible = game_router._build_game_llm_visible_event("badminton", event)
+
+    assert visible == {
+        "kind": "shot-made",
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+    assert event["badmintonGameMemoryEnabled"] is True
+
+
+@pytest.mark.unit
+def test_build_game_llm_visible_event_filters_badminton_memory_flags():
+    event = {
+        "kind": "shot-made",
+        "badmintonGameMemoryEnabled": True,
+        "badminton_game_memory_enabled": True,
+        "badmintonGameMemoryPlayerInteractionEnabled": True,
+        "badminton_game_memory_player_interaction_enabled": True,
+        "badmintonGameMemoryEventReplyEnabled": True,
+        "badminton_game_memory_event_reply_enabled": True,
+        "badmintonGameMemoryArchiveEnabled": True,
+        "badminton_game_memory_archive_enabled": True,
+        "badmintonGameMemoryPostgameContextEnabled": True,
+        "badminton_game_memory_postgame_context_enabled": True,
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+
+    visible = game_router._build_game_llm_visible_event("badminton", event)
+
+    assert visible == {
+        "kind": "shot-made",
+        "currentState": {"mode": "shooter", "streak": 3},
+    }
+    assert event["badmintonGameMemoryEnabled"] is True
+
+
+@pytest.mark.unit
+def test_postgame_context_snapshot_excludes_recent_dialogues(monkeypatch):
+    state = {
+        "preGameContext": {"story": "opening"},
+        "game_context_summary": "summary",
+        "game_context_signals": {},
+        "game_context_organizer": {},
+        "game_dialog_log": [],
+    }
+    game_router._append_game_dialog(state, {
+        "type": "game_event",
+        "kind": "goal-scored",
+        "text": "scored",
+        "result_line": "Nice.",
+    })
+
+    snapshot = game_router._build_postgame_context_snapshot(state)
+
+    assert snapshot["game_context"]["summary"] == "summary"
+    assert snapshot["game_context"]["recent_dialogues"] == []
+
+
+@pytest.mark.unit
+def test_postgame_context_request_id_is_archive_scoped():
+    first = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 10.5,
+    }
+    second = {
+        "game_type": "soccer",
+        "session_id": "default",
+        "ended_at": 11.5,
+    }
+
+    assert game_router._postgame_context_request_id(first) == "soccer:default:10.5"
+    assert game_router._postgame_context_request_id(second) == "soccer:default:11.5"
+    assert game_router._postgame_context_request_id(first) != game_router._postgame_context_request_id(second)
+    assert game_router._postgame_context_request_id({"game_type": "soccer", "session_id": "default"}) is None
 
 
 @pytest.mark.unit
@@ -822,6 +3105,235 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     assert result["line"] == ""
     assert "======以上为游戏事件输入======" in fake_session.last_text
     assert '"kind": "goal-scored"' in fake_session.last_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
+    from config.prompts.prompts_game import PREGAME_CONTEXT_INPUT_WATERMARK
+
+    captured = {}
+
+    class FakeResult:
+        content = '{"launchIntent": "unknown"}'
+
+    class FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return FakeResult()
+
+    async def fake_create(*_args, **_kwargs):
+        return FakeLLM()
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", fake_create)
+    monkeypatch.setattr(
+        game_router,
+        "_get_character_info",
+        lambda _name: {"model": "m", "base_url": "u", "api_key": "k"},
+    )
+
+    await game_router._run_pregame_context_ai(
+        lanlan_name="Lan",
+        master_name="玩家",
+        lanlan_prompt="人设摘录",
+        recent_history="昨天一起聊了很久",
+        neko_initiated=True,
+        neko_invite_text="一起踢球吗",
+        prompt_template="开局上下文分析器系统提示",
+        extra_payload={"gameType": "soccer"},
+    )
+
+    human_message = captured["messages"][1]
+    # 收尾水印必须在 human message 末尾，且把近期记录原文包在水印之上。
+    assert human_message.content.endswith(PREGAME_CONTEXT_INPUT_WATERMARK)
+    assert "昨天一起聊了很久" in human_message.content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_game_chat_sends_filtered_llm_visible_event(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.last_text = ""
+
+        async def stream_text(self, text):
+            self.last_text = text
+
+        async def update_session(self, _config):
+            return None
+
+    fake_session = FakeSession()
+    key = game_router._game_session_key("Lan", "soccer", "match_filtered")
+    game_router._game_sessions[key] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "",
+        "user_language": "zh",
+        "game_type": "soccer",
+        "session_id": "match_filtered",
+        "last_activity": 0,
+        "lock": asyncio.Lock(),
+        "instructions": "stub",
+    }
+    monkeypatch.setattr(game_router, "_refresh_game_session_instructions", AsyncMock())
+
+    await game_router._run_game_chat(
+        "soccer",
+        "match_filtered",
+        {
+            "kind": "mailbox-batch",
+            "lanlan_name": "Lan",
+            "soccerGameMemoryEnabled": True,
+            "soccer_game_memory_enabled": True,
+            "soccerGameMemoryPlayerInteractionEnabled": True,
+            "soccer_game_memory_player_interaction_enabled": True,
+            "soccerGameMemoryEventReplyEnabled": True,
+            "soccer_game_memory_event_reply_enabled": True,
+            "gameMemoryEnabled": True,
+            "game_memory_enabled": True,
+            "balanceHint": {"message": "暂时保留"},
+            "angerPressureCap": {"message": "暂时保留", "reached": False},
+            "currentState": {
+                "round": 2,
+                "score": {"player": 1, "ai": 1},
+                "aiFreezeSec": 0,
+                "playerKickStartleWindowSec": 0,
+                "playerKickWallBounceForStartle": False,
+                "startle": {"directCdSec": 0, "grazeCdSec": 0, "mutualLockSec": 0},
+                "zoneoutCooldownSec": 0,
+                "ballGhost": False,
+            },
+            "pendingItems": [{
+                "kind": "user-voice",
+                "priority": 8,
+                "source": "voice_input_gate",
+                "builtinFallback": "备用台词",
+                "snapshot": {
+                    "round": 1,
+                    "score": {"player": 0, "ai": 1},
+                    "aiFreezeSec": 0.3,
+                    "ballGhost": True,
+                },
+            }],
+        },
+    )
+
+    payload_text = fake_session.last_text.split("======以下为游戏事件输入======", 1)[1]
+    payload_text = payload_text.split("======以上为游戏事件输入======", 1)[0].strip()
+    payload = json.loads(payload_text)
+
+    assert "lanlan_name" not in payload
+    assert "soccerGameMemoryEnabled" not in payload
+    assert "soccer_game_memory_enabled" not in payload
+    assert "gameMemoryEnabled" not in payload
+    assert "game_memory_enabled" not in payload
+    assert "aiFreezeSec" not in payload["currentState"]
+    assert "playerKickStartleWindowSec" not in payload["currentState"]
+    assert "playerKickWallBounceForStartle" not in payload["currentState"]
+    assert "startle" not in payload["currentState"]
+    assert "zoneoutCooldownSec" not in payload["currentState"]
+    assert "ballGhost" not in payload["currentState"]
+    assert "aiFreezeSec" not in payload["pendingItems"][0]["snapshot"]
+    assert "ballGhost" not in payload["pendingItems"][0]["snapshot"]
+    assert payload["pendingItems"][0]["priority"] == 8
+    assert payload["pendingItems"][0]["source"] == "voice_input_gate"
+    assert payload["pendingItems"][0]["builtinFallback"] == "备用台词"
+    assert isinstance(payload["balanceHint"].get("message"), str)
+    assert payload["angerPressureCap"]["message"] == "暂时保留"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_game_chat_rejects_stale_session_before_llm(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("stale badminton chat should not start an LLM session")
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "fresh-session", "Lan")
+        state["mode"] = "shooter"
+
+        result = await game_router.game_chat("badminton", _FakeRequest({
+            "session_id": "old-session",
+            "lanlan_name": "Lan",
+            "event": {"kind": "shot_missed", "mode": "shooter"},
+        }))
+
+    assert result["ok"] is True
+    assert result["skipped"] == "stale_session"
+    assert result["reason"] == "session_id_mismatch"
+    assert result["line"] == ""
+    assert result["control"] == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_game_chat_rejects_missing_route_before_llm(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("inactive badminton chat should not start an LLM session")
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        result = await game_router.game_chat("badminton", _FakeRequest({
+            "session_id": "old-session",
+            "lanlan_name": "Lan",
+            "event": {"kind": "shot_missed", "mode": "shooter"},
+        }))
+
+    assert result == {
+        "ok": True,
+        "skipped": "route_inactive",
+        "reason": "route_not_active",
+        "handled": False,
+        "line": "",
+        "control": {},
+        "lanlan_name": "Lan",
+        "method": "game_chat",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_game_chat_does_not_archive_late_client_timeout_reply(monkeypatch):
+    async def fake_run_game_chat(*_args, **_kwargs):
+        return {
+            "line": "这句来晚了",
+            "control": {},
+            "metrics": {"total_ms": 2300, "llm_ms": 2290},
+        }
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("badminton", "duel-session", "Lan")
+        state["mode"] = "duel"
+
+        result = await game_router.game_chat("badminton", _FakeRequest({
+            "session_id": "duel-session",
+            "lanlan_name": "Lan",
+            "event": {
+                "kind": "long_aim",
+                "mode": "duel",
+                "label": "neko_duel_turn",
+                "client_timeout_ms": 2200,
+            },
+        }))
+
+    assert result["line"] == "这句来晚了"
+    assert result["skipped_memory"] == "client_timeout"
+    assert state["game_dialog_log"] == []
 
 
 @pytest.mark.unit
@@ -1068,7 +3580,7 @@ class _FakeRealtimeSession:
 
 
 class _FakeRealtimeManager:
-    def __init__(self, session):
+    def __init__(self, session, append_context_result=None):
         self.session = session
         self.is_active = True
         self.user_language = "zh-CN"
@@ -1079,6 +3591,19 @@ class _FakeRealtimeManager:
         self.voice_nudge_calls = 0
         self.voice_nudge_kwargs = []
         self.voice_nudge_event = asyncio.Event()
+        self.append_context_calls = []
+        self.append_context_result = append_context_result
+
+    async def append_context(self, **kwargs):
+        self.append_context_calls.append(kwargs)
+        if self.append_context_result is not None:
+            return self.append_context_result
+        source = str(kwargs.get("source") or "")
+        text = kwargs["text"]
+        if source not in {"game.realtime_context", "game.postgame"}:
+            text = f"{kwargs['role']}: {text}"
+        await self.session.prime_context(text, skipped=True)
+        return SimpleNamespace(appended=True, deduped=False, targets=("realtime_prime",), reason=None)
 
     async def trigger_voice_proactive_nudge(self, **kwargs):
         self.voice_nudge_calls += 1
@@ -1123,6 +3648,60 @@ async def test_realtime_context_skips_gemini_prime_to_avoid_hidden_response(monk
     assert result["reason"] == "gemini_no_session_update"
     assert session.prime_context_calls == []
     assert session.create_response_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_endpoint_requires_local_mutation_csrf(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(session)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, mutation_headers=False, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert mgr.append_context_calls == []
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_realtime_context_aborts_when_active_session_changes_before_append(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    def swap_session(_game_type, _payload, _language=None):
+        mgr.session = replacement
+        return "[Game Realtime Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_compact_realtime_context_text", swap_session)
+
+    result = await game_router.game_realtime_context(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "source": "game_event",
+            "currentState": {"score": {"player": 1, "ai": 2}},
+            "pendingItems": [{"type": "game_event", "kind": "goal-scored"}],
+        }, path="/api/game/soccer/realtime-context"),
+    )
+
+    assert result == {"ok": False, "reason": "realtime_session_changed", "lanlan_name": "Lan"}
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 class _FakeGameRouteManager:
@@ -1297,9 +3876,7 @@ async def test_route_start_finalizes_old_active_route_before_replacing(monkeypat
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatch):
-    """启动新路由前要结束同角色下所有 active 路由（即使 game_type 不同），
-    否则 is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
-    会按 dict 迭代顺序拿到歧义 route，导致输入归属不确定。"""
+    """Starting a route must close every active route for the same character."""
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
     game_router._game_sessions[game_router._game_session_key("Lan", "soccer", "soccer_match")] = {
         "session": fake_session,
@@ -1329,6 +3906,64 @@ async def test_route_start_finalizes_other_game_types_for_same_lanlan(monkeypatc
     fake_session.close.assert_awaited_once()
     assert game_router.is_game_route_active("Lan", "chess") is True
     assert game_router.is_game_route_active("Lan", "soccer") is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_end_holds_supersede_lock_until_finalize_releases_takeover(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+    old_state = game_router._activate_game_route("badminton", "old_match", "Lan")
+    _mark_game_started(old_state)
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = object()
+
+    release_finalize = asyncio.Event()
+    finalize_started = asyncio.Event()
+
+    async def fake_push(*_args, **_kwargs):
+        finalize_started.set()
+        await release_finalize.wait()
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(
+        game_router,
+        "_build_soccer_pregame_context",
+        AsyncMock(return_value=(game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "fallback", "")),
+    )
+
+    end_task = asyncio.create_task(game_router.game_route_end(
+        "badminton",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "old_match",
+            "reason": "badminton_game_over",
+            "game_started": True,
+            "round_completed": True,
+            "currentState": {"score": {"player": 1, "ai": 0}},
+            "finalScore": {"player": 1, "ai": 0},
+        }),
+    ))
+    await asyncio.wait_for(finalize_started.wait(), timeout=1)
+
+    start_task = asyncio.create_task(game_router.game_route_start(
+        "soccer",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "new_match"}),
+    ))
+    await asyncio.sleep(0)
+    assert not start_task.done()
+
+    release_finalize.set()
+    end_result = await asyncio.wait_for(end_task, timeout=1)
+    start_result = await asyncio.wait_for(start_task, timeout=1)
+
+    assert end_result["ok"] is True
+    assert start_result["ok"] is True
+    assert old_state["game_route_active"] is False
+    assert game_router._game_route_states[game_router._route_state_key("Lan", "soccer")]["session_id"] == "new_match"
+    assert mgr._takeover_active is True
 
 
 @pytest.mark.unit
@@ -1708,6 +4343,50 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_heartbeat_refreshes_enabled_debug_log_idle_ttl(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("match_1", "soccer")
+    assert entry is not None
+    stale_updated_at = game_log.time.time() - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
+    entry["updated_at"] = stale_updated_at
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert state["last_heartbeat_at"] <= entry["updated_at"]
+    assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_heartbeat_does_not_create_debug_log_when_disabled(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert game_log.find_game_session_debug_log("match_1", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_heartbeat_records_hidden_visibility(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
@@ -1736,6 +4415,7 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     _put_game_session("Lan", "soccer", "match_1", fake_session)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
     _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
 
@@ -1759,7 +4439,12 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     assert result["game_session_closed"] is True
     assert result["archive"]["exit_reason"] == "heartbeat_timeout"
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
+    assert result["debug_log_ended"] is True
     assert submitted[0]["exit_reason"] == "heartbeat_timeout"
+    debug_log = game_log.find_game_session_debug_log("match_1", "soccer")
+    assert debug_log is not None
+    assert debug_log["status"] == "ended"
+    assert [item["event"] for item in debug_log["entries"]] == ["session_ended"]
     fake_session.close.assert_awaited_once()
 
 
@@ -1869,7 +4554,7 @@ async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
     )
 
     assert result["archive_memory"]["status"] == "skipped"
-    assert result["archive_memory"]["reason"] == "soccer_game_memory_archive_disabled"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_disabled"
     assert result["archive"]["game_memory_enabled"] is False
     assert result["archive"]["memory_skipped"] is True
 
@@ -1972,6 +4657,63 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_project_speak_rejects_stale_route_session(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("soccer", "match_new", "Lan")
+
+        result = await game_router.game_project_speak(
+            "soccer",
+            _FakeRequest({
+                "line": "old line",
+                "session_id": "match_old",
+                "lanlan_name": "Lan",
+                "request_id": "req-stale-speak",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "session_id_mismatch"
+        assert result["handled"] is False
+        assert result["method"] == "project_tts"
+        assert result["audio_sent"] is False
+        assert result["state"]["session_id"] == "match_new"
+        assert mgr.spoken == []
+        assert state["game_route_active"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_rejects_closed_game_route_output(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+        result = await game_router.game_project_speak(
+            "badminton",
+            _FakeRequest({
+                "line": "stale line",
+                "session_id": "closed-session",
+                "lanlan_name": "Lan",
+                "source": "game-llm-result",
+                "request_id": "req-closed-speak",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "route_closed"
+        assert result["handled"] is False
+        assert result["method"] == "project_tts"
+        assert result["audio_sent"] is False
+        assert result["state"]["game_route_active"] is False
+        assert mgr.spoken == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
@@ -2002,6 +4744,67 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
         "finalize_turn": False,
     })]
     assert mgr.spoken == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_rejects_stale_route_session(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+        state = game_router._activate_game_route("soccer", "match_new", "Lan")
+
+        result = await game_router.game_project_mirror_assistant(
+            "soccer",
+            _FakeRequest({
+                "line": "old mirror line",
+                "session_id": "match_old",
+                "lanlan_name": "Lan",
+                "request_id": "req-stale-mirror",
+                "turn_id": "turn-stale-mirror",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "session_id_mismatch"
+        assert result["handled"] is False
+        assert result["method"] == "project_text_mirror"
+        assert result["mirrored"] is False
+        assert result["state"]["session_id"] == "match_new"
+        assert mgr.assistant_mirrored == []
+        assert mgr.spoken == []
+        assert state["game_dialog_log"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_mirror_assistant_rejects_closed_game_route_output(monkeypatch):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+
+        result = await game_router.game_project_mirror_assistant(
+            "badminton",
+            _FakeRequest({
+                "line": "stale mirror line",
+                "session_id": "closed-session",
+                "lanlan_name": "Lan",
+                "source": "game-llm-result",
+                "request_id": "req-closed-mirror",
+                "turn_id": "turn-closed-mirror",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert result["skipped"] == "stale_session"
+        assert result["reason"] == "route_closed"
+        assert result["handled"] is False
+        assert result["method"] == "project_text_mirror"
+        assert result["mirrored"] is False
+        assert result["state"]["game_route_active"] is False
+        assert mgr.assistant_mirrored == []
+        assert mgr.spoken == []
 
 
 @pytest.mark.unit
@@ -2281,10 +5084,119 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
     # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
+    assert mgr.append_context_calls[0]["source"] == "game.postgame"
+    assert mgr.append_context_calls[0]["audience"] == "model"
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
+    assert not context_text.startswith("system: ")
     assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_end_skips_postgame_nudge_when_context_append_deduped(monkeypatch, _fake_realtime):
+    session = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(
+        session,
+        append_context_result=SimpleNamespace(
+            appended=False,
+            deduped=True,
+            targets=(),
+            reason="duplicate_request_id",
+        ),
+    )
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.0,))
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+    state["last_state"] = {"score": {"player": 1, "ai": 3}}
+    game_router._append_game_dialog(state, {
+        "type": "assistant",
+        "source": "game_llm",
+        "line": "别认输嘛，再来一脚。",
+    })
+
+    async def fake_submit(archive):
+        return {"ok": True, "status": "cached", "count": 1}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
+
+    result = await game_router.game_end(
+        "soccer",
+        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan", "reason": "manual"}),
+    )
+
+    assert result["postgame"]["mode"] == "realtime"
+    assert result["postgame"]["context_injected"] is True
+    assert result["postgame"]["nudge_scheduled"] is False
+    assert result["postgame"]["reason"] == "context_deduped"
+    assert mgr.voice_nudge_calls == 0
+    assert session.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_nudge_skips_replacement_session(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+    monkeypatch.setattr(game_router, "_POSTGAME_REALTIME_NUDGE_DELAYS", (0.01,))
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+    mgr.session = replacement
+    await asyncio.sleep(0.05)
+
+    assert result["mode"] == "realtime"
+    assert result["nudge_scheduled"] is True
+    assert mgr.voice_nudge_calls == 0
+    assert len(original.prime_context_calls) == 1
+    assert replacement.prime_context_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_realtime_context_aborts_when_active_session_changes(monkeypatch, _fake_realtime):
+    original = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    replacement = _fake_realtime(model_lower="qwen-realtime", delivered=True)
+    mgr = _FakeRealtimeManager(original)
+
+    def swap_session(_archive):
+        mgr.session = replacement
+        return "[Game Module Postgame Context]\nrace"
+
+    monkeypatch.setattr(game_router, "_build_game_postgame_context_text", swap_session)
+
+    result = await game_router._deliver_postgame_to_realtime(
+        mgr,
+        {
+            "game_type": "soccer",
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "ended_at": "100.0",
+        },
+        {"trigger_voice": True},
+    )
+
+    assert result == {
+        "ok": False,
+        "mode": "realtime",
+        "action": "skip",
+        "reason": "realtime_session_changed",
+    }
+    assert mgr.append_context_calls == []
+    assert original.prime_context_calls == []
+    assert replacement.prime_context_calls == []
 
 
 @pytest.mark.unit

@@ -11,12 +11,72 @@ const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
 const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
 const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
 const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
+const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
+const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
+
+function isAvatarFramedSettingsWindowUrl(finalUrl) {
+    return typeof finalUrl === 'string'
+        && (
+            finalUrl.startsWith('/character_card_manager')
+            || finalUrl.startsWith('/chara_manager')
+            || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/memory_browser')
+        );
+}
+
+function buildAvatarCenteredWindowFeatures(width, height) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+    }
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function buildAvatarFullscreenWindowFeatures() {
+    const screenRef = window.screen || {};
+    const width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+    const height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+    const left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+    const top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function getAvatarNavigationWindowFeatures(finalUrl) {
+    if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+        return buildAvatarCenteredWindowFeatures(
+            AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH,
+            AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT
+        );
+    }
+    return undefined;
+}
 
 function clearAvatarSidePanelHoverState(panel) {
     if (!panel) return;
     if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
     if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
     if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
+}
+
+function applyAvatarSidePanelTransform(panel, motion = 'none') {
+    if (window.AvatarPopupUI && typeof window.AvatarPopupUI.applySidePanelTransform === 'function') {
+        window.AvatarPopupUI.applySidePanelTransform(panel, motion);
+        return;
+    }
+    panel.style.transform = motion && motion !== 'none' ? motion : 'none';
+}
+
+function getAvatarSidePanelExitMotion(panel) {
+    if (panel && panel.dataset && panel.dataset.goDown === 'true') return 'translateY(-6px)';
+    return panel && panel.dataset && panel.dataset.goLeft === 'true'
+        ? 'translateX(6px)'
+        : 'translateX(-6px)';
 }
 
 if (typeof window !== 'undefined') {
@@ -521,6 +581,8 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
+        { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -708,26 +770,6 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 /**
  * 创建侧边面板菜单项
  */
-// 跟踪所有已打开的模型管理子窗口，只有全部关闭后才恢复主页渲染
-const _activeManagerWindows = new Set();
-let _managerWindowCheckTimer = null;
-
-function _startManagerWindowWatcher() {
-    if (_managerWindowCheckTimer) return;
-    _managerWindowCheckTimer = setInterval(() => {
-        for (const win of _activeManagerWindows) {
-            if (win.closed) _activeManagerWindows.delete(win);
-        }
-        if (_activeManagerWindows.size === 0) {
-            clearInterval(_managerWindowCheckTimer);
-            _managerWindowCheckTimer = null;
-            if (typeof window.handleShowMainUI === 'function') {
-                window.handleShowMainUI();
-            }
-        }
-    }, 1000);
-}
-
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
@@ -788,21 +830,15 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
-    // 打开子窗口并暂停主页渲染，所有管理窗口关闭后自动恢复
-    function openAndPauseMainUI(url, name, feat) {
+    // 打开模型管理子窗口，主页面模型保持原样显示。
+    function openModelManagerWindow(url, name, feat) {
         let childWin;
         if (typeof window.openOrFocusWindow === 'function') {
             childWin = window.openOrFocusWindow(url, name, feat);
         } else {
             childWin = window.open(url, name, feat);
         }
-        // 弹窗被拦截或打开失败时不隐藏主页，避免无法恢复
-        if (!childWin) return;
-        if (typeof window.handleHideMainUI === 'function') {
-            window.handleHideMainUI();
-        }
-        _activeManagerWindows.add(childWin);
-        _startManagerWindowWatcher();
+        return childWin;
     }
 
     menuItem.addEventListener('click', (e) => {
@@ -819,7 +855,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
-                openAndPauseMainUI(finalUrl, windowName);
+                features = buildAvatarFullscreenWindowFeatures();
+                openModelManagerWindow(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -841,14 +878,21 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
-                if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
-                    windowName = 'neko_chara_manager';
+                if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                    if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                        windowName = 'neko_chara_manager';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                        windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                        windowName = 'neko_memory_browser';
+                    }
+                    features = getAvatarNavigationWindowFeatures(finalUrl);
                 }
                 isOpening = true;
                 if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(finalUrl, windowName);
+                    window.openOrFocusWindow(finalUrl, windowName, features);
                 } else {
-                    window.open(finalUrl, windowName);
+                    window.open(finalUrl, windowName, features);
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             }
@@ -1463,7 +1507,9 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         container.style.left = `${left}px`;
         container.style.right = 'auto';
         container.style.top = `${top}px`;
-        container.style.transform = placeLeft ? 'translateX(6px)' : 'translateX(-6px)';
+        container.dataset.goDown = 'false';
+        container.dataset.goLeft = String(placeLeft);
+        applyAvatarSidePanelTransform(container, placeLeft ? 'translateX(6px)' : 'translateX(-6px)');
         return true;
     };
 
@@ -1506,7 +1552,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
                 return;
             }
             container.style.opacity = '1';
-            container.style.transform = 'translateX(0)';
+            applyAvatarSidePanelTransform(container, 'none');
             if (alreadyVisible) {
                 container.style.pointerEvents = 'auto';
                 return;
@@ -1536,7 +1582,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
         container.style.pointerEvents = 'none';
         container.style.opacity = '0';
-        container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
+        applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
         container._collapseTimeout = setTimeout(() => {
             if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
                 container.style.display = 'none';
@@ -1841,7 +1887,7 @@ function createIntervalControl(manager, prefix, toggle) {
             }
             container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
-            container.style.transform = 'translateX(0)';
+            applyAvatarSidePanelTransform(container, 'none');
         });
     };
 
@@ -1855,7 +1901,7 @@ function createIntervalControl(manager, prefix, toggle) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         container.style.opacity = '0';
-        container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
+        applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
         container._collapseTimeout = setTimeout(() => {
             if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
             container._collapseTimeout = null;
@@ -2095,12 +2141,16 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'avatar-reaction-bubble' && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
         checkbox.checked = window.avatarReactionBubbleEnabled;
+    } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
+        checkbox.checked = window.focusCognitionEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
+    } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
+        checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2192,6 +2242,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                     timestamp: Date.now()
                 }
             }));
+        } else if (toggle.id === 'focus-cognition') {
+            // 凝神（cognition focus）的 per-user 总开关。关掉后端就进不了 focus
+            // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
+            // 思考气泡随之不再出现；master 情绪读不受影响。
+            window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
@@ -2240,6 +2298,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             }
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'auto-cat') {
+            // 「自动变猫」开关：开=启用自动 idle 变猫（默认）。状态由 app-auto-goodbye 自管（独立 localStorage），
+            // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
+                window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
             }
         }
     };
@@ -2472,7 +2536,16 @@ const AvatarPopupMixin = {
                         }
                         setTimeout(() => { isOpening = false; }, 500);
                     } else {
-                        if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) windowName = 'neko_chara_manager';
+                        if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                            if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                                windowName = 'neko_chara_manager';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                                windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                                windowName = 'neko_memory_browser';
+                            }
+                            features = getAvatarNavigationWindowFeatures(finalUrl);
+                        }
 
                         isOpening = true;
                         if (typeof window.openOrFocusWindow === 'function') {

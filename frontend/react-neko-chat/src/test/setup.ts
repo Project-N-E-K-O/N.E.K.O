@@ -1,5 +1,29 @@
 import '@testing-library/jest-dom/vitest';
 
+if (
+  typeof window.localStorage === 'undefined'
+  || typeof window.localStorage.getItem !== 'function'
+  || typeof window.localStorage.setItem !== 'function'
+  || typeof window.localStorage.removeItem !== 'function'
+) {
+  const store = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    },
+  });
+}
+
 if (!HTMLElement.prototype.scrollTo) {
   HTMLElement.prototype.scrollTo = function scrollTo(options?: ScrollToOptions | number, _y?: number) {
     if (typeof options === 'number') {

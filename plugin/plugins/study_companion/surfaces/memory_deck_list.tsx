@@ -1,6 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import { deckTypeLabel, ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   deckGoalSavedMessage,
   getMemoryHabitStatus,
@@ -28,8 +29,15 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
 
   async function refresh(signal?: AbortSignal) {
-    const payload = await callPlugin<{ decks?: MemoryDeck[] }>('study_memory_list_decks', { limit: 100 }, signal);
-    setDecks(Array.isArray(payload.decks) ? payload.decks : []);
+    const payload = await callPlugin<{ decks?: MemoryDeck[] }>(props.api, 'study_memory_list_decks', { limit: 100 }, signal);
+    const nextDecks = Array.isArray(payload.decks) ? payload.decks : [];
+    setDecks(nextDecks);
+    postStudySurfaceMessage({
+      type: STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
+      payload: {
+        card_count: nextDecks.reduce((total, deck) => total + (Number(deck.item_count) || 0), 0),
+      },
+    });
   }
 
   async function createDeck() {
@@ -40,7 +48,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     }
     setBusy(true);
     try {
-      await callPlugin('study_memory_create_deck', { name: trimmedName, deck_type: deckType });
+      await callPlugin(props.api, 'study_memory_create_deck', { name: trimmedName, deck_type: deckType });
       setName('');
       await refresh();
       setStatus(text(props, 'ui.status.reply_ready', 'Reply ready'));
@@ -54,7 +62,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   async function deleteDeck(deckId: string) {
     setBusy(true);
     try {
-      await callPlugin('study_memory_delete_deck', { deck_id: deckId });
+      await callPlugin(props.api, 'study_memory_delete_deck', { deck_id: deckId });
       await refresh();
     } catch (error) {
       setStatus(errorMessage(error));
@@ -68,7 +76,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     try {
       const amount = normalizePositiveInteger(goalAmount, 1);
       setGoalAmount(amount);
-      const payload = await setDeckGoal(deckId, amount, goalUnit);
+      const payload = await setDeckGoal(props.api, deckId, amount, goalUnit);
       setStatus(deckGoalSavedMessage(props, payload));
       await refresh();
     } catch (error) {
@@ -79,8 +87,9 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    ensureBrandCSS();
     const controller = new AbortController();
-    getMemoryHabitStatus(controller.signal)
+    getMemoryHabitStatus(props.api, controller.signal)
       .then(setHabitStatus)
       .catch(() => setHabitStatus({ available: false }));
     refresh(controller.signal).catch((error) => {
@@ -92,10 +101,10 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }, []);
 
   return (
-    <div className="study-panel">
+    <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
-          <h1>{text(props, 'ui.surface.memory_deck_list', 'Memory Decks')}</h1>
+          <h1>{text(props, 'ui.surface.memory_deck_list', 'Deck Management')}</h1>
           <span>{status || `${decks.length}`}</span>
         </div>
       </header>
@@ -107,10 +116,10 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
         <label>
           <span>{text(props, 'ui.memory.deck_type', 'Deck Type')}</span>
           <select value={deckType} disabled={busy} onChange={(event) => setDeckType(event.target.value)}>
-            <option value="word">word</option>
-            <option value="passage">passage</option>
-            <option value="formula">formula</option>
-            <option value="custom">custom</option>
+            <option value="word">{deckTypeLabel(props, 'word')}</option>
+            <option value="passage">{deckTypeLabel(props, 'passage')}</option>
+            <option value="formula">{deckTypeLabel(props, 'formula')}</option>
+            <option value="custom">{deckTypeLabel(props, 'custom')}</option>
           </select>
         </label>
         {habitBridgeAvailable(habitStatus) ? (
@@ -136,7 +145,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
       <div className="study-panel__actions">
         {decks.map((deck) => (
           <div key={deck.id} className="study-panel__row">
-            <span>{deck.name} / {deck.deck_type} / {deck.item_count || 0}</span>
+            <span>{deck.name} / {deckTypeLabel(props, deck.deck_type)} / {deck.item_count || 0}</span>
             {habitBridgeAvailable(habitStatus) ? (
               <button type="button" disabled={busy} onClick={() => saveDeckGoal(deck.id)}>
                 {text(props, 'ui.daily_goal.set_for_deck', 'Set Goal')}

@@ -209,6 +209,16 @@ jobs:
       # anonymous profile folder so the bundled app can run vector memory
       # offline. The runtime (memory/embeddings.py) auto-falls back to bundled
       # assets when the user's app-data profile is incomplete.
+      # Cache the weights by revision so huggingface.co is hit at most once per
+      # pin (per OS) instead of every build — the same per-IP HTTP 429 throttle
+      # that broke the Docker build can bite here too. Cache hit -> the next step
+      # is a no-op ("keep existing"); only a cold cache actually downloads.
+      - name: Cache embedding model weights
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ runner.os }}-${{ env.EMBEDDING_MODEL_REVISION }}-both
+
       - name: Prepare embedding model assets
         shell: bash
         run: |
@@ -283,6 +293,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
+          # changelog/.md 与 survey/.json 是纯数据文件，--include-package=config 只编 .py
+          # 不带它们，必须显式 include-data-dir，否则打包后 /api/changelog 与 /api/survey
+          # 读不到内容（survey 是 Steam-only，正是只在打包构建里跑）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/changelog=config/changelog"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/surveys=config/surveys"
 
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
@@ -337,6 +352,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Synced with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
           # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
           # package itself (CI previously only carried its package-data).
@@ -448,6 +469,9 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
+          rem changelog/.md 与 survey/.json 是纯数据，--include-package=config 不带，须显式打包
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/changelog=config/changelog
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/surveys=config/surveys
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
@@ -502,6 +526,12 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken_ext
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=onnxruntime
+          rem onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          rem nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          rem --include-package=onnxruntime would recurse and compile the whole subtree,
+          rem including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          rem Synced with build_nuitka.bat.
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=onnxruntime.transformers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tokenizers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi

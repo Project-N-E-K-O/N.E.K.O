@@ -1,6 +1,6 @@
 <div align="center">
 
-![Logo](assets/neko_logo.jpg)
+![Logo](assets/neko_logo_new.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
 # Project N.E.K.O. :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
@@ -10,7 +10,7 @@
 > N.E.K.O，一个渴望理解、建立连接、并与我们共同成长的数字生命。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
@@ -21,8 +21,6 @@
 **:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
 
 :newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎喜加一，顺手给个好评~**
-
-*Project N.E.K.O.，喵宇宙！*
 
 </div>
 
@@ -45,11 +43,20 @@
 </tr>
 </table>
 
+## 实机展示
+
+支持文本、语音、窥屏、鼠标点击、拖拽等一系列交互方式，既可以在闲暇的时候陪你聊天，也可以游戏娱乐时观战吐槽，还会叼着网络梗图来找你~~
+
+<img width="422.4" height="278.4" alt="Image" src="https://github.com/user-attachments/assets/71e9ed4c-f332-4db5-bc13-ca0d05049142" />
+<img width="363.6" height="278.4" alt="6 15-主动搭话" src="https://github.com/user-attachments/assets/50f61732-996b-41cb-9dba-d85f17734d8c" />
+
+当你需要学习工作等专注的空间时，她还会真的变成一只小猫咪安静地陪着你哦~ 就像这样→ <img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
+
 ---
 
 # 猫娘计划 (Project N.E.K.O.)
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于MIT许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于Apache 2.0许可证 **始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
 
 ---
 
@@ -72,9 +79,9 @@
 
 ## 快速开始
 
-### Windows / macOS 用户（一键包）
+### Windows / macOS / Linux用户（一键包）
 
-解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（macOS用户需要手动解除系统隔离）
+解压后，直接运行`N.E.K.O.exe`、`N.E.K.O.app`或`n.e.k.o`即可启动。（macOS用户需要手动解除系统隔离）
 
 ### Docker 部署 (Linux)
 
@@ -466,6 +473,16 @@ uv run python app/agent_server.py
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
+**调试聊天界面形态（full / compact）**：Web 端默认 `full`（完整聊天窗口），Electron 端默认 `compact`（悬浮对话条）。在浏览器控制台用 localStorage 切换测试（硬刷新生效）：
+
+```js
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full');    location.reload(); // 进 full
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload(); // 进 compact
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location.reload(); // 回默认
+```
+
+形态说明、各形态自测点与三端验证详见 [`docs/design/compact-chat-mode-design.md`](docs/design/compact-chat-mode-design.md) 的「形态切换与本地测试」。
+
 开发者建议加入企鹅群 995414391 交流。
 
 </details>
@@ -568,11 +585,11 @@ N.E.K.O/
 
 v0.7: ✅ 完善Agent相关功能。**已完成。**
 
-v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月完成。
+v0.8: ✅ 完善记忆相关功能，完善OpenClaw类似功能。**已完成（2026年4月）。**
 
-v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年6月完成。
 
-v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月完成。
 
 ### 遥测说明 (Telemetry)
 

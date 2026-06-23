@@ -22,6 +22,37 @@ STUDY_EXPORT_FORMATS = ("markdown", "pdf", "docx", "xmind")
 STUDY_EXPORT_STYLES = ("neko", "academic", "compact")
 _LOGGER = logging.getLogger(__name__)
 OCR_SNIPPET_MAX_CHARS = 200
+PRIVATE_CURRENT_QUESTION_FIELDS = frozenset(
+    {
+        "answer",
+        "reference_answer",
+        "accepted_answers",
+        "key_points",
+        "rubric",
+        "solution_steps",
+        "math_equivalence_engine",
+        "internal_private_payload",
+        "current_question_private",
+        "attempt_evaluated",
+    }
+)
+
+
+def public_current_question_payload(
+    value: dict[str, Any] | None,
+    *,
+    include_reference_answer: bool = False,
+) -> dict[str, Any]:
+    payload = json_copy(value or {})
+    if not isinstance(payload, dict):
+        return {}
+    private_fields = set(PRIVATE_CURRENT_QUESTION_FIELDS)
+    if include_reference_answer:
+        private_fields.discard("reference_answer")
+    for field_name in private_fields:
+        payload.pop(field_name, None)
+    payload.pop("answer_evaluation_cache", None)
+    return payload
 
 
 class ModeIntentPayload(TypedDict, total=False):
@@ -53,7 +84,6 @@ class StudyStatusPayload(TypedDict, total=False):
     current_question: dict[str, Any]
     last_answer_evaluation: dict[str, Any]
     screen_classification: dict[str, Any]
-    last_reply: str
     last_error: str
     history: list[dict[str, Any]]
 
@@ -87,6 +117,44 @@ class ActivitySummary(TypedDict):
     total_focus_minutes: float
     ocr_text_snippet: str
     app_distribution: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookMeta:
+    id: str
+    name: str
+    description: str = ""
+    sort_order: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    note_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NoteItem:
+    id: str
+    notebook_id: str | None
+    title: str
+    content: str
+    content_plain: str
+    snippet: str
+    is_ai_generated: bool = False
+    source_type: str = "manual"
+    source_ref: str = ""
+    topic_ids: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    word_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    edited_at: str = ""
+
+
+class NoteSearchResult(TypedDict, total=False):
+    notes: list[dict[str, Any]]
+    topics: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    wrong_questions: list[dict[str, Any]]
+    query: str
 
 
 STATUS_READY = "ready"
@@ -168,6 +236,7 @@ class SupervisionConfig:
     enabled: bool = True
     remind_interval_minutes: int = 10
     inactivity_timeout_minutes: int = 5
+    idle_away_seconds: int = 900
     allow_disable_by_chat: bool = True
 
     def __post_init__(self) -> None:
@@ -177,6 +246,9 @@ class SupervisionConfig:
         )
         self.inactivity_timeout_minutes = _range_or_default(
             self.inactivity_timeout_minutes, 1, 30, 5
+        )
+        self.idle_away_seconds = _range_or_default(
+            self.idle_away_seconds, 60, 3600, 900
         )
         self.allow_disable_by_chat = bool(self.allow_disable_by_chat)
 
@@ -216,9 +288,11 @@ class AwarenessConfig:
     snapshot_interval_seconds: int = 5
     context_window_minutes: int = 5
     classify_mode: str = "title_first"
-    image_max_bytes: int = 204800
-    push_to_llm_interval_seconds: int = 30
+    image_max_bytes: int = 65_536
+    push_to_llm_interval_seconds: int = 300
     push_to_llm_mode: str = "read"
+    os_signals_enabled: bool = True
+    distraction_detection: bool = True
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
@@ -237,10 +311,10 @@ class AwarenessConfig:
             classify_mode = "title_first"
         self.classify_mode = classify_mode
         self.image_max_bytes = _clamp_int_or_default(
-            self.image_max_bytes, 10240, 1_048_576, 204800
+            self.image_max_bytes, 10240, 512_000, 65_536
         )
         self.push_to_llm_interval_seconds = _clamp_int_or_default(
-            self.push_to_llm_interval_seconds, 5, 300, 30
+            self.push_to_llm_interval_seconds, 30, 300, 300
         )
         push_mode = str(self.push_to_llm_mode or "read").strip()
         if push_mode not in {"read", "blind", "respond"}:
@@ -250,6 +324,8 @@ class AwarenessConfig:
             )
             push_mode = "read"
         self.push_to_llm_mode = push_mode
+        self.os_signals_enabled = bool(self.os_signals_enabled)
+        self.distraction_detection = bool(self.distraction_detection)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -261,6 +337,7 @@ class StudyConfig:
     default_mode: StudyMode = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
+    auto_open_ui: bool = True
     ocr_enabled: bool = True
     ocr_backend_selection: str = "rapidocr"
     ocr_capture_backend: str = "auto"
@@ -297,6 +374,7 @@ class StudyConfig:
         self.default_mode = normalize_mode(self.default_mode or self.mode)
         self.language = str(self.language or "zh-CN").strip() or "zh-CN"
         self.history_limit = max(1, self._coerce_int(self.history_limit, 50))
+        self.auto_open_ui = bool(self.auto_open_ui)
         self.ocr_install_timeout_seconds = self._clamp_float(
             self.ocr_install_timeout_seconds, 1.0, 3600.0, 300.0
         )
@@ -412,8 +490,6 @@ class StudyState:
     last_answer_evaluated_at: str = ""
     last_session_summary: str = ""
     last_session_summary_at: str = ""
-    last_reply: str = ""
-    last_reply_at: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
     dependency_status: dict[str, Any] = field(default_factory=dict)
 
@@ -582,6 +658,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         default_mode=default_mode,
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
+        auto_open_ui=_bool(study, "auto_open_ui", True, "auto_open_ui"),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
         ocr_backend_selection=_str(
             ocr, "backend_selection", "rapidocr", "ocr_backend_selection"
@@ -735,6 +812,12 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 5,
                 "supervision_inactivity_timeout_minutes",
             ),
+            idle_away_seconds=_int(
+                supervision,
+                "idle_away_seconds",
+                900,
+                "supervision_idle_away_seconds",
+            ),
             allow_disable_by_chat=_bool(
                 supervision,
                 "allow_disable_by_chat",
@@ -787,13 +870,13 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             image_max_bytes=_int(
                 awareness,
                 "image_max_bytes",
-                204800,
+                65_536,
                 "awareness_image_max_bytes",
             ),
             push_to_llm_interval_seconds=_int(
                 awareness,
                 "push_to_llm_interval_seconds",
-                30,
+                300,
                 "awareness_push_to_llm_interval_seconds",
             ),
             push_to_llm_mode=_str(
@@ -801,6 +884,18 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "push_to_llm_mode",
                 "read",
                 "awareness_push_to_llm_mode",
+            ),
+            os_signals_enabled=_bool(
+                awareness,
+                "os_signals_enabled",
+                True,
+                "awareness_os_signals_enabled",
+            ),
+            distraction_detection=_bool(
+                awareness,
+                "distraction_detection",
+                True,
+                "awareness_distraction_detection",
             ),
         ),
     )

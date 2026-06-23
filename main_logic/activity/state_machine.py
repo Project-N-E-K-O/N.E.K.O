@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """User-activity state machine.
 
 Pure-rules engine: takes signals (system snapshot, window observations,
@@ -121,7 +135,7 @@ GAMING_GPU_MAX_IDLE_SECONDS = 60.0
 # cap on follow-ups prevents the AI from harassing the user about the
 # same hanging question.
 UNFINISHED_THREAD_WINDOW_SECONDS = 5 * 60
-UNFINISHED_THREAD_MAX_FOLLOWUPS = 2
+UNFINISHED_THREAD_MAX_FOLLOWUPS = 1
 
 # Question-detection heuristic: only the last N chars of the AI message
 # are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清")

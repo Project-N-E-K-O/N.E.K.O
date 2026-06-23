@@ -55,9 +55,25 @@ def test_service_payload_builders_preserve_nested_state_and_reply_payloads() -> 
     assert status["is_first_run"] is True
     assert status["history"] == [{"role": "user"}]
     assert status["weak_topics"] == [{"topic_id": "t"}]
+    assert "current_question" not in status
     assert build_tutor_payload(reply)["summary"] == "structured"
     assert build_explain_payload(reply)["extra"] == {"nested": True}
     assert build_ocr_payload(snapshot)["summary"] == "ocr text"
+
+
+def test_status_payload_only_deepcopies_exposed_knowledge_fields() -> None:
+    class _KnowledgeDict(dict):
+        def __deepcopy__(self, memo):  # noqa: ANN001
+            raise AssertionError("outer knowledge mapping should not be deep-copied")
+
+    config = StudyConfig(language="en")
+    state = build_initial_state(mode=config.mode)
+    knowledge = _KnowledgeDict({"weak_topics": [{"topic_id": "limits"}]})
+
+    status = build_status_payload(config=config, state=state, knowledge=knowledge)
+    knowledge["weak_topics"][0]["topic_id"] = "mutated"
+
+    assert status["weak_topics"] == [{"topic_id": "limits"}]
 
 
 def test_dependency_status_uses_installability_and_tesseract_language_fallbacks(
@@ -257,6 +273,7 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
                 "name": "Topic A",
                 "subject": "math",
                 "chapter": "1",
+                "stage": "senior_high",
                 "prerequisites": [{"id": "topic-pre", "required_mastery": 0.7}],
                 "related": [{"topic_id": "topic-b", "relation": "similar"}],
             },
@@ -274,6 +291,9 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
     assert open_payload["path"] == "/plugin/study/ui/"
     assert unavailable["message_key"] == "ui.open.unavailable"
     assert map_payload["summary"]["weak_topic_count"] == 1
+    assert map_payload["summary"]["stage_counts"]["senior_high"] == 1
+    topic_node = next(node for node in map_payload["nodes"] if node["id"] == "topic-a")
+    assert topic_node["stage"] == "senior_high"
     assert map_payload["edges"][0]["required_mastery"] == 0.7
     assert contribution["preview"]["opt_in"] is True
     assert contribution["queue"] == [{"id": "q"}]

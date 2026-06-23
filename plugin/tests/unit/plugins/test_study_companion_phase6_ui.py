@@ -55,7 +55,7 @@ def test_phase6_config_parses_habit_defaults_and_clamps_ranges() -> None:
     assert config.checkin.auto_derive_from_session is False
 
 
-def test_phase6_ui_guides_are_registered() -> None:
+def test_phase6_ui_panels_are_registered() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)

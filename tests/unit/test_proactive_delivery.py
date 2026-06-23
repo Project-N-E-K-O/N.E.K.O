@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from main_logic.proactive_delivery import (
+    DELIVERY_ACK_FUTURE_KEY,
     ProactiveDeliveryManager,
     effective_priority,
 )
@@ -74,6 +75,18 @@ async def test_coalescing_is_opt_in():
     assert [c["id"] for c in delivered] == ["new"]
 
 
+async def test_coalescing_resolves_dropped_delivery_ack_false():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    old_future = asyncio.get_running_loop().create_future()
+    mgr.submit({"id": "old", DELIVERY_ACK_FUTURE_KEY: old_future}, priority=2, coalesce_key="dup")
+    mgr.submit({"id": "new"}, priority=2, coalesce_key="dup")
+
+    assert old_future.done()
+    assert old_future.result() is False
+
+
 async def test_no_coalesce_key_never_collapses():
     # Unset key → unique → both delivered (no silent drop). This is the
     # non-regression guarantee for plugins that didn't opt in.
@@ -115,6 +128,31 @@ async def test_second_batch_waits_for_next_play_end():
     mgr.on_playback_end()
     await _settle()
     assert [c["id"] for c in delivered] == ["a", "b"]
+
+
+async def test_noop_release_frees_inflight_slot_immediately():
+    # A release that delivers nothing (e.g. every cue dropped at a release-time
+    # gate) emits no playback signal, so without an explicit release the slot
+    # would stay armed for the whole inflight timeout and hold back the next
+    # cue. release_inflight_noop frees it so the follow-up cue goes out promptly.
+    delivered = []
+    mgr = None
+
+    async def deliver(batch):
+        delivered.append([c for c in batch])
+        if len(delivered) == 1:
+            mgr.release_inflight_noop()  # simulate the gate-drop no-op release
+
+    mgr = ProactiveDeliveryManager(deliver=deliver, min_gap_s=0.0, inflight_timeout_s=5.0)
+    mgr.submit({"id": "dropped"}, priority=1)
+    await _settle()
+    assert len(delivered) == 1  # first batch released, delivered nothing
+
+    mgr.submit({"id": "second"}, priority=1)
+    await _settle()
+    # slot was freed immediately, so 'second' is delivered within _settle
+    # rather than after the 5s inflight timeout.
+    assert [batch[0]["id"] for batch in delivered] == ["dropped", "second"]
 
 
 async def test_min_gap_delays_release():
@@ -160,6 +198,19 @@ async def test_drain_pending_returns_queue_without_delivering():
     mgr.on_playback_end()
     await _settle()
     assert delivered == []
+
+
+async def test_drain_pending_keeps_delivery_ack_pending_for_redelivery():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    future = asyncio.get_running_loop().create_future()
+    mgr.submit({"id": "queued", DELIVERY_ACK_FUTURE_KEY: future}, priority=2)
+
+    drained = mgr.drain_pending()
+
+    assert [c["id"] for c in drained] == ["queued"]
+    assert not future.done()
 
 
 async def test_reset_gate_clears_gate_but_keeps_queue():

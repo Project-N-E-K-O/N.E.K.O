@@ -12,6 +12,13 @@ from PIL import Image
 
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.constants import LLM_OPERATION_CONCEPT_EXPLAIN
+from plugin.plugins.study_companion.entry_common import (
+    _validate_optional_vision_image_payload,
+)
+from plugin.plugins.study_companion.entry_tutor_explain_entries import (
+    IMAGE_ONLY_EXPLAIN_PROMPT_EN,
+    IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+)
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
@@ -64,6 +71,30 @@ class _VisionPipeline:
 
 JPEG_IMAGE_BASE64 = base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg").decode("ascii")
 PNG_IMAGE_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-png").decode("ascii")
+ZH_TRANSFER_EXPECTED_TEXT = (
+    "可以把题目中的条件、数值或问法换成同类型设定，"
+    "仍按“题目解析 → 解题过程 → 答案”的顺序梳理。"
+)
+
+
+def test_image_only_explain_prompts_require_solution_process_sections() -> None:
+    assert "detailed solution process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Solution Process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Answer" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "brief analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Problem Analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "Transfer Practice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "do not assume it is single-choice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "verify each item independently" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "output all correct options" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "详细的解答过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "题目解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "解题过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "答案" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "举一反三" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "不要默认是单选题" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "输出全部正确选项" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
 
 
 @pytest.mark.parametrize(
@@ -91,6 +122,56 @@ def test_study_explain_text_schema_accepts_vision_image() -> None:
         "type": "string",
         "default": "",
     }
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        StudyCompanionPlugin.study_generate_question,
+        StudyCompanionPlugin.study_evaluate_answer,
+    ],
+)
+def test_structured_study_entries_schema_accepts_vision_image(entry: object) -> None:
+    meta = getattr(entry, EVENT_META_ATTR)
+    properties = meta.input_schema["properties"]
+
+    assert properties["vision_image_base64"] == {
+        "type": "string",
+        "default": "",
+    }
+
+
+def test_validate_optional_vision_image_payload_shared_helper() -> None:
+    owner = SimpleNamespace(_cfg=StudyConfig(llm_vision_enabled=True), logger=_Logger())
+
+    result = _validate_optional_vision_image_payload(
+        owner,
+        JPEG_IMAGE_BASE64,
+        operation="test_entry",
+    )
+
+    assert result == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+    disabled_owner = SimpleNamespace(
+        _cfg=StudyConfig(llm_vision_enabled=False),
+        logger=_Logger(),
+    )
+    disabled = _validate_optional_vision_image_payload(
+        disabled_owner,
+        JPEG_IMAGE_BASE64,
+        operation="test_entry",
+    )
+    assert isinstance(disabled, Err)
+    assert "llm_vision_enabled" in str(disabled.error)
+
+    invalid = _validate_optional_vision_image_payload(
+        owner,
+        "data:image/webp;base64,abc123",
+        operation="test_entry",
+    )
+    assert isinstance(invalid, Err)
+    assert "JPEG/PNG" in str(invalid.error)
+    assert owner.logger.warnings
 
 
 def test_attach_vision_image_adds_to_last_user_msg() -> None:
@@ -173,6 +254,114 @@ async def test_concept_explain_attaches_vision_context(
     content = seen[-1]["content"]
     assert isinstance(content, list)
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,image-payload"
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_missing_zh_transfer_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    expected_tail = "举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT
+    assert reply.reply.rstrip().endswith(expected_tail)
+    assert reply.reply.count("举一反三") == 1
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_to_numbered_zh_solution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "1. 分析条件。\n\n2. 计算总和。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_en(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return "4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA"
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_appends_transfer_to_option_verification_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _fake_call_model(_messages: list[dict[str, Any]]):
+        return (
+            "验证 C：若 AB ⊥ CD，则 CD ⊥ 平面 ABD。\n\n"
+            "结论：C 错误。\n\n"
+            "验证 D：若 AB ⊥ 平面 ACD，则 AC ⊥ AD。\n\n"
+            "结论：D 错误。\n\n"
+            "结论：B 正确。"
+        )
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+
+
+@pytest.mark.asyncio
+async def test_concept_explain_vision_failure_uses_image_specific_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+
+    async def _broken_call_model(_messages: list[dict[str, Any]]):
+        raise RuntimeError("llm unavailable")
+
+    monkeypatch.setattr(agent, "_call_model", _broken_call_model)
+
+    reply = await agent.concept_explain(
+        IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
+        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+    )
+
+    assert reply.degraded is True
+    assert reply.diagnostic == "llm_call_failed"
+    assert "视觉模型" in reply.reply
+    assert "关键文本" not in reply.reply
+    assert "检查问题" not in reply.reply
+    assert "请先识别图片中的题目" not in reply.reply
 
 
 @pytest.mark.asyncio
@@ -557,8 +746,28 @@ async def test_study_submit_image_without_caption_preserves_ocr_fallback() -> No
     result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert calls == ["请查看这张图片的内容"]
+    assert calls == [IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN]
     assert plugin._state.last_ocr_text == "previous OCR context"
+
+
+@pytest.mark.asyncio
+async def test_study_submit_image_without_caption_uses_english_prompt() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=True, language="en")
+    plugin._state = build_initial_state()
+    plugin._lock = threading.RLock()
+    calls: list[str] = []
+
+    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **_: Any):
+        calls.append(text)
+        return Ok({"reply": "explained"})
+
+    plugin.study_explain_text = MethodType(_study_explain_text, plugin)
+
+    result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert calls == [IMAGE_ONLY_EXPLAIN_PROMPT_EN]
 
 
 @pytest.mark.asyncio
@@ -659,6 +868,11 @@ async def test_study_submit_image_requires_enabled_config() -> None:
 
 
 class _FakeVisionTutorAgent:
+    def __init__(self) -> None:
+        self.explanations: list[tuple[str, dict[str, object], str]] = []
+        self.generated_questions: list[tuple[str, dict[str, object], str]] = []
+        self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
+
     async def concept_explain(
         self,
         text: str,
@@ -666,6 +880,7 @@ class _FakeVisionTutorAgent:
         mode: str = "companion",
         context: dict[str, object] | None = None,
     ) -> TutorReply:
+        self.explanations.append((text, dict(context or {}), mode))
         return TutorReply(
             operation="concept_explain",
             input_text=text,
@@ -673,15 +888,75 @@ class _FakeVisionTutorAgent:
             created_at="2026-05-25T00:00:00Z",
         )
 
+    async def question_generate(
+        self,
+        text: str,
+        *,
+        mode: str = "companion",
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.generated_questions.append((text, dict(context or {}), mode))
+        return TutorReply(
+            operation="question_generate",
+            input_text=text,
+            reply="question generated",
+            payload={
+                "question": "What is shown?",
+                "answer": "A diagram",
+                "hint": "Use the visual context.",
+                "difficulty": 2,
+                "topic": "diagram",
+            },
+            created_at="2026-05-25T00:00:00Z",
+        )
+
+    async def answer_evaluate(
+        self,
+        *,
+        question: str = "",
+        answer: str = "",
+        expected_answer: str = "",
+        mode: str = "companion",
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.evaluations.append(
+            (question, answer, expected_answer, dict(context or {}), mode)
+        )
+        return TutorReply(
+            operation="answer_evaluate",
+            input_text=answer,
+            reply="answer evaluated",
+            payload={
+                "verdict": "partial",
+                "score": 50,
+                "feedback": "Compare it with the image.",
+                "next_action": "Review the diagram.",
+            },
+            created_at="2026-05-25T00:00:00Z",
+        )
+
     async def shutdown(self) -> None:
         pass
 
 
-def _make_plugin_for_explain(*, vision_enabled: bool) -> StudyCompanionPlugin:
+class _StructuredVisionKnowledgeTracker:
+    def get_status_summary(self, *, limit: int = 5) -> dict[str, object]:
+        return {"limit": limit}
+
+    def get_next_question_params(self, _hint: str = "") -> dict[str, object]:
+        return {"topic": "diagram"}
+
+    def get_mastery(self, _topic: str) -> float:
+        return 0.5
+
+
+def _make_plugin_for_explain(
+    *, vision_enabled: bool, language: str = "zh-CN"
+) -> StudyCompanionPlugin:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
-    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled)
+    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled, language=language)
     plugin._state = build_initial_state()
-    plugin._lock = threading.RLock()
+    plugin._lock = asyncio.Lock()
     plugin._agent = _FakeVisionTutorAgent()
     plugin._store = _Store()
     plugin._knowledge_tracker = _KnowledgeTracker()
@@ -692,6 +967,59 @@ def _make_plugin_for_explain(*, vision_enabled: bool) -> StudyCompanionPlugin:
         self._persist_state_calls += 1
 
     plugin._persist_state = MethodType(_persist_state, plugin)
+    return plugin
+
+
+def _make_plugin_for_structured_vision(
+    *, vision_enabled: bool, language: str = "zh-CN"
+) -> StudyCompanionPlugin:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled, language=language)
+    plugin._state = build_initial_state()
+    plugin._lock = asyncio.Lock()
+    plugin._agent = _FakeVisionTutorAgent()
+    plugin._knowledge_tracker = _StructuredVisionKnowledgeTracker()
+    plugin.logger = _Logger()
+
+    async def _build_learning_context(
+        self: StudyCompanionPlugin,
+        operation: str,
+        *,
+        input_text: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "operation": operation,
+            "input_text": input_text,
+            **dict(extra or {}),
+        }
+
+    async def _finalize_tutor_call(
+        self: StudyCompanionPlugin,
+        _operation: str,
+        reply: TutorReply,
+        **_: Any,
+    ) -> dict[str, Any]:
+        return dict(reply.payload)
+
+    def _resolve_current_run_id(
+        self: StudyCompanionPlugin,
+        _extra_args: dict[str, Any] | None = None,
+    ) -> str:
+        return "vision-run"
+
+    async def _emit_answer_evaluated_event(
+        self: StudyCompanionPlugin,
+        **_: Any,
+    ) -> None:
+        return None
+
+    plugin._build_learning_context = MethodType(_build_learning_context, plugin)
+    plugin._finalize_tutor_call = MethodType(_finalize_tutor_call, plugin)
+    plugin._resolve_current_run_id = MethodType(_resolve_current_run_id, plugin)
+    plugin._emit_answer_evaluated_event = MethodType(
+        _emit_answer_evaluated_event, plugin
+    )
     return plugin
 
 
@@ -744,3 +1072,198 @@ async def test_study_explain_text_accepts_valid_vision_image() -> None:
     )
 
     assert isinstance(result, Ok)
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_uses_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
+    assert context["vision_image_base64"] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_prefers_pasted_image_over_stale_ocr() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+    plugin._state.last_ocr_text = "stale OCR text"
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
+    assert "stale OCR text" not in text
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_uses_english_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True, language="en")
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text == IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_accepts_valid_vision_image() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    result = await plugin.study_generate_question(
+        text="make a question from this",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Ok)
+    assert plugin._agent.generated_questions[-1][1][
+        "vision_image_base64"
+    ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_allows_image_only() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert plugin._agent.generated_questions[-1][0] == "请根据这张图片生成一道学习题。"
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
+    assert (
+        plugin._agent.generated_questions[-1][1]["source_text"]
+        == plugin._agent.generated_questions[-1][0]
+    )
+    assert plugin._agent.generated_questions[-1][1][
+        "vision_image_base64"
+    ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_prefers_pasted_image_over_stale_ocr() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+    plugin._state.last_ocr_text = "stale OCR text"
+
+    result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert plugin._agent.generated_questions[-1][0] == "请根据这张图片生成一道学习题。"
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
+    assert plugin._agent.generated_questions[-1][1]["source_text"] == (
+        plugin._agent.generated_questions[-1][0]
+    )
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_uses_english_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True, language="en")
+
+    result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert (
+        plugin._agent.generated_questions[-1][0]
+        == "Generate a study question from the pasted image."
+    )
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_rejects_vision_when_disabled() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=False)
+
+    result = await plugin.study_generate_question(
+        text="make a question",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Err)
+    assert "llm_vision_enabled" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_rejects_invalid_vision_mime() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    result = await plugin.study_generate_question(
+        text="make a question",
+        vision_image_base64="data:image/webp;base64,abc123",
+    )
+
+    assert isinstance(result, Err)
+    assert "JPEG/PNG" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_wraps_context_failures() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    async def _build_learning_context(
+        self: StudyCompanionPlugin,
+        operation: str,
+        *,
+        input_text: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        raise RuntimeError(f"context failed for {operation}:{input_text}:{extra}")
+
+    plugin._build_learning_context = MethodType(_build_learning_context, plugin)
+
+    result = await plugin.study_generate_question(text="make a question")
+
+    assert isinstance(result, Err)
+    assert "context failed" in str(result.error)
+    assert any("study_generate_question" in warning[0] for warning in plugin.logger.warnings)
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_accepts_valid_vision_image() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    result = await plugin.study_evaluate_answer(
+        question="What is shown?",
+        answer="A diagram",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Ok)
+    assert plugin._agent.evaluations[-1][3][
+        "vision_image_base64"
+    ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_rejects_vision_when_disabled() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=False)
+
+    result = await plugin.study_evaluate_answer(
+        question="What is shown?",
+        answer="A diagram",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Err)
+    assert "llm_vision_enabled" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_preserves_missing_question_error() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    result = await plugin.study_evaluate_answer(
+        answer="A diagram",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Err)
+    assert "requires a question" in str(result.error)

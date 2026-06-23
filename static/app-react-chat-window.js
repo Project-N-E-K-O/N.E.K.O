@@ -18,15 +18,22 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+    // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
+    // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
+    // instead of the active compact yarn ball. Strictly gated on the restorable
+    // surface being full so the compact minimize path is untouched.
+    var CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC = '/static/icons/expand_icon_off_ball.png';
 
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var suppressDragReleaseClick = false;
     var resizeState = null;
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
-    var HOME_IDLE_DOCK_GAP = 12;
+    var HOME_IDLE_DOCK_GAP = -12;
     var IDLE_DOCK_TIER_NONE = 'none';
     var IDLE_DOCK_TIER_CAT2 = 'cat2';
     var IDLE_DOCK_TIER_CAT3 = 'cat3';
@@ -35,8 +42,6 @@
     var idleDockSavedPosition = null;
     var idleDockTriggeredMinimize = false;
     var idleDockMinimizeObserver = null;
-    var idleDockContainerObserver = null;
-    var idleDockSyncFrame = 0;
     var electronIdleDockActive = false;
     var electronIdleDockTriggeredCollapse = false;
     var electronIdleDockSavedBounds = null;
@@ -58,22 +63,28 @@
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
+    var tutorialChatRequestSeq = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
+    // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
+    // the frozen legacy surface, entered only via an explicit setChatSurfaceMode
+    // ('full') (e.g. the NEKO-PC tray toggle), never by cycling through compact.
     var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
+    // Full set of valid surface modes for normalization. Keeps `full` a first-class
+    // mode the host honors when set, without letting it pollute the compact cycle.
+    var CHAT_SURFACE_MODES = ['full', 'compact', 'minimized'];
 
     var state = {
         viewProps: null,
         messages: [],
         composerAttachments: [],
         composerHidden: false,
+        goodbyeComposerHidden: false,
         onMessageAction: null,
         onComposerImportImage: null,
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
-        onCompactHistoryDrop: null,
-        onCompactHistoryDragStateChange: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
@@ -92,10 +103,15 @@
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
         homeTutorialInteractionLocked: false,
+        homeTutorialInputLocked: false,
+        _avatarToolMenuOpenRequestSeq: 0,
+        _compactToolFanOpenRequestSeq: 0,
+        _compactToolWheelRotateRequestSeq: 0,
+        _compactToolWheelIndexRequestSeq: 0,
         _galgameRequestSeq: 0,
-        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
-        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
-        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
+        // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source, sessionId, gameType, options: [{choice,label}] } | null
         choicePrompt: null,
         // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
@@ -103,8 +119,25 @@
     };
 
     function normalizeChatSurfaceMode(mode) {
-        if (mode === 'full') return 'compact';
-        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'compact';
+        return CHAT_SURFACE_MODES.indexOf(mode) >= 0 ? mode : 'compact';
+    }
+
+    function isCompactOnlyElectronChatHost() {
+        var body = document.body;
+        return !!(
+            body
+            && isElectronChatWindow()
+            && body.getAttribute('data-chat-host-kind') === 'compact'
+        );
+    }
+
+    function coerceChatSurfaceModeForHost(mode) {
+        var normalized = normalizeChatSurfaceMode(mode);
+        // /chat 是 Electron 紧凑宿主；full 由 /chat_full 独立窗口承载，避免历史 full 状态污染透明承载窗。
+        if (normalized === 'full' && isCompactOnlyElectronChatHost()) {
+            return 'compact';
+        }
+        return normalized;
     }
 
     function normalizeCompactChatState(mode) {
@@ -112,7 +145,7 @@
     }
 
     function getCurrentChatSurfaceMode() {
-        return normalizeChatSurfaceMode(state.chatSurfaceMode);
+        return coerceChatSurfaceModeForHost(state.chatSurfaceMode);
     }
 
     function getCurrentCompactChatState() {
@@ -139,19 +172,45 @@
     }
 
     function getNextChatSurfaceMode(mode) {
-        var normalized = normalizeChatSurfaceMode(mode);
+        var normalized = coerceChatSurfaceModeForHost(mode);
         if (normalized === 'minimized') {
-            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
         }
-        var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
-        var nextIndex = currentIndex >= 0
-            ? (currentIndex + 1) % CHAT_SURFACE_MODE_SEQUENCE.length
-            : 0;
-        return CHAT_SURFACE_MODE_SEQUENCE[nextIndex];
+        // Any real surface — compact or the revived legacy full — minimizes to the
+        // ball; restoring returns to the last real surface via the branch above.
+        // full is deliberately kept out of CHAT_SURFACE_MODE_SEQUENCE so it never
+        // pollutes the compact cycle, but that made the old index-based fallback
+        // resolve full -> sequence[0] -> compact, which surfaced as "full minimize
+        // jumps to compact". Minimizing is the same intent from either surface.
+        return 'minimized';
     }
 
     function resetCompactChatState() {
         state.compactChatState = 'default';
+    }
+
+    // Default surface when the user has no persisted preference yet.
+    //   - Web / browser (wide) → `full` (the complete chat window).
+    //   - Web / browser (mobile width, non-Electron) → `compact` (the floating
+    //     bar): the full window is built for desktop and overflows a phone, so a
+    //     fresh narrow visitor opens compact. `isMobileWidth()` already excludes
+    //     both Electron runtimes, so this only ever fires for narrow web.
+    //   - Electron desktop shell → `compact` (the floating bar): the chat window
+    //     (chat.html, electron chat body class) and the pet window (index.html,
+    //     __LANLAN_IS_ELECTRON_PET__) both opt into compact.
+    // An explicit `window.__NEKO_CHAT_DEFAULT_COMPACT__` boolean overrides either
+    // way, so a host can force the default without relying on the markers above.
+    function getDefaultChatSurfaceMode() {
+        try {
+            if (window.__NEKO_CHAT_DEFAULT_COMPACT__ === true) return 'compact';
+            if (window.__NEKO_CHAT_DEFAULT_COMPACT__ === false) return 'full';
+        } catch (_) {}
+        if (isElectronChatWindow()) return 'compact';
+        try {
+            if (window.__LANLAN_IS_ELECTRON_PET__) return 'compact';
+        } catch (_) {}
+        if (isMobileWidth()) return 'compact';
+        return 'full';
     }
 
     function shouldPersistChatSurfaceModePreference() {
@@ -161,27 +220,46 @@
     }
 
     function readChatSurfaceModePreference() {
+        var fallback = coerceChatSurfaceModeForHost(getDefaultChatSurfaceMode());
         if (!shouldPersistChatSurfaceModePreference()) {
-            return 'compact';
+            return fallback;
         }
         try {
             var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
-            // The storage key only ever holds the restorable surface ('compact').
-            // Migrate any legacy value persisted by the old three-state build
-            // ('full') or a stray 'minimized' back to 'compact' so stale values
-            // don't linger in storage. Any other value (or first run) just
-            // resolves to 'compact' without an extra write.
-            if (raw === 'full' || raw === 'minimized') {
-                localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
+            // The storage key holds the last restorable surface: 'compact' or the
+            // revived legacy 'full'. An explicit stored choice wins; otherwise we
+            // fall back to the per-runtime default (web=full / Electron=compact).
+            // A stray 'minimized' never lingers — rewrite it to the fallback.
+            if (raw === 'full') return coerceChatSurfaceModeForHost('full');
+            if (raw === 'compact') return coerceChatSurfaceModeForHost('compact');
+            if (raw === 'minimized') {
+                localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, fallback);
             }
-            return 'compact';
+            return fallback;
         } catch (_) {
-            return 'compact';
+            return fallback;
         }
     }
 
+    function readInitialChatSurfaceMode() {
+        var body = document.body;
+        var declaredModeAttr = body
+            ? body.getAttribute('data-initial-chat-surface-mode')
+            : '';
+        var declaredMode = declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : '';
+        if (declaredMode === 'compact' || declaredMode === 'full') {
+            if (declaredMode === 'full' && isCompactOnlyElectronChatHost()) {
+                return 'compact';
+            }
+            return declaredMode;
+        }
+        return readChatSurfaceModePreference();
+    }
+
     function persistChatSurfaceModePreference(mode) {
-        if (mode !== 'compact') return;
+        // Persist only the restorable surfaces (compact/full); minimized restores
+        // to lastRestorableChatSurfaceMode rather than being persisted directly.
+        if (mode !== 'compact' && mode !== 'full') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
@@ -208,8 +286,46 @@
     // 但摘掉 body class，让 chat.html / preload-chat-react 里依赖该 class 的
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
+    function getEffectiveComposerHidden() {
+        return !!(state.composerHidden || state.goodbyeComposerHidden);
+    }
+
+    function getNekoGoodbyeModeActive() {
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function') {
+                return !!window.isNekoGoodbyeModeActive();
+            }
+        } catch (_) {}
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active === true)
+        );
+    }
+
+    function hasLocalGoodbyeModeSource() {
+        // Standalone chat pages inherit window.isNekoGoodbyeModeActive from
+        // app-state.js even though they do not own model managers. A false
+        // hook result is therefore not authoritative here; only a true hook
+        // result or an actual local manager/silent-state object can safely
+        // drive localOnly goodbye recomputation.
+        try {
+            if (typeof window.isNekoGoodbyeModeActive === 'function'
+                && window.isNekoGoodbyeModeActive()) {
+                return true;
+            }
+        } catch (_) {}
+        return !!(
+            window.live2dManager
+            || window.vrmManager
+            || window.mmdManager
+            || (window.__nekoGoodbyeSilentState && typeof window.__nekoGoodbyeSilentState === 'object')
+        );
+    }
+
     function getEffectiveGalgameEnabled() {
-        return !!state.galgameModeEnabled && !state.composerHidden;
+        return !!state.galgameModeEnabled && !getEffectiveComposerHidden();
     }
 
     function applyGalgameBodyClass() {
@@ -225,6 +341,23 @@
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
     }
+
+    function getEffectiveComposerAttachmentsVisible() {
+        return !!(
+            state.composerAttachments
+            && state.composerAttachments.length > 0
+            && !getEffectiveComposerHidden()
+        );
+    }
+
+    function syncComposerAttachmentsVisibility(previousVisible) {
+        var nextVisible = getEffectiveComposerAttachmentsVisible();
+        applyAttachmentsBodyClass(nextVisible);
+        if (previousVisible !== undefined && previousVisible !== nextVisible) {
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextVisible });
+        }
+        return nextVisible;
+    }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
     // the class and fires the change event chat.html listens to.
@@ -238,10 +371,17 @@
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
-    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = -4;
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 180;
+    // 桌面端 compact surface 可拖到的最短宽度。默认/初始宽度仍为 COMPACT_SURFACE_MAX_WIDTH=430
+    // （见 getCompactSurfaceMetrics），这里只放宽 resize 下限，让用户能把对话条拖得更窄。
+    // 须与 react-neko-chat App.tsx 的 COMPACT_SURFACE_RESIZE_(MOBILE_)MIN_WIDTH 同步，
+    // 否则 React 侧拖到的宽度会在 phase=end 时被 host 这份 clamp 顶回去。
+    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 180;
+    var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
@@ -253,7 +393,6 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
-    var compactMinimizeBallSnapshot = '';
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -261,6 +400,11 @@
     var compactSurfacePendingModelOpen = false;
     var compactSurfaceResizeSession = null;
     var compactSurfaceDesktopResizeActive = false;
+    var compactSurfaceDesktopDragActive = false;
+    var IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS = 1600;
+    var idleCat1CompactMirrorElement = null;
+    var idleCat1CompactMirrorTimer = 0;
+    var idleCat1CompactMirrorLastDetail = null;
 
     function normalizeCompactDesktopRect(raw) {
         if (!raw) return null;
@@ -306,6 +450,7 @@
     }
 
     function handleDesktopCompactLayoutChange(layout) {
+        compactSurfaceDesktopDragActive = !!(layout && layout.dragging);
         var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
         var baseAnchorChanged = false;
         if (!nextAnchorSnapshot) {
@@ -394,6 +539,18 @@
         return !!(document.body && document.body.classList.contains('electron-chat-window'));
     }
 
+    function isElectronLinuxRuntime() {
+        var runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+        return !!(
+            isElectronChatWindow()
+            && (
+                runtime.isLinux ||
+                runtime.isLinuxX11 ||
+                runtime.platform === 'linux'
+            )
+        );
+    }
+
     function isMobileWidth() {
         // chat.html 是 Electron 独立窗口，始终按 PC 行为处理（即使用户把窗口拖窄到 <768px），
         // 通过 <body class="electron-chat-window"> 从"手机端布局"中排除。
@@ -459,7 +616,7 @@
         var normalized = normalizeCompactDesktopRect(bounds);
         if (!normalized) return null;
         var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
-        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2 + MINIMIZED_DOWN_OFFSET;
         var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         return {
@@ -501,7 +658,23 @@
         return false;
     }
 
+    function getCompactSurfaceMobileWidthBounds() {
+        var viewportWidth = Math.max(1, window.innerWidth || 0);
+        var viewportMax = Math.max(
+            1,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER)
+        );
+        var minWidth = Math.min(COMPACT_SURFACE_MOBILE_MIN_WIDTH, viewportMax);
+        return {
+            minWidth: Math.round(minWidth),
+            maxWidth: Math.round(Math.max(minWidth, viewportMax))
+        };
+    }
+
     function getCompactSurfaceResizeMaxWidth() {
+        if (isMobileWidth()) {
+            return getCompactSurfaceMobileWidthBounds().maxWidth;
+        }
         return Math.max(
             COMPACT_SURFACE_MAX_WIDTH,
             Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2))
@@ -511,15 +684,30 @@
     function getCompactSurfaceMetrics() {
         var shell = getShell();
         var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
+        var mobileWidthBounds = isMobileWidth() ? getCompactSurfaceMobileWidthBounds() : null;
         var defaultWidth = isMobileWidth()
-            ? Math.max(280, window.innerWidth - 16)
+            ? mobileWidthBounds.maxWidth
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
         var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
         var storedWidth = loadCompactSurfaceStoredWidth();
-        var width = Math.round(Math.min(
-            Math.max(defaultWidth, measuredWidth, storedWidth || 0),
-            getCompactSurfaceResizeMaxWidth()
-        ));
+        // 有用户拖拽记忆（stored）时以它为准——桌面端允许小于默认 430（仅 clamp 到 [桌面最短, resize 上限]），
+        // 否则 applyCompactSurfacePosition 等重算会用 max(default,…) 把拖窄后的宽度顶回 430。
+        // 无 stored 时才回退默认宽度（首次/重置仍为 430，不改默认）。
+        var width;
+        if (isMobileWidth() && storedWidth) {
+            width = storedWidth;
+        } else if (storedWidth && storedWidth > 0) {
+            // 桌面端有拖拽记忆：以 stored 为准，可小于默认 430（仅 clamp 到 [桌面最短, resize 上限]）。
+            width = Math.round(Math.min(
+                Math.max(storedWidth, COMPACT_SURFACE_DESKTOP_MIN_WIDTH),
+                getCompactSurfaceResizeMaxWidth()
+            ));
+        } else {
+            width = Math.round(Math.min(
+                Math.max(defaultWidth, measuredWidth),
+                getCompactSurfaceResizeMaxWidth()
+            ));
+        }
         var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
         return {
             width: width,
@@ -579,7 +767,10 @@
             var width = Number(parsed && parsed.width);
             if (!Number.isFinite(width) || width <= 0) return null;
             var maxWidth = getCompactSurfaceResizeMaxWidth();
-            return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+            var minWidth = isMobileWidth()
+                ? getCompactSurfaceMobileWidthBounds().minWidth
+                : COMPACT_SURFACE_DESKTOP_MIN_WIDTH;
+            return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
         } catch (_) {
             return null;
         }
@@ -641,12 +832,190 @@
         };
     }
 
+    function getIdleCat1CompactMirrorElement() {
+        if (idleCat1CompactMirrorElement && idleCat1CompactMirrorElement.isConnected) {
+            return idleCat1CompactMirrorElement;
+        }
+        var host = document.body;
+        if (!host) return null;
+        var element = document.createElement('div');
+        element.id = 'neko-idle-cat1-compact-mirror';
+        element.className = 'neko-idle-cat1-compact-mirror';
+        element.setAttribute('data-compact-geometry-owner', 'surface');
+        element.setAttribute('data-compact-geometry-item', 'cat1Mirror');
+        element.setAttribute('aria-hidden', 'true');
+        element.hidden = true;
+        var image = document.createElement('img');
+        image.className = 'neko-idle-cat1-compact-mirror-art';
+        image.alt = '';
+        image.draggable = false;
+        element.appendChild(image);
+        host.appendChild(element);
+        idleCat1CompactMirrorElement = element;
+        return element;
+    }
+
+    function clearIdleCat1CompactMirrorTimer() {
+        if (!idleCat1CompactMirrorTimer) return;
+        window.clearTimeout(idleCat1CompactMirrorTimer);
+        idleCat1CompactMirrorTimer = 0;
+    }
+
+    function hideIdleCat1CompactMirror(reason) {
+        clearIdleCat1CompactMirrorTimer();
+        var element = idleCat1CompactMirrorElement;
+        if (element) {
+            element.hidden = true;
+            element.removeAttribute('data-active');
+            element.removeAttribute('data-neko-cat1-wide-art');
+            element.style.removeProperty('left');
+            element.style.removeProperty('top');
+            element.style.removeProperty('width');
+            element.style.removeProperty('height');
+        }
+        idleCat1CompactMirrorLastDetail = null;
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function getIdleCat1CompactMirrorWindowBounds() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        if (windowBounds) return windowBounds;
+        var x = Number(window.screenX);
+        var y = Number(window.screenY);
+        return {
+            x: Number.isFinite(x) ? x : 0,
+            y: Number.isFinite(y) ? y : 0
+        };
+    }
+
+    function getIdleCat1CompactMirrorPageRect(detail) {
+        var surface = normalizeCompactDesktopRect(detail && detail.surfaceScreenRect);
+        if (!surface) return null;
+        var catRect = detail && detail.catRect ? detail.catRect : null;
+        var catWidth = Math.round(Number(catRect && catRect.width) || 112);
+        var catHeight = Math.round(Number(catRect && catRect.height) || 112);
+        if (catWidth <= 0 || catHeight <= 0) return null;
+        var windowBounds = getIdleCat1CompactMirrorWindowBounds();
+        var surfaceLeft = surface.left - (Number(windowBounds.x) || 0);
+        var surfaceTop = surface.top - (Number(windowBounds.y) || 0);
+        var sidePadding = Math.max(0, Number(detail && detail.sidePaddingPx) || 12);
+        var capInset = Math.max(sidePadding, surface.height / 2 + sidePadding);
+        var edgePadding = Math.min(capInset, Math.max(0, surface.width / 2));
+        var minCenterX = surfaceLeft + edgePadding;
+        var maxCenterX = surfaceLeft + surface.width - edgePadding;
+        var ratio = Number(detail && detail.anchorRatio);
+        if (!Number.isFinite(ratio)) ratio = 0.5;
+        ratio = Math.max(0, Math.min(1, ratio));
+        var centerX = maxCenterX >= minCenterX
+            ? minCenterX + (maxCenterX - minCenterX) * ratio
+            : surfaceLeft + surface.width / 2;
+        var overlap = Number(detail && detail.overlapPx);
+        if (!Number.isFinite(overlap)) overlap = 28;
+        return {
+            left: Math.round(centerX - catWidth / 2),
+            top: Math.round(surfaceTop - catHeight + overlap),
+            width: catWidth,
+            height: catHeight
+        };
+    }
+
+    function showIdleCat1CompactMirror(detail) {
+        var element = getIdleCat1CompactMirrorElement();
+        var rect = getIdleCat1CompactMirrorPageRect(detail);
+        if (!element || !rect) {
+            hideIdleCat1CompactMirror('invalid');
+            return;
+        }
+        idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
+        var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
+        if (image) {
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
+            if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+                element.setAttribute('data-neko-cat1-wide-art', 'true');
+            } else {
+                element.removeAttribute('data-neko-cat1-wide-art');
+            }
+            image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
+        }
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        element.hidden = false;
+        element.setAttribute('data-active', 'true');
+        clearIdleCat1CompactMirrorTimer();
+        idleCat1CompactMirrorTimer = window.setTimeout(function () {
+            hideIdleCat1CompactMirror('timeout');
+        }, IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS);
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function refreshIdleCat1CompactMirrorPosition() {
+        var element = idleCat1CompactMirrorElement;
+        if (!element || element.hidden || !idleCat1CompactMirrorLastDetail) return;
+        var rect = getIdleCat1CompactMirrorPageRect(idleCat1CompactMirrorLastDetail);
+        if (!rect) return;
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        syncCompactInteractionGeometry();
+    }
+
+    function shouldIgnoreIdleCat1CompactMirrorState(detail) {
+        return !!(
+            window.__LANLAN_IS_ELECTRON_PET__
+            && detail
+            && detail.via === 'local'
+            && detail.source === 'pet-window'
+        );
+    }
+
+    function handleIdleCat1CompactMirrorState(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (shouldIgnoreIdleCat1CompactMirrorState(detail)) return;
+        if (!detail || !detail.active) {
+            hideIdleCat1CompactMirror(detail && detail.reason ? detail.reason : 'inactive');
+            return;
+        }
+        showIdleCat1CompactMirror(detail);
+    }
+
+    function handleIdleCat1PlayYarnVisibility(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        var hidden = !!(detail && detail.hidden);
+        var shell = getShell();
+        if (shell && shell.classList) {
+            if (hidden && shell.classList.contains('is-minimized')) {
+                shell.setAttribute('data-neko-cat1-play-hidden', 'true');
+                syncCompactInteractionGeometry();
+            } else if (!hidden) {
+                shell.removeAttribute('data-neko-cat1-play-hidden');
+                syncCompactInteractionGeometry();
+            }
+        }
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.setCompactChatBallTemporarilyHidden === 'function') {
+            try {
+                bridge.setCompactChatBallTemporarilyHidden(hidden);
+            } catch (_) {}
+        }
+    }
+
     function dispatchCompactSurfaceLayoutChange(rect) {
         var detail = rect || null;
         if (detail && isElectronChatWindow()) {
             detail = Object.assign({}, detail, {
                 screenRect: getCompactSurfaceResizeScreenRect(detail),
                 resizeActive: !!compactSurfaceResizeSession
+            });
+        }
+        if (detail) {
+            detail = Object.assign({}, detail, {
+                dragging: !!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive
             });
         }
         window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
@@ -703,6 +1072,7 @@
             document.documentElement.style.setProperty('--desktop-compact-surface-width', rect.width + 'px');
             document.documentElement.style.setProperty('--desktop-compact-surface-height', rect.height + 'px');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         shell.style.transform = 'none';
         if (options && options.persist && !isElectronChatWindow()) {
             saveCompactSurfacePosition(rect.left, rect.top, rect.width);
@@ -710,6 +1080,48 @@
         dispatchCompactSurfaceLayoutChange(rect);
         syncCompactInteractionGeometry();
         return rect;
+    }
+
+    function seedCompactSurfaceAnchorForRender() {
+        var shell = getShell();
+        if (!shell || getCurrentChatSurfaceMode() !== 'compact') return;
+        if (compactSurfaceAnchorLocked) return;
+        if (compactSurfaceDesktopResizeActive || compactSurfaceResizeSession) return;
+        if ((dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) return;
+        if (shell.hasAttribute('data-compact-surface-anchor-ready')) return;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var target = getCompactSurfaceTarget(layoutOverride);
+        if (!target) {
+            shell.removeAttribute('data-compact-surface-anchor-ready');
+            return;
+        }
+        var left = Math.round(target.left);
+        var top = Math.round(target.top);
+        var width = Math.round(target.width);
+        var height = Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT);
+        shell.style.setProperty('--compact-surface-left', left + 'px');
+        shell.style.setProperty('--compact-surface-top', top + 'px');
+        shell.style.setProperty('--compact-surface-width', width + 'px');
+        shell.style.setProperty('--compact-surface-height', height + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', left + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', top + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', width + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', height + 'px');
+        if (isElectronChatWindow() || (layoutOverride && layoutOverride.surface)) {
+            shell.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            shell.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            shell.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            shell.style.setProperty('--desktop-compact-surface-height', height + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-left', left + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-top', top + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-width', width + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-height', height + 'px');
+        }
+        if (layoutOverride && layoutOverride.workArea) {
+            document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
+            document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
+        }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
     }
 
     function getCurrentCompactSurfaceRect() {
@@ -795,11 +1207,14 @@
                 ? (currentRect.left + currentRect.width) - minLeft
                 : maxRight - currentRect.left;
         }
+        var minWidth = isMobileWidth()
+            ? getCompactSurfaceMobileWidthBounds().minWidth
+            : COMPACT_SURFACE_DESKTOP_MIN_WIDTH;
         var maxWidth = Math.max(
-            COMPACT_SURFACE_MAX_WIDTH,
-            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, sideMax)
+            minWidth,
+            Math.min(getCompactSurfaceResizeMaxWidth(), sideMax)
         );
-        return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+        return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
     }
 
     function applyCompactSurfaceResizeRequest(detail) {
@@ -811,6 +1226,14 @@
             if (phase === 'end') {
                 compactSurfaceResizeSession = null;
             }
+            window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+                detail: {
+                    screenRect: detail.screenRect,
+                    resizeActive: phase !== 'end',
+                    dragging: false,
+                    reason: phase === 'end' ? 'resize-end' : 'resize'
+                }
+            }));
             return;
         }
         var currentRect = getCurrentCompactSurfaceRect();
@@ -994,6 +1417,24 @@
         };
     }
 
+    function getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, surfaceRect) {
+        var mirror = normalizeCompactDomRect(mirrorRect);
+        var surface = normalizeCompactDomRect(surfaceRect);
+        if (!mirror) return null;
+        if (!surface) return mirror;
+        var horizontalPad = Math.ceil(mirror.width / 2);
+        var left = Math.round(surface.left - horizontalPad);
+        var right = Math.round(surface.right + horizontalPad);
+        var top = Math.round(Math.min(mirror.top, surface.top));
+        var bottom = Math.round(Math.max(mirror.bottom, surface.top));
+        return normalizeCompactDomRect({
+            left: left,
+            top: top,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top)
+        });
+    }
+
     function intersectCompactRects(a, b) {
         var leftRect = normalizeCompactDomRect(a);
         var rightRect = normalizeCompactDomRect(b);
@@ -1018,7 +1459,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle' && item !== 'resizeHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle' && item !== 'cat1Mirror') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -1055,8 +1496,22 @@
         var scrollNode = element.querySelector('.compact-export-history-scroll');
         if (!scrollNode || typeof scrollNode.getBoundingClientRect !== 'function') return null;
         if (scrollNode.scrollHeight <= scrollNode.clientHeight + 1) return null;
+        if (scrollNode.getAttribute('data-compact-scrollbar-visible') !== 'true') return null;
         var style = window.getComputedStyle ? window.getComputedStyle(scrollNode) : null;
-        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+        var scrollbarHit = element.querySelector('.compact-export-history-scrollbar-hit');
+        if (scrollbarHit && typeof scrollbarHit.getBoundingClientRect === 'function') {
+            var hitStyle = window.getComputedStyle ? window.getComputedStyle(scrollbarHit) : null;
+            if (hitStyle && hitStyle.pointerEvents === 'none') return null;
+            if (!hitStyle || (
+                hitStyle.display !== 'none'
+                && hitStyle.visibility !== 'hidden'
+                && hitStyle.pointerEvents !== 'none'
+            )) {
+                var hitRect = intersectCompactRects(scrollbarHit.getBoundingClientRect(), parentRect);
+                if (hitRect) return hitRect;
+            }
+        }
         var scrollRect = intersectCompactRects(scrollNode.getBoundingClientRect(), parentRect);
         if (!scrollRect) return null;
         var gutterWidth = Math.min(Math.max(Number(scrollNode.offsetWidth - scrollNode.clientWidth) || 0, 8), 14);
@@ -1071,6 +1526,8 @@
     }
 
     var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;
 
     function readCompactToolFanPixelVar(style, name, fallback) {
         var rawValue = style ? style.getPropertyValue(name) : '';
@@ -1108,13 +1565,42 @@
         return slices;
     }
 
+    function expandCompactRect(rect, expandX, expandTop, expandBottom) {
+        if (!rect) return null;
+        var left = rect.left - expandX;
+        var top = rect.top - expandTop;
+        var right = rect.right + expandX;
+        var bottom = rect.bottom + expandBottom;
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function buildCompactAvatarToolChoiceHitRect(rect) {
+        return expandCompactRect(
+            rect,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y
+        );
+    }
+
     function isCompactSurfaceBaseAnchorKind(kind) {
         return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';
     }
 
+    function isCompactSurfaceBaseHitKind(kind) {
+        return kind === 'inputControl';
+    }
+
     function getCompactSurfaceGeometryRole(kind) {
         if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
-        if (kind === 'dragHandle') return 'baseHit';
+        if (isCompactSurfaceBaseHitKind(kind)) return 'baseHit';
         return 'extraIsland';
     }
 
@@ -1122,6 +1608,14 @@
         if (!item) return item;
         item.geometryRole = getCompactSurfaceGeometryRole(item.kind);
         return item;
+    }
+
+    function getCompactGeometryItemBoundsRects(item) {
+        if (!item) return [];
+        var rects = [];
+        if (item.visualRect) rects.push(item.visualRect);
+        if (item.nativeRect) rects.push(item.nativeRect);
+        return rects;
     }
 
     function collectCompactToolFanGeometryItems(element) {
@@ -1142,26 +1636,93 @@
                 });
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
-            .map(function (child, index) {
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button, .avatar-tool-quickbar-edit'))
+            .reduce(function (collectedItems, child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
-                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
-                if (style && Number(style.opacity) <= 0.01) return null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return collectedItems;
+                if (style && Number(style.opacity) <= 0.01) return collectedItems;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
-                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
-                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
+                var isAvatarToolChoice = child.classList && (child.classList.contains('composer-icon-button') || child.classList.contains('avatar-tool-quickbar-edit'));
+                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return collectedItems;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
-                if (!rect) return null;
-                return {
+                if (!rect) return collectedItems;
+                var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;
+                if (!hitRect) return collectedItems;
+                var itemId = isAvatarToolChoice
+                    ? 'toolFan:avatarToolChoice:' + index
+                    : 'toolFan:' + slot + ':' + index;
+                collectedItems.push({
                     id: isAvatarToolChoice
                         ? 'toolFan:avatarToolChoice:' + index
                         : 'toolFan:' + slot + ':' + index,
                     owner: 'surface',
                     kind: 'toolFan',
                     visualRect: rect,
-                    hitRect: rect,
-                    nativeRect: rect,
+                    hitRect: hitRect,
+                    nativeRect: hitRect,
                     interactive: true
+                });
+                var tooltip = child.querySelector && child.querySelector('.compact-input-tool-tooltip');
+                if (!tooltip) return collectedItems;
+                var tooltipStyle = window.getComputedStyle ? window.getComputedStyle(tooltip) : null;
+                if (tooltipStyle && (tooltipStyle.display === 'none' || tooltipStyle.visibility === 'hidden')) return collectedItems;
+                if (tooltipStyle && Number(tooltipStyle.opacity) <= 0.01) return collectedItems;
+                var tooltipRect = normalizeCompactDomRect(tooltip.getBoundingClientRect());
+                if (!tooltipRect) return collectedItems;
+                collectedItems.push({
+                    id: itemId + ':tooltip',
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: tooltipRect,
+                    hitRect: null,
+                    nativeRect: tooltipRect,
+                    interactive: false
+                });
+                return collectedItems;
+            }, []));
+    }
+
+    function collectCompactInputSurfaceGeometryItems(element) {
+        var parentRect = getCompactGeometryElementRect(element);
+        var inputSurfaceIsDragSurface = element.getAttribute('data-compact-drag-surface') === 'true';
+        var items = [];
+        if (parentRect) {
+            items.push({
+                id: element.id || 'input:surface',
+                owner: 'surface',
+                kind: 'input',
+                visualRect: parentRect,
+                hitRect: inputSurfaceIsDragSurface ? parentRect : null,
+                nativeRect: inputSurfaceIsDragSurface ? parentRect : null,
+                interactive: inputSurfaceIsDragSurface
+            });
+        }
+        var hitRegionElements = [];
+        if (element.getAttribute('data-compact-hit-region') === 'true') {
+            hitRegionElements.push(element);
+        }
+        hitRegionElements = hitRegionElements.concat(
+            Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+        );
+        return items.concat(hitRegionElements
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                if (style && style.pointerEvents === 'none') return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                if (!clippedRect) return null;
+                return {
+                    id: child.getAttribute('data-compact-hit-region-id') || ('input:hit:' + index),
+                    owner: 'surface',
+                    kind: 'inputControl',
+                    visualRect: clippedRect,
+                    hitRect: clippedRect,
+                    nativeRect: clippedRect,
+                    interactive: true,
+                    hitRegionKind: child.getAttribute('data-compact-hit-region-kind') || null
                 };
             })
             .filter(Boolean));
@@ -1189,7 +1750,7 @@
                         kind: kind || 'unknown',
                         visualRect: scrollbarRect,
                         hitRect: scrollbarRect,
-                        nativeRect: null,
+                        nativeRect: scrollbarRect,
                         interactive: true,
                         hitRegionKind: 'scrollbar'
                     });
@@ -1203,7 +1764,9 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                var clippedRect = kind === 'musicPlayer'
+                    ? rect
+                    : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
                 var interactive = style ? style.pointerEvents !== 'none' : true;
                 if (!interactive) return null;
@@ -1214,7 +1777,7 @@
                     kind: kind || 'unknown',
                     visualRect: clippedRect,
                     hitRect: clippedRect,
-                    nativeRect: kind === 'history' ? null : clippedRect,
+                    nativeRect: clippedRect,
                     interactive: true,
                     hitRegionKind: hitRegionKind
                 };
@@ -1238,20 +1801,55 @@
                 kind: 'surfaceShell',
                 visualRect: shellRect,
                 hitRect: null,
-                nativeRect: shellRect,
+                nativeRect: null,
                 interactive: false
             });
         }
         return elements.reduce(function (items, element) {
+            if (element.classList.contains('avatar-tool-manager-dialog')) {
+                var dialogRect = getCompactGeometryElementRect(element);
+                if (dialogRect) {
+                    items.push({
+                        id: 'avatarToolManagerDialog',
+                        owner: 'surface',
+                        kind: 'avatarToolManager',
+                        visualRect: dialogRect,
+                        hitRect: dialogRect,
+                        nativeRect: dialogRect,
+                        interactive: true
+                    });
+                }
+                return items;
+            }
             if (
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('neko-idle-cat1-compact-mirror')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (compactGeometryItem === 'input') {
+                return items.concat(collectCompactInputSurfaceGeometryItems(element));
+            }
+            if (compactGeometryItem === 'cat1Mirror') {
+                var mirrorRect = getCompactGeometryElementRect(element);
+                var mirrorNativeRect = getIdleCat1CompactMirrorNativeReserveRect(mirrorRect, shellRect);
+                if (mirrorRect) {
+                    items.push({
+                        id: 'cat1Mirror:native',
+                        owner: 'surface',
+                        kind: 'cat1Mirror',
+                        visualRect: mirrorRect,
+                        hitRect: null,
+                        nativeRect: mirrorNativeRect || mirrorRect,
+                        interactive: false
+                    });
+                }
+                return items;
             }
             if (element.getAttribute('data-compact-geometry-hit-scope') === 'children') {
                 return items.concat(collectCompactCompositeGeometryItems(element, compactGeometryItem));
@@ -1281,11 +1879,18 @@
         var extraIslandItems = surfaceItems.filter(function (item) {
             return item && item.geometryRole === 'extraIsland';
         });
-        var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
-        var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.nativeRect; });
-        var ballRect = isCompactHomeMinimizeBallEnabled() && !isElectronCompactExternalBallEnabled()
-            ? normalizeCompactDomRect(getCompactMinimizeBallTarget())
-            : null;
+        var baseSurfaceNativeItems = surfaceItems.filter(function (item) {
+            return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit');
+        });
+        var surfaceRects = surfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
+        var baseSurfaceRects = baseSurfaceItems.reduce(function (rects, item) {
+            return rects.concat(getCompactGeometryItemBoundsRects(item));
+        }, []);
+        // compact 态不再渲染模型旁的悬浮最小化球，故不再上报其 hit/native 区域，
+        // 避免 Electron 桌面壳为一个不可见的球保留点击区域（externalBall 仍走桌面外部球）。
+        var ballRect = null;
         return {
             mode: getCurrentChatSurfaceMode(),
             compactChatState: getCurrentCompactChatState(),
@@ -1297,9 +1902,8 @@
             surfaceUnion: unionCompactRects(surfaceRects),
             baseSurfaceItems: baseSurfaceItems,
             baseSurfaceRect: unionCompactRects(baseSurfaceRects),
-            baseSurfaceNativeRects: baseSurfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
-            baseSurfaceHitRects: surfaceItems
-                .filter(function (item) { return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'); })
+            baseSurfaceNativeRects: baseSurfaceNativeItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            baseSurfaceHitRects: baseSurfaceNativeItems
                 .map(function (item) { return item.hitRect; })
                 .filter(Boolean),
             extraIslandItems: extraIslandItems,
@@ -1338,6 +1942,7 @@
         shell.style.removeProperty('--desktop-compact-surface-top');
         shell.style.removeProperty('--desktop-compact-surface-width');
         shell.style.removeProperty('--desktop-compact-surface-height');
+        shell.removeAttribute('data-compact-surface-anchor-ready');
         document.documentElement.style.removeProperty('--compact-surface-left');
         document.documentElement.style.removeProperty('--compact-surface-top');
         document.documentElement.style.removeProperty('--compact-surface-width');
@@ -1381,7 +1986,8 @@
             Math.round(target.left),
             Math.round(target.top),
             Math.round(target.width),
-            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
+            (!!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) ? 'dragging' : 'idle'
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -1413,6 +2019,7 @@
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         }
+        shell.setAttribute('data-compact-surface-anchor-ready', 'true');
         dispatchCompactSurfaceLayoutChange({
             left: Math.round(target.left),
             top: Math.round(target.top),
@@ -1422,47 +2029,12 @@
         syncCompactInteractionGeometry();
     }
 
-    function clearCompactMinimizeBallAnchor() {
-        var shell = getShell();
-        if (!shell) return;
-        shell.style.removeProperty('--compact-minimize-ball-left');
-        shell.style.removeProperty('--compact-minimize-ball-top');
-        compactMinimizeBallSnapshot = '';
-        syncCompactInteractionGeometry();
-    }
-
-    function syncCompactMinimizeBallAnchor() {
-        var shell = getShell();
-        if (!shell) return;
-        if (!isCompactHomeMinimizeBallEnabled()) {
-            clearCompactMinimizeBallAnchor();
-            return;
-        }
-
-        var placement = getCompactMinimizeBallTarget();
-        if (!placement) {
-            clearCompactMinimizeBallAnchor();
-            return;
-        }
-
-        var snapshot = Math.round(placement.left) + ':' + Math.round(placement.top);
-        if (snapshot === compactMinimizeBallSnapshot) {
-            return;
-        }
-
-        compactMinimizeBallSnapshot = snapshot;
-        shell.style.setProperty('--compact-minimize-ball-left', Math.round(placement.left) + 'px');
-        shell.style.setProperty('--compact-minimize-ball-top', Math.round(placement.top) + 'px');
-        syncCompactInteractionGeometry();
-    }
-
     function stopCompactMinimizeBallTracking() {
         if (compactMinimizeBallFrame) {
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
         compactSurfacePendingModelOpen = false;
-        clearCompactMinimizeBallAnchor();
         clearCompactSurfaceAnchor();
     }
 
@@ -1482,13 +2054,11 @@
                 return;
             }
             syncCompactSurfaceAnchor();
-            syncCompactMinimizeBallAnchor();
             syncCompactInteractionGeometry();
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
         syncCompactSurfaceAnchor();
-        syncCompactMinimizeBallAnchor();
         syncCompactInteractionGeometry();
         compactMinimizeBallFrame = window.requestAnimationFrame(loop);
     }
@@ -1572,6 +2142,29 @@
         }
     }
 
+    // Web 宿主下用鼠标拖拽 surface 本体后，浏览器仍会在 mouseup 落点补发一次
+    // click（mousedown 的 preventDefault 不取消 click）。落点若是胶囊按钮会被误判为
+    // 点击而展开输入框。拖拽真正移动过(moved)时 arm 此守卫，吞掉紧随其后的那一次
+    // click。click 与 mouseup 同任务同步派发，setTimeout(…,0) 必在其后清旗，既兜底
+    // 「落点无 click」也不会误吞之后无关的点击。touch 路径已在 touchstart
+    // preventDefault 阶段抑制了合成 click，不经此守卫。
+    function armDragReleaseClickGuard() {
+        suppressDragReleaseClick = true;
+        window.setTimeout(function () {
+            suppressDragReleaseClick = false;
+        }, 0);
+    }
+
+    function consumeDragReleaseClickGuard(event) {
+        if (!suppressDragReleaseClick) return;
+        suppressDragReleaseClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    }
+
     function getOverlay() {
         return $('react-chat-window-overlay');
     }
@@ -1587,8 +2180,9 @@
     function isYuiGuideDragLocked() {
         var body = document.body;
         if (!body) return false;
-        return body.classList.contains('yui-guide-home-driver-hidden')
+        return body.classList.contains('yui-guide-home-ui-suppressed')
             || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-standalone-input-shield-active')
             || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
@@ -1818,7 +2412,8 @@
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
             galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
-            composerDisabled: !!state.homeTutorialInteractionLocked
+            composerDisabled: !!state.homeTutorialInteractionLocked,
+            compactInputLocked: !!state.homeTutorialInputLocked
         };
     }
 
@@ -1829,6 +2424,21 @@
         return state.viewProps;
     }
 
+    function createTutorialChatRequest(payload) {
+        tutorialChatRequestSeq += 1;
+        return Object.assign({
+            id: 'tutorial-chat-' + Date.now() + '-' + tutorialChatRequestSeq
+        }, payload || {});
+    }
+
+    function setTutorialChatRequest(propName, payload) {
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            [propName]: createTutorialChatRequest(payload)
+        });
+        renderWindow();
+        return true;
+    }
+
     function cloneMessage(message) {
         if (!message || typeof message !== 'object') return null;
         return {
@@ -1837,7 +2447,9 @@
             author: message.author,
             time: message.time,
             createdAt: message.createdAt,
+            turnId: message.turnId,
             avatarLabel: message.avatarLabel,
+            baseAvatarUrl: message.baseAvatarUrl || message.avatarUrl,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
                 if (!block || typeof block !== 'object') return null;
@@ -1890,19 +2502,48 @@
             }
         }
 
+        var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl;
         return {
             id: String(message.id),
             role: message.role || 'assistant',
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
             createdAt: createdAt,
+            turnId: message.turnId ? String(message.turnId) : undefined,
             avatarLabel: message.avatarLabel,
-            avatarUrl: message.avatarUrl,
+            baseAvatarUrl: baseAvatarUrl,
+            avatarUrl: resolveCurrentAssistantAvatarUrl(message.role, baseAvatarUrl),
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
             actions: Array.isArray(message.actions) ? message.actions : undefined,
             status: message.status,
             sortKey: typeof message.sortKey === 'number' ? message.sortKey : fallbackSortKey
         };
+    }
+
+    function resolveCurrentAssistantAvatarUrl(role, baseAvatarUrl) {
+        if (role !== 'assistant') return baseAvatarUrl || undefined;
+        try {
+            if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                return window.appChatAvatar.getCurrentAvatarDataUrl() || baseAvatarUrl || undefined;
+            }
+        } catch (_) {}
+        return baseAvatarUrl || undefined;
+    }
+
+    function refreshAssistantAvatarUrls(event) {
+        var changed = false;
+        state.messages = state.messages.map(function (message) {
+            if (!message || message.role !== 'assistant') return message;
+            var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl || '';
+            var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant', baseAvatarUrl);
+            if (message.avatarUrl === avatarUrl && message.baseAvatarUrl === baseAvatarUrl) return message;
+            changed = true;
+            return Object.assign({}, message, {
+                baseAvatarUrl: baseAvatarUrl,
+                avatarUrl: avatarUrl
+            });
+        });
+        if (changed) renderWindow();
     }
 
     function sortMessages(messages) {
@@ -1924,20 +2565,19 @@
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
-            composerHidden: state.composerHidden,
+            composerHidden: getEffectiveComposerHidden(),
             chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactMinimizeCancelSeq: compactMinimizeCancelSeq,
             compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
-            choicePrompt: state.choicePrompt || null,
+            choicePrompt: getRevealedChoicePrompt(),
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
-            onCompactHistoryDrop: handleCompactHistoryDrop,
-            onCompactHistoryDragStateChange: handleCompactHistoryDragStateChange,
             onAvatarInteraction: handleAvatarInteraction,
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
@@ -1947,7 +2587,11 @@
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
             onChoiceSelect: handleChoiceSelect,
-            onCompactChatStateChange: handleCompactChatStateChange
+            onCompactChatStateChange: handleCompactChatStateChange,
+            onCompactMinimizeRequest: handleCompactMinimizeRequest,
+            compactToolWheelRotateRequest: state.viewProps.compactToolWheelRotateRequest || null,
+            compactToolWheelIndexRequest: state.viewProps.compactToolWheelIndexRequest || null,
+            compactHistoryOpenRequest: state.viewProps.compactHistoryOpenRequest || null
         });
     }
 
@@ -2177,6 +2821,20 @@
         }
     }
 
+    // full 专属位置恢复（桌面）：有用户拖/缩后记住的位置就还原过去，否则保持 base
+    // CSS 的居中（top/left:50% + translate）。绝不退回 restorePosition() 的
+    // positionWindowAtLeftMiddle() —— 那会把完整窗口甩到屏幕左中。
+    function restoreFullPosition() {
+        if (isMobileWidth()) return;
+        var shell = getShell();
+        if (!shell) return;
+        var stored = getStoredPosition();
+        if (!stored) return; // 无记忆位置 → 维持 CSS 居中
+        restoreSize();
+        applyPosition(stored.left, stored.top);
+        rememberExpandedShellPosition(stored.left, stored.top);
+    }
+
     function mountWindow() {
         var root = getRoot();
         if (!root) return false;
@@ -2193,6 +2851,9 @@
     function renderWindow() {
         var overlay = getOverlay();
         if (!overlay || overlay.hidden) return;
+        if (!mounted && getCurrentChatSurfaceMode() === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         mountWindow();
         scheduleMobileContentLayout();
     }
@@ -2219,7 +2880,12 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked) {
+        if (
+            state.homeTutorialInteractionLocked
+            || state.homeTutorialInputLocked
+            || isHomeTutorialInteractionLocked()
+            || getEffectiveComposerHidden()
+        ) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -2256,6 +2922,33 @@
         }
         state.rollbackDraft = '';
 
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') {
+            var prompt = state.choicePrompt;
+            var icebreakerDetail = {
+                sessionId: prompt.sessionId || '',
+                text: detail.text,
+                requestId: detail.requestId
+            };
+            state.choicePrompt = null;
+            delete state.pendingRollbackDrafts[detail.requestId];
+            renderWindow();
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', { detail: icebreakerDetail }));
+            dispatchHostEvent('icebreaker-free-text-submit', icebreakerDetail);
+            try {
+                var interpage = window.appInterpage;
+                if (interpage && typeof interpage.postIcebreakerFreeTextSubmitted === 'function') {
+                    interpage.postIcebreakerFreeTextSubmitted({
+                        sessionId: icebreakerDetail.sessionId,
+                        text: icebreakerDetail.text,
+                        requestId: icebreakerDetail.requestId
+                    });
+                }
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] free text broadcast failed:', error);
+            }
+            return;
+        }
+
         if (typeof state.onComposerSubmit === 'function') {
             try {
                 state.onComposerSubmit(detail);
@@ -2276,31 +2969,6 @@
         }
 
         dispatchHostEvent('submit', detail);
-    }
-
-    function handleCompactHistoryDrop(payload) {
-        var detail = payload || {};
-
-        if (typeof state.onCompactHistoryDrop === 'function') {
-            try {
-                return state.onCompactHistoryDrop(detail);
-            } catch (error) {
-                console.error('[ReactChatWindow] onCompactHistoryDrop failed:', error);
-                return false;
-            }
-        }
-        if (window.appButtons && typeof window.appButtons.sendCompactHistoryDropPayload === 'function') {
-            return window.appButtons.sendCompactHistoryDropPayload(detail);
-        }
-        if ((!detail.images || !detail.images.length) && typeof detail.text === 'string' && detail.text.trim()) {
-            handleComposerSubmit({
-                text: detail.text,
-                requestId: detail.requestId
-            });
-            return true;
-        }
-        console.warn('[ReactChatWindow] no compact history drop handler available');
-        return false;
     }
 
     function prepareCompactHistoryDropSubmit(payload) {
@@ -2326,21 +2994,6 @@
         }
         state.rollbackDraft = '';
         return true;
-    }
-
-    function handleCompactHistoryDragStateChange(payload) {
-        var detail = payload || {};
-
-        if (typeof state.onCompactHistoryDragStateChange === 'function') {
-            try {
-                state.onCompactHistoryDragStateChange(detail);
-            } catch (error) {
-                console.error('[ReactChatWindow] onCompactHistoryDragStateChange failed:', error);
-            }
-        }
-
-        dispatchHostEvent('compact-history-drag-state-change', detail);
-        window.dispatchEvent(new CustomEvent('neko:compact-history-drag-state-change', { detail: detail }));
     }
 
     function handleAvatarInteraction(payload) {
@@ -2566,6 +3219,87 @@
         }
     }
 
+    function syncSubtitleWindowFromTranslateToggle(enabled) {
+        var subtitleWindow = window.nekoSubtitleWindow;
+        if (!subtitleWindow) return;
+        try {
+            if (typeof subtitleWindow.setEnabled === 'function') {
+                subtitleWindow.setEnabled(!!enabled);
+            } else if (enabled && typeof subtitleWindow.show === 'function') {
+                subtitleWindow.show();
+            } else if (!enabled && typeof subtitleWindow.hide === 'function') {
+                subtitleWindow.hide();
+            }
+        } catch (error) {
+            console.warn('[ReactChatWindow] subtitle window visibility sync failed:', error);
+        }
+    }
+
+    function setTranslateEnabled(enabled, options) {
+        var requestOptions = options || {};
+        var next = !!enabled;
+        var shouldPersist = requestOptions.persist !== false;
+        var syncSource = requestOptions.source || 'react-chat-host-set-enabled';
+        if (requestOptions.syncBridge !== false) {
+            try {
+                var bridge = window.subtitleBridge;
+                if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                    bridge.setSubtitleEnabled(next, {
+                        persist: shouldPersist,
+                        source: syncSource
+                    });
+                } else {
+                    throw new Error('subtitleBridge.setSubtitleEnabled unavailable');
+                }
+            } catch (err) {
+                console.warn('[ReactChatWindow] bridge set enabled failed, using fallback:', err);
+                var appSt = window.appState;
+                var subtitleStore = window.nekoSubtitleShared;
+                if (appSt) appSt.subtitleEnabled = next;
+                var synced = false;
+                if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
+                    try {
+                        subtitleStore.updateSettings({
+                            subtitleEnabled: next
+                        }, {
+                            persist: shouldPersist,
+                            source: syncSource
+                        });
+                        synced = true;
+                    } catch (storeErr) {
+                        console.warn('[ReactChatWindow] subtitle shared update failed:', storeErr);
+                    }
+                }
+                if (!synced && shouldPersist) {
+                    try {
+                        localStorage.setItem('subtitleEnabled', String(next));
+                    } catch (storageErr) {
+                        console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:', storageErr);
+                    }
+                }
+            }
+        }
+
+        if (shouldPersist
+            && window.appSettings
+            && typeof window.appSettings.saveSettings === 'function') {
+            try {
+                window.appSettings.saveSettings();
+            } catch (saveErr) {
+                console.warn('[ReactChatWindow] appSettings.saveSettings failed:', saveErr);
+            }
+        }
+
+        state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
+        renderWindow();
+
+        if (requestOptions.suppressHostEvent !== true) {
+            dispatchHostEvent('translate-toggle', { enabled: next });
+        }
+        return next;
+    }
+
     function handleTranslateToggle() {
         var bridge = window.subtitleBridge;
         var next;
@@ -2585,9 +3319,14 @@
             var subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
                 ? subtitleStore.getSettings()
                 : null;
-            var current = (appSt && typeof appSt.subtitleEnabled !== 'undefined')
-                ? appSt.subtitleEnabled
-                : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'));
+            var viewProps = ensureViewProps();
+            var current = (viewProps && typeof viewProps.translateEnabled !== 'undefined')
+                ? !!viewProps.translateEnabled
+                : (
+                    appSt && typeof appSt.subtitleEnabled !== 'undefined'
+                        ? !!appSt.subtitleEnabled
+                        : (subtitleState ? !!subtitleState.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true'))
+                );
             next = !current;
             if (appSt) appSt.subtitleEnabled = next;
             if (subtitleStore && typeof subtitleStore.updateSettings === 'function') {
@@ -2606,9 +3345,47 @@
 
         // Update React prop to reflect new state
         state.viewProps = Object.assign({}, ensureViewProps(), { translateEnabled: next });
+        syncSubtitleWindowFromTranslateToggle(next);
         renderWindow();
 
         dispatchHostEvent('translate-toggle', { enabled: next });
+    }
+
+    function syncTranslateEnabledFromSubtitleState(enabled) {
+        var next = !!enabled;
+        var props = ensureViewProps();
+        if (props.translateEnabled === next) {
+            return;
+        }
+        state.viewProps = Object.assign({}, props, { translateEnabled: next });
+        renderWindow();
+    }
+
+    function handleSubtitleSettingsChange(event) {
+        var detail = event && event.detail ? event.detail : {};
+        var changedKeys = Array.isArray(detail.changedKeys) ? detail.changedKeys : [];
+        if (changedKeys.length && changedKeys.indexOf('subtitleEnabled') === -1) {
+            return;
+        }
+        if (!detail.state || typeof detail.state.subtitleEnabled === 'undefined') {
+            return;
+        }
+        syncTranslateEnabledFromSubtitleState(detail.state.subtitleEnabled);
+    }
+
+    function bindSubtitleSettingsSync() {
+        var subtitleStore = window.nekoSubtitleShared;
+        if (subtitleStore && typeof subtitleStore.subscribeSettings === 'function') {
+            subtitleStore.subscribeSettings(function(stateValue, detail) {
+                var syncDetail = detail || {};
+                if (!syncDetail.state) {
+                    syncDetail = Object.assign({}, syncDetail, { state: stateValue });
+                }
+                handleSubtitleSettingsChange({ detail: syncDetail });
+            });
+            return;
+        }
+        window.addEventListener('neko-subtitle-settings-change', handleSubtitleSettingsChange);
     }
 
     // ============================ GalGame mode ============================
@@ -2768,6 +3545,12 @@
     function fetchGalgameOptionsForLatestTurn() {
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
+        // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
+        // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
+        // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
+        // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
+        // 此时并不覆盖它，故须单独按 choicePrompt 拦。
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
@@ -2878,7 +3661,7 @@
     }
 
     function handleGalgameOptionSelect(option) {
-        if (isHomeTutorialInteractionLocked()) return;
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (!option || typeof option.text !== 'string') return;
         var text = option.text.trim();
         if (!text) return;
@@ -2899,14 +3682,46 @@
         dispatchHostEvent('galgame-option-select', detail);
     }
 
-    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // ---- 通用 ChoicePrompt：mini-game invite / new-user icebreaker ----
     // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
     // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
-    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+    // 直接 callback；这里只是 BC 兜底）。
 
     function handleChoiceSelect(option, source) {
-        if (isHomeTutorialInteractionLocked()) return;
         if (!option || typeof option.choice !== 'string') return;
+        if (source === 'new_user_icebreaker') {
+            var prompt = state.choicePrompt;
+            if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+            var detail = {
+                sessionId: option.sessionId || prompt.sessionId || '',
+                gameType: prompt.gameType || 'new_user_icebreaker',
+                choice: option.choice,
+                label: option.label || '',
+                option: option
+            };
+            state.choicePrompt = null;
+            renderWindow();
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: detail
+            }));
+            dispatchHostEvent('icebreaker-choice-selected', detail);
+            try {
+                var interpage = window.appInterpage;
+                if (interpage && typeof interpage.postIcebreakerChoiceSelected === 'function') {
+                    interpage.postIcebreakerChoiceSelected({
+                        sessionId: detail.sessionId,
+                        gameType: detail.gameType,
+                        choice: detail.choice,
+                        label: detail.label,
+                        option: option
+                    });
+                }
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] choice broadcast failed:', error);
+            }
+            return;
+        }
+        if (isHomeTutorialInteractionLocked() || getEffectiveComposerHidden()) return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
             if (typeof option.text === 'string') {
@@ -2921,7 +3736,84 @@
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
-        setCompactChatState(nextCompactChatState);
+        var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
+            return;
+        }
+        setCompactChatState(normalized);
+    }
+
+    // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
+    // 走 setChatSurfaceMode('minimized')（既有的 setMinimized + 位置持久化 + chat-surface-mode-change
+    // 派发都在其中）；不用 toggleMinimized——毛绒球只在非 minimized 态出现，语义恒为「收起」。
+    //
+    // 说明：曾尝试「在 compact 态把 root 原位慢速淡出 + 提前异步显示独立球」做收起 overlap，但
+    // (a) 淡出期间 compact 仍可交互/未冻结，提前显示的球与 relayout/hit-test/moveTop 互相打架 →
+    //     球在光标下抖、cursor 在箭头/手之间闪；
+    // (b) 给 root 设 inline opacity:0 做淡出，频繁点击时 setMinimized 因状态 desync 提前 return、
+    //     跳过 opacity 复位 → root 卡在 0 = 输入框隐身。
+    // 这套机制竞态太重，已回退。现仅保留一个安全增强：给按下的毛绒球补「按下挤压」动画（CSS），
+    // 留一个短延时让挤压动画露出来再瞬时折叠（折叠本体走原有 PRE_COLLAPSE_DIM 瞬时路径，零竞态）。
+    // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
+    var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
+    var compactMinimizePressTimer = 0;
+    var compactMinimizeCancelSeq = 0; // 折叠取消序号（见 clearCompactMinimizePressTimer），传给 React
+    var compactMinimizeBallTargetAnchor = null;
+    // 清掉挂起的「按下挤压→瞬时折叠」延时。窗口关闭/动画取消时必须调用，否则这个
+    // 跨 280ms 存活的回调会在窗口已关闭/重开后仍 setChatSurfaceMode('minimized')，
+    // 把更新后的状态覆盖成「幽灵最小化」（CodeRabbit Minor / Codex P2）。
+    function clearCompactMinimizePressTimer() {
+        if (!compactMinimizePressTimer) return;
+        window.clearTimeout(compactMinimizePressTimer);
+        compactMinimizePressTimer = 0;
+        compactMinimizeBallTargetAnchor = null;
+        // 真清掉一个 pending 折叠延时 = 一次进行中的折叠被取消（如 280ms 内 closeWindow）。
+        // 递增序号；buildRenderProps 把它当 prop 传给 React，让组件在重开时立即复位
+        // compactCollapsing，而不必等 600ms 兜底——否则快速「关→重开」会让 compact 表面带着擦除
+        // mask 的不可见末态 + 历史区临时关闭重新出现（Codex P2）。
+        compactMinimizeCancelSeq += 1;
+        pendingChatSurfaceMode = null;
+    }
+    function handleCompactMinimizeRequest() {
+        if (isMinimizeTransitioning) return;
+        rememberCompactMinimizeBallTargetAnchor();
+        // reduced-motion：折叠擦除/按压挤压动画已被 CSS（@media prefers-reduced-motion: reduce）
+        // 禁用，此时再延时 COMPACT_MINIMIZE_PRESS_MS(280ms) 才折叠，只会让窗口「点了没反应」一段，
+        // 无任何动画反馈。无障碍模式下直接立即折叠，保持即时响应（Codex P2）。
+        var reduceMotion = false;
+        try {
+            reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (e) {}
+        if (reduceMotion) {
+            setChatSurfaceMode('minimized');
+            return;
+        }
+        // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
+        try {
+            var pressIcons = document.querySelectorAll('.compact-chat-minimize-ball-icon');
+            for (var pi = 0; pi < pressIcons.length; pi++) {
+                var pressIcon = pressIcons[pi];
+                pressIcon.classList.remove('neko-minimize-ball-pressing');
+                void pressIcon.offsetWidth;
+                pressIcon.classList.add('neko-minimize-ball-pressing');
+            }
+        } catch (e) {}
+        // 防重入：擦除途中再次点最小化忽略。
+        if (compactMinimizePressTimer) return;
+        // #1 折叠方向性擦除（右→左收）由 App.tsx 的 compactCollapsing state 驱动 className 实现
+        //    （onClick 里已 setCompactCollapsing(true)）—— 不再在此用 classList 加类（会被 React 重渲染覆盖）。
+        // web 与 Electron 统一走这条 = 擦除时长的延时再瞬时折叠：web 若同步 setChatSurfaceMode
+        // ('minimized') 会在下一帧前就让 isCompactSurface=false、卸载 .compact-chat-surface-shell，
+        // 新加的 neko-compact-collapsing 擦除遮罩与蓝条淡出根本来不及渲染（Codex P2）。
+        compactMinimizePressTimer = window.setTimeout(function () {
+            compactMinimizePressTimer = 0;
+            // 守卫：擦除期间宿主可能把 surface mode 切走（关闭/重开经
+            // closeWindow→cancelActiveAnimation 清掉本 timer；或经公开 API setChatSurfaceMode
+            // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
+            // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
+            if (getCurrentChatSurfaceMode() !== 'compact') return;
+            setChatSurfaceMode('minimized');
+        }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
     function handleMiniGameInviteChoice(option) {
@@ -3099,6 +3991,102 @@
         renderWindow();
     }
 
+    var choicePromptRevealTimer = null;
+
+    // icebreaker choicePrompt 的「视觉揭示」延迟：state.choicePrompt 一旦设置就立刻生效
+    // （handleComposerSubmit 据此把间隙内的自由文本判为 icebreaker free-text 而非普通
+    // 聊天），但带 revealAt 时，按钮要等到该时刻才传给 React 组件（见 getRevealedChoicePrompt
+    // + buildRenderProps）。延迟只藏按钮、不扣状态，这样既保留「选项晚于台词露出」的观感，
+    // 又不会重新打开间隙内输入落到普通聊天的窗口。
+    function scheduleChoicePromptReveal() {
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        var prompt = state.choicePrompt;
+        if (!prompt || !prompt.revealAt) return;
+        var remaining = prompt.revealAt - Date.now();
+        if (remaining <= 0) {
+            prompt.revealAt = 0;
+            return;
+        }
+        choicePromptRevealTimer = window.setTimeout(function () {
+            choicePromptRevealTimer = null;
+            // 仅当同一个 prompt 仍在台上才揭示——期间被新 prompt 覆盖或清空则什么都不做。
+            if (state.choicePrompt === prompt) {
+                prompt.revealAt = 0;
+                renderWindow();
+            }
+        }, remaining);
+    }
+
+    // 渲染层取用的 choicePrompt：揭示时刻未到的 icebreaker prompt 先把按钮藏起来（返回
+    // null，视觉等同于尚未下发），其他 source 或已到点的照常返回。
+    function getRevealedChoicePrompt() {
+        var prompt = state.choicePrompt;
+        if (!prompt) return null;
+        if (prompt.revealAt && Date.now() < prompt.revealAt) return null;
+        return prompt;
+    }
+
+    function setNewUserIcebreakerPrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || ''),
+                sessionId: sessionId
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
+            return;
+        }
+        var revealDelayMs = Number(payload.revealDelayMs) || 0;
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || 'new_user_icebreaker'),
+            options: cleanedOptions,
+            revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0
+        };
+        invalidatePendingGalgameRequest();
+        scheduleChoicePromptReveal();
+        renderWindow();
+    }
+
+    function setChoicePrompt(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        var source = String(payload.source || '');
+        if (source === 'new_user_icebreaker') {
+            setNewUserIcebreakerPrompt(payload);
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            setMiniGameInvitePrompt(payload);
+        }
+    }
+
+    function setIcebreakerChoicePrompt(payload) {
+        setNewUserIcebreakerPrompt(payload);
+    }
+
+    function clearIcebreakerChoicePrompt(sessionId) {
+        if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return false;
+        if (sessionId && state.choicePrompt.sessionId !== String(sessionId)) return false;
+        state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        renderWindow();
+        return true;
+    }
+
     function dismissChoicePromptIfMatches(sessionId) {
         if (!sessionId) return;
         if (state.choicePrompt
@@ -3166,10 +4154,12 @@
 
     function setViewProps(nextViewProps) {
         var nextProps = nextViewProps || {};
+        var surfaceModeChanged = false;
         if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
-            var normalizedChatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+            var normalizedChatSurfaceMode = coerceChatSurfaceModeForHost(nextProps.chatSurfaceMode);
             var previousChatSurfaceMode = getCurrentChatSurfaceMode();
-            if (normalizedChatSurfaceMode !== previousChatSurfaceMode
+            surfaceModeChanged = normalizedChatSurfaceMode !== previousChatSurfaceMode;
+            if (surfaceModeChanged
                 && !Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
                 resetCompactChatState();
             }
@@ -3179,6 +4169,19 @@
                 lastRestorableChatSurfaceMode = previousChatSurfaceMode;
             }
             state.chatSurfaceMode = normalizedChatSurfaceMode;
+            if (surfaceModeChanged) {
+                // 同 setChatSurfaceMode：mode 经此公开入口变更时取消挂起的延时折叠，防 full→compact
+                // hop 内陈旧折叠回调误折叠刚恢复的表面（Codex P2）。timer 已=0 时为 no-op。
+                clearCompactMinimizePressTimer();
+                // setViewProps is a public entry point (exposed + the
+                // `set-view-props` event), so it can land a real surface change —
+                // e.g. an external `{chatSurfaceMode:'full'}`. Mirror
+                // setChatSurfaceMode and persist the restorable preference, else
+                // the switch is lost on reload (readChatSurfaceModePreference
+                // returns the stale value). persistChatSurfaceModePreference
+                // no-ops for minimized, which still restores via lastRestorable.
+                persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+            }
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
             state.compactChatState = normalizeCompactChatState(nextProps.compactChatState);
@@ -3188,6 +4191,16 @@
             compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
+        // setViewProps can now land a real surface change (e.g. compact -> the
+        // revived `full`) because normalizeChatSurfaceMode preserves all three
+        // modes. renderWindow only updates the React tree; the host shell's
+        // data-chat-surface-mode attribute — which the compact CSS rules key off —
+        // is owned by syncChatSurfaceModeUI, so sync it here too or the shell keeps
+        // the stale mode and compact chrome leaks onto the new surface. (Minimize
+        // transitions still route through setChatSurfaceMode/setMinimized.)
+        if (surfaceModeChanged) {
+            syncChatSurfaceModeUI();
+        }
         return state.viewProps;
     }
 
@@ -3238,9 +4251,12 @@
 
     function setComposerHidden(hidden) {
         var next = !!hidden;
-        var changed = state.composerHidden !== next;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
         state.composerHidden = next;
-        if (changed) {
+        var effectiveChanged = wasEffectiveHidden !== getEffectiveComposerHidden();
+        if (effectiveChanged) {
+            syncComposerAttachmentsVisibility(previousAttachmentsVisible);
             // composer 隐藏/显示切换会改变 effective galgame body class（参见
             // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
             // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
@@ -3253,16 +4269,138 @@
         renderWindow();
     }
 
+    function setGoodbyeComposerHidden(hidden, reason) {
+        var next = !!hidden;
+        var wasEffectiveHidden = getEffectiveComposerHidden();
+        var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();
+        try {
+            window.__nekoGoodbyeChatComposerHidden = {
+                hidden: next,
+                reason: reason || (next ? 'goodbye' : 'return'),
+                timestamp: Date.now()
+            };
+        } catch (_) {}
+        if (state.goodbyeComposerHidden === next) {
+            if (wasEffectiveHidden !== getEffectiveComposerHidden()) {
+                syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+                renderWindow();
+            }
+            return;
+        }
+        state.goodbyeComposerHidden = next;
+        var isEffectiveHidden = getEffectiveComposerHidden();
+        var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
+        syncComposerAttachmentsVisibility(previousAttachmentsVisible);
+        if (next) {
+            resetCompactChatState();
+            invalidatePendingGalgameRequest();
+        }
+        if (wasEffectiveHidden !== isEffectiveHidden) {
+            applyGalgameBodyClass();
+            dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
+            if (restoredEffectiveComposer && getEffectiveGalgameEnabled()) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
+        }
+        renderWindow();
+    }
+
+    function syncGoodbyeComposerHidden(reason, options) {
+        if (options && options.localOnly && !hasLocalGoodbyeModeSource()) {
+            return;
+        }
+        setGoodbyeComposerHidden(getNekoGoodbyeModeActive(), reason || 'sync');
+    }
+
+    function requestGoodbyeComposerHiddenState(reason) {
+        var resolvedReason = reason || 'react-chat-window';
+        try {
+            if (typeof window.requestGoodbyeChatComposerHiddenState === 'function') {
+                if (window.requestGoodbyeChatComposerHiddenState(resolvedReason)) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            window.dispatchEvent(new CustomEvent('neko:request-goodbye-chat-composer-hidden-state', {
+                detail: {
+                    reason: resolvedReason,
+                    timestamp: Date.now()
+                }
+            }));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function setHomeTutorialInteractionLocked(locked, reason) {
         var next = !!locked;
         if (state.homeTutorialInteractionLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInteractionLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
-            composerDisabled: next
+            compactChatState: getCurrentCompactChatState(),
+            composerDisabled: !!next
         });
         renderWindow();
+    }
+
+    function setHomeTutorialInputLocked(locked, reason) {
+        var next = locked === true;
+        if (state.homeTutorialInputLocked === next) {
+            return;
+        }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
+        state.homeTutorialInputLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: getCurrentCompactChatState(),
+            compactInputLocked: next,
+            composerDisabled: !!state.homeTutorialInteractionLocked
+        });
+        renderWindow();
+    }
+
+    function rotateCompactToolWheel(direction, stepCount, options) {
+        var normalizedDirection = direction === -1 ? -1 : 1;
+        var normalizedStepCount = Number.isFinite(stepCount)
+            ? Math.max(1, Math.min(7, Math.floor(stepCount)))
+            : 1;
+        var normalizedOptions = typeof options === 'string'
+            ? { reason: options }
+            : (options || {});
+        return setTutorialChatRequest('compactToolWheelRotateRequest', {
+            direction: normalizedDirection,
+            stepCount: normalizedStepCount,
+            reason: typeof normalizedOptions.reason === 'string' ? normalizedOptions.reason : '',
+            forceFast: normalizedOptions.forceFast !== false
+        });
+    }
+
+    function setCompactToolWheelIndex(index, reason) {
+        var normalizedIndex = Number.isFinite(index)
+            ? Math.max(0, Math.min(6, Math.floor(index)))
+            : 0;
+        return setTutorialChatRequest('compactToolWheelIndexRequest', {
+            index: normalizedIndex,
+            reason: typeof reason === 'string' ? reason : ''
+        });
+    }
+
+    function setCompactHistoryOpen(open, reason) {
+        return setTutorialChatRequest('compactHistoryOpenRequest', {
+            open: open === true,
+            reason: typeof reason === 'string' ? reason : ''
+        });
     }
 
     function deactivateToolCursor() {
@@ -3271,7 +4409,7 @@
     }
 
     function setComposerAttachments(attachments) {
-        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
+        var previousVisible = getEffectiveComposerAttachmentsVisible();
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -3282,22 +4420,28 @@
                 };
             }).filter(Boolean)
             : [];
-        var nextHas = state.composerAttachments.length > 0;
-        applyAttachmentsBodyClass(nextHas);
+        syncComposerAttachmentsVisibility(previousVisible);
         renderWindow();
-        if (prevHas !== nextHas) {
-            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
-            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
-            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
-            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
-        }
         return state.composerAttachments;
     }
 
     var MAX_MESSAGES = 50;
 
+    function getNextAppendSortKey() {
+        var maxExistingSortKey = Array.isArray(state.messages)
+            ? state.messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxExistingSortKey + 1, Date.now());
+        _sortKeySeq = nextSortKey + 1;
+        return nextSortKey;
+    }
+
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, _sortKeySeq++);
+        var normalized = normalizeMessage(message, getNextAppendSortKey());
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
@@ -3341,6 +4485,25 @@
         return changed;
     }
 
+    function isYuiGuideChatMessage(message) {
+        if (!message) return false;
+        if (typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0) return true;
+        var source = typeof message.source === 'string' ? message.source : '';
+        return source === 'yui_guide' || source === 'yui-guide-director';
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !isYuiGuideChatMessage(message);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
@@ -3364,13 +4527,18 @@
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
             composerAttachments: state.composerAttachments.slice(),
-            composerHidden: state.composerHidden
+            composerHidden: getEffectiveComposerHidden(),
+            composerHiddenRequested: state.composerHidden,
+            goodbyeComposerHidden: state.goodbyeComposerHidden
         };
     }
 
-    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
+    var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
+    var pendingChatSurfaceMode = null;
+    var pendingMinimizedSurfaceCommit = null;
 
     // ── Idle-dock: independent orchestration (Phase 4) ──────────
     // Positions the minimized ball next to CAT2/CAT3 return-ball.
@@ -3387,13 +4555,17 @@
     }
 
     function getIdleDockTarget() {
+        // The revived legacy full never docks its minimized orb to the idle cat —
+        // it collapses in place and stays put (pre-deletion behavior). Compact's
+        // CAT2/CAT3 return-cat dock is untouched.
+        if (isLegacyFullMinimizedBall()) return null;
         if (!idleDockActive || !isIdleDockTierActive()) return null;
         var container = getVisibleReturnButtonContainer();
         if (!container || typeof container.getBoundingClientRect !== 'function') return null;
         var rect = container.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
-        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2) + MINIMIZED_DOWN_OFFSET);
         return {
             left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
@@ -3407,24 +4579,8 @@
         }
     }
 
-    function stopIdleDockContainerObserver() {
-        if (idleDockContainerObserver) {
-            try { idleDockContainerObserver.disconnect(); } catch (_) {}
-            idleDockContainerObserver = null;
-        }
-    }
-
-    function cancelIdleDockSync() {
-        if (idleDockSyncFrame) {
-            window.cancelAnimationFrame(idleDockSyncFrame);
-            idleDockSyncFrame = 0;
-        }
-    }
-
     function clearIdleDockState() {
         stopIdleDockMinimizeObserver();
-        stopIdleDockContainerObserver();
-        cancelIdleDockSync();
         idleDockActive = false;
         idleDockSavedPosition = null;
         idleDockTriggeredMinimize = false;
@@ -3451,7 +4607,6 @@
         idleDockSavedPosition = { left: rect.left, top: rect.top };
         idleDockActive = true;
         applyIdleDockPosition();
-        refreshIdleDockContainerObserver();
     }
 
     function scheduleIdleDockMinimizeFallback(shell) {
@@ -3471,37 +4626,6 @@
             syncChatSurfaceModeUI();
             finishIdleDockMinimize(latestShell);
         }, 460);
-    }
-
-    function refreshIdleDockContainerObserver() {
-        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        var container = getVisibleReturnButtonContainer();
-        if (!container || typeof MutationObserver !== 'function') {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        stopIdleDockContainerObserver();
-        idleDockContainerObserver = new MutationObserver(function () {
-            scheduleIdleDockSync();
-        });
-        idleDockContainerObserver.observe(container, {
-            attributes: true,
-            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
-        });
-    }
-
-    function syncIdleDockPosition() {
-        idleDockSyncFrame = 0;
-        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
-        applyIdleDockPosition();
-    }
-
-    function scheduleIdleDockSync() {
-        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
-        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
     }
 
     function getElectronIdleDockBridge() {
@@ -3695,6 +4819,7 @@
     }
 
     async function applyElectronCat1PairMoveBounds(bounds) {
+        if (isElectronLinuxRuntime()) return;
         var targetBounds = electronRectToBounds(bounds);
         if (!targetBounds) return;
         var bridge = getElectronIdleDockBridge();
@@ -3714,6 +4839,7 @@
 
     function scheduleElectronCat1PairMoveBounds(bounds) {
         if (!isElectronChatWindow()) return;
+        if (isElectronLinuxRuntime()) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
@@ -3851,6 +4977,15 @@
     }
 
     async function enterElectronIdleDock(screenRect) {
+        // full 独立窗口（Electron part B）完全避开 idle-dock —— 与 web 路径 enterIdleDock 的
+        // full 守卫对偶：CAT2/CAT3 idle tier 不应把展开的 full 窗口自动折叠/贴猫。full 用旧版
+        // 独立窗口折叠机制（preload 物理缩窗），不参与 idle-dock。
+        if (getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
+        // 隐藏的聊天窗口不 idle-dock：full 激活时 compact 窗口被 .hide()（document.hidden=true）
+        // 仍会收到 idle 事件，若不挡会在后台折叠并 spawn 出与当前可见 surface 无关的毛线球。
+        // 正常 minimized 态用 dimReactChatForMinimize(setOpacity 0) 而非 hide，document.hidden
+        // 仍为 false，故此守卫不影响 minimized 态的 idle-dock 跟随。
+        if (typeof document !== 'undefined' && document.hidden) return;
         var bridge = getElectronIdleDockBridge();
         var targetRect = normalizeElectronRect(screenRect);
         if (!bridge || !targetRect) return;
@@ -4034,14 +5169,16 @@
         var tier = detail && detail.tier;
         var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
-            enterElectronIdleDock(detail.screenRect);
+            if (!hasElectronIdleDockPendingOrActive()) {
+                enterElectronIdleDock(detail.screenRect);
+            }
             return;
         }
         if (hasElectronIdleDockPendingOrActive()) {
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = detail && (
+            var shouldPreserveCurrentPosition = activeTier && detail && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
@@ -4056,6 +5193,11 @@
     // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
     function enterIdleDock() {
         if (isElectronChatWindow()) return;
+        // full 完全避开 idle-dock：CAT2/CAT3 视觉层级不应把展开的 full 窗口自动
+        // 最小化成球。这个检查必须在触发最小化之前，而不只在算 dock 位置时
+        // （getIdleDockTarget 的 isLegacyFullMinimizedBall 守卫只能阻止 dock 定位，
+        // 阻止不了 setChatSurfaceMode('minimized') 本身）。
+        if (getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
 
         if (minimized) {
             // Already minimized — save current position and dock immediately.
@@ -4067,7 +5209,6 @@
             idleDockActive = true;
             idleDockTriggeredMinimize = false;
             applyIdleDockPosition();
-            refreshIdleDockContainerObserver();
         } else {
             // Not minimized — trigger normal minimize, observe for completion.
             idleDockTriggeredMinimize = true;
@@ -4123,7 +5264,7 @@
             }
             savedShellSize = null;
             savedShellPosition = null;
-            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
             renderWindow();
             syncMinimizeUI();
             syncChatSurfaceModeUI();
@@ -4136,25 +5277,76 @@
         }
 
         if (wasActive && triggered && minimized) {
-            setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));
+            setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));
         }
     }
 
     // ── End idle-dock ────────────────────────────────────────────
 
-    // 返回最小化后 shell 应达到的像素几何。
-    // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
-    // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
-    // 由于 collapse/expand 动画的 transform-origin = 0% 100%（左下角），
-    // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
-    // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
-    function getMinimizedTarget(rect) {
-        var compactBallTarget = getCompactMinimizeBallTarget();
-        if (compactBallTarget) {
-            return compactBallTarget;
-        }
+    function getCompactMinimizeBallTargetRect() {
+        var root = getRoot();
+        if (!root || typeof root.querySelector !== 'function') return null;
+        var button = root.querySelector('.compact-chat-minimize-ball');
+        if (!button || typeof button.getBoundingClientRect !== 'function') return null;
+        var buttonRect = normalizeCompactDomRect(button.getBoundingClientRect());
+        if (!buttonRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: buttonRect.left + buttonRect.width / 2 - MINIMIZED_SIZE / 2,
+            top: buttonRect.top + buttonRect.height / 2 - MINIMIZED_SIZE / 2
+        };
+    }
 
-        // 桌面端和移动端统一使用 50px 圆形悬浮球
+    function rememberCompactMinimizeBallTargetAnchor() {
+        compactMinimizeBallTargetAnchor = null;
+        if (getCurrentChatSurfaceMode() !== 'compact') return null;
+        compactMinimizeBallTargetAnchor = getCompactMinimizeBallTargetRect();
+        return compactMinimizeBallTargetAnchor;
+    }
+
+    function consumeCompactMinimizeBallTargetAnchor() {
+        var targetRect = normalizeCompactDomRect(compactMinimizeBallTargetAnchor);
+        compactMinimizeBallTargetAnchor = null;
+        return targetRect;
+    }
+
+    function getMinimizedTargetFromCompactAnchor(anchorRect) {
+        anchorRect = normalizeCompactDomRect(anchorRect);
+        if (!anchorRect) return null;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.left),
+                    window.innerWidth - MINIMIZED_SIZE
+                )
+            ),
+            top: Math.max(
+                0,
+                Math.min(
+                    Math.round(anchorRect.top),
+                    window.innerHeight - MINIMIZED_SIZE
+                )
+            )
+        };
+    }
+
+    // 返回最小化后 shell 应达到的像素几何。
+    // compact 折叠时，优先锚定到 React frame 内的毛线球按钮中心；React 在切到 minimized
+    // 后会卸载 compact surface，所以点击入口要先记录 target rect。拿不到 target rect 时才退回
+    // shell 左下角 fallback。
+    function getMinimizedTarget(rect) {
+        var compactTarget = isLegacyFullMinimizedBall()
+            ? null
+            : getMinimizedTargetFromCompactAnchor(consumeCompactMinimizeBallTargetAnchor());
+        if (compactTarget) return compactTarget;
+
+        // Fallback: collapse to the surface's own bottom-left corner. This keeps
+        // legacy full behavior and covers compact cases where the inline yarn
+        // icon was not measurable.
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
@@ -4188,6 +5380,16 @@
             }
         }
 
+        if (isLegacyFullMinimizedBall()) {
+            // Legacy full expands FROM the ball: the orb may have been dragged
+            // while minimized, so the inline expand logic recomputes the dialog
+            // from ballLeft/ballBottom (球的左下角 = 对话框的左下角). Opt out of any
+            // saved-window-position pin here by returning null. (#1506 三态重构前的
+            // 老 full 行为。) Window-position memory across refresh is handled
+            // separately by restoreFullPosition() on open.
+            return null;
+        }
+
         var expandedTargetPosition = savedExpandedShellPosition
             || getStoredPosition()
             || (savedShellPosition
@@ -4211,17 +5413,43 @@
             activeAnimationCleanup = null;
         }
         isMinimizeTransitioning = false;
+        // 取消进行中的折叠/展开时一并清掉挂起的「按下挤压→瞬时折叠」延时（closeWindow
+        // 也走这里），避免该回调在窗口关闭/重开后幽灵触发 setChatSurfaceMode('minimized')。
+        clearCompactMinimizePressTimer();
+        pendingChatSurfaceMode = null;
+        pendingMinimizedSurfaceCommit = null;
+    }
+
+    // 最小化球皮肤跟随可恢复形态；紧凑 Electron 宿主会把历史 full 规整回 compact。
+    function isLegacyFullMinimizedBall() {
+        return coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode) === 'full';
+    }
+
+    function applyMinimizedBallSkin(ballIcon) {
+        var legacyFull = isLegacyFullMinimizedBall();
+        if (ballIcon) {
+            ballIcon.src = legacyFull
+                ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
+                : CHAT_MINIMIZED_BALL_ICON_SRC;
+        }
+        var shell = getShell();
+        if (shell) {
+            // Glow only renders together with .is-minimized (see
+            // full-chat-minimize.css); harmless while full is expanded.
+            shell.classList.toggle('is-legacy-full-ball', legacyFull);
+        }
     }
 
     function ensureMinimizedBallIcon() {
-        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off_ball.png';
+            icon.src = isLegacyFullMinimizedBall()
+                ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
+                : CHAT_MINIMIZED_BALL_ICON_SRC;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -4236,6 +5464,9 @@
 
     function setCompactChatState(nextCompactChatState) {
         var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
+            return getCurrentCompactChatState();
+        }
         if (state.compactChatState === normalized) {
             return normalized;
         }
@@ -4248,14 +5479,76 @@
         return normalized;
     }
 
+    function nextTutorialChatRequestId(prefix) {
+        tutorialChatRequestSeq += 1;
+        return prefix + '-' + Date.now() + '-' + tutorialChatRequestSeq;
+    }
+
+    function setAvatarToolMenuOpen(open, reason) {
+        setViewProps({
+            avatarToolMenuOpenRequest: {
+                id: nextTutorialChatRequestId('avatar-tool-menu'),
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            }
+        });
+        return true;
+    }
+
+    function setCompactToolFanOpen(open, reason) {
+        setViewProps({
+            compactToolFanOpenRequest: {
+                id: nextTutorialChatRequestId('compact-tool-fan'),
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            }
+        });
+        return true;
+    }
+
+    function commitPendingMinimizedSurfaceMode() {
+        if (!pendingMinimizedSurfaceCommit) return false;
+
+        var commit = pendingMinimizedSurfaceCommit;
+        pendingMinimizedSurfaceCommit = null;
+        state.chatSurfaceMode = commit.mode;
+        resetCompactChatState();
+        renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: commit.mode,
+            previousMode: commit.previousMode
+        });
+        return true;
+    }
+
     function setChatSurfaceMode(nextMode) {
-        var normalized = normalizeChatSurfaceMode(nextMode);
+        var normalized = coerceChatSurfaceModeForHost(nextMode);
         var previousMode = getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
         if (previousMode === normalized) {
+            if (isMinimizeTransitioning) {
+                pendingChatSurfaceMode = null;
+            }
             syncChatSurfaceModeUI();
             return normalized;
+        }
+
+        if (isMinimizeTransitioning) {
+            pendingChatSurfaceMode = normalized;
+            return previousMode;
+        }
+        pendingChatSurfaceMode = null;
+
+        // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
+        // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
+        // 仅靠回调里 getCurrentChatSurfaceMode()==='compact' 守卫挡不住这种 hop）。timer 自身的
+        // minimize 调用此时 timer 已=0，clear 为 no-op，不影响正常折叠。
+        clearCompactMinimizePressTimer();
+
+        if (!previousMinimized && nextMinimized && previousMode === 'compact') {
+            rememberCompactMinimizeBallTargetAnchor();
         }
 
         if (!nextMinimized) {
@@ -4265,8 +5558,24 @@
         }
 
         resetCompactChatState();
+        syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });
+        requestGoodbyeComposerHiddenState('chat-surface-mode-change');
+
+        if (!previousMinimized && nextMinimized && previousMode === 'full' && !isElectronChatWindow() && getShell()) {
+            pendingMinimizedSurfaceCommit = {
+                mode: normalized,
+                previousMode: previousMode
+            };
+            setMinimized(true);
+            return normalized;
+        }
+
+        pendingMinimizedSurfaceCommit = null;
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
+        if (normalized === 'compact') {
+            seedCompactSurfaceAnchorForRender();
+        }
         renderWindow();
 
         if (nextMinimized !== previousMinimized) {
@@ -4284,6 +5593,17 @@
 
     function cycleChatSurfaceMode() {
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
+    }
+
+    function flushPendingChatSurfaceModeIfNeeded() {
+        if (isMinimizeTransitioning || !pendingChatSurfaceMode) return;
+
+        var targetMode = pendingChatSurfaceMode;
+        pendingChatSurfaceMode = null;
+        if (targetMode === getCurrentChatSurfaceMode()) {
+            return;
+        }
+        setChatSurfaceMode(targetMode);
     }
 
     function setMinimized(nextMinimized) {
@@ -4336,20 +5656,34 @@
             var targetLeft = target.left;
             var targetTop = target.top;
 
-            // 3. 计算缩放比（transform-origin 为 0% 100% 即左下角，无需 translate）
+            // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
+            //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到
+            //    0px 100% 等价原点；compact 的毛线球槽位目标则不会再从左下角跳过去。
             var sx = rect.width > 0 ? target.width / rect.width : 1;
             var sy = rect.height > 0 ? target.height / rect.height : 1;
+            var originX = 0;
+            var originY = rect.height;
+            var originDenomX = 1 - sx;
+            var originDenomY = 1 - sy;
+            if (Math.abs(originDenomX) > 0.0001) {
+                originX = (targetLeft - rect.left) / originDenomX;
+            }
+            if (Math.abs(originDenomY) > 0.0001) {
+                originY = (targetTop - rect.top) / originDenomY;
+            }
+            if (!Number.isFinite(originX)) originX = 0;
+            if (!Number.isFinite(originY)) originY = rect.height;
 
             // 4. 初始 transform = identity，添加过渡类
             shell.style.transform = 'scale(1, 1)';
+            shell.style.transformOrigin = originX + 'px ' + originY + 'px';
             shell.classList.add('is-collapsing');
             void shell.offsetHeight; // 强制 reflow
 
             // 5. 设置目标 transform，触发动画
+            //    动画期间 left/top 不动，只通过动态 origin 缩放到 target。
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
-                    shell.style.left = targetLeft + 'px';
-                    shell.style.top = targetTop + 'px';
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -4365,6 +5699,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
                 // 清除内联尺寸，让 .is-minimized 的 CSS 生效
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
@@ -4375,7 +5710,14 @@
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
                 shell.classList.add('is-minimized');
+                // The ball icon is created once at init (when the restorable
+                // surface is usually compact); re-apply the skin now so a
+                // minimize from the revived legacy full shows its breathing-light
+                // orb instead of the stale compact yarn ball.
+                applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                commitPendingMinimizedSurfaceMode();
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
             };
             var onEnd = function (e) {
                 if (e.target !== shell || e.propertyName !== 'transform') return;
@@ -4390,6 +5732,8 @@
                 shell.removeEventListener('transitionend', onEnd);
                 shell.classList.remove('is-collapsing');
                 shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
+                pendingMinimizedSurfaceCommit = null;
                 handled = true;
             };
 
@@ -4402,6 +5746,22 @@
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
+            var previousSetupVisibility = shell.style.visibility;
+            var setupVisibilityHidden = true;
+            var restoreSetupVisibility = function () {
+                if (!setupVisibilityHidden) return;
+                setupVisibilityHidden = false;
+                if (previousSetupVisibility) {
+                    shell.style.visibility = previousSetupVisibility;
+                } else {
+                    shell.style.removeProperty('visibility');
+                }
+            };
+            // Removing .is-minimized makes the full React surface visible again.
+            // Keep it hidden while we restore/measure geometry so the browser
+            // cannot paint one frame at the measurement position before the
+            // scale-from-ball transform is ready.
+            shell.style.visibility = 'hidden';
             shell.classList.remove('is-minimized');
             shell.style.removeProperty('right');
             shell.style.removeProperty('bottom');
@@ -4426,9 +5786,7 @@
             }
 
             // 以球的位置为展开后对话框的左下角来计算展开位置
-            // 先设临时位置以获取真实尺寸
-            shell.style.left = '0px';
-            shell.style.top = '0px';
+            // 先落到最终目标位置获取真实尺寸，避免 (0,0) 测量态被绘制出来。
             var expandedTarget = getExpandedTargetFromSavedState();
             if (expandedTarget) {
                 shell.style.left = expandedTarget.left + 'px';
@@ -4451,6 +5809,8 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
+                restoreSetupVisibility();
                 requestAnimationFrame(function () {
                     var r = shell.getBoundingClientRect();
                     var clamped = clampPosition(r.left, r.top);
@@ -4487,6 +5847,7 @@
             shell.style.transform = 'scale(' + sx2 + ', ' + sy2 + ')';
             shell.classList.add('is-expanding');
             void shell.offsetHeight; // 强制 reflow
+            restoreSetupVisibility();
 
             // 动画到 identity（展开到完整尺寸）
             requestAnimationFrame(function () {
@@ -4512,6 +5873,7 @@
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
                 scheduleMobileContentLayout();
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
@@ -4521,6 +5883,21 @@
                         return;
                     }
                     if (surfaceModeAfterExpand === 'minimized') {
+                        return;
+                    }
+                    if (surfaceModeAfterExpand === 'full') {
+                        // full 从球展开后 expandedTop = ballBottom - height，球被拖到
+                        // 视口顶部时这会是负值，full 大半跑出屏幕、标题栏够不着。
+                        // syncCompactSurfaceAnchor 只管 compact，对 full 是 no-op，
+                        // 所以这里显式 clamp 进视口（clampPosition 保留标题栏可达）。
+                        var fullShell = getShell();
+                        if (fullShell) {
+                            var fullRect = fullShell.getBoundingClientRect();
+                            var clampedFull = clampPosition(fullRect.left, fullRect.top);
+                            if (clampedFull.left !== fullRect.left || clampedFull.top !== fullRect.top) {
+                                applyPosition(clampedFull.left, clampedFull.top);
+                            }
+                        }
                         return;
                     }
                     syncCompactSurfaceAnchor();
@@ -4539,6 +5916,7 @@
                 shell.removeEventListener('transitionend', onExpandEnd);
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
+                restoreSetupVisibility();
                 expandHandled = true;
             };
 
@@ -4561,10 +5939,9 @@
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
             btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
         }
-        // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
-        if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
-        }
+        // 重置悬浮球图标到默认态（清除可能残留的 hover 图标），并按 restorable 形态
+        // 选皮肤：compact=毛线球 / full=呼吸灯旧球。
+        applyMinimizedBallSkin(ballIcon);
     }
 
     function syncChatSurfaceModeUI() {
@@ -4573,16 +5950,14 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         var surfaceMode = getCurrentChatSurfaceMode();
-        var ariaLabel = surfaceMode === 'compact'
-            ? getI18nText('chat.reactWindowMinimize', '最小化聊天框')
-            : surfaceMode === 'minimized'
-                ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
-                : getI18nText('chat.reactWindowCompact', '切换到紧凑聊天框');
-        var shortLabel = surfaceMode === 'compact'
-            ? getI18nText('chat.reactWindowMinimizeShort', '最小化')
-            : surfaceMode === 'minimized'
-                ? getI18nText('chat.reactWindowRestoreShort', '恢复')
-                : getI18nText('chat.reactWindowCompactShort', '紧凑');
+        // full 与 compact 点头部按钮的真实动作都是「最小化」（getNextChatSurfaceMode
+        // 对二者都返回 'minimized'），所以 full 态也用最小化文案，别再写「切换到紧凑」。
+        var ariaLabel = surfaceMode === 'minimized'
+            ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
+            : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
+        var shortLabel = surfaceMode === 'minimized'
+            ? getI18nText('chat.reactWindowRestoreShort', '恢复')
+            : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         if (button) {
             button.setAttribute('aria-label', ariaLabel);
             button.title = shortLabel;
@@ -4591,9 +5966,7 @@
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
             btnIcon.alt = ariaLabel;
         }
-        if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
-        }
+        applyMinimizedBallSkin(ballIcon);
         if (shell) {
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
             shell.setAttribute('data-compact-chat-state', getCurrentCompactChatState());
@@ -4602,6 +5975,7 @@
     }
 
     function toggleMinimized() {
+        if (isMinimizeTransitioning) return;
         if (minimized && idleDockActive && idleDockSavedPosition) {
             var shell = getShell();
             if (shell) {
@@ -4613,8 +5987,6 @@
             idleDockSavedPosition = null;
             idleDockTier = IDLE_DOCK_TIER_NONE;
             stopIdleDockMinimizeObserver();
-            stopIdleDockContainerObserver();
-            cancelIdleDockSync();
         }
         cycleChatSurfaceMode();
     }
@@ -4663,8 +6035,11 @@
                     // rebuilds the compact body instead of the (blank) minimized
                     // surface; closeWindow performs the same reset when it clears
                     // the minimized shell.
-                    state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+                    state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
                     resetCompactChatState();
+                }
+                if (getCurrentChatSurfaceMode() === 'compact') {
+                    seedCompactSurfaceAnchorForRender();
                 }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
@@ -4688,6 +6063,9 @@
                     if (getCurrentChatSurfaceMode() === 'compact') {
                         syncCompactSurfaceAnchor();
                         scheduleCompactMinimizeBallTracking();
+                    } else if (getCurrentChatSurfaceMode() === 'full') {
+                        // 刷新/打开时还原 full 记住的位置（无记忆则保持居中）。
+                        restoreFullPosition();
                     }
                     scheduleMobileContentLayout();
                 }
@@ -4728,8 +6106,10 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        pendingChatSurfaceMode = null;
         clearIdleDockState();
         deactivateToolCursor();
+        hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -4755,7 +6135,7 @@
             // openWindow() rebuilds the React props with chatSurfaceMode:
             // 'minimized', rendering a blank body over a no-longer-minimized
             // shell.
-            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            state.chatSurfaceMode = coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode);
             resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;
@@ -4785,12 +6165,10 @@
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
-    function isCompactDragHandleTarget(target) {
-        return !!(
-            target
-            && typeof target.closest === 'function'
-            && target.closest('[data-compact-drag-handle="true"]')
-        );
+    function isCompactDragSurfaceTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (target.closest('[data-compact-no-drag="true"]')) return false;
+        return !!target.closest('[data-compact-drag-surface="true"]');
     }
 
     function startDrag(clientX, clientY, options) {
@@ -4828,6 +6206,8 @@
             dragState.moved = true;
         }
 
+        if (dragState.compactSurface && !dragState.moved) return;
+
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
         if (dragState.compactSurface) {
@@ -4844,6 +6224,7 @@
         var changedTouch = opts.changedTouches && opts.changedTouches.length > 0 ? opts.changedTouches[0] : null;
 
         var wasMoved = dragState.moved;
+        var wasCompactSurface = !!dragState.compactSurface;
 
         var shell = getShell();
         if (shell) {
@@ -4852,10 +6233,26 @@
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
             // 移动端坐标也不持久化，避免污染桌面端保存的位置
+            // full 是可拖动的完整窗口：拖完记住位置，刷新/展开后回到这里（不再每次居中）。
+            if (!minimized && !isMobileWidth() && getCurrentChatSurfaceMode() === 'full') {
+                rememberExpandedShellPosition(rect.left, rect.top);
+                persistPosition(rect.left, rect.top);
+            }
         }
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+        if (wasCompactSurface && wasMoved) {
+            var compactRect = getCurrentCompactSurfaceRect();
+            if (compactRect) {
+                dispatchCompactSurfaceLayoutChange(compactRect);
+            }
+        }
+
+        // 移动过的拖拽不该再变成点击：吞掉 mouseup 落点补发的那一次 click。
+        if (wasMoved) {
+            armDragReleaseClickGuard();
+        }
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
@@ -4899,7 +6296,7 @@
         document.addEventListener('mousedown', function (event) {
             if (event.button !== 0) return;
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             startDrag(event.clientX, event.clientY, {
                 compactSurface: true
             });
@@ -4909,14 +6306,15 @@
 
         document.addEventListener('touchstart', function (event) {
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY, {
                 compactSurface: true
             });
-            event.preventDefault();
-            event.stopPropagation();
-        }, { capture: true, passive: false });
+            // Do not preventDefault on touchstart: a stationary tap on the
+            // compact capsule must still synthesize click so React can enter
+            // input mode. Real drags are blocked in touchmove below.
+        }, { capture: true, passive: true });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -4937,6 +6335,18 @@
         document.addEventListener('touchcancel', function (event) {
             stopDrag({ changedTouches: event.changedTouches, suppressClick: true });
         });
+
+        // React 侧工具轮盘原点「按住拖动文本框」手势：轮盘 / toggle 是 no-drag，宿主的
+        // mousedown 命中判定不会自动起拖，所以由 React 检测到拖动意图后派发该事件，这里
+        // 以按下点为锚启动 compact surface 拖拽，复用上面的全局 mousemove/mouseup（含落点
+        // click 守卫）。Electron 下由 preload-chat-react.js 用原生窗口拖拽接管，这里早退。
+        window.addEventListener('neko:compact-surface-drag-grab', function (event) {
+            if (isElectronChatWindow()) return;
+            if (getCurrentChatSurfaceMode() !== 'compact' || minimized) return;
+            var detail = event && event.detail ? event.detail : {};
+            if (!Number.isFinite(detail.clientX) || !Number.isFinite(detail.clientY)) return;
+            startDrag(detail.clientX, detail.clientY, { compactSurface: true });
+        });
     }
 
     var MIN_WIDTH = 320;
@@ -4945,7 +6355,7 @@
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
 
     function getDesktopMinHeight() {
-        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        if (!getEffectiveGalgameEnabled()) return MIN_HEIGHT;
         // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
         return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
     }
@@ -5079,6 +6489,11 @@
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
+            } else if (getCurrentChatSurfaceMode() === 'full') {
+                // full 是可调整大小的完整窗口：记住尺寸与位置，刷新/展开后还原。
+                persistPosition(rect.left, rect.top);
+                persistSize(rect.width, rect.height);
+                rememberExpandedShellPosition(rect.left, rect.top);
             }
         }
 
@@ -5145,6 +6560,10 @@
             clearMessages();
         });
 
+        window.addEventListener('chat-avatar-preview-updated', refreshAssistantAvatarUrls);
+        window.addEventListener('chat-avatar-preview-cleared', refreshAssistantAvatarUrls);
+        window.addEventListener('neko:tutorial-chat-identity-changed', refreshAssistantAvatarUrls);
+
         window.addEventListener(EVENT_PREFIX + 'set-view-props', function (event) {
             setViewProps(event.detail && event.detail.viewProps);
         });
@@ -5155,6 +6574,11 @@
 
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'set-goodbye-composer-hidden', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            setGoodbyeComposerHidden(!!detail.hidden, detail.reason || 'bridge');
         });
 
         window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
@@ -5169,24 +6593,32 @@
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(true, 'tutorial-started');
+            setHomeTutorialInputLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
         });
 
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
         });
 
@@ -5233,13 +6665,22 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
-        state.chatSurfaceMode = readChatSurfaceModePreference();
+        var tutorialLockActive = isHomeTutorialRunning();
+        state.homeTutorialInteractionLocked = tutorialLockActive;
+        state.homeTutorialInputLocked = false;
+        state.chatSurfaceMode = readInitialChatSurfaceMode();
+        if (tutorialLockActive) {
+            setHomeTutorialInputLocked(true, 'tutorial-startup');
+        }
         lastRestorableChatSurfaceMode = state.chatSurfaceMode;
         resetCompactChatState();
         state.viewProps = Object.assign({}, ensureViewProps(), {
             chatSurfaceMode: getCurrentChatSurfaceMode(),
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            composerDisabled: !!(state.homeTutorialInteractionLocked || state.homeTutorialInputLocked),
+            compactInputLocked: !!state.homeTutorialInputLocked
         });
+        bindSubtitleSettingsSync();
         syncChatSurfaceModeUI();
         prewarmUserDisplayName();
         // Resolve the persisted GalGame preference now that the storage-location
@@ -5287,10 +6728,13 @@
         document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', consumeDragReleaseClickGuard, true);
         bindDragging();
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+        setTimeout(refreshAssistantAvatarUrls, 0);
+        setTimeout(refreshAssistantAvatarUrls, 500);
         ensureElectronChatMinimizedStateBridge();
 
         // 恢复手机端用户设置的高度
@@ -5311,13 +6755,13 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_on.png';
+                applyMinimizedBallSkin(ico);
             });
             header.addEventListener('mouseleave', function () {
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
+                applyMinimizedBallSkin(ico);
             });
         }
 
@@ -5334,15 +6778,6 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    var dockTarget = getIdleDockTarget();
-                    if (dockTarget) {
-                        var dockShell = getShell();
-                        if (dockShell) {
-                            dockShell.style.left = dockTarget.left + 'px';
-                            dockShell.style.top = dockTarget.top + 'px';
-                        }
-                        return;
-                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -5366,7 +6801,13 @@
                         }
                     }
                 } else {
-                    restorePosition();
+                    // full 走 restoreFullPosition()：有记忆位置才还原、无记忆保持居中，
+                    // 不能像 compact/minimized 那样走 restorePosition() → 被甩回左中。
+                    if (getCurrentChatSurfaceMode() === 'full') {
+                        restoreFullPosition();
+                    } else {
+                        restorePosition();
+                    }
                     syncCompactSurfaceAnchor();
                     scheduleMobileContentLayout();
                 }
@@ -5382,6 +6823,8 @@
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail || detail.type !== 'visual-tier') return;
 
+            setGoodbyeComposerHidden(detail.tier !== IDLE_DOCK_TIER_NONE, detail.source || 'visual-tier');
+
             idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
                 ? detail.tier
                 : IDLE_DOCK_TIER_NONE;
@@ -5392,16 +6835,13 @@
             if (isIdleDockTierActive()) {
                 if (!idleDockActive) {
                     enterIdleDock();
-                } else {
-                    scheduleIdleDockSync();
-                    refreshIdleDockContainerObserver();
                 }
                 return;
             }
 
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
-                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: idleDockActive && detail.source === 'return-ball-drag-demotion',
                 });
                 return;
             }
@@ -5418,17 +6858,25 @@
             if (!detail) return;
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
+        window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
+        window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
+        window.addEventListener('live2d-goodbye-click', function () {
+            setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
+        });
         window.addEventListener('live2d-return-click', function () {
+            setGoodbyeComposerHidden(false, 'live2d-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('vrm-return-click', function () {
+            setGoodbyeComposerHidden(false, 'vrm-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('mmd-return-click', function () {
+            setGoodbyeComposerHidden(false, 'mmd-return-click');
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
@@ -5437,6 +6885,7 @@
         window.addEventListener('neko:desktop-compact-layout-change', function (event) {
             var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
             handleDesktopCompactLayoutChange(layout || null);
+            refreshIdleCat1CompactMirrorPosition();
         });
         if (window.__nekoDesktopCompactLayout) {
             handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);
@@ -5448,6 +6897,9 @@
             applyCompactSurfaceResizeRequest(event.detail || {});
         }, true);
         window.addEventListener('neko:compact-surface-resize-width-change', function () {
+            syncCompactInteractionGeometry();
+        });
+        window.addEventListener('neko:compact-interaction-geometry-refresh', function () {
             syncCompactInteractionGeometry();
         });
     }
@@ -5470,6 +6922,16 @@
             if (initialComposerShouldHide) {
                 setComposerHidden(true);
             }
+            if (window.__nekoGoodbyeChatComposerHidden
+                && typeof window.__nekoGoodbyeChatComposerHidden === 'object') {
+                setGoodbyeComposerHidden(
+                    !!window.__nekoGoodbyeChatComposerHidden.hidden,
+                    window.__nekoGoodbyeChatComposerHidden.reason || 'initial-goodbye-cache'
+                );
+            } else {
+                syncGoodbyeComposerHidden('initial-goodbye-state');
+            }
+            requestGoodbyeComposerHiddenState('initial-goodbye-state');
         } catch (_) {
             // 首绘兜底失败不影响后续 session_started 同步
         }
@@ -5505,10 +6967,17 @@
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        setHomeTutorialInputLocked: setHomeTutorialInputLocked,
+        setAvatarToolMenuOpen: setAvatarToolMenuOpen,
+        setCompactToolFanOpen: setCompactToolFanOpen,
+        rotateCompactToolWheel: rotateCompactToolWheel,
+        setCompactToolWheelIndex: setCompactToolWheelIndex,
+        setCompactHistoryOpen: setCompactHistoryOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
+        clearGuideMessages: clearGuideMessages,
         clearMessages: clearMessages,
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {
@@ -5526,13 +6995,7 @@
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
-        setOnCompactHistoryDrop: function (handler) {
-            state.onCompactHistoryDrop = typeof handler === 'function' ? handler : null;
-        },
         prepareCompactHistoryDropSubmit: prepareCompactHistoryDropSubmit,
-        setOnCompactHistoryDragStateChange: function (handler) {
-            state.onCompactHistoryDragStateChange = typeof handler === 'function' ? handler : null;
-        },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },
@@ -5544,14 +7007,23 @@
         setChatSurfaceMode: setChatSurfaceMode,
         cycleChatSurfaceMode: cycleChatSurfaceMode,
         setCompactChatState: setCompactChatState,
+        setGoodbyeComposerHidden: setGoodbyeComposerHidden,
+        syncGoodbyeComposerHidden: syncGoodbyeComposerHidden,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
+        },
+        setTranslateEnabled: function (enabled, options) {
+            return setTranslateEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        setChoicePrompt: setChoicePrompt,
+        setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt,
+        clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window

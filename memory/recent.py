@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm
@@ -23,6 +37,8 @@ from config import (
     RECENT_SUMMARY_MAX_TOKENS,
     RECENT_PER_MESSAGE_MAX_TOKENS,
     RECENT_SUMMARY_STALE_HOURS,
+    RECENT_COMPRESS_INPUT_BUDGET_TOKENS,
+    RECENT_HARD_CAP_TOKENS,
 )
 from datetime import datetime
 
@@ -41,12 +57,13 @@ REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
 
 
 def _msg_fingerprint(m) -> tuple[str, str]:
-    """归一化一条消息为 (type, content_prefix) 元组用于 fingerprint 比对。
+    """Normalize a message into a (type, content_prefix) tuple for fingerprint comparison.
 
-    支持消息对象（HumanMessage/AIMessage/...）和 dict（持久化 fingerprint）。
-    content 是 list 时（multimodal）拼成 string。content 截断到前
-    REVIEW_FINGERPRINT_CONTENT_PREFIX 字符——只要重启用户没改写已有消息内容，
-    这个前缀稳定。
+    Supports message objects (HumanMessage/AIMessage/...) and dicts (persisted
+    fingerprints). When content is a list (multimodal), it is joined into a
+    string. Content is truncated to the first
+    REVIEW_FINGERPRINT_CONTENT_PREFIX characters — stable across restarts as
+    long as the user doesn't rewrite existing message content.
     """
     if isinstance(m, dict):
         t = m.get('type', '') or ''
@@ -68,7 +85,7 @@ def _msg_fingerprint(m) -> tuple[str, str]:
 
 
 def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[dict]:
-    """从 snapshot 末尾取 K 条做 fingerprint，序列化成可 JSON 持久化的 dict 列表。"""
+    """Take the last K messages of the snapshot as the fingerprint, serialized into JSON-persistable dicts."""
     if not snapshot:
         return []
     tail = snapshot[-k:] if len(snapshot) >= k else list(snapshot)
@@ -80,10 +97,11 @@ def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[di
 
 
 def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | None:
-    """在 current 里找最后一段连续 K 条消息匹配 fingerprint 的位置。
+    """Find, in current, the last run of K consecutive messages matching the fingerprint.
 
-    返回 fingerprint 末位（也就是 cutoff）在 current 里的 index；
-    找不到返回 None。从尾往前搜，多个候选时取最靠后的（最近）。
+    Returns the index in current of the fingerprint's last element (i.e. the
+    cutoff); None when not found. Searches from the tail backwards, taking the
+    rearmost (most recent) of multiple candidates.
     """
     if not current or not fingerprint:
         return None
@@ -98,14 +116,15 @@ def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | 
 
 
 def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
-    """给定 review 启动时的 snapshot 和当前 history，算出 (capacity, cutoff_idx)。
+    """Given the snapshot taken at review start and the current history, compute (capacity, cutoff_idx).
 
-    1. 用 snapshot 末尾 K 条做 anchor 在 current 里定位 cutoff_idx。
-    2. 从 cutoff_idx 起逆向走，对比 snapshot[-1], snapshot[-2], ... 与
-       current[cutoff_idx], current[cutoff_idx-1], ... 的连续匹配长度
-       即 capacity（当中间出现压缩 SystemMessage 等"alien"条目时停下）。
+    1. Use the snapshot's last K entries as an anchor to locate cutoff_idx in current.
+    2. Walk backwards from cutoff_idx, comparing snapshot[-1], snapshot[-2], ...
+       against current[cutoff_idx], current[cutoff_idx-1], ...; the consecutive
+       match length is the capacity (stopping when an "alien" entry such as a
+       compression SystemMessage appears in between).
 
-    返回 ``(0, None)`` 表示白 review。
+    Returns ``(0, None)`` for a wasted (no-op) review.
     """
     if not snapshot or not current:
         return (0, None)
@@ -155,19 +174,19 @@ class CompressedRecentHistoryManager:
                 self.user_histories[ln] = []
 
     def _get_default_path(self, lanlan_name: str) -> str:
-        """统一获取默认路径，避免重复代码。"""
+        """Single place for the default path, avoiding duplicated code."""
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, lanlan_name), 'recent.json')
 
     def _ensure_path_for_character(self, lanlan_name: str) -> str:
-        """确保角色有有效的文件路径，返回路径。"""
+        """Ensure the character has a valid file path; returns the path."""
         if lanlan_name not in self.log_file_path:
             self.log_file_path[lanlan_name] = self._get_default_path(lanlan_name)
             logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径")
         return self.log_file_path[lanlan_name]
 
     def _reset_history_file(self, file_path, lanlan_name, reason):
-        """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
+        """Reset the recent file to a valid empty JSON array when it is corrupted or empty."""
         try:
             assert_cloudsave_writable(
                 self._config_manager,
@@ -191,7 +210,7 @@ class CompressedRecentHistoryManager:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 
     def _load_history_from_file(self, file_path, lanlan_name):
-        """安全读取 recent 文件，遇到空文件或非法 JSON 时自动重置。"""
+        """Safely read the recent file, auto-resetting on an empty file or invalid JSON."""
         try:
             with open(file_path, encoding='utf-8') as f:
                 raw_content = f.read()
@@ -237,40 +256,49 @@ class CompressedRecentHistoryManager:
             return f.read()
     
     def _get_llm(self):
-        """动态获取LLM实例以支持配置热重载。
+        """Fetch the LLM instance dynamically to support config hot-reload.
 
-        timeout=30 配合业务层 max_retries=3 + 指数 backoff（最坏 ~127s）
-        覆盖 /process 上游 30s timeout 后的"放弃" 上限。
-        max_retries=0 禁掉 OpenAI SDK 默认 2 次自动重试，避免与业务层 retry 叠加翻 3 倍。
+        timeout=30 pairs with business-level max_retries=3 + exponential backoff
+        (worst case ~127s), covering the "give up" ceiling after the /process
+        upstream's 30s timeout.
+        max_retries=0 disables the OpenAI SDK's default 2 automatic retries,
+        avoiding a 3× blow-up stacked on the business-level retry.
         """
         api_config = self._config_manager.get_model_api_config('summary')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=30, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length summary/JSON isn't truncated
         )
 
     def _get_review_llm(self):
-        """动态获取审核LLM实例以支持配置热重载。
+        """Fetch the review LLM instance dynamically to support config hot-reload.
 
-        timeout 用 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发 120s hard
-        cap，必须 ≤110）。review 是纯后台任务（Phase C 重设计后不持锁、
-        不阻塞用户路径、并发跑也无所谓），完全可以开 thinking——重写
-        历史的判断密度高，思考受益明显。
+        timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
+        a 120s hard cap; must be ≤110). Review is a pure background task (after
+        the Phase C redesign it holds no locks, never blocks the user path, and
+        concurrent runs are harmless), so thinking can be enabled freely — the
+        judgment-dense work of rewriting history clearly benefits from it.
 
-        Phase D：extra_body=None 显式覆盖 create_chat_llm 自动解析，让 thinking
-        模型按其默认行为响应（thinking 模式开启）。
-        max_retries=0 同上：禁 SDK 自动重试，由业务层 retry 兜底。
+        Phase D: extra_body=None explicitly overrides create_chat_llm's
+        automatic resolution, letting thinking models respond with their
+        default behavior (thinking mode on).
+        max_retries=0 as above: SDK auto-retry off; the business-layer retry is
+        the safety net.
         """
         api_config = self._config_manager.get_model_api_config('correction')
+        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
+            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
             extra_body=None,
         )
 
-    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
+    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
         try:
             _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
             self.log_file_path = recent_log
@@ -311,8 +339,24 @@ class CompressedRecentHistoryManager:
 
             if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
-                compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
-                self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
+                snapshot = list(to_compress)
+                compressed_result = await self.compress_history(to_compress, lanlan_name, detailed)
+                if compressed_result is None:
+                    logger.warning(
+                        f"[RecentHistory] {lanlan_name} 摘要失败，跳过本轮压缩以保留原始历史"
+                    )
+                    # best-effort：通知上层起一个受保护的后台压缩任务尽力压（主路径失败）。
+                    # 硬上限裁剪**不在这里**做——否则"历史超 cap 后任何一次暂时性失败"
+                    # 都会立刻丢最旧原文，而后台压缩用的是裁剪前 snapshot → 合并失配
+                    # moot → 那批对话没被摘要就永久丢了。改由后台 best-effort 也压不成
+                    # 后再裁剪（memory_server._run_backup_compress / dead-letter 分支），
+                    # 让暂时性失败有机会被后台压成摘要保留。
+                    await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, False, detailed)
+                else:
+                    compressed = [compressed_result[0]]
+                    self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
+                    # 主路径成功 → 通知上层 cancel 在跑的后台压缩（兜底不再需要）。
+                    await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, True, detailed)
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
 
@@ -339,12 +383,13 @@ class CompressedRecentHistoryManager:
         """Side meta file per character, co-located with recent.json
         ({"last_past_block_update_at": ISO}).
 
-        优先沿用 ``self.log_file_path[lanlan_name]`` 的目录——这是该类所有
-        recent.json 读写的实际路径来源（character_data 第 9 元组项）。如果
-        用户配置把某个角色的 recent.json 移到了 memory_dir 之外，meta 文件
-        仍跟它在同一目录，不会跑去无关位置（CodeRabbit review on PR #1316
-        catch）。在 update_history 跑过之前 log_file_path 可能为空——这种
-        情况下 fall back 到 memory_dir-based 推导。
+        Prefers the directory of ``self.log_file_path[lanlan_name]`` — the
+        actual path source of every recent.json read/write in this class (item
+        9 of the character_data tuple). If the user's config moved a
+        character's recent.json outside memory_dir, the meta file still sits in
+        the same directory instead of wandering off (CodeRabbit review catch on
+        PR #1316). Before update_history has run, log_file_path may be empty —
+        in that case fall back to the memory_dir-based derivation.
         """
         recent_path = (self.log_file_path or {}).get(lanlan_name)
         if recent_path:
@@ -391,12 +436,14 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.debug(f"[RecentHistory] {lanlan_name}: 写 recent_meta 失败: {e}")
 
-    # detailed: 保留尽可能多的细节
-    async def compress_history(self, messages, lanlan_name, detailed=False):
+    def _render_messages_to_text(self, messages, lanlan_name):
+        """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。
+
+        单条 message 文本超过 RECENT_PER_MESSAGE_MAX_TOKENS 时做头尾保留截断
+        （head=tail=半数 token）。用户长贴 / AI 偶尔写小作文都会触发；头尾各
+        保留确保问候/问题与结尾的总结/请求都不丢，中段砍掉。
+        """
         from utils.tokenize import truncate_head_tail_tokens
-        # 单条 message 文本超过 RECENT_PER_MESSAGE_MAX_TOKENS 时做头尾保留
-        # 截断（head=tail=半数 token）。用户长贴 / AI 偶尔写小作文都会触发；
-        # 头尾各保留确保问候/问题与结尾的总结/请求都不丢，中段砍掉。
         per_msg_cap = RECENT_PER_MESSAGE_MAX_TOKENS
         head_tail = per_msg_cap // 2
         name_mapping = self.name_mapping.copy()
@@ -422,53 +469,35 @@ class CompressedRecentHistoryManager:
                 joined = truncate_head_tail_tokens(joined, head_tail, head_tail)
                 line = f"{role} | {joined}"
             lines.append(line)
-        messages_text = "\n".join(lines)
+        return "\n".join(lines)
+
+    def _build_summary_prompt(self, messages_text, detailed):
+        """构建 Stage-1 摘要 prompt（不含 stale-hint 前缀；单次压缩与分段 map 共用）。
+
+        ``{MASTER_NAME}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
+        占位符（与同 prompt 里既有的 ``%s`` 共存）。⚠️ master_name 替换**最后**
+        做：它是 user-controlled，含 ``%`` 会让先前的 ``%`` formatting 崩溃；含
+        ``%s`` 会被先前的 ``.replace("%s", ...)`` 二次替换（codex P2）。
+        """
         lang = get_global_language()
-        # ``{MASTER_NAME}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
-        # 占位符（与同 prompt 里既有的 ``%s`` 共存：``%s`` 走 Python 格式化，
-        # ``{MASTER_NAME}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
-        # 看到 "%s 和 ai 的对话"+"用户的负面反馈" 时困惑（feedback_no_dehumanizing_terms）。
-        # ⚠️ master_name 替换**最后**做：它是 user-controlled，含 ``%`` 会让先前
-        # 的 ``%`` formatting 把它当格式符崩溃；含 ``%s`` 会被先前的
-        # ``.replace("%s", ...)`` 二次替换。先做模板自身的 ``%s`` 替换 / ``%``
-        # formatting，再注入实名（codex P2）。
         master_name = self.name_mapping['human']
         if not detailed:
-            prompt = (
+            return (
                 get_recent_history_manager_prompt(lang)
                 .replace("%s", messages_text)
                 .replace("{MASTER_NAME}", master_name)
             )
-        else:
-            prompt = (
-                (get_detailed_recent_history_manager_prompt(lang) % messages_text)
-                .replace("{MASTER_NAME}", master_name)
-            )
+        return (
+            (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
 
-        # Past block 时间衰减：距上次"实际更新 past block"超过
-        # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加一段提醒让 LLM 把
-        # 明显过时的内容挪到 summary 末尾的"较久前"段落。锚点只在 hint 真正
-        # 注入时推进（见下方 stale_hint_injected）——这样 hint 形成"每 N 小时
-        # 触发一次"的节奏，而不是"每次 compress 都看一眼"。
-        # 仅影响本次 summary 文本，不持久化到 reflection / persona。
-        stale_hint_injected = False
-        first_time_baseline = False
-        try:
-            last_past_update = await self._aread_last_past_block_update_at(lanlan_name)
-            if last_past_update is None:
-                # 第一次为该角色 compress——先建立 baseline 锚点，本轮不注入
-                # hint（首次会话还没有什么"过时"内容值得拎走）。
-                first_time_baseline = True
-            else:
-                gap_hours = (datetime.now() - last_past_update).total_seconds() / 3600.0
-                if gap_hours >= RECENT_SUMMARY_STALE_HOURS:
-                    hint = get_summary_stale_hint(lang, gap_hours)
-                    prompt = hint + "\n\n" + prompt
-                    stale_hint_injected = True
-        except Exception as e:
-            # 时间衰减提醒是 best-effort；失败不能挡 summary 主流程
-            logger.debug(f"[RecentHistory] {lanlan_name}: stale hint 注入失败: {e}")
-
+    async def _invoke_summary_llm(self, prompt):
+        """调摘要 LLM（3 次重试 + 对网络/429 指数退避），成功返回 summary 字符串，
+        失败返回 None。不含 further_compress / memo 包装 / stale 锚点——那些由
+        compress_history 主体在拿到 summary 后处理。Stage-1 单次压缩与分段 map
+        阶段共用本方法。
+        """
         retries = 0
         max_retries = 3
         while retries < max_retries:
@@ -477,7 +506,7 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_compression")
                 llm = self._get_llm()
                 try:
-                    response_content = (await llm.ainvoke(prompt)).content
+                    response_content = (await llm.ainvoke(prompt)).content  # noqa: LLM_INPUT_BUDGET  # compression prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                 finally:
                     await llm.aclose()
                 response_content = str(response_content).strip()
@@ -488,32 +517,14 @@ class CompressedRecentHistoryManager:
                 # 从 JSON 字典中提取对话摘要，key 与 prompt 模板里约定的一致
                 if 'summary' in summary_json:
                     raw_summary = summary_json['summary']
-                    # Qwen 偶尔返回 list/dict 而不是字符串；强制 str-ify 后再喂
-                    # acount_tokens（不然会抛 TypeError 把整轮压缩流程崩掉）。
+                    # Qwen 偶尔返回 list/dict 而不是字符串；强制 str-ify 后再用
+                    # （不然 acount_tokens 会抛 TypeError 把整轮压缩崩掉）。
                     summary = (
                         raw_summary if isinstance(raw_summary, str)
                         else json.dumps(raw_summary, ensure_ascii=False)
                     )
                     print(f"💗摘要结果：{summary}")
-                    if await acount_tokens(summary) > MAX_SUMMARY_TOKENS:
-                        summary = await self.further_compress(summary)
-                        if summary is None:
-                            continue
-                        if not isinstance(summary, str):
-                            summary = json.dumps(summary, ensure_ascii=False)
-                    from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
-                    memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
-                    # 推进 past-block 更新锚点（best-effort）：
-                    # - 第一次 compress：建立 baseline，让后续按 gap 触发
-                    # - 注入过 stale hint：表示 LLM 本轮真的更新了 past block
-                    # 中间没有 hint 注入的常规压缩不动锚点——这样 hint 形成稳定
-                    # 的"每 N 小时一次"节奏，而不是被频繁压缩冲掉。
-                    if first_time_baseline or stale_hint_injected:
-                        await self._awrite_last_past_block_update_at(lanlan_name)
-                    # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持
-                    # 一致——之前用 raw 摘要会出现"用户看到的 memo 用了 stage-2
-                    # 摘要、缓存却存了 stage-1 原文"的诡异不一致。
-                    return SystemMessage(content=memo_text), summary
+                    return summary
                 else:
                     print('💥 摘要failed: ', response_content)
                     retries += 1
@@ -531,9 +542,290 @@ class CompressedRecentHistoryManager:
                 print(f'❌ 摘要模型失败：{e}')
                 # 如果解析失败，重试
                 retries += 1
-        # 如果所有重试都失败，返回None
-        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_EMPTY
-        return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
+        return None
+
+    def _split_messages_by_budget(self, messages, lanlan_name):
+        """按渲染后累计 token 把消息切成多段，每段 ≤ RECENT_COMPRESS_INPUT_BUDGET_TOKENS。
+        不切碎单条消息（单条已被 per-message 截断到 ≤500 token）。"""
+        from utils.tokenize import count_tokens
+        budget = RECENT_COMPRESS_INPUT_BUDGET_TOKENS
+        chunks, cur, cur_tok = [], [], 0
+        for msg in messages:
+            t = count_tokens(self._render_messages_to_text([msg], lanlan_name))
+            if cur and cur_tok + t > budget:
+                chunks.append(cur)
+                cur, cur_tok = [], 0
+            cur.append(msg)
+            cur_tok += t
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    def _split_texts_by_budget(self, texts):
+        """按累计 token 把字符串列表分批，每批拼接 ≤ 预算（reduce 阶段用）。"""
+        from utils.tokenize import count_tokens
+        budget = RECENT_COMPRESS_INPUT_BUDGET_TOKENS
+        batches, cur, cur_tok = [], [], 0
+        for txt in texts:
+            tok = count_tokens(txt)
+            if cur and cur_tok + tok > budget:
+                batches.append(cur)
+                cur, cur_tok = [], 0
+            cur.append(txt)
+            cur_tok += tok
+        if cur:
+            batches.append(cur)
+        return batches
+
+    async def _segmented_compress(self, messages, lanlan_name, detailed):
+        """输入过大时的分段 map-reduce：把 messages 切段逐段总结成中间摘要，反复
+        reduce 直到拼接 ≤ 预算，返回该文本交给 compress_history 主体做最终总结。
+        任一段 LLM 失败返回 None（上层据此跳过本轮压缩）。"""
+        chunks = self._split_messages_by_budget(messages, lanlan_name)
+        partials = []
+        for chunk in chunks:
+            s = await self._invoke_summary_llm(
+                self._build_summary_prompt(self._render_messages_to_text(chunk, lanlan_name), detailed)
+            )
+            if s is None:
+                return None
+            partials.append(s)
+        logger.info(
+            f"[RecentHistory] {lanlan_name} 分段压缩：{len(messages)} 条原始消息 → {len(chunks)} 段中间摘要"
+        )
+        # 中间摘要拼接仍超预算 → 再分批合并总结，限深度防极端。
+        depth = 0
+        while (
+            len(partials) > 1
+            and await acount_tokens("\n\n".join(partials)) > RECENT_COMPRESS_INPUT_BUDGET_TOKENS
+            and depth < 3
+        ):
+            batches = self._split_texts_by_budget(partials)
+            if len(batches) >= len(partials):
+                break  # 无法再缩（单段已超预算），交给主体兜底
+            new_partials = []
+            for batch in batches:
+                s = await self._invoke_summary_llm(
+                    self._build_summary_prompt("\n\n".join(batch), detailed)
+                )
+                if s is None:
+                    return None
+                new_partials.append(s)
+            partials = new_partials
+            depth += 1
+        merged = "\n\n".join(partials)
+        # reduce 缩不动 / 深度耗尽时 merged 仍可能超预算 → 硬截到预算兜底，保证
+        # 交给主体最终总结的输入有界（best-effort，丢尾部）。
+        if await acount_tokens(merged) > RECENT_COMPRESS_INPUT_BUDGET_TOKENS:
+            from utils.tokenize import atruncate_to_tokens
+            merged = await atruncate_to_tokens(merged, RECENT_COMPRESS_INPUT_BUDGET_TOKENS)
+        return merged
+
+    # detailed: 保留尽可能多的细节
+    async def compress_history(self, messages, lanlan_name, detailed=False):
+        messages_text = self._render_messages_to_text(messages, lanlan_name)
+        # 输入过大（积压一直压不掉时会膨胀）→ 先分段 map-reduce 缩小输入，减小
+        # 单次 LLM 输入、避免输入过大导致超时。正常输入不走这条。
+        if await acount_tokens(messages_text) > RECENT_COMPRESS_INPUT_BUDGET_TOKENS:
+            reduced = await self._segmented_compress(messages, lanlan_name, detailed)
+            if reduced is None:
+                logger.warning(f"[RecentHistory] {lanlan_name} 分段压缩失败，跳过本轮压缩")
+                return None
+            messages_text = reduced
+
+        lang = get_global_language()
+        prompt = self._build_summary_prompt(messages_text, detailed)
+
+        # Past block 时间衰减：距上次"实际更新 past block"超过
+        # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加提醒让 LLM 把明显
+        # 过时的内容挪到 summary 末尾的"较久前"段落。锚点只在 hint 真正注入时
+        # 推进——这样 hint 形成"每 N 小时触发一次"的节奏，而不是每轮压缩都刷。
+        # 仅影响本次 summary 文本，不持久化到 reflection / persona。
+        stale_hint_injected = False
+        first_time_baseline = False
+        try:
+            last_past_update = await self._aread_last_past_block_update_at(lanlan_name)
+            if last_past_update is None:
+                # 第一次为该角色 compress——先建立 baseline 锚点，本轮不注入 hint。
+                first_time_baseline = True
+            else:
+                gap_hours = (datetime.now() - last_past_update).total_seconds() / 3600.0
+                if gap_hours >= RECENT_SUMMARY_STALE_HOURS:
+                    hint = get_summary_stale_hint(lang, gap_hours)
+                    prompt = hint + "\n\n" + prompt
+                    stale_hint_injected = True
+        except Exception as e:
+            # 时间衰减提醒是 best-effort；失败不能挡 summary 主流程
+            logger.debug(f"[RecentHistory] {lanlan_name}: stale hint 注入失败: {e}")
+
+        # Stage-1 + Stage-2 联合重试：原行为是 further_compress 失败时重试整个
+        # stage-1（stage-1 LLM 有随机性，重下一次可能直接生成 ≤MAX 的 summary 而
+        # 不必二次压缩）。重构后用有限计数循环复现该重试，同时避免原 `continue`
+        # 不计数可能导致的死循环。
+        summary = None
+        for _ in range(3):
+            s = await self._invoke_summary_llm(prompt)
+            if s is None:
+                # stage-1 连续失败：不生成空备忘录，避免覆盖既有 memo 或丢未压原文。
+                logger.warning(f"[RecentHistory] {lanlan_name} 摘要连续失败，跳过本轮压缩")
+                return None
+            if await acount_tokens(s) <= MAX_SUMMARY_TOKENS:
+                summary = s
+                break
+            reduced = await self.further_compress(s)
+            if reduced is not None:
+                summary = reduced if isinstance(reduced, str) else json.dumps(reduced, ensure_ascii=False)
+                break
+            # stage-2 失败 → 重试 stage-1（最多 3 轮）
+        if summary is None:
+            logger.warning(f"[RecentHistory] {lanlan_name} 二次压缩连续失败，跳过本轮压缩")
+            return None
+
+        # 推进 past-block 更新锚点（best-effort）：第一次 compress 建 baseline；
+        # 注入过 stale hint 表示 LLM 本轮真的更新了 past block。常规压缩不动锚点，
+        # 让 hint 形成稳定的"每 N 小时一次"节奏。
+        if first_time_baseline or stale_hint_injected:
+            await self._awrite_last_past_block_update_at(lanlan_name)
+
+        # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持一致——之前
+        # 用 raw 摘要会出现"用户看到的 memo 用 stage-2、缓存却存 stage-1"的不一致。
+        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
+        memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
+        return SystemMessage(content=memo_text), summary
+
+    async def _notify_compress_done(self, callback, lanlan_name, snapshot, ok, detailed):
+        """Invoke the best-effort compression callback without blocking the main flow.
+
+        memory_server injects the callback: ok=False starts background
+        compression, while ok=True cancels any running background task.
+        """
+        if callback is None:
+            return
+        try:
+            await callback(lanlan_name, snapshot, ok, detailed)
+        except Exception as e:
+            logger.debug(f"[RecentHistory] {lanlan_name} on_compress_done({ok}) 回调异常: {e}")
+
+    async def enforce_hard_cap(self, lanlan_name):
+        """Keep recent-history prompt size bounded as a final fallback.
+
+        When history still exceeds RECENT_HARD_CAP_TOKENS after best-effort
+        background compression, discard the oldest uncompressed dialogue text
+        while preserving the first memo, when present, and at least the latest
+        max_history_length entries.
+        """
+        history = self.user_histories.get(lanlan_name, [])
+        if not history:
+            return
+        # 不用条数提前断言"不可能超上限"——几条超长原文就能顶破 token 上限。
+        # 统一交给下面按真实 token 算的 _trim 决定（_trim 内仍保证至少留近期
+        # max_history_length 条，丢不动就不丢）。
+
+        from utils.tokenize import count_tokens
+
+        def _raw_tokens(msgs):
+            # 硬上限按**真实注入 prompt** 的 token 算，不能走 _render_messages_to_text
+            # （那个为压缩输入把每条截到 ≤RECENT_PER_MESSAGE_MAX_TOKENS，会严重低估
+            # 长消息、让硬上限对超长原文失效）。这里数原始 content 的 token。
+            total = 0
+            for m in msgs:
+                c = getattr(m, 'content', '')
+                if isinstance(c, list):
+                    c = ' '.join(
+                        p.get('text', '') if isinstance(p, dict) else str(p) for p in c
+                    )
+                elif not isinstance(c, str):
+                    c = str(c)
+                total += count_tokens(c)
+            return total
+
+        def _trim():
+            if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
+                return None  # 未超，不动
+            # 首条若是备忘录（已压缩的长期记忆）则保留，只丢正文里最旧的原文。
+            head = [history[0]] if isinstance(history[0], SystemMessage) else []
+            body = history[len(head):]
+            kept = []
+            kept_tok = _raw_tokens(head)
+            for msg in reversed(body):
+                mtok = _raw_tokens([msg])
+                if kept and kept_tok + mtok > RECENT_HARD_CAP_TOKENS and len(kept) >= self.max_history_length:
+                    break
+                kept.append(msg)
+                kept_tok += mtok
+            kept.reverse()
+            return head + kept
+
+        new_history = await asyncio.to_thread(_trim)
+        if new_history is not None and len(new_history) < len(history):
+            dropped = len(history) - len(new_history)
+            logger.warning(
+                f"[RecentHistory] {lanlan_name} 历史超硬上限 {RECENT_HARD_CAP_TOKENS} token，"
+                f"丢弃最旧 {dropped} 条未压缩原文以保证有界"
+            )
+            self.user_histories[lanlan_name] = new_history
+            # 自包含落盘：本方法现在由后台 task / 回调调用（update_history 之外），
+            # 不能再依赖 update_history 的后续落盘。
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager, operation="save",
+                    target=f"memory/{lanlan_name}/recent.json",
+                )
+                file_path = self._ensure_path_for_character(lanlan_name)
+                await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+                await atomic_write_json_async(
+                    file_path,
+                    await asyncio.to_thread(messages_to_dict, new_history),
+                    indent=2, ensure_ascii=False,
+                )
+            except MaintenanceModeError:
+                raise
+            except Exception as e:
+                logger.error(f"[RecentHistory] {lanlan_name} 硬上限裁剪落盘失败: {e}", exc_info=True)
+
+    async def merge_backup_memo(self, lanlan_name, snapshot, memo):
+        """后台压缩成功后，把 memo 合并回当前 history（快照对齐）。
+
+        用 snapshot 的 fingerprint 在当前 history 里定位那批积压：仍整批连续在
+        头部（capacity==len(snapshot) 且批头在 index 0）→ 替换成 [memo] + 这期间
+        新增的对话，落盘，返回 'merged'；否则（已被主路径压掉 / 被 /new_dialog
+        清空 / 头部已变）→ 丢弃返回 'moot'。
+
+        读 current 到写 new_history 之间全是同步代码（_compute_review_capacity
+        同步），asyncio 单线程下原子；落盘在写之后。调用方（memory_server）应在
+        _get_settle_lock 内调用，串行化对该角色的写。
+        """
+        current = self.user_histories.get(lanlan_name, [])
+        if not current or not snapshot:
+            return 'moot'
+        capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+        if cutoff_idx is None or capacity != len(snapshot) or (cutoff_idx - capacity + 1) != 0:
+            return 'moot'
+        new_history = [memo] + current[cutoff_idx + 1:]
+        self.user_histories[lanlan_name] = new_history
+        try:
+            assert_cloudsave_writable(
+                self._config_manager, operation="save",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
+            file_path = self._ensure_path_for_character(lanlan_name)
+            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
+            await atomic_write_json_async(
+                file_path,
+                await asyncio.to_thread(messages_to_dict, new_history),
+                indent=2, ensure_ascii=False,
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as e:
+            # 落盘失败 → 内存与磁盘不一致（下次 update_history reload 会回滚内存），
+            # 报 'failed' 让上层 bump 退避、不清计数，而不是谎报 'merged'。
+            logger.error(f"[RecentHistory] {lanlan_name} 后台压缩合并落盘失败: {e}", exc_info=True)
+            return 'failed'
+        logger.info(
+            f"[RecentHistory] {lanlan_name} 后台压缩合并完成：history {len(current)}→{len(new_history)}"
+        )
+        return 'merged'
 
     async def further_compress(self, initial_summary):
         # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 100 余量 = 1100 token。
@@ -646,28 +938,36 @@ class CompressedRecentHistoryManager:
 
     async def review_history(self, lanlan_name, snapshot=None, cancel_event=None):
         """
-        审阅历史记录，寻找并修正矛盾、冗余、逻辑混乱或复读的部分。
+        Review the history, finding and fixing contradictions, redundancy,
+        logical confusion, or repetition.
 
-        Phase C 重设计（snapshot + capacity-based 替换）：
-        - ``snapshot``：spawn 时拍下的 history 副本（list of message objects）。
-          LLM 输入用 snapshot 不用当前 history——这样 review LLM 期间用户路径
-          可以继续追加消息 / 触发压缩，互不干扰。
-        - 完成时基于 snapshot 末尾 K=3 条做 fingerprint 匹配，定位 cutoff 在
-          当前 history 里的位置；逆向走出 capacity（连续匹配长度）；用 corrected
-          末尾 ``min(capacity, len(corrected))`` 条替换当前 history 里 cutoff 前
-          连续 ``capacity`` 个 slot；cutoff 之后的新增消息保持不动。
-        - cutoff 找不到（被压缩吞了 / 被 /new_dialog 清了）→ 整段丢弃 = 白 review
-          → caller 应将 fingerprint 设为 None，下一轮 review 立刻可起。
+        Phase C redesign (snapshot + capacity-based replacement):
+        - ``snapshot``: a copy of the history taken at spawn time (list of
+          message objects). The LLM input uses the snapshot, not the current
+          history — so while the review LLM runs, the user path can keep
+          appending messages / triggering compression without interference.
+        - On completion, fingerprint-match the snapshot's last K=3 entries to
+          locate the cutoff position in the current history; walk back to get
+          the capacity (consecutive match length); replace the consecutive
+          ``capacity`` slots before the cutoff in the current history with the
+          last ``min(capacity, len(corrected))`` entries of corrected; messages
+          added after the cutoff stay untouched.
+        - Cutoff not found (swallowed by compression / cleared by /new_dialog)
+          → drop the whole batch = wasted review → the caller should set the
+          fingerprint to None so the next review can start immediately.
 
         Returns:
             (str, list[dict] | None) tuple:
-              ('patched', new_fingerprint) — 成功 patch 并落盘；new_fingerprint
-                  是 patch 后 new_history 末尾 review 区的 K 条 fingerprint，供
-                  caller 写入 maint_state（**必须**用这个新 fingerprint，而不是
-                  ``build_review_fingerprint(snapshot)``——review 可能改写过末
-                  尾 K 条里的任一条，旧 fingerprint 在新 history 里再也定位不到）
-              ('white', None) — cutoff 在当前 history 里失配，整段丢弃
-              ('failed', None) — LLM 失败 / 被取消 / 历史为空 / 响应格式错误
+              ('patched', new_fingerprint) — patched and persisted;
+                  new_fingerprint is the K-entry fingerprint of the review
+                  region at the tail of the patched new_history, for the caller
+                  to write into maint_state (it **must** use this new
+                  fingerprint rather than ``build_review_fingerprint(snapshot)``
+                  — the review may have rewritten any of the last K entries,
+                  and the old fingerprint would never locate again in the new
+                  history)
+              ('white', None) — cutoff failed to match in the current history; batch dropped
+              ('failed', None) — LLM failure / cancelled / empty history / malformed response
         """
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
@@ -727,7 +1027,7 @@ class CompressedRecentHistoryManager:
                 )
                 review_llm = self._get_review_llm()
                 try:
-                    response_content = (await review_llm.ainvoke(prompt)).content
+                    response_content = (await review_llm.ainvoke(prompt)).content  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                 finally:
                     await review_llm.aclose()
 

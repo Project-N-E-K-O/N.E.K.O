@@ -14,6 +14,7 @@ catch contract regressions in the tool plumbing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -296,6 +297,166 @@ async def test_offline_openai_path_runs_tool_then_text():
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_filters_pretool_leak_before_history():
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    async def recall_handler(args):
+        return {"hits": []}
+
+    tool_def = ToolDefinition(
+        name="recall_memory",
+        description="recall",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        handler=recall_handler,
+    )
+    leak = 'recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_call>'
+    chunks_call_1 = [
+        LLMStreamChunk(content="让我查一下。"),
+        LLMStreamChunk(content=leak),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "recall_memory", "arguments": '{"query":"x"}'},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content="没有查到。", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output=await recall_handler(call.arguments))
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "以前聊过什么？"}]
+    out_chunks = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        messages,
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        out_chunks.append(ch)
+    tail, _event = leak_filter.finalize()
+    if tail:
+        out_chunks.append(LLMStreamChunk(content=tail))
+
+    visible = "".join(ch.content for ch in out_chunks)
+    assert visible == "让我查一下。没有查到。"
+    assistant_with_tool = next(
+        m for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "让我查一下。"
+    assert "recall_memory</name>" not in assistant_with_tool["content"]
+    assert "secret" not in assistant_with_tool["content"]
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_emits_finalized_pretool_tail():
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    async def recall_handler(args):
+        return {"hits": []}
+
+    tool_def = ToolDefinition(
+        name="recall_memory",
+        description="recall",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        handler=recall_handler,
+    )
+    chunks_call_1 = [
+        LLMStreamChunk(content="Let"),
+        LLMStreamChunk(content="s"),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "recall_memory", "arguments": '{"query":"x"}'},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content=" continue.", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output=await recall_handler(call.arguments))
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "以前聊过什么？"}]
+    out_chunks = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        messages,
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        out_chunks.append(ch)
+
+    visible = "".join(ch.content for ch in out_chunks)
+    assert visible == "Lets continue."
+    assistant_with_tool = next(
+        m for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "Lets"
+
+
+@pytest.mark.asyncio
+async def test_visible_tool_leak_filter_flushes_pending_text_before_stream_error(monkeypatch):
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def _astream_with_tools_then_raise(self, messages, **overrides):
+        yield LLMStreamChunk(content="Let")
+        yield LLMStreamChunk(content="s")
+        raise RuntimeError("stream broke")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_with_tools_then_raise)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.model = "fake"
+    client._tool_definitions = []
+
+    out_chunks = []
+    with pytest.raises(RuntimeError, match="stream broke"):
+        async for chunk in client._astream_visible_with_tools([{"role": "user", "content": "hi"}]):
+            out_chunks.append(chunk)
+
+    assert "".join(chunk.content for chunk in out_chunks) == "Lets"
+    assert getattr(out_chunks[-1], "_tool_leak_filtered", False) is True
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
     在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的
@@ -489,6 +650,56 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     # base_url / api_key 必须同步到 vision 配置
     assert client.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert client.api_key == "fake-gemini-key"
+
+
+@pytest.mark.asyncio
+async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.model = "gpt-4o-mini"
+    client.base_url = "https://api.openai.com/v1"
+    client.api_key = "sk-fake"
+    client.vision_model = "vision-model"
+    client.vision_base_url = "https://vision.example/v1"
+    client.vision_api_key = "vision-key"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    class _FakeLLM:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    old_llm = _FakeLLM("old")
+    client.llm = old_llm
+    created: list[_FakeLLM] = []
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        llm = _FakeLLM("vision")
+        created.append(llm)
+        return llm
+
+    monkeypatch.setattr(_ofc, "create_chat_llm_async", fake_create_chat_llm_async)
+
+    await asyncio.gather(
+        client.switch_model("vision-model", use_vision_config=True),
+        client.switch_model("vision-model", use_vision_config=True),
+    )
+
+    assert len(created) == 1
+    assert client.llm is created[0]
+    assert client.model == "vision-model"
+    assert client.base_url == "https://vision.example/v1"
+    assert client.api_key == "vision-key"
+    assert old_llm.closed == 1
 
 
 @pytest.mark.asyncio
@@ -758,6 +969,9 @@ def test_tool_register_request_rejects_non_loopback_callback_url():
         "http://[::1]:9000/cb",
         "http://127.0.0.5/cb",  # 127.0.0.0/8 整段都是 loopback
         "https://localhost/cb",
+        # IPv4-mapped IPv6 loopback：CPython < 3.11.11 的 is_loopback
+        # 不穿透映射，validator 需手动解包 ipv4_mapped 判断
+        "http://[::ffff:127.0.0.1]:9000/cb",
     ]:
         ToolRegisterRequest(**{**base, "callback_url": url})
 
@@ -770,6 +984,7 @@ def test_tool_register_request_rejects_non_loopback_callback_url():
         "ftp://127.0.0.1/cb",  # 错误 scheme
         "http:///cb",  # 缺 host
         "http://[2001:db8::1]/cb",  # 公网 IPv6
+        "http://[::ffff:8.8.8.8]/cb",  # IPv4-mapped 公网 IP 仍须拒绝
     ]
     for url in illegal_urls:
         with pytest.raises(ValidationError):
@@ -1484,6 +1699,77 @@ def test_api_key_error_helper_does_not_treat_plain_403_as_invalid_key():
     assert _is_api_key_rejected_error(RuntimeError("AuthenticationError: OAuth token expired")) is False
 
 
+def test_safety_violation_helper_detects_provider_block_signals():
+    from main_logic.omni_offline_client import _is_safety_violation_signal
+
+    assert _is_safety_violation_signal("content_filter") is True
+    assert _is_safety_violation_signal(None, "SAFETY") is True
+    assert _is_safety_violation_signal("ResponsibleAIPolicyViolation") is True
+    assert _is_safety_violation_signal("connection blocked by proxy") is False
+    assert _is_safety_violation_signal("BLOCK_REASON_UNSPECIFIED") is False
+    assert _is_safety_violation_signal("1008 connection closed") is False
+    assert _is_safety_violation_signal("1008 policy violation") is True
+    assert _is_safety_violation_signal("stop", None) is False
+    assert _is_safety_violation_signal(None, None) is False
+
+
+@pytest.mark.asyncio
+async def test_stream_text_empty_safety_completion_reports_policy_violation(monkeypatch):
+    """Safety-blocked empty completions should not surface as generic no-response."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    async def _astream_empty_safety(self, messages, **overrides):
+        self._last_finish_reason = "content_filter"
+        self._last_block_reason = "SAFETY"
+        self._last_prompt_tokens = 123
+        yield LLMStreamChunk(content="", finish_reason="content_filter")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_empty_safety)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done():
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "gemini-2.5-flash"
+    client.on_text_delta = None
+    client.on_input_transcript = None
+    client.on_response_done = fake_done
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+    client._last_finish_reason = None
+    client._last_block_reason = None
+    client._last_prompt_tokens = None
+
+    await client.stream_text("hi")
+
+    assert len(status_messages) == 1
+    assert status_messages[0]["code"] == "API_POLICY_VIOLATION"
+    assert status_messages[0]["details"]["finish_reason"] == "content_filter"
+    assert status_messages[0]["details"]["block_reason"] == "SAFETY"
+    assert status_messages[0]["details"]["prompt_tokens"] == 123
+    assert status_messages[0]["details"]["model"] == "gemini-2.5-flash"
+
+
 @pytest.mark.asyncio
 async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -1635,6 +1921,49 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     # 没 yield 过 → 静默 fallback，用户拿到 OpenAI 路径的文本
     assert yielded == ["OpenAI fallback OK"]
     # transient 不翻 _genai_tools_unsupported
+    assert client._genai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monkeypatch):
+    """Silent fallback must reset leak-filter state that did not emit text."""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+
+    async def _genai_consumes_filter_then_raises(self, messages, **overrides):
+        leak_filter = overrides["_tool_leak_filter"]
+        leak_filter.feed("<seed:tool_call>secret")
+        if False:
+            yield  # make it an async generator
+        raise RuntimeError("HTTP 503 transient before visible output")
+
+    async def _openai_emits(self, messages, **overrides):
+        leak_filter = overrides["_tool_leak_filter"]
+        visible, _event = leak_filter.feed("Hello")
+        yield LLMStreamChunk(content=visible)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_genai_with_tools", _genai_consumes_filter_then_raises)
+    monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._use_genai_sdk = True
+    client._genai_tools_unsupported = False
+
+    yielded = []
+    leak_filter = ToolLeakFilter(tool_names={"recall_memory"})
+    async for ch in client._astream_with_tools(
+        [{"role": "user", "content": "x"}],
+        _tool_leak_filter=leak_filter,
+        _tool_leak_provider="free",
+    ):
+        yielded.append(ch.content)
+
+    assert yielded == ["Hello"]
+    assert leak_filter.finalize() == ("", None)
     assert client._genai_tools_unsupported is False
 
 
@@ -2774,3 +3103,186 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
         assert c["ui_enabled"] and c["tts_enabled"]
     # 关键回归：禁用模式下小模型摘要器一次都不能被调
     assert summarize_calls == []
+
+
+def _minimal_offline_client_for_leak_tests():
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition
+    from utils.llm_client import SystemMessage
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.base_url = "free"
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 9999
+    client.max_response_rerolls = 0
+    client.max_tool_iterations = 1
+    client.enable_response_guard = False
+    client.enable_long_response_summary = False
+    client.vision_model = ""
+    client.model = "x"
+    client._tool_definitions = [ToolDefinition(name="recall_memory", description="")]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_stream_text_filters_tool_call_leak_before_ui_and_history(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="before ")
+        yield LLMStreamChunk(
+            content='recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_call>'
+        )
+        yield LLMStreamChunk(content=" after")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("hello")
+
+    visible = "".join(emitted)
+    assert visible == "before  after"
+    assert "recall_memory" not in visible
+    ai_messages = [m for m in client._conversation_history if isinstance(m, AIMessage)]
+    assert ai_messages[-1].content == "before  after"
+    assert "secret" not in ai_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_text_replaces_full_prompt_history_after_memory_callback(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        sent_user_messages = [msg for msg in messages if isinstance(msg, HumanMessage)]
+        assert sent_user_messages[-1].content == "full document prompt"
+        yield LLMStreamChunk(content="ok")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    transcripts: list[str] = []
+
+    async def transcript_callback(text: str) -> None:
+        transcripts.append(text)
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text(
+        "full document prompt",
+        system_prefix="callback result",
+        input_transcript_callback=transcript_callback,
+        history_replacement_text="summary only",
+    )
+
+    assert transcripts == ["full document prompt"]
+    assert isinstance(client._conversation_history[1], HumanMessage)
+    assert client._conversation_history[1].content == "callback result\n\nsummary only"
+    assert "full document prompt" not in [
+        getattr(message, "content", "") for message in client._conversation_history
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_ephemeral_filters_tool_call_leak_before_ui_and_history(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="hi ")
+        yield LLMStreamChunk(content="<seed:tool_call>secret</seed:tool_call>")
+        yield LLMStreamChunk(content=" done")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = fake_text_delta
+    client.on_response_done = noop
+    client.on_status_message = noop
+    client.on_proactive_done = noop
+
+    assert await client.prompt_ephemeral("nudge", completion_mode="response") is True
+
+    visible = "".join(emitted)
+    assert visible == "hi  done"
+    assert "seed:tool_call" not in visible
+    ai_messages = [m for m in client._conversation_history if isinstance(m, AIMessage)]
+    assert ai_messages[-1].content == "hi  done"
+    assert "secret" not in ai_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_text_only_leak_yields_no_visible_output(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, LLMStreamChunk
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="<seed:tool_call>secret</seed:tool_call>")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    emitted: list[str] = []
+    statuses: list[str] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        emitted.append(text)
+
+    async def fake_status(message):
+        statuses.append(message)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+
+    await client.stream_text("hello")
+
+    assert emitted == []
+    assert not any(isinstance(m, AIMessage) for m in client._conversation_history)
+    assert [json.loads(message) for message in statuses] == [{"code": "LLM_NO_RESPONSE"}]

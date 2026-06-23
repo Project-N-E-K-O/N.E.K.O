@@ -19,6 +19,10 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
+    const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
     const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
     const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
@@ -545,46 +549,71 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
-    function isHomeTutorialLockedForGreeting() {
+    function readNewUserIcebreakerStore() {
         try {
-            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
-                    return true;
-                }
-            }
-            if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                if (window.isNekoHomeTutorialInteractionLocked() === true) {
-                    return true;
-                }
-            }
-        } catch (_) {}
-        try {
-            if (window.NekoHomeTutorialFeatureController
-                && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
-                && window.NekoHomeTutorialFeatureController.isActive() === true) {
+            if (typeof localStorage === 'undefined') return null;
+            var raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function hasCompletedNewUserIcebreaker() {
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        var finalDay = days && days['7'];
+        return !!(finalDay && finalDay.completed === true);
+    }
+
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        var timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter(function (value) {
+            return Number.isFinite(value) && value > 0;
+        });
+        if (!timestamps.length) return false;
+        var latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
+
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        if (hasCompletedNewUserIcebreaker()) return false;
+        for (var day = 1; day <= 7; day += 1) {
+            var entry = days[String(day)];
+            if (isRecentNewUserIcebreakerEntry(entry)) {
                 return true;
             }
-        } catch (_) {}
-        try {
-            if (document.body && document.body.classList.contains('yui-taking-over')) {
-                return true;
-            }
-        } catch (_) {}
+        }
         return false;
     }
 
-    function sendHomeTutorialState(reason) {
-        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
-        try {
-            S.socket.send(JSON.stringify({
-                action: 'home_tutorial_state',
-                blocking_greeting: isHomeTutorialLockedForGreeting(),
-                reason: reason || 'state-sync',
-                timestamp: Date.now(),
-            }));
-        } catch (error) {
-            console.warn('[HomeTutorial] failed to sync tutorial state:', error);
+    function isTutorialReleaseGreetingReason(reason) {
+        var normalizedReason = String(reason || '').trim().toLowerCase();
+        return normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped';
+    }
+
+    function isNewUserIcebreakerBlockingGreeting(reason) {
+        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
+        if (isTutorialReleaseGreetingReason(normalizedReason)) {
+            return false;
         }
+        return isNewUserIcebreakerPeriodActive();
     }
 
     function normalizeAssistantTurnId(turnId) {
@@ -729,6 +758,13 @@
     // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
     // 一致；抽成共享 helper 防止下次又单边演进。
     function flushRealisticBufferOnTurnEnd() {
+        var endingTurnId = resolveAssistantLifecycleTurnId();
+        if (endingTurnId) {
+            emitAssistantLifecycleEvent('neko-assistant-turn-ending', {
+                turnId: endingTurnId,
+                source: 'turn_end_flush'
+            });
+        }
         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
         }
@@ -747,7 +783,10 @@
         var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
         if (trimmed) {
             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-            window._realisticGeminiQueue.push(trimmed);
+            window._realisticGeminiQueue.push({
+                text: trimmed,
+                turnId: endingTurnId || null
+            });
             if (typeof window.processRealisticQueue === 'function') {
                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
             }
@@ -910,6 +949,7 @@
 
     function ensureAssistantTurnStarted(source, serverTurnId) {
         if (S.assistantTurnId) {
+            window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
             logAssistantLifecycle('ensureAssistantTurnStarted:reuse_existing', {
                 source: source || 'visible_gemini_bubble',
@@ -927,6 +967,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
@@ -964,6 +1005,7 @@
         clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'user_activity');
         S.assistantTurnId = null;
+        window._nekoAssistantTurnId = null;
         clearPendingAssistantTurnStart();
         S.interruptedSpeechId = interruptedSpeechId || null;
         S.pendingDecoderReset = true;
@@ -1041,6 +1083,7 @@
         emitAssistantSpeechCancel(source || 'socket_close');
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
+        window._nekoAssistantTurnId = null;
         S.assistantTurnCompletedId = null;
         S.assistantTurnSettledId = null;
         S.assistantTurnCompletionSource = null;
@@ -1346,13 +1389,68 @@
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
 
-            sendHomeTutorialState('ws-open');
-
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            var goodbyeActiveOnOpen = false;
+            var goodbyeSyncOnOpen = null;
+            try {
+                var pendingGoodbyeState = window.__nekoGoodbyeSilentState;
+                if (pendingGoodbyeState && pendingGoodbyeState.pending === true) {
+                    goodbyeSyncOnOpen = {
+                        active: !!pendingGoodbyeState.active,
+                        reason: pendingGoodbyeState.reason || (pendingGoodbyeState.active ? 'goodbye' : 'return')
+                    };
+                }
+                goodbyeActiveOnOpen = (typeof window.isNekoGoodbyeModeActive === 'function')
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked));
+                if (!goodbyeSyncOnOpen && goodbyeActiveOnOpen) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye'
+                    };
+                }
+                if (!goodbyeSyncOnOpen && pendingGoodbyeState && pendingGoodbyeState.active === true) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye-from-sync'
+                    };
+                }
+                if (goodbyeSyncOnOpen && _thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason
+                    }));
+                    window.__nekoGoodbyeSilentState = {
+                        active: !!goodbyeSyncOnOpen.active,
+                        reason: goodbyeSyncOnOpen.reason,
+                        pending: false,
+                        updatedAt: Date.now()
+                    };
+                }
+            } catch (_) {
+                goodbyeActiveOnOpen = false;
+            }
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
-            S._pendingGreetingSwitch = false;
-            _sendGreetingCheckIfReady();
+            if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active)) {
+                S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
+                S._pendingGreetingSwitch = false;
+            } else {
+                var isGreetingSwitchOnOpen = !!S._pendingGreetingSwitch;
+                var greetingReasonOnOpen = S._greetingCheckReason || (isGreetingSwitchOnOpen ? 'character-switch' : 'ws-open');
+                _markGreetingCheckPending(isGreetingSwitchOnOpen, greetingReasonOnOpen);
+                S._pendingGreetingSwitch = false;
+                if (isGreetingSwitchOnOpen || S._startupGreetingReleaseGateUsed) {
+                    _sendGreetingCheckIfReady();
+                } else {
+                    S._startupGreetingReleaseGateUsed = true;
+                    sendStartupGreetingReleaseRequest('ws-open');
+                }
+            }
 
             // ── game-window-state 重连兜底（codex P2）──
             // game_window_state_change 是 edge-triggered WS 事件——只在 activate
@@ -1449,6 +1547,7 @@
                     }
                     if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
+                        window._nekoAssistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
                     }
@@ -1487,6 +1586,7 @@
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
+                    window._nekoAssistantTurnId = null;
                     clearPendingAssistantTurnStart();
                     // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
                     // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
@@ -1722,7 +1822,7 @@
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('audio_chunk_header_fallback');
+                        ensureAssistantTurnStarted('audio_chunk_header_fallback', response.turn_id);
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
@@ -1750,14 +1850,14 @@
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(),
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(),
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch
                     });
@@ -1814,6 +1914,35 @@
                         window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
                     }
 
+                // -------- focus_state (凝神 indicator) --------
+                // Backend mirrors Focus enter/exit (LLMSessionManager
+                // ._on_focus_transition). Re-dispatch as a CustomEvent the React
+                // chat window listens for to toggle its subtle 思考微光 glow.
+                // Inert by default — only emitted when FOCUS_MODE_ENABLED.
+                } else if (response.type === 'focus_state') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-state', {
+                        detail: { active: !!response.active },
+                    }));
+
+                // -------- focus_charge (凝神 edge-glow level) --------
+                // Continuous Focus charge (0..1) + wall-clock stamp. The React
+                // window scales its edge glow from this and extrapolates the
+                // time decay locally between pushes for a smooth fade.
+                } else if (response.type === 'focus_charge') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-charge', {
+                        detail: { charge: Number(response.charge) || 0, atMs: Number(response.at_ms) || 0 },
+                    }));
+
+                // -------- focus_thinking (凝神 model-thinking pulse) --------
+                // True while a Focus turn runs thinking-on but hasn't emitted
+                // visible content yet; cleared once it speaks or the turn ends.
+                // The React chat window shows a thinking-dots bubble at the tail
+                // of the history while active. Inert unless Focus is engaged.
+                } else if (response.type === 'focus_thinking') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-thinking', {
+                        detail: { active: !!response.active },
+                    }));
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
@@ -1829,6 +1958,7 @@
 
                     if (statusCode === 'TTS_CONNECTION_FAILED') {
                         emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
+                            turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                             code: statusCode,
                             details: statusDetails || null,
                             source: 'tts_status'
@@ -1922,6 +2052,9 @@
                     }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
+                    if (statusCode === 'CHARACTER_LEFT') {
+                        window.dispatchEvent(new CustomEvent('neko:character-left', { detail: response }));
+                    }
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         S._suppressCharacterLeft = false;
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
@@ -1984,6 +2117,7 @@
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
                                         S.sessionStartedResolver = resolve;
                                         S.sessionStartedRejecter = reject;
+                                        S._pendingSessionStartMode = 'audio';
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -2522,6 +2656,49 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (response.input_mode !== 'text'
+                            && typeof window.isNekoGoodbyeModeActive === 'function'
+                            && window.isNekoGoodbyeModeActive()) {
+                        console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.cancelPendingSessionStart === 'function') {
+                            window.cancelPendingSessionStart('Voice start cancelled by goodbye');
+                        } else {
+                            S.voiceStartPending = false;
+                            window.isMicStarting = false;
+                            S.sessionStartedResolver = null;
+                            S.sessionStartedRejecter = null;
+                        }
+                        S.isTextSessionActive = false;
+                        S.voiceChatActive = false;
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                            S._suppressCharacterLeft = true;
+                            S.socket.send(JSON.stringify({ action: 'end_session' }));
+                        }
+                        return;
+                    }
+                    // 跨模式 ack 守卫：用户点的麦/文本启动正在 await session_started 时
+                    // （resolver 还在 + _pendingSessionStartMode 记着请求模式），若到达的
+                    // input_mode 与用户请求的不一致，这条 ack 属于并发的后台会话——典型是
+                    // proactive / greeting 自起的 text 会话（它也是一次正常 start_session，
+                    // 完成时会发 session_started(text)）。绝不能用它去 resolve 用户的 audio
+                    // 启动 promise 或翻转 voiceChatActive/isTextSessionActive，否则用户点了
+                    // 语音却被 text ack 收口 → 开麦但后端是 text 会话、UI 错配。直接忽略，
+                    // 用户那次启动的真正 ack（后端跨模式撞车会等 in-flight 落定后改起本模式
+                    // 会话再发，见 core.py start_session）随后到达时按下方正常流程收口。
+                    // 注意要求 resolver 仍在：无 pending 启动时（如 chat.html 子窗口纯靠
+                    // session_started 同步 hide 自己的输入框）不拦，维持多窗口原行为。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedResolver
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_started', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
@@ -2554,6 +2731,15 @@
                         window.syncVoiceChatComposerHidden(_shouldHide);
                     }
 
+                    // 立即清掉启动超时：匹配的 ack 已到（已过上方 mode 守卫），若拖到下面
+                    // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
+                    // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
+                    // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
+                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {
@@ -2564,6 +2750,7 @@
                             S.sessionStartedResolver(response.input_mode);
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
+                            S._pendingSessionStartMode = null;
                         }
                     }, 500);
 
@@ -2584,6 +2771,20 @@
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
+                    // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
+                    // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发
+                    // session_failed(text)。它不该 reject 用户那次 audio 启动——后端跨模式
+                    // 撞车会等 in-flight 落定后改起 audio（见 core.py start_session），用户的
+                    // 真正 ack 随后到达。模式不一致就忽略这条 fail。session_failed 一定带
+                    // input_mode（见后端 send_session_failed），故 mismatch 判定可靠。
+                    if (S._pendingSessionStartMode
+                            && S.sessionStartedRejecter
+                            && response.input_mode
+                            && response.input_mode !== S._pendingSessionStartMode) {
+                        console.log('[App] ignore cross-mode session_failed', response.input_mode,
+                            'while pending', S._pendingSessionStartMode);
+                        return;
+                    }
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2612,10 +2813,12 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
+                    window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2626,6 +2829,7 @@
                     }
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
+                    S._pendingSessionStartMode = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2814,9 +3018,10 @@
 
                 // -------- activity_context_prompt --------
                 // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
-                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
-                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
-                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                // 「进入」专注工作（context='work'）时推这条。前端（对所有用户、每会话
+                // 每类一次）据此弹窗问要不要开/关主动搭话里的屏幕分享来源。去重都在
+                // app-context-prompt.js（原 A/B 实验组 vision_chat_default_off 的机制已
+                // 合并进 main）。
                 } else if (response.type === 'activity_context_prompt') {
                     if (window.appContextPrompt
                             && typeof window.appContextPrompt.handle === 'function') {
@@ -3053,27 +3258,8 @@
         }
         return false;
     }
-    function _isHomeTutorialPage() {
-        if (window.location && typeof window.location.pathname === 'string') {
-            var path = window.location.pathname || '/';
-            return path === '/' || path === '/index.html';
-        }
-        var manager = window.universalTutorialManager || null;
-        return !!(manager && manager.currentPage === 'home');
-    }
-    function _isTutorialBlockingGreeting() {
-        if (!_isHomeTutorialPage()) return false;
-        try {
-            if (isHomeTutorialLockedForGreeting()) {
-                return true;
-            }
-        } catch (_) {}
-        return window.isInTutorial === true
-            || !!(window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning);
-    }
     function _isGreetingCheckBlocked() {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
-        if (_isTutorialBlockingGreeting()) return true;
         if (S.isRecording || S.isPlaying) return true;
         if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
         if (S.assistantTurnAwaitingBubble || S.assistantSpeechActiveTurnId) return true;
@@ -3081,8 +3267,6 @@
             '#prominent-notice-overlay',
             '.modal-overlay',
             '.modal-dialog',
-            '.driver-popover',
-            '.driver-overlay',
             '.storage-location-completion-card',
             '#storage-location-overlay',
             '.storage-location-modal'
@@ -3111,9 +3295,110 @@
         S._greetingCheckIsSwitch = !!isSwitch;
         S._greetingCheckReason = reason || '';
     }
+
+    function consumeStartupGreetingReleasedDetail() {
+        try {
+            const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
+            if (detail && detail.released === true) {
+                delete window.__NEKO_STARTUP_GREETING_RELEASED__;
+            }
+            return detail && detail.released === true ? detail : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function hasStartupGreetingReleaseProducer() {
+        try {
+            if (window.universalTutorialManager) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            return !!document.querySelector('script[src*="/static/tutorial/core/universal-manager.js"],script[src*="tutorial/core/universal-manager.js"]');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isStartupTutorialActiveForGreeting() {
+        try {
+            var manager = window.universalTutorialManager || null;
+            if (manager && manager.isTutorialRunning === true) return true;
+            if (manager && manager.activeAvatarFloatingGuideRound) return true;
+            if (document.body && document.body.classList && document.body.classList.contains('yui-taking-over')) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function scheduleStartupGreetingReleaseFallback() {
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+        }
+        S._startupGreetingReleaseFallbackTimer = setTimeout(function () {
+            S._startupGreetingReleaseFallbackTimer = 0;
+            if (S._startupGreetingReleasePending) {
+                if (isStartupTutorialActiveForGreeting()) {
+                    scheduleStartupGreetingReleaseFallback();
+                    return;
+                }
+                releaseStartupGreetingCheck('startup-greeting-release-timeout');
+            }
+        }, STARTUP_GREETING_RELEASE_FALLBACK_MS);
+    }
+
+    function sendStartupGreetingReleaseRequest(reason) {
+        const released = consumeStartupGreetingReleasedDetail();
+        if (released) {
+            releaseStartupGreetingCheck(released.reason || 'startup-greeting-release');
+            return;
+        }
+        if (!hasStartupGreetingReleaseProducer()) {
+            releaseStartupGreetingCheck(reason || 'startup-greeting-no-release-producer');
+            return;
+        }
+        S._startupGreetingReleasePending = true;
+        S._startupGreetingReleaseReason = reason || 'ws-open';
+        scheduleStartupGreetingReleaseFallback();
+    }
+
+    function releaseStartupGreetingCheck(reason) {
+        if (!S._startupGreetingReleasePending && !S._greetingCheckPending) {
+            return;
+        }
+        S._startupGreetingReleasePending = false;
+        S._startupGreetingReleaseReason = '';
+        if (S._startupGreetingReleaseFallbackTimer) {
+            clearTimeout(S._startupGreetingReleaseFallbackTimer);
+            S._startupGreetingReleaseFallbackTimer = 0;
+        }
+        if (reason) {
+            S._greetingCheckReason = reason;
+        }
+        _sendGreetingCheckIfReady();
+    }
+
+    function _consumeGreetingCheckForNewUserIcebreaker() {
+        if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
+        if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
+        S._greetingCheckPending = false;
+        S._greetingCheckIsSwitch = false;
+        S._greetingCheckReason = '';
+        _resetGreetingCheckRetry(true);
+        console.log('[greeting_check] consumed by new-user icebreaker period');
+        return true;
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) {
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
+            return;
+        }
+        if (S._startupGreetingReleasePending) {
+            return;
+        }
+        if (_consumeGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
@@ -3141,7 +3426,6 @@
                 } catch (_) { greetingLang = ''; }
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                sendHomeTutorialState('greeting-check-ready');
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
@@ -3219,15 +3503,44 @@
         });
     }
 
-    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+    window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};
-        sendHomeTutorialState(detail.reason || 'lock-changed');
-        if (detail.locked === false) {
-            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
-                && S._greetingCheckPending) {
-                S._greetingCheckReason = detail.reason;
-            }
-            _sendGreetingCheckIfReady();
+        if (detail.released === false) {
+            return;
+        }
+        releaseStartupGreetingCheck(detail.reason || 'startup-greeting-release');
+    });
+
+    // 从猫咪形态变回猫娘（请她回来）时，按猫咪停留时长 + tier 请求一次专属问候。
+    // 与 greeting_check 对偶，但走独立 action，时长由 app-auto-goodbye 测量传入。
+    // 变回不重连 WS，所以这里直接在事件触发时发；若无连接则静默放弃（普通 greeting
+    // 会在下次 WS 重连时按对话 gap 兜底）。
+    window.addEventListener('neko:cat-greeting-check', function (event) {
+        var detail = (event && event.detail && typeof event.detail === 'object') ? event.detail : {};
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        var durationSeconds = Number(detail.durationSeconds) || 0;
+        if (durationSeconds < 180) {
+            return; // < 3min 静默（前端先挡一道，后端 get_cat_greeting_prompt 再挡一道）
+        }
+        var catLang = '';
+        try {
+            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
+            else catLang = localStorage.getItem('i18nextLng') || '';
+            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
+        } catch (_) { catLang = ''; }
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'cat_greeting_check',
+                cat_duration_seconds: durationSeconds,
+                tier: detail.tier || '',
+                was_auto: !!detail.wasAuto,
+                language: catLang
+            }));
+            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
+        } catch (e) {
+            console.warn('[cat_greeting_check] send failed:', e);
         }
     });
 

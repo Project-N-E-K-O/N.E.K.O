@@ -6,10 +6,12 @@ from .entry_common import (
     _entry_exception_error,
     plugin_entry,
     tr,
+    ui,
 )
 
 
 class _MemoryReviewEntriesMixin:
+    @ui.action()
     @plugin_entry(
         id="study_memory_due_reviews",
         name=tr("entries.memory_due_reviews.name", default="Study Memory Due Reviews"),
@@ -41,6 +43,7 @@ class _MemoryReviewEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_due_reviews")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_review_item",
         name=tr("entries.memory_review_item.name", default="Review Study Memory Item"),
@@ -110,6 +113,7 @@ class _MemoryReviewEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_review_item")
 
+    @ui.action()
     @plugin_entry(
         id="study_memory_recitation_attempt",
         name=tr(

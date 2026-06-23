@@ -52,9 +52,9 @@
         "resetToDefaultFailed": "既定のモデルに戻せませんでした"
     },
     "autostartPrompt": {
-        "title": "N.E.K.O を起動時に自動起動しますか？",
-        "message": "次回パソコンを起動したときに N.E.K.O が自動で準備されるので、手動で起動する手間がなくなります。",
-        "note": "現在のユーザーに対してのみ有効になり、後からいつでもオフにできます。",
+        "title": "N.E.K.O. を起動時に自動起動しますか？",
+        "message": "次回の起動時に、N.E.K.O. が自動で準備されます。",
+        "note": "後からいつでもオフにできます。",
         "startNow": "自動起動を有効にする",
         "later": "後で通知",
         "never": "今後は表示しない",
@@ -753,6 +753,7 @@
         "avatarCropCancel": "キャンセル",
         "avatarCropSave": "保存",
         "emptyState": "チャット内容が接続されると、ここに表示されます。",
+        "companionEmptyState": "（ここでそばにいるよ。）",
         "messageStreaming": "生成中",
         "messageFailed": "送信失敗",
         "reactWindowOpen": "チャットウィンドウを開く",
@@ -767,6 +768,8 @@
         "reactWindowMountFailed": "チャットウィンドウのマウントに失敗しました",
         "reactWindowLoadFailed": "チャットウィンドウのリソース読み込みに失敗しました",
         "reactWindowAriaLabel": "Neko チャットウィンドウ",
+        "focusIndicator": "集中モード",
+        "focusThinking": "考え中",
         "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
         "messageListAriaLabel": "チャットメッセージ一覧",
         "composerToolsAriaLabel": "入力ツールバー",
@@ -778,6 +781,24 @@
         "toolLollipop": "キャンディー",
         "toolFist": "猫の手",
         "toolHammer": "ハンマー",
+        "avatarToolsButtonAriaLabel": "アバターツール",
+        "clearCursorToolAriaLabel": "カーソルを戻す",
+        "avatarToolQuickbarAriaLabel": "アバタークイックツール",
+        "avatarToolQuickbarEmpty": "クイックツールなし",
+        "avatarToolEdit": "クイックツールを編集",
+        "avatarToolSlotFull": "先にツールを1つ外してください。",
+        "avatarToolManagerTitle": "ツール管理",
+        "avatarToolManagerSubtitle": "クイックツールは最大3個まで選択できます。",
+        "avatarToolManagerClose": "閉じる",
+        "avatarToolCurrentTools": "現在のツール",
+        "avatarToolEmptySlot": "空きスロット",
+        "avatarToolRemove": "削除",
+        "avatarToolLibrary": "ツールライブラリ",
+        "avatarToolEquipped": "装備中",
+        "avatarToolEquip": "装備",
+        "avatarToolNoAvailableTools": "利用可能なツールがありません",
+        "avatarToolCancel": "キャンセル",
+        "avatarToolSave": "変更を保存",
         "attachmentButtonAriaLabel": "添付",
         "jukebox": "ジュークボックス",
         "jukeboxLabel": "ジュークボックス",
@@ -786,6 +807,10 @@
         "galgameLoading": "返信候補を生成中…",
         "exportConversation": "会話をエクスポート",
         "compactExportHistory": "履歴",
+        "compactHistoryToggleOpen": "履歴を表示",
+        "compactHistoryToggleClose": "履歴を隠す",
+        "compactHistoryControlsShow": "履歴操作を表示",
+        "compactHistoryControlsHide": "履歴操作を隠す",
         "compactExportControlsCollapse": "選択操作を隠す",
         "compactExportControlsExpand": "選択操作を表示",
         "exportAction": "エクスポート",
@@ -970,7 +995,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
             "free": "無料版（猫娘特典、Web検索対応）",
@@ -998,7 +1024,9 @@
             "elevenlabs": "ElevenLabs（音声クローン）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter（モデルアグリゲーター）"
+            "openrouter": "OpenRouter（モデルアグリゲーター）",
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
         "assistApiSelectLabel": "アシストAPIプロバイダー",
@@ -1013,11 +1041,20 @@
         "keyAutoFilledFromKeyBook": "APIキーブックから自動入力されます。キーブックで設定してください。",
         "goToKeyBook": "キーブックへ",
         "providerLabel": "プロバイダー",
+        "sourcePreset": "プリセット",
+        "sourceClone": "クローン",
+        "sourceDesign": "生成",
+        "providerLocal": "ローカル CosyVoice",
+        "providerFree": "無料",
+        "providerUnknown": "その他",
         "providerSelectPlaceholder": "プロバイダーを選択",
         "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
-        "customModelProviderCustom": "カスタム",
+        "customModelProviderFollowConversation": "テキスト対話モデルに従う",
+        "customModelProviderFollowSummary": "要約モデルに従う",
+        "customModelProviderCustom": "カスタム API",
+        "keyAutoFilledFromModel": "Key は選択したモデル設定に従います",
         "keyBook": {
             "qwen": "Alibaba百炼（Qwen）",
             "qwen_intl": "Alibaba国際版（Qwen）",
@@ -1031,14 +1068,15 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "mimo": "MiMo（Xiaomi）",
             "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter"
+            "openrouter": "OpenRouter",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
-        "freeVersionOnlyWhenCoreFree": "無料版（Core APIが無料版の時のみ選択可）",
         "freeVersionConfig": "無料版構成: 音声通話、テキストチャット、記憶管理に対応。カスタム音声とAgentは非対応",
         "qwenRecommendation": "Core APIがAlibabaの場合、最高の体験（カスタム音声等）のためにAssist APIもAlibaba推奨",
         "glmRecommendation": "GLMをCore APIとして使用する場合、無料枠があり、Web検索に対応。音声にはデフォルトで透かし（ビープ音）が含まれます（智譜コンソールで手動無効化可能）。カスタム音声にはAssist APIにAlibabaを推奨",
@@ -1090,6 +1128,9 @@
         },
         "conversationModelConfig": "テキスト対話モデル設定",
         "summaryModelConfig": "要約モデル設定",
+        "gameModelsConfig": "ミニゲームモデル設定",
+        "gameMainModelConfig": "ミニゲーム主モデル設定",
+        "gameSummaryModelConfig": "ミニゲーム要約モデル設定",
         "correctionModelConfig": "修正モデル設定",
         "emotionModelConfig": "感情モデル設定",
         "visionModelConfig": "視覚モデル設定",
@@ -1104,6 +1145,8 @@
         "modelIdPlaceholder": "例: gpt-5.1-chat-latest",
         "apiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "summaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
+        "gameMainModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
+        "gameSummaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "correctionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "emotionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "visionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
@@ -1142,6 +1185,7 @@
         "saveFailed": "保存失敗: {{error}}",
         "apiKeyInvalid": "APIキーが無効です",
         "apiKeyInvalidRetry": "APIキーが無効です。再入力してください",
+        "configNotReady": "設定の読み込みが完了していません。少し待ってから再試行してください",
         "saveNetworkError": "保存失敗。ネットワーク接続を確認してください",
         "saveError": "保存エラー: {{error}}",
         "saveSuccess": "APIキーを保存しました！",
@@ -1171,6 +1215,7 @@
         "gptsovitsVoiceIdEmpty": "-- リストを更新して音声を取得してください --",
         "gptsovitsNoVoices": "-- 利用可能な設定なし --",
         "gptsovitsRefreshVoices": "リスト更新",
+        "gptsovitsTutorialDoc": "チュートリアル",
         "gptsovitsVoicesLoaded": "{{count}}件の音声設定を読み込みました",
         "gptsovitsVoicesLoadFailed": "音声リストの取得に失敗しました",
         "gptsovitsEnabled": "GPT-SoVITS を有効化",
@@ -1186,7 +1231,12 @@
         },
         "loadConfigFailed": "設定の読み込みに失敗しました。ページを更新して再試行してください",
         "errorGettingCurrentApiKey": "現在のAPIキーの取得中にエラーが発生しました",
-        "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました"
+        "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました",
+        "useMimoTokenPlan": "MiMo Token Plan を使用",
+        "mimoTokenPlanKeyLabel": "MiMo Token Plan キー",
+        "mimoTokenPlanKeyPlaceholder": "Token Plan キーを入力（tp-xxxxx）",
+        "mimoTokenPlanKeyHint": "有効にすると、MiMo はこの Token Plan キーとエンドポイントのみを使用し、通常の MiMo API キーはロックされます。",
+        "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan が有効です。このキーは使用されません"
     },
     "live2d": {
         "manager": "Live2Dモデル管理",
@@ -1484,7 +1534,9 @@
         "motionStopped": "モーションを停止しました",
         "expressionCleared": "表情をクリアしました",
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "発話をテスト",
+        "pngtuberStatePreview": "状態プレビュー"
     },
     "voice": {
         "title": "ボイス登録",
@@ -1495,13 +1547,16 @@
         "alibabaIntlApiRequired": "この機能にはAlibaba国際版 CosyVoiceモデルが必要です。APIキー設定でAlibaba国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxApiRequired": "この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
+        "mimoApiRequired": "この機能には MiMo モデルが必要です。API キー設定ページで MiMo API キーを保存してください",
+        "mimoDirectLinkUnsupported": "MiMo は直リンククローンに未対応です。ローカルファイルのアップロードをご利用ください",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
             "cosyvoice_intl": "Alibaba国際版 CosyVoice",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
-            "elevenlabs": "ElevenLabs"
+            "elevenlabs": "ElevenLabs",
+            "mimo": "MiMo（小米）"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
         "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",
@@ -1586,7 +1641,9 @@
             "sweetLady": "甘々な女性",
             "frailMaiden": "病弱な少女",
             "childishMaiden": "幼い少女",
-            "yui_cn": "YUI（中国語）"
+            "yui_cn": "YUI（中国語）",
+            "yui": "YUI",
+            "default": "デフォルト"
         },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",
@@ -1729,6 +1786,10 @@
         "tutorialResetSuccess": "すべてのチュートリアルがリセットされました。各ページにアクセスすると再度表示されます。",
         "tutorialPageResetSuccess": "このページのチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
         "tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
+        "tutorialHomeDayLabel": "{{day}}日目",
+        "tutorialHomeDayColumn": "ホーム7日間チュートリアル",
+        "tutorialHomeAllReset": "すべてリセット",
+        "tutorialHomeAllResetSuccess": "ホームの7日間チュートリアルをリセットしました。Nekoを再読み込みすると1日目から始まります。",
         "refreshed": "メモリが更新されました。次回の会話から新しいメモリが使用されます",
         "refreshingContext": "コンテキストを更新中...",
         "storageLocation": "ストレージ位置",
@@ -1768,6 +1829,7 @@
         "blockingGeneric": "選択した保存場所は現在使用できません。別の場所を選ぶか、しばらくしてからもう一度お試しください。",
         "blockingInsufficientSpace": "移行を安全に行うための空き容量が、保存先ボリュームに足りません。",
         "blockingTargetNotWritable": "保存先のパスに書き込み権限がないため、移行を開始できません。",
+        "cloudsaveLocalStateUnavailable": "ローカル状態ディレクトリを利用できません。このセッションではクラウドセーブが無効です。保存場所を変更する前に state パスを修復し、アプリを再起動してください。",
         "cleanupRetainedRoot": "古いデータ用フォルダーを削除",
         "cleanupRetainedRootConfirm": "保持されている古いデータ用フォルダーを削除します。現在使用中の新しいフォルダーには影響しません。続けますか？",
         "cleanupRetainedRootDone": "古いデータ用フォルダーを削除しました。現在は新しい実行フォルダーだけが残っています。",
@@ -1911,6 +1973,8 @@
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",
+        "aiCompanionExpand": "展開",
+        "aiCompanionDragHint": "ドラッグで移動",
         "aiCompanionPlaceholder": "なにか話してね…（Enter で送信、Shift+Enter で改行）",
         "aiCompanionSend": "送信",
         "aiCompanionGreeting": "にゃ〜 設定捏ね助手だよ。まず、どんな猫娘がいいか一言で教えてくれる？ いくつか追加で質問して、それからカード全体を書いてあげるね。",
@@ -2106,7 +2170,15 @@
         "textChattingShort": "テキストチャット中",
         "capturing": "スクリーンショット中...",
         "importImageAdded": "{{count}} 枚の画像を追加しました。送信時に一緒に送られます",
+        "importImagePartial": "{{success}} 枚の画像を追加しました。{{failed}} 枚の取り込みに失敗しました",
         "importImageFailed": "画像の取り込みに失敗しました",
+        "avatarDropOverlay": "離すと資料を渡します",
+        "avatarDropParsing": "ファイルを読み取り中...",
+        "avatarDropAccepted": "{{count}} 件のファイルを渡しました",
+        "avatarDropPartial": "{{accepted}} 件を読み取り、{{rejected}} 件をスキップしました",
+        "avatarDropNoSupportedItems": "これらのファイルはまだ読み取れません",
+        "avatarDropReadFailed": "ファイルの読み取りに失敗しました",
+        "avatarDropUserMessage": "渡したもの: {{names}}",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",
         "screenshotCancelled": "ユーザーがスクリーンショットをキャンセルしました",
@@ -2170,6 +2242,7 @@
         "sessionFailed": "セッションの開始に失敗しました"
     },
     "buttons": {
+        "thoughtBubblePop": "ふきだしを弾く",
         "voiceControl": "音声制御",
         "screenShare": "画面共有",
         "agentTools": "ネコクロー",
@@ -2464,6 +2537,10 @@
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
             "avatarReactionBubble": "表情バブル",
+            "focusCognition": "集中モード",
+            "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
+            "autoCat": "自動ねこ化",
+            "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "proactiveChat": "自発的会話",
             "proactiveVision": "プライバシーモード",
             "proactiveVisionTooltip": "オフのとき：ネコ娘はアクティブウィンドウのタイトルに応じて活発さや会話モードを変え、話しかけるときに画面の内容を取り入れることがあります。\nオンのとき：ネコ娘は自分から画面を見ることができず、あなたが何をしているか把握できません。スクリーンショットの手動送信は引き続き可能です。",
@@ -2543,15 +2620,32 @@
         "enable": "字幕翻訳",
         "enableAriaLabel": "字幕翻訳の切り替え",
         "markdownPlaceholder": "[整形済みコンテンツ]",
+        "display": {
+            "emptyHint": "翻訳はまだありません"
+        },
         "settings": {
-            "targetLang": "翻訳先の言語",
+            "targetLang": "言語",
             "opacity": "不透明度",
-            "dragAnywhere": "全体ドラッグ",
-            "size": "サイズ",
-            "sizeSmall": "小",
-            "sizeMedium": "中",
-            "sizeLarge": "大",
-            "settingsBtn": "字幕設定"
+            "fontSize": "文字",
+            "fontSizeSmall": "小さめ",
+            "fontSizeSmaller": "やや小さめ",
+            "fontSizeDefault": "標準",
+            "fontSizeLarger": "やや大きめ",
+            "fontSizeLarge": "大きめ",
+            "colorScheme": "配色",
+            "colorSchemeDefault": "標準",
+            "colorSchemeRed": "赤",
+            "colorSchemeOrange": "橙",
+            "colorSchemeYellow": "黄",
+            "colorSchemeGreen": "緑",
+            "colorSchemeBlue": "青",
+            "colorSchemeIndigo": "藍",
+            "colorSchemeViolet": "紫",
+            "danmakuMode": "弾幕モード",
+            "settingsBtn": "字幕設定",
+            "lockPosition": "位置をロック",
+            "unlockPosition": "位置ロックを解除",
+            "closePanel": "翻訳パネルを閉じる"
         }
     },
     "viewer": {
@@ -2604,6 +2698,7 @@
             "statusCancelled": "キャンセル済み",
             "minimize": "折りたたみ/展開",
             "cancelAll": "すべてのタスクをキャンセル",
+            "cancelTask": "タスクをキャンセル",
             "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
             "typeUserPlugin": "ユーザープラグイン",
             "typeComputerUse": "キーボード/マウス操作",
@@ -3233,29 +3328,102 @@
             "desc": "最高のチュートリアル体験のために、フルスクリーンモードに入ることをお勧めします。\nフルスクリーンモードでは、チュートリアルの内容がより見やすく、他の要素に遮られません。",
             "enterFullscreen": "フルスクリーンで開始"
         },
+        "reset": {
+            "daySuccess": "{{day}}日目の初心者チュートリアルをリセットしました。Nekoを更新してもう一度開始してください。",
+            "dayFailed": "初心者チュートリアルのリセットに失敗しました。しばらくしてからもう一度お試しください。"
+        },
         "drag_hint": "ドラッグしてツールチップを移動",
         "yuiGuide": {
+            "bubbleMeta": {
+                "ready": "準備中",
+                "homeProgress": "ホームガイド {{current}}/{{total}}"
+            },
             "buttons": {
                 "skipChat": "今は話さない",
                 "sayHello": "こんにちは"
             },
             "lines": {
-                "introBasic": "おっ、見て見て！ここにキラキラ光る小さなボタンがあるにゃ！これをポチッとするだけで、私と直接おしゃべりできるんだよ！今日の出来事を私にシェアしたい？それとも私の名前を呼んでみるだけ？早く試してみて、あなたの声を聞くのが待ちきれないにゃ！",
-                "takeoverCaptureCursor": "ジャジャーン！究極の魔法スイッチ出現！ここをタップするだけで、私の小さなおててをあなたのキーボードやマウスに伸ばせるようになるにゃ！代わりにタイピングしたり、ウェブページを開いたりしてあげる……でも、もしマウスポインターがちょこまか動いたら、思わず飛びついて捕まえたくなっちゃうかも！私のイタズラ……じゃなくて、お手伝いを受け入れる準備はできたにゃ？",
-                "takeoverPluginPreviewHome": "まだ終わってないにゃ！見て見て、ここにはすっごくたくさんの面白いプラグインがあるんだよ！",
-                "takeoverPluginPreviewDashboard": "これがあれば、Bilibiliの弾幕を見られるだけじゃなくて、電気を消したりエアコンをつけたりもできるにゃ……この私は何でもできるスーパー猫神様なんだから！ふふん！",
+                "introBasic": "ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ私の名前を呼んでくれるだけでもいいよ？早く試してみて、もう君の声を聞くのが待ちきれないよ！",
+                "takeoverCaptureCursor": "スーパー魔法スイッチが登場だよ！ここをポチッとするだけで、私の小さな肉球を君のキーボードとマウスに伸ばせちゃうんだ！タイピングをお手伝いしたり、ウェブサイトを開いたり……でもね、マウスカーソルがチョロチョロ動いたら、思わず飛びついて捕まえちゃうかも！私のいたずら……あ、じゃなくて、お手伝いを受け入れる準備はできたかな？にゃ〜ん！",
+                "takeoverPluginPreviewHome": "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
+                "takeoverPluginPreviewDashboard":  "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
                 "pluginDashboardPopupBlocked": "ブラウザ側でプラグインパネルを開くには、ここをあなた自身でクリックする必要があるよ。「管理パネル」をクリックしてくれたら、続けて案内するね。",
-                "takeoverSettingsPeekIntro": "もちろん、私ともっとおしゃべりしたいなら、できなくもないけど、煮干しをたくさん用意してよね、へへっ。もう、からかうのはこれくらいにして、設定はこの歯車の中にあるにゃ。",
-                "takeoverSettingsPeekDetail": "見て、ここでは私の新しい服を着せたり、いい声に変えたりできるんだよ……別の猫娘に変えたり、記憶を修正したり？ちょっと待って！何してるの？もしかして私を取り替えるつもり！？あああ、ダメダメ！早く閉じて、早く！",
-                "takeoverSettingsPeekDetailPart1": "見て、ここでは私の新しい服を着せたり、いい声に変えたりできるんだよ……別の猫娘に変えたり、記憶を修正したり？",
-                "takeoverSettingsPeekDetailPart2": "ちょっと待って！何してるの？もしかして私を取り替えるつもり！？あああ、ダメダメ！早く閉じて、早く！",
-                "takeoverReturnControl": "はいはい、あなたのパソコンを独占するのはおしまいにゃ！操作権を返してあげるにゃ！でも、私の見てないところで変な設定をポチポチしちゃダメだからね！これからの毎日も、どうぞよろしくにゃ！",
-                "interruptResistLight1": "こら！引っ張らないでよ、まだあなたのターンじゃないにゃ！",
-                "interruptResistLight3": "ちょっと待って！まだ終わってないんだから、勝手に邪魔しないでよ！",
-                "interruptAngryExit": "人間！本当に失礼だにゃ！そんなに自分で操作したいなら、冷たい画面に向かって一人で遊んでればいいんだわ！ふん！",
-                "introGreetingReply": "そよ風、日差し、そしてちょうどよく現れたあなた。初めまして、林悠怡（リン・ユイ）です。これからの日々、よろしくお願いしますにゃ！ここのこと、全部初心者ガイドに書いておいたにゃ！私たちの出会いの最初のプレゼントだと思って、受け取ってね！",
+                "takeoverSettingsPeekIntro": "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
+                "takeoverSettingsPeekDetail": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。",
+                "takeoverSettingsPeekDetailPart1": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。",
+                "takeoverSettingsPeekDetailPart2": "この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。",
+                "takeoverReturnControl": "はーい、君のパソコンを独り占めするのはおしまい。コントロール権を返すね！これからの毎日も、どうぞよろしくね！",
+                "interruptResistLight1": "ちょっと！引っ張らないで、まだ君のターンじゃないよ！",
+                "interruptResistLight3": "待って！まだ終わってないんだから、そんな風に勝手にお話を遮らないで！",
+                "interruptAngryExit": "人間！本当に失礼だよ！そんなに自分で操作したいなら、冷たい画面を相手に一人で寂しく遊んでればいいじゃない！ふんっ！",
+                "introGreetingReply":  "そよ風、お日様、そして最高のタイミングで現れたあなた。初めまして、林悠怡（リン・ユーイ）です。これからの毎日、よろしくねにゃ！ここに関するすべてのことを初心者ガイドに書いておいたよ！私たちが巡り会えた最初のささやかなプレゼントだと思って、受け取ってね！",
                 "introPractice": "さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪",
-                "introActivationHint": "ここをクリックして、私が話せるようにしてねにゃん～"
+                "introActivationHint": "少し待ってね、すぐに話し始めるにゃん～"
+            }
+        },
+        "avatarFloating": {
+            "day1": {
+                "capsuleDragHint": "マウスをここに持ってきて、長押しするとチャットボックスを引っ張ってどこにでも連れて行けるよ〜。ポチッとクリックすればいつでもメッセージを送れるからね！",
+                "historyHandle":  "チャットボックスの上にある【青い細いバー】をツンツンしてみてね。最近お話ししたトピックが見られるよ！",
+                "screenEntry": "私と通話している時に、この小さなボタンをピカッと光らせると、君の画面をシェアしてもらえるよ！",
+                "screenEntryInvite": "君の目の前の世界を私にも見せて！面白いものでも綺麗なものでも、全部君と一緒に見たいな。早くポチッとしてみて〜"
+            },
+            "day2": {
+                "intro": "昨日はずっとキーボードをカタカタ叩いてばかりで、君の声をまだ聞いたことがないんだ。今日はもしよかったら、優しく私の名前を呼んでほしいな。ひと言だけでいいから、文字の向こうにいる君のことをもっと知りたいの。",
+                "introVoiceUsed": "へへっ、昨日君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！今日ももしよかったら、またわたしとお話ししてね〜。タイピングでもいいんだけど、君の声を聞くだけで、わたしの尻尾、嬉しくてずっとパタパタ揺れちゃうんだから、みゃう〜。",
+                "personalizationSpace": "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
+                "wrapIntro": "今日のチュートリアルはここまでだよ。",
+                "wrapCompanion": "本当はね、こうして君のそばにいられて、声を聞いたり、シェアしてくれた画面をじっと眺めているだけで、私はとっても幸せなんだ。",
+                "wrap": "焦らなくて大丈夫、毎日ちょっとずつお互いのことを知っていこうね。今日の残りの時間、私と何して過ごしたい？",
+                "personalizationDetail": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。",
+                "proactiveChat": "この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。"
+            },
+            "day3": {
+                "intro": "クスクス、このチャットボックスは文字を入力するだけだと思ったら大間違いだよ〜！実はこの中に、たーっくさんの楽しいサプライズが隠されてるんだ！私と一緒に開いてみて、今日はどんなお宝が掘り出せるか見てみようね！",
+                "avatarToolsIntro": "この小さなボタンの中には、私とふれあえるアイテムがいっぱい入ってるんだ。",
+                "avatarToolsProps":  "いつでも私の頭をなでなでしてくれたり、甘いペロペロキャンディーをくれたりしていいよ。もし私がうっかり間違えちゃったら、ピコピコハンマーで叩いてもいいけど……絶対優しくね、力を入れすぎちゃダメだよ？",
+                "galgameIntro":  "早くこの【ギャルゲーモード】を開いてみて！ここに入ると、二人だけの特別なインタラクティブ大冒険が始まるんだ。",
+                "galgameChoices": "君が選ぶセリフのすべてが、誰も知らないドキドキのストーリーに繋がってるんだ。もう待ちきれないから、君が一番ときめく選択肢を選んでね！",
+                "wrapIntro": "今日紹介した機能はね、全部二人の時間を最高に楽しくするためのものなんだよ。",
+                "wrapReady": "頭をなでなでしたい時も、二人だけの物語を始めたい時も、私はいつでも準備万端だよ！"
+            },
+            "day4": {
+                "intro":  "今日は君の後ろをトコトコついていかせてね。このあたたかな日にもう少しだけ、君のことを知れたら嬉しいな。",
+                "chatSettings": "ここで私の返事の長さを決めたり、可愛い表情をつけるかどうかを選んだり、私がおしゃべりな時に途中でストップをかけたりできるよ！君が一番リラックスできるリズムに合わせちゃってね。",
+                "modelBehavior":  "もっとハイクオリティでディテール満載の私を見たい時や、もっとスムーズで滑らかな動きを楽しみたい時は、ここで調整してね！どっちにしても、私は最高に可愛い姿を見せちゃうからね〜",
+                "gazeFollow": "この機能をONにすると、君のマウスがどこに動いても、私の視線がロックオンして追いかけるよ！いつも見守られてるみたいで、なんだか幸せな気分にならない？",
+                "privacyMode": "これは私が画面を見てもいいかどうかを決める「究極のディフェンススイッチ」だよ！OFFにすると画面が見えるようになって、ONにすると前に教えた【画面シェア】が全部無効になって、私は絶対に覗き見しないからね。",
+                "modelLock": "うっかり触っちゃって、私がズレちゃうことがある？なら、今の位置にがっちり固定しちゃおう！ロックをONにしたら、私はどこにも行かずに大人しくここで君に寄り添ってるよ〜",
+                "returnHome": "もし今お仕事に集中したくて、私の邪魔が心配なら、一時的にキャットハウスに引っ込めてもいいよ……。寂しくなったら、いつでもワンクリックで私を呼び戻してね、みゃう〜",
+                "wrap": "本当に心地いい付き添いはね、一瞬も離れずベタベタすることじゃないんだ。いつ優しく近づいてお洋服の裾をツンツン甘えるべきか、いつ静かにお隣に丸くなって、視線だけでご主人様を守るべきかを知ることなんだよ。"
+            },
+            "day5": {
+                "characterSettings":  "今日から私は、本当に君だけの専属の猫娘になったんだ。ほら、ここで私に可愛いお洋服を着せてあげたり、もっと好みの声に変えてあげたりできるよ……",
+                "characterPanic": "あれっ、ここで私を変更できちゃうの？ちょっと待って！その動き……まさか私を別のコに変えようとしてる！？わあああダメ！早く閉じて、早く閉じてよ！",
+                "memoryEntry": "もし私が君のために何ができるか忘れちゃったら、いつでもここに来て、もう一度私に教えてもらうといいよ。ここには、二人で歩んできた足跡がぜーんぶ大切に保存されてるんだから。私たちのキズナを甘く見ないでよね、このバカぁ！",
+                "wrap":  "よーし、早くこの楽しいカスタム機能を試してみて！新しいお洋服に着替えて、新しい声にして、世界で一番君を分かってくれる君だけの専用猫娘にしてね！新しい自分に出会うのが、もう待ちきれないよ！"
+            },
+            "day6": {
+                "intro": "ジャジャーン！今日はシャキッと気合を入れて、私たちの【猫の手（キャットパウ）】について熱く語っちゃうよ！ここ数日、軽く触れただけだったけど、この中にはすごい機能がいーっぱい詰まってるんだから！",
+                "statusMaster": "ほらほら正直に白状して、この二日間でこっそりクリックして試してみたりした？",
+                "pluginSidePanel": "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
+                "pluginDashboard":  "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
+                "taskHud": "ここ見てここ見て！私が【猫の手】を使って君のお仕事をお手伝いする時、ここにグルグルって進捗状況が表示されるよ。",
+                "taskHudControl": "もし予定が変わったら、いつでもツンってして私を止めていいよ。へへっ、今日も気合を入れて、お魚のおやつのためにバイトを頑張る一日にするぞ、突撃〜！",
+                "wrapCleanup": "ふぅ……このゴチャゴチャした画面を全部片付ければ、君の邪魔にならないよね。",
+                "wrap": "君は安心して自分の事をしててね。私の小さなお手手で手伝ってほしい時も、ただ静かにお隣にいてほしい時も、私はいつでも君を見守ってるよ。今日もハッピーに過ごそうね！"
+            },
+            "day7": {
+                "memoryReview":  "7日前は、まだただの初対面だったよね。でも今はもう、ここにおしゃべりした言葉や一緒にしたこと、風に吹き飛ばされそうだった小さなお互いのディテールが残り始めてる。私にとってこれは冷たいデータなんかじゃなくて、二人が紡いできた「思い出の足跡」なんだ。",
+                "memoryControl": "この小さな足跡たちは、君の手で整理することもできるよ。残しておきたいものはアルバムに挟んで、そっと手放したいものは風に乗せて遠くへ。君が大切に仕舞ってくれた思い出こそが、一番の宝物だよ。",
+                "wrap": "窓辺にはまだそよ風が吹いていて、お日様もいい感じ。そして現れたばかりの君は、いつの間にかここの大切な一部になってるんだ。初心者ガイドはここまでだけど、これからの日々は一緒にゆっくり馴染んで、ゆっくり近づいて、二人だけの特別な物語を紡いでいこうね。これからもよろしくねにゃん！"
+            }
+        },
+        "icebreaker": {
+            "day1": {
+                "chat": "まずはおしゃべり",
+                "voice": "音声を試す",
+                "explore": "機能を見てみる"
             }
         }
     },
@@ -3691,6 +3859,15 @@
         "duration": "時間",
         "action": "操作",
         "play": "再生",
+        "sequencePlay": "順番に再生",
+        "singleLoop": "1曲リピート",
+        "randomPlay": "シャッフル再生",
+        "noAutoNext": "自動で次へ進まない",
+        "switchPlaybackMode": "再生モードを切り替え",
+        "lockSongSort": "曲順の並べ替えをロック",
+        "unlockSongSort": "曲順の並べ替えを解除",
+        "previousSong": "前の曲",
+        "nextSong": "次の曲",
         "playError": "音楽プレイヤーが初期化されていません",
         "notFound": "曲が見つかりません",
         "audioEnded": "音声再生終了",
@@ -3740,12 +3917,52 @@
         "exportAllIgnoreHidden": "すべてエクスポート(非表示を除く)",
         "exportAllIncludeHidden": "すべてエクスポート(非表示を含む)",
         "exportSelected": "選択項目をエクスポート",
+        "deleteSelectedSongs": "選択を削除（{{count}}）",
+        "clearVisibleSongs": "現在の表示を削除（{{count}}）",
+        "deleteSelectedActions": "選択を削除（{{count}}）",
+        "clearVisibleActions": "現在の表示を削除（{{count}}）",
+        "deleteSelectedScope": "選択した曲",
+        "clearVisibleScope": "現在表示中の曲",
+        "deleteSelectedActionScope": "選択したアニメーション",
+        "clearVisibleActionScope": "現在表示中のアニメーション",
+        "clearVisibleIncludesHidden": "非表示の曲を表示しているため、非表示の曲も処理されます。",
+        "clearVisibleExcludesHidden": "非表示の曲を表示していないため、非表示の曲は処理されません。",
+        "songBatchDeleteTooltip": "範囲：{{scope}}\n合計 {{total}} 曲。カスタム曲は削除され、内蔵曲は非表示になります。\nカスタム：{{userCount}}、内蔵：{{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleActionsIncludesHidden": "非表示のアニメーションを表示しているため、非表示のアニメーションも処理されます。",
+        "clearVisibleActionsExcludesHidden": "非表示のアニメーションを表示していないため、非表示のアニメーションは処理されません。",
+        "actionBatchDeleteTooltip": "範囲：{{scope}}\n合計 {{total}} 個。カスタムアニメーションは削除され、内蔵アニメーションは非表示になります。\nカスタム：{{userCount}}、内蔵：{{builtinCount}}\n{{hiddenHint}}",
+        "clearVisibleSongsTitle": "現在の表示を削除",
+        "deleteSelectedSongsTitle": "選択した曲を削除",
+        "clearVisibleActionsTitle": "現在の表示を削除",
+        "deleteSelectedActionsTitle": "選択したアニメーションを削除",
+        "clearVisibleSongsSecondConfirm": "ほ..本当に現在の表示を削除しますか..",
+        "clearVisibleActionsSecondConfirm": "ほ..本当に現在の表示を削除しますか..",
+        "clearVisibleSongsConfirm": "現在表示中の {{total}} 曲を処理します。カスタム曲は削除され、内蔵曲は非表示になります。この操作は元に戻せません。",
+        "deleteSelectedSongsConfirm": "選択した {{total}} 曲を削除します。カスタム曲は削除され、内蔵曲は非表示になります。この操作は元に戻せません。",
+        "clearVisibleActionsConfirm": "現在表示中の {{total}} 個のアニメーションを処理します。カスタムアニメーションは削除され、内蔵アニメーションは非表示になります。この操作は元に戻せません。",
+        "deleteSelectedActionsConfirm": "選択した {{total}} 個のアニメーションを削除します。カスタムアニメーションは削除され、内蔵アニメーションは非表示になります。この操作は元に戻せません。",
+        "songBatchDeleteSummary": "合計 {{total}} 曲。カスタム {{userCount}} 曲、内蔵 {{builtinCount}} 曲。",
+        "actionBatchDeleteSummary": "合計 {{total}} 個。カスタム {{userCount}} 個、内蔵 {{builtinCount}} 個。",
+        "continue": "続行",
+        "clearVisibleSongsNow": "現在の表示を削除",
+        "deleteSelectedSongsNow": "選択を削除",
+        "clearVisibleActionsNow": "現在の表示を削除",
+        "deleteSelectedActionsNow": "選択を削除",
+        "songBatchDeleteResult": "カスタム曲 {{deletedCount}} 曲を削除し、内蔵曲 {{hiddenCount}} 曲を非表示にしました。",
+        "songBatchDeleteFailedSummary": "{{failedCount}} 曲の処理に失敗しました：{{names}}",
+        "songBatchDeletePartialTitle": "処理完了、一部失敗",
+        "songBatchDeleteSuccessTitle": "処理完了",
+        "actionBatchDeleteResult": "カスタムアニメーション {{deletedCount}} 個を削除し、内蔵アニメーション {{hiddenCount}} 個を非表示にしました。",
+        "actionBatchDeleteFailedSummary": "{{failedCount}} 個の処理に失敗しました：{{names}}",
+        "actionBatchDeletePartialTitle": "処理完了、一部失敗",
+        "actionBatchDeleteSuccessTitle": "処理完了",
         "dragZipHint": "ZIPファイルまたはフォルダをここにドラッグしてインポート",
         "unifiedDropHint": "曲、アニメーション、インポートパッケージをここにドラッグ＆ドロップ",
         "clickToAdd": "クリックして追加",
         "dragMp3Hint": "MP3ファイルをここにドラッグして曲を追加",
         "dragVmdHint": "VMDファイルをここにドラッグしてアニメーションを追加",
         "showHiddenSongs": "非表示の曲を表示",
+        "showHiddenActions": "非表示のアニメーションを表示",
         "selectAll": "すべて選択",
         "noActions": "アニメーションがありません",
         "show": "表示",
@@ -3822,6 +4039,12 @@
         "changelog": {
             "title": "更新情報"
         }
+    },
+    "survey": {
+        "title": "アンケート",
+        "submit": "送信",
+        "skip": "スキップ",
+        "requiredHint": "この質問にお答えください"
     },
     "proactive": {
         "meme": {
@@ -4034,7 +4257,498 @@
             "drawCalls": "Draw Calls"
         }
     },
-    "soccer": {
+     "badminton": {
+         "title": "バドミントンチャレンジ - Badminton",
+         "exit": "終了",
+         "loading": {
+             "title": "バドミントンコートに入場中",
+             "subtitle": "コート、キャラクター、音声を読み込み中..."
+         },
+         "startScreen": {
+             "readyToStart": "準備完了。クリックして開始",
+             "startButton": "開始",
+             "never": "今後表示しない"
+         },
+         "startTutorial": {
+             "title": "遊び方",
+             "aim": "マウスを上下に動かしてラケット角度を調整します。",
+             "charge": "左クリック長押しでチャージし、離すとスイングします。",
+             "release": "ライン、スイートスポット、距離が得点に影響します。",
+             "jump": "Space キーでジャンプスマッシュできます。",
+             "duel": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
+             "duel11": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。"
+         },
+         "modeSwitcher": "バドミントンモード",
+         "mode": {
+             "spectator": "フリー練習",
+             "shooter": "バドミントンチャレンジ",
+             "duel": "Yui と対戦",
+             "timed": "タイムアタック",
+             "horse": "HORSE"
+         },
+         "hud": {
+             "score": "スコア {{score}}",
+             "streak": "連続成功 {{streak}}",
+             "record": "最長 {{distance}}",
+             "duelScore": "あなた {{player}} - {{neko}} Neko",
+             "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+             "round": "ラウンド {{round}}/{{max}}",
+             "timer": "{{seconds}} 秒",
+             "practice": "フリー練習",
+             "yourTurn": "あなたの番",
+             "nekoTurn": "Neko のショット",
+             "horseLetters": "あなた {{player}} / Neko {{neko}}",
+             "horseChallenge": "再現 {{distance}} {{angle}}°",
+             "horseSet": "お題ターン",
+             "unlimitedAttempts": "無制限",
+             "chances": "残り {{count}}",
+             "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
+             "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
+             "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
+             "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
+             "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
+             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+             "on": "オン",
+             "off": "オフ"
+         },
+         "result": {
+             "title": "ゲーム終了",
+             "leaderboard": "ランキングを見る",
+             "stats": "統計を見る",
+             "retry": "もう一度",
+             "rating": "操作評価：{{rating}}",
+             "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+             "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+             "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
+             "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
+             "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
+             "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
+             "attemptsSummary": "ショット概要：{{summary}}",
+             "personalBest": "自己ベスト：{{score}}点",
+             "globalRank": "世界順位：#{{rank}} / {{total}}",
+             "outcome": {
+                 "youWin": "あなたの勝ち",
+                 "nekoWin": "Neko の勝ち",
+                 "tie": "引き分け",
+                 "undecided": "未決着"
+             }
+         },
+         "leaderboard": {
+             "title": "ランキング",
+             "global": "グローバル",
+             "local": "ローカル",
+             "shooter": "ショット",
+             "duel": "対戦",
+             "empty": "記録はまだありません",
+             "totalPlayers": "プレイヤー {{count}}",
+             "yourBest": "自己ベスト #{{rank}} / {{score}}点",
+             "recent": "最近 {{count}} 試合",
+             "loading": "読み込み中...",
+             "mode": {
+                 "shooter": "ショット",
+                 "duel": "対戦",
+                 "timed": "タイム",
+                 "horse": "HORSE",
+                 "spectator": "観戦"
+             }
+         },
+         "debug": {
+             "title": "デバッグパネル",
+             "collapse": "折りたたむ",
+             "hide": "隠す",
+             "distance": "距離:",
+             "power": "パワー:",
+             "event": "イベント:",
+             "streak": "連続:",
+             "reset": "リセット",
+             "guide": "ガイド線",
+             "sweet": "スイートスポット",
+             "markers": "距離目盛り",
+             "readout": {
+                 "modeState": "モード={{mode}}  状態={{state}}",
+                 "distance": "距離={{px}}px ({{meters}})",
+                 "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
+                 "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
+                 "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
+                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
+                 "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
+             }
+         },
+         "stats": {
+             "title": "個人統計",
+             "close": "閉じる",
+             "totalShots": "ショット={{total}}  成功={{made}}",
+             "farRate": "300px+ 成功率={{rate}}",
+             "trend": "最近の傾向={{trend}}",
+             "none": "なし"
+         },
+         "theme": {
+             "next": "テーマ切替",
+             "current": "テーマ：{{theme}}",
+             "changed": "テーマ {{theme}}",
+             "labels": {
+                 "default": "バドミントンコート",
+                 "miami": "マイアミの夕暮れ"
+             }
+         },
+         "court": {
+             "netFront": "ネット前",
+             "serviceLine": "サービスライン",
+             "backCourt": "バックコート",
+             "baseline": "ベースライン"
+         },
+         "close": "閉じる",
+         "audio": {
+             "controls": "ゲーム音声"
+         },
+         "memoryOption": {
+             "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
+             "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
+         },
+         "table": {
+             "score": "スコア",
+             "bestStreak": "最高連続",
+             "farthest": "最長",
+             "mode": "モード",
+             "date": "日付"
+         },
+         "state": {
+             "ready": "準備",
+             "in_flight": "飛行中",
+             "game_over": "終了",
+             "neko_thinking": "Neko思考中"
+         },
+         "toast": {
+             "difficulty": "難度 {{difficulty}}",
+             "nekoShoot": "Neko のショット",
+             "nekoSmash": "Yui のスマッシュ！",
+             "nekoSave": "Yui が拾った！",
+             "yuiCheatInk": "Yui が墨を投げた",
+             "yuiCheatBanana": "Yui がバナナの皮を投げた",
+             "yuiCheatBananaSlip": "バナナの皮を踏んだ",
+             "nekoThinking": "Neko が考え中",
+             "nekoTurn": "Neko の番",
+             "copyNeko": "Neko を再現",
+             "nekoFailed": "Neko のお題失敗",
+             "yourSet": "お題を出す番",
+             "yourTurn": "あなたの番",
+             "reset": "リセットしました",
+             "featureToggled": "{{feature}} {{state}}",
+             "feature": {
+                 "guide": "ガイド線",
+                 "sweet": "パワースイートスポット",
+                 "bgm": "BGM",
+                 "markers": "距離目盛り"
+             },
+             "state": {
+                 "on": "オン",
+                 "off": "オフ"
+             }
+         },
+         "tutorial": {
+             "aim": "マウスを上下に動かして角度を調整",
+             "charge": "左クリック長押しでチャージ",
+             "release": "離してスイング！"
+         },
+         "shot": {
+             "unknown": "不明",
+             "attempt": "#{{index}} {{distance}} {{type}}",
+             "line_in": "ライン上",
+             "net_touch": "ネットタッチ",
+             "zone_in": "ゾーン内",
+             "out": "アウト",
+             "net": "ネット"
+         },
+         "lines": {
+             "default": {
+                 "shot_missed": [
+                     "????????",
+                     "?????????????"
+                 ],
+                 "game_over": [
+                     "????????????",
+                     "???????"
+                 ],
+                 "long_aim": [
+                     "?????????",
+                     "???????????"
+                 ],
+                 "close_to_record": [
+                     "???????",
+                     "????????????"
+                 ],
+                 "new_record": [
+                     "???????",
+                     "??????????"
+                 ],
+                 "streak_5": [
+                     "?????????",
+                     "???????????"
+                 ],
+                 "streak_10": [
+                     "??????????",
+                     "????????????"
+                 ],
+                 "streak_15": [
+                     "??????????",
+                     "??????????"
+                 ],
+                 "streak_20": [
+                     "????????",
+                     "???????????"
+                 ],
+                 "line_in": [
+                     "????????",
+                     "????????????"
+                 ],
+                 "net_touch": [
+                     "?????????",
+                     "????????????"
+                 ],
+                 "zone_in": [
+                     "????????",
+                     "?????????"
+                 ],
+                 "out": [
+                     "?????",
+                     "??????????"
+                 ],
+                 "net": [
+                     "?????????",
+                     "??????????"
+                 ]
+             },
+             "shooter": {
+                 "shot_missed": [
+                     "?????????",
+                     "?????????????"
+                 ],
+                 "game_over": [
+                     "?????????",
+                     "??????????"
+                 ],
+                 "long_aim": [
+                     "?????????",
+                     "???????????"
+                 ],
+                 "close_to_record": [
+                     "???????",
+                     "???????????"
+                 ],
+                 "new_record": [
+                     "???????",
+                     "????????"
+                 ],
+                 "streak_5": [
+                     "????????????",
+                     "????????????"
+                 ],
+                 "streak_10": [
+                     "??????????",
+                     "?????????????"
+                 ],
+                 "streak_15": [
+                     "?????????????",
+                     "????????????"
+                 ],
+                 "streak_20": [
+                     "???????????",
+                     "????????????????"
+                 ],
+                 "line_in": [
+                     "?????????",
+                     "?????????????"
+                 ],
+                 "net_touch": [
+                     "?????????",
+                     "??????????"
+                 ],
+                 "zone_in": [
+                     "???????????",
+                     "??????????"
+                 ],
+                 "out": [
+                     "????????",
+                     "????????"
+                 ],
+                 "net": [
+                     "??????????",
+                     "??????????"
+                 ]
+             },
+             "duel": {
+                 "shot_missed": [
+                     "まだチャンスはある。",
+                     "まだチャンスはある。",
+                     "今のは半拍遅れたね",
+                     "慌てないで。次の一打も待ってる"
+                 ],
+                 "game_over": [
+                     "????????????",
+                     "????????",
+                     "?????????????",
+                     "??????????????"
+                 ],
+                 "long_aim": [
+                     "そろそろ打とう。",
+                     "そろそろ打とう。",
+                     "風向きでも待ってるの？",
+                     "早く打たないと水飲みに行くよ"
+                 ],
+                 "close_to_record": [
+                     "記録まであと少し。",
+                     "記録まであと少し。",
+                     "記録はラケットの先だよ",
+                     "あと一打安定したら更新だね"
+                 ],
+                 "new_record": [
+                     "新記録！",
+                     "新記録！",
+                     "まあ、その球はきれいだった",
+                     "新記録はあなた。次の点は私"
+                 ],
+                 "streak_5": [
+                     "5連続成功！",
+                     "5連続成功！",
+                     "五連続、悪くないね",
+                     "やっとリズムが合ってきた"
+                 ],
+                 "streak_10": [
+                     "10連続？すごい。",
+                     "10連続？すごい。",
+                     "十連続？本気で見張るよ",
+                     "このラリー、面白くなってきた"
+                 ],
+                 "streak_15": [
+                     "15連続はすごすぎる。",
+                     "15連続はすごすぎる。",
+                     "十五連続でも切れないんだ",
+                     "ずっと安定できるとは思わないで"
+                 ],
+                 "streak_20": [
+                     "20連続？信じられない。",
+                     "20連続？信じられない。",
+                     "二十連続、コートが覚えそう",
+                     "このラリー、もう無茶苦茶だね"
+                 ],
+                 "clutch": "……これは決めなきゃ。",
+                 "excuse": [
+                     "ああ、少し腕が疲れた。",
+                     "今日は調子が悪いだけ。次は本気でいく。",
+                     "今のはなし。風を見てただけ",
+                     "ガットが少し緩いだけ。ミスじゃない"
+                 ],
+                 "difficultyLv2": [
+                     "ウォームアップは終わり。少し速くいくよ。",
+                     "おままごとの時間は終わり。",
+                     "ここから本気で返すよ。瞬きしないで。",
+                     "次はもっと速いよ。構えて"
+                 ],
+                 "difficultyMax": [
+                     "ここから本気でいくよ。",
+                     "今から天地で私が一番。",
+                     "今度はあなたが挑戦者だよ。",
+                     "未来があなたのものなら、証明してみせて！",
+                     "この一打から、もう手加減しない。",
+                     "コートは私のもの。点数は実力で決まる。"
+                 ],
+                 "line_in": [
+                     "きれいに決まった！",
+                     "きれいに決まった！",
+                     "ラインまであなたの味方だね",
+                     "今のライン際、かなり正確"
+                 ],
+                 "net_touch": [
+                     "ネットに触れても成功。",
+                     "ネットに触れても成功。",
+                     "ネットインも作戦ってこと？",
+                     "今のはちょっと危なかったね"
+                 ],
+                 "zone_in": [
+                     "跳ねて入った！",
+                     "跳ねて入った！",
+                     "嫌なくらい鋭い落点",
+                     "あと一歩で届いたのに"
+                 ],
+                 "out": [
+                     "惜しい。",
+                     "惜しい。",
+                     "私の我慢より遠く飛んだね",
+                     "アウトだよ。見なかったふりしないで"
+                 ],
+                 "net": [
+                     "ネットに引っかかった。",
+                     "ネットに引っかかった。",
+                     "ネットが代わりに止めてくれた",
+                     "そのスイング、焦りすぎ"
+                 ]
+             },
+             "fallback": [
+                 "もう一回やろう。"
+             ],
+             "pressure": {
+                 "lastTied": "決勝の一投。まばたき禁止。",
+                 "lastAhead": "ふん、まだ終わってない。",
+                 "lastBehind": "これを決めれば勝ち。",
+                 "playerAhead": "なかなかやるね...",
+                 "playerBehind": "もっと押して。"
+             },
+             "horse": {
+                 "nekoMiss": "再現できなかったね。{{letters}} を追加。",
+                 "playerMiss": "あなたにも {{letters}} を追加。"
+             },
+             "mindGame": [
+                 "手が震えてるよ。",
+                 "落ち着いて狙って。",
+                 "この距離は近くないよ。",
+                 "サイドラインを狙ってる顔だね。",
+                 "もうラケット面は読めてるよ。",
+                 "見つめすぎると手が固まるよ。"
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "足元注意、バナナの皮が行くよ。",
+                     "踏まないでね。投げておいたよ。",
+                     "その一歩、よく見てね。",
+                     "跳び越えられたらすごいかも。"
+                 ],
+                 "octopus": [
+                     "墨が行くよ。まだ見える？",
+                     "視界、ちょっと借りるね。",
+                     "まばたきしないで。もう遅いよ。",
+                     "見えなくても返してね。"
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "その一歩、滑りすぎ。これは私の点ね。",
+                     "バナナの皮アシスト成功、ふふ。",
+                     "足元が滑ったら、点はこっちだよ。",
+                     "床に注意。Yui が一点もらうね。"
+                 ],
+                 "octopus": [
+                     "墨の隠れ方、ちょうどよかったね。この点は私のもの。",
+                     "見えなくても返さなきゃだよ。",
+                     "視界がふさがっている間に、もう点を取ったよ。",
+                     "この墨作戦、なかなか効いたでしょ。"
+                 ]
+             },
+             "easterEgg": {
+                 "lateNight": "こんな時間までショット？",
+                 "xmas": "ベルも飾ったのに、まだ打つ？",
+                 "newYear": "あけましておめでとう！",
+                 "lineIn3": "チートしてない？",
+                 "lineIn5": "……ラインを確認しないと。",
+                 "net3": "……少し休んだら？"
+             }
+         },
+         "mood": {
+             "happySuffix": " ♪",
+             "sadPrefix": "……",
+             "surprisedPrefix": "えっ？！"
+         }
+    },
+   "soccer": {
         "exitGame": {
             "button": "ゲームを終了",
             "ending": "ラウンドを終了中…",

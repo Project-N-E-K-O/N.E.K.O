@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 EmbeddingService — Tier 0 of the memory hierarchy: vector embeddings.
 
@@ -109,14 +123,14 @@ DEFAULT_VECTORS_MAX_LENGTH = 1024
 # 推理峰值上限。激活内存近似 ``batch × seq × hidden × layers``;固定
 # batch + pad-to-longest 让一条长文本就能把激活顶到上百 GB(实测:
 # 用户粘贴一段长 recent 进记忆,凛天上线那个 sweep 把 RSS 从 1.1 GB
-# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_TOKEN_BUDGET``,
+# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``,
 # 长文本时 batch 自动缩到 1~2 条,峰值有硬上界。
 #
 # 选 16384:在新 max_length=1024 下,一桶能放下 16 条满长(等同
 # worker BATCH_SIZE=16 的原行为),正常路径吞吐零损失;当历史数据 /
 # 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
 # 一桶,峰值仍可控。"""
-_INFER_TOKEN_BUDGET = 16384
+_INFER_BATCH_MAX_TOKENS = 16384
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -161,6 +175,11 @@ class _DisableReason(enum.Enum):
     # the log separates "no fast path at all" from the now-supported "no VNNI
     # but AVX2 present" case (Haswell 2013+ / Zen+).
     NO_SIMD_INT8_PATH = "no_avx2_or_vnni_for_int8"
+    # CPU brand string is on _CPU_BRAND_BLOCKLIST: it advertises a usable
+    # int8 SIMD path but crashes onnxruntime/MLAS at runtime (illegal
+    # instruction). Disabled *before* the session loads so the crash never
+    # happens; override per machine with NEKO_VECTORS_FORCE_ENABLE=1.
+    CPU_BLOCKLISTED = "cpu_on_known_bad_blocklist"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
     INFERENCE_ERROR = "inference_raised"
@@ -315,8 +334,8 @@ def detect_total_ram_gb() -> float | None:
 # Known-good thresholds for CPU microarchitectures that ship AVX-VNNI.
 # Family/model is a stable hardware identifier readable from
 # ``HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\Identifier`` on
-# Windows and ``/proc/cpuinfo`` on Linux — no executable-page allocation,
-# no inline machine code, no AV heuristic match.
+# Windows and ``/proc/cpuinfo`` on Linux — a plain registry / text read,
+# nothing an AV heuristic can mistake for a low-level CPU-probing trick.
 #
 # Conservative: a "yes" from the table is authoritative (confirmed=True);
 # an "I don't know" falls through to numpy CPU features / /proc/cpuinfo so
@@ -325,6 +344,27 @@ def detect_total_ram_gb() -> float | None:
 _INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
                                        # Meteor, Arrow, Lunar, Panther
                                        # Lake; Sapphire/Emerald Rapids.
+
+# CPUs that advertise a usable int8 SIMD path through every numeric signal
+# we trust (family/model, numpy AVX2/VNNI flags) yet still crash
+# onnxruntime at runtime with an illegal-instruction fault. Matched as a
+# case-insensitive substring of the CPU *brand string* ("model name" on
+# Linux / ``ProcessorNameString`` on Windows), because family/model can not
+# single out one SKU — e.g. Haswell-EP E5-2666 v3 shares 06_3FH with the
+# entire Haswell-EP cohort, the bulk of which run fine. Brand-string
+# matching is the fragile py-cpuinfo pattern this module otherwise avoids,
+# so keep this list SHORT and evidence-backed (a real SIGILL in
+# onnxruntime's .so, confirmed via ``dmesg``), never a catch-all guess.
+#
+# A hit disables the WHOLE onnxruntime session — int8 *and* fp32 — not just
+# the int8 kernel. The root cause is not yet pinned to a specific kernel, so
+# we can not assume the fp32 weights (if an operator shipped them) are safe
+# on this silicon; shipping a path we believe still SIGILLs would defeat the
+# guard. The fp32 / forced-load recovery path is not removed, only gated:
+# ``NEKO_VECTORS_FORCE_ENABLE=1`` overrides the blocklist per machine.
+_CPU_BRAND_BLOCKLIST = (
+    "e5-2666 v3",  # AWS-custom Haswell-EP; user-reported onnxruntime crash (SIGILL)
+)
 
 # AMD Family 0x19 is shared between Zen 3 (no AVX-VNNI) and Zen 4 (yes), so
 # family alone is not enough — gate on the documented Zen 4 model ranges
@@ -358,7 +398,7 @@ _AMD_ZEN3_MODEL_RANGES_FAMILY_19 = (
 
 
 def _read_cpu_family_model() -> tuple[str, int, int] | None:
-    """Return ``(vendor, family, model)`` from a non-shellcode source,
+    """Return ``(vendor, family, model)`` from a plain registry/text read,
     or None when neither the Windows registry nor ``/proc/cpuinfo``
     answered.
 
@@ -415,6 +455,75 @@ def _read_cpu_family_model() -> tuple[str, int, int] | None:
     return None
 
 
+def _read_cpu_brand_string() -> str | None:
+    """Return the CPU brand/marketing string (e.g.
+    ``"Intel(R) Xeon(R) CPU E5-2666 v3 @ 2.90GHz"``) from a plain
+    registry / text read, or None when neither source answers.
+
+    The sole consumer is :func:`_cpu_is_blocklisted`. Brand-string parsing
+    is the fragile py-cpuinfo pattern this module avoids everywhere else
+    (numeric family/model is preferred), but it is the *only* signal that
+    pins down one SKU — family/model lumps a whole microarchitecture cohort
+    together — so it is fenced off to this one narrow use.
+    """
+    system = platform.system()
+    try:
+        if system == "Windows":
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as k:
+                return winreg.QueryValueEx(k, "ProcessorNameString")[0]
+        if system == "Linux":
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+    except Exception:
+        return None
+    return None
+
+
+def _cpu_is_blocklisted() -> bool:
+    """True when the CPU brand string matches :data:`_CPU_BRAND_BLOCKLIST`
+    and the operator has not set ``NEKO_VECTORS_FORCE_ENABLE``.
+
+    The override is read straight from the environment (not via the
+    ``config`` module), so it keeps working after the app is Nuitka-compiled:
+    the frozen module is baked into the binary, the process environment is
+    not. It follows the documented env convention — ``NEKO_`` prefix, with
+    the bare name accepted as a fallback, matching config's ``_read_str_env``
+    key order: the FIRST env name that is present and non-empty wins, so an
+    explicit ``NEKO_VECTORS_FORCE_ENABLE`` takes precedence over the bare
+    name even when its value is falsey (it does not fall through). This is
+    the per-machine escape hatch for a false positive (a listed chip that
+    actually runs fine, or a later microcode fix) and the way to re-try a
+    forced fp32 / int8 load on a blocklisted host.
+    """
+    for _key in ("NEKO_VECTORS_FORCE_ENABLE", "VECTORS_FORCE_ENABLE"):
+        _raw = os.getenv(_key)
+        if _raw is None or not _raw.strip():
+            continue
+        # First present-and-non-empty key decides; a later key (the bare
+        # name) never overrides an explicitly-set earlier one, even if that
+        # value is falsey — so NEKO_ precedence holds.
+        if _raw.strip().lower() in ("1", "true", "yes", "on"):
+            return False        # force-enabled → never blocklisted
+        break                   # explicit falsey override → fall to brand check
+    return _brand_blocklisted()
+
+
+def _brand_blocklisted() -> bool:
+    """Pure brand-string side of :func:`_cpu_is_blocklisted` (no env
+    override): True iff the CPU brand matches :data:`_CPU_BRAND_BLOCKLIST`."""
+    brand = _read_cpu_brand_string()
+    if not brand:
+        return False
+    low = brand.lower()
+    return any(bad in low for bad in _CPU_BRAND_BLOCKLIST)
+
+
 def _vnni_via_family_model() -> tuple[bool, bool]:
     """Authoritative VNNI answer via CPU family/model lookup.
 
@@ -423,7 +532,7 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
     answer is final. ``(False, False)`` means the table doesn't know —
     let the caller fall through to numpy CPU features / ``/proc/cpuinfo``.
 
-    Replaces the deleted CPUID shellcode probe. Strictly less precise
+    Replaces the deleted low-level CPUID probe. Strictly less precise
     in one direction (brand-new microarchitectures that ship before the
     table is updated stay inconclusive instead of authoritative), but
     the consumer's ``auto`` quantization path treats inconclusive as
@@ -474,17 +583,17 @@ def _numpy_cpu_features() -> dict | None:
     numpy probes CPU features in its compiled C core at import (for kernel
     dispatch) and exposes the result as ``__cpu_features__`` — a plain
     ``{feature_name: bool}`` dict. We read it instead of calling py-cpuinfo
-    because py-cpuinfo detects features by allocating an *executable* memory
-    page and running inline CPUID machine code inside a ``multiprocessing``
-    child (its ``ASM`` class: VirtualAlloc → VirtualProtect(PAGE_EXECUTE) →
-    CFUNCTYPE → call). That is the exact VirtualAlloc+shellcode pattern
-    PR #1437 stripped out of *this* module — Huorong's heuristic scanner
-    flags it as ``Trojan/Python.ShellLoader`` and quarantines this file (it's
-    the module on the import stack when py-cpuinfo's cpuid subprocess fires,
-    which is why the AV report blames ``embeddings.py`` running under
-    ``multiprocessing.spawn``). numpy's detection is pure compiled C — no
-    user-space RWX page, no subprocess — so the heuristic has nothing to
-    bite, and numpy is already a hard dependency we import for inference.
+    because py-cpuinfo probes the CPU by generating a tiny native routine at
+    runtime and calling into it from a child process — a low-level trick that
+    antivirus heuristics (notably Huorong) match and act on, quarantining
+    whichever Python file happens to be on the import stack at the time. The
+    launcher starts the memory server as a spawn child that re-imports this
+    module, so on Windows that file is ``embeddings.py`` — which is why the AV
+    report blamed it (the report's ``--multiprocessing-fork`` line is that
+    spawn child, not the probe). numpy's detection is pure compiled C with
+    none of that, so the heuristic has nothing to bite, and numpy is already a
+    hard dependency we import for inference. See PR #1437 / #1525 and this
+    module's git history for the full write-up.
 
     Returns None on exotic builds where the private attribute is gone, so
     callers fall through to ``/proc/cpuinfo`` (Linux) or stay inconclusive.
@@ -532,7 +641,7 @@ def _np_feature(feats: dict, *needles: str) -> bool:
 def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
     """x86 INT8 fast path = AVX-VNNI (client) or AVX512-VNNI (server).
 
-    Detection order (no shellcode, no subprocess):
+    Detection order (plain reads only, no child process):
       1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
          only path that authoritatively answers for Alder-Lake+ Intel
          *client* CPUs, whose AVX-VNNI flag numpy's feature map does not
@@ -571,7 +680,7 @@ def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
 def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
 
-    Strategy (no shellcode, no subprocess):
+    Strategy (plain reads only, no child process):
 
       * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
         never shipped an ARM Mac without it, so we short-circuit to
@@ -588,7 +697,7 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
         is unavailable. The ARM SBC ecosystem still has plenty of
         Cortex-A53 / A57 / A72 cores that predate dotprod (Pi-3 class).
       * Windows — ``IsProcessorFeaturePresent`` kernel32 API (a documented
-        call, not executable-memory injection). Its 0 return is ambiguous
+        feature-query call, nothing low-level). Its 0 return is ambiguous
         (lacks dotprod OR old Win build that returns 0 for unknown feature
         ids), reported as inconclusive so ``auto`` stays optimistic.
 
@@ -734,9 +843,9 @@ def detect_avx2_details() -> tuple[bool, bool]:
     (SSE-only) int8 would be too slow to auto-enable.
 
     Source is numpy ``__cpu_features__['AVX2']`` (compiled C probe) rather
-    than py-cpuinfo, whose CPUID probe allocates an executable page and runs
-    machine code in a multiprocessing child — the VirtualAlloc+shellcode
-    pattern Huorong quarantines as ShellLoader (see :func:`_numpy_cpu_features`).
+    than py-cpuinfo, whose CPU probe runs a generated native routine in a
+    child process — the low-level pattern Huorong's heuristic quarantines
+    this file over (see :func:`_numpy_cpu_features`).
     ``absence_confirmed=False`` means no source could read CPU features —
     caller stays optimistic (picks int8), matching the VNNI-inconclusive policy.
     """
@@ -876,17 +985,19 @@ def build_model_id(
 ) -> str:
     """Return the canonical id used in ``embedding_model_id`` cache fields.
 
-    Format: ``<profile>-<dim>d-<quant>`` 或 ``<profile>-<dim>d-<quant>-mlen<N>``
+    Format: ``<profile>-<dim>d-<quant>`` or ``<profile>-<dim>d-<quant>-mlen<N>``
     (e.g. ``local-text-retrieval-v1-128d-int8-mlen1024``).
     A change to any axis flips the id, which invalidates cached
     embeddings on the next read — same idea as ``tokenizer_identity``.
 
-    ``max_length`` 是 tokenizer 截断长度 —— Codex 在 PR #1585 指出:同段
-    长文本在 max_length=8192 / max_length=1024 下喂进 ONNX 的 token 序列
-    根本不一样,得到的向量空间也不同;不编进 id 就会让升级后旧 cache
-    "看起来还有效",跟新 query 做 cosine 比较时静默偏移召回质量。
-    None 时回退到不带 mlen 的旧格式 — 仅给老调用点(如未传 max_length
-    的 legacy 测试 fixture)做兼容,真正的 service 路径总会传。
+    ``max_length`` is the tokenizer truncation length — Codex pointed out on PR
+    #1585 that the same long text fed into ONNX under max_length=8192 vs
+    max_length=1024 yields entirely different token sequences, hence different
+    vector spaces; leaving it out of the id would make stale caches "look valid"
+    after an upgrade, silently skewing recall quality when cosine-compared against
+    new queries. None falls back to the old mlen-less format — only for legacy call
+    sites (e.g. old test fixtures that don't pass max_length); real service paths
+    always pass it.
     """
     base = f"{profile}-{dim}d-{quantization}"
     if max_length is None:
@@ -1087,7 +1198,13 @@ class EmbeddingService:
         # Decide initial disable conditions (all but model file presence,
         # which we check at load time so a deferred download path can
         # still flip vectors on after first session).
-        if not self._enabled:
+        if _cpu_is_blocklisted():
+            # Highest priority: a known-bad CPU SIGILLs onnxruntime no matter
+            # what the SIMD detection concluded, so this gate sits above the
+            # RAM / quantization checks. Logged (not silent) so the startup
+            # line tells operators why vectors are off and how to override.
+            self._mark_disabled(_DisableReason.CPU_BLOCKLISTED, log=True)
+        elif not self._enabled:
             self._mark_disabled(_DisableReason.USER_DISABLED, log=False)
         elif self._ram_gb is None or self._ram_gb < self._min_ram_gb:
             self._mark_disabled(_DisableReason.LOW_RAM, log=False)
@@ -1297,7 +1414,7 @@ class EmbeddingService:
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
-        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_TOKEN_BUDGET
+        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_BATCH_MAX_TOKENS
         # 兜底,峰值已可控;关掉 arena 让分配器跟实际需求走,RSS 能跌回,
         # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
         # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
@@ -1332,7 +1449,7 @@ class EmbeddingService:
         long entry can blow up activation memory for the whole batch
         (a long blob pasted into recent → entire 16-batch padded to
         thousands of tokens → multi-GB activations). We re-bucket here
-        by token budget ``batch × max_len ≤ _INFER_TOKEN_BUDGET``: short
+        by token budget ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``: short
         rows still pack densely (same throughput as before for the
         normal case), and long rows fall into smaller buckets — capping
         the per-run activation footprint regardless of input shape.
@@ -1355,7 +1472,7 @@ class EmbeddingService:
             new_max = max(bucket_max_len, n)
             # 空桶必接受(哪怕单条 > budget),否则极端 max_length 配置会死锁;
             # 非空桶按预算 flush。
-            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_TOKEN_BUDGET:
+            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_BATCH_MAX_TOKENS:
                 self._run_bucket(bucket_idx, encoded, input_names, out, np)
                 bucket_idx = [orig_i]
                 bucket_max_len = n
@@ -1379,10 +1496,11 @@ class EmbeddingService:
         out: list,
         np,
     ) -> None:
-        """单桶的 pad → ONNX run → pool → L2-norm → 写回 ``out``。
+        """Single-bucket pad → ONNX run → pool → L2-norm → write back into ``out``.
 
-        拆出来纯粹是为了让 ``_infer_blocking`` 的桶装循环短一些;状态全
-        通过参数传,无副作用(``out`` 是按 original index 原地写)。
+        Split out purely to keep ``_infer_blocking``'s bucketing loop short; all
+        state is passed via parameters, no side effects (``out`` is written in
+        place by original index).
         """
         ids = [encoded[i].ids for i in bucket_idx]
         mask = [encoded[i].attention_mask for i in bucket_idx]

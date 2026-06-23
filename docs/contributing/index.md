@@ -1,6 +1,6 @@
 # Contributing
 
-Project N.E.K.O. is open source under the MIT License. Contributions are welcome from developers, creators, and community members worldwide.
+Project N.E.K.O. is open source under the Apache License 2.0. Contributions are welcome from developers, creators, and community members worldwide.
 
 ## How to contribute
 
@@ -38,4 +38,4 @@ breaks the standalone build without breaking source-mode tests.
 
 ## License
 
-The core engine is licensed under **MIT** and will remain open source. Your contributions may be included in official Steam and App Store releases.
+The core engine is licensed under **Apache License 2.0** and will remain open source. Your contributions may be included in official Steam and App Store releases.

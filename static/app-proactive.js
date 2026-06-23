@@ -21,6 +21,8 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
+    const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
 
     // ======================== proactive leader election ========================
     //
@@ -43,9 +45,24 @@
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
+    function _isElectronFullChatHost(path) {
+        const normalizedPath = path || '';
+        if (normalizedPath !== '/chat_full' && normalizedPath !== '/chat_full/') return false;
+        const body = document.body;
+        return !!(
+            body &&
+            body.classList &&
+            body.classList.contains('neko-electron-runtime') &&
+            body.getAttribute('data-chat-host-kind') === 'full'
+        );
+    }
+
     function _computeSelfRank() {
         try {
             const path = (window.location && window.location.pathname) || '';
+            // Electron full chat 使用独立 session，只显示/控制同步过来的聊天与播放器。
+            // Web /chat_full 没有 neko-electron-runtime，仍需参与 proactive leader 选举。
+            if (_isElectronFullChatHost(path)) return 99;
             // chat.html 浮窗 → 从节点
             if (path === '/chat') return 1;
             // 不参与 proactive 的页面（model_manager / jukebox / subtitle / agenthud / toast / cookies_login 等）
@@ -70,9 +87,31 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
+    let _homeTutorialFeatureSuppressedByEvent = false;
+
+    function isProactiveVisionEnabledNow() {
+        // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            if (raw) {
+                const settings = JSON.parse(raw);
+                if (settings && typeof settings.proactiveVisionEnabled === 'boolean') {
+                    return settings.proactiveVisionEnabled;
+                }
+            }
+        } catch (_) { }
+
+        if (typeof window.proactiveVisionEnabled !== 'undefined') {
+            return !!window.proactiveVisionEnabled;
+        }
+        return !!S.proactiveVisionEnabled;
+    }
 
     function isHomeTutorialFeatureSuppressed() {
         try {
+            if (_homeTutorialFeatureSuppressedByEvent) {
+                return true;
+            }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
@@ -82,6 +121,119 @@
         } catch (_) {
             return false;
         }
+    }
+
+    function readNewUserIcebreakerStore() {
+        try {
+            if (typeof localStorage === 'undefined') return null;
+            const raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isRecentNewUserIcebreakerEntry(entry) {
+        if (!entry || typeof entry !== 'object') return false;
+        const timestamps = [
+            Number(entry.triggeredAt || 0),
+            Number(entry.updatedAt || 0),
+            Number(entry.completedAt || 0),
+            Number(entry.endedAt || 0)
+        ].filter((value) => Number.isFinite(value) && value > 0);
+        if (!timestamps.length) return false;
+        const latest = Math.max.apply(Math, timestamps);
+        return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
+    }
+
+    function getNewUserIcebreakerBlockingRetryMs() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) {
+                    return getNewUserIcebreakerRetryDelayMs();
+                }
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return 0;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return 0;
+
+        let latest = 0;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (!entry || typeof entry !== 'object') continue;
+            [
+                Number(entry.triggeredAt || 0),
+                Number(entry.updatedAt || 0),
+                Number(entry.completedAt || 0),
+                Number(entry.endedAt || 0)
+            ].forEach((value) => {
+                if (Number.isFinite(value) && value > latest) {
+                    latest = value;
+                }
+            });
+        }
+        if (!latest) return 0;
+        const remaining = NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest);
+        return remaining > 0 ? remaining : 0;
+    }
+
+    /**
+     * Returns whether a new-user icebreaker is currently owning the greeting slot.
+     *
+     * A live icebreaker session wins immediately; persisted day entries only
+     * suppress nearby reconnect/proactive work so older day history does not
+     * mute normal sessions for the rest of the seven-day onboarding.
+     *
+     * @returns {boolean} True when proactive chat should be suppressed for onboarding.
+     */
+    function isNewUserIcebreakerPeriodActive() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return false;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (isRecentNewUserIcebreakerEntry(entry)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
+
+    function getNewUserIcebreakerRetryDelayMs() {
+        let remainingMs = 0;
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (days) {
+            for (let day = 1; day <= 7; day += 1) {
+                const entry = days[String(day)];
+                if (!entry || typeof entry !== 'object') continue;
+                const latest = Math.max(
+                    Number(entry.triggeredAt || 0),
+                    Number(entry.updatedAt || 0),
+                    Number(entry.completedAt || 0),
+                    Number(entry.endedAt || 0)
+                );
+                if (Number.isFinite(latest) && latest > 0) {
+                    remainingMs = Math.max(remainingMs, NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS - (Date.now() - latest));
+                }
+            }
+        }
+        return Math.max(5000, Math.min(remainingMs || 5000, 30000));
     }
 
     try {
@@ -151,7 +303,7 @@
      * rule, reverse proxy, WAF, …)? The unified-guard contract is
      * ``error_code === "csrf_validation_failed"`` (see
      * ``static/app-prompt-shared.js`` 520-541 and
-     * ``static/universal-tutorial-manager.js`` 120-134).
+     * ``static/tutorial/core/universal-manager.js`` 120-134).
      *
      * Only the CSRF case warrants the ``refreshToken()`` + retry-once
      * recovery path; treating *every* 403 as benign-and-skip means a
@@ -431,6 +583,9 @@
         if (isHomeTutorialFeatureSuppressed()) {
             return false;
         }
+        if (isNewUserIcebreakerPeriodActive()) {
+            return false;
+        }
 
         // 「请她离开」状态下禁止一切主动搭话
         if (isGoodbyeActive()) {
@@ -461,7 +616,7 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
-            return S.proactiveVisionEnabled;
+            return isProactiveVisionEnabledNow();
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -487,6 +642,12 @@
             S.proactiveChatTimer = null;
         }
 
+        // 明确不参与的页面不挂 recheck；/chat_full 独立 session 下会一直自封失败。
+        if (PROACTIVE_SELF_RANK === 99) {
+            console.log('[Proactive] 当前页面不参与 proactive 调度，跳过');
+            return;
+        }
+
         // 主备协调：非 leader 不调度，只挂一个轻量的 recheck，
         // 一旦 leader 失联（peer 过期）就自动接班。
         if (!isProactiveLeader()) {
@@ -503,9 +664,22 @@
         }
 
         // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
+        if (isNewUserIcebreakerPeriodActive()) {
+            console.log('[Proactive] new-user icebreaker active, retry schedule later');
+            S.proactiveChatBackoffLevel = 0;
+            S.proactiveChatTimer = setTimeout(
+                scheduleProactiveChat,
+                getNewUserIcebreakerBlockingRetryMs() || getNewUserIcebreakerRetryDelayMs()
+            );
+            return;
+        }
         if (!canTriggerProactively()) {
             console.log('主动搭话前置条件不满足，不启动调度器');
             S.proactiveChatBackoffLevel = 0;
+            var icebreakerRetryMs = getNewUserIcebreakerBlockingRetryMs();
+            if (icebreakerRetryMs > 0) {
+                S.proactiveChatTimer = setTimeout(scheduleProactiveChat, icebreakerRetryMs + 250);
+            }
             return;
         }
 
@@ -780,6 +954,10 @@
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
                 return false;
             }
+            if (isNewUserIcebreakerPeriodActive()) {
+                console.log('[ProactiveChat] 新用户破冰期未结束，跳过主动搭话');
+                return false;
+            }
 
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
@@ -800,7 +978,7 @@
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
@@ -879,7 +1057,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -911,9 +1089,12 @@
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                 var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                var musicPending = (typeof window.isMusicPending === 'function') && window.isMusicPending();
+                var remoteMusicActive = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                var musicRateLimited = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                 var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                if (musicPlaying || musicCooldown) {
-                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', cooldown=' + musicCooldown);
+                if (musicPlaying || musicPending || remoteMusicActive || musicRateLimited || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', pending=' + musicPending + ', remote=' + remoteMusicActive + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
                 } else {
                     console.log('[ProactiveChat] 音乐模式已启用');
                     availableModes.push('music');
@@ -1016,7 +1197,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
@@ -1032,8 +1213,11 @@
                 // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                     var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+                    var musicPendingNow = (typeof window.isMusicPending === 'function') && window.isMusicPending();
+                    var remoteMusicActiveNow = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                    var musicRateLimitedNow = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                     var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                    if (!musicPlayingNow && !musicCooldownNow) {
+                    if (!musicPlayingNow && !musicPendingNow && !remoteMusicActiveNow && !musicRateLimitedNow && !musicCooldownNow) {
                         latestModes.push('music');
                     }
                 }
@@ -1208,12 +1392,25 @@
                                 url: musicLink.url,
                                 cover: musicLink.cover
                             };
-                            console.log('[ProactiveChat] 发送音乐消息:', track);
-                            var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                            await new Promise(function (resolve) {
+                                setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
+                            });
+                            var musicBusyBeforeDispatch =
+                                ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying()) ||
+                                ((typeof window.isMusicPending === 'function') && window.isMusicPending()) ||
+                                ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive()) ||
+                                ((typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited()) ||
+                                ((typeof window.isMusicCooldown === 'function') && window.isMusicCooldown());
+                            if (musicBusyBeforeDispatch) {
+                                console.log('[ProactiveChat] 音乐 dispatch 前检测到播放器已占用，跳过本次音乐链接');
+                            } else {
+                                console.log('[ProactiveChat] 发送音乐消息:', track);
+                                var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
 
-                            // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
-                            if (dispatchResult === true) {
-                                dispatchedTrackUrl = musicLink.url;
+                                // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
+                                if (dispatchResult === true) {
+                                    dispatchedTrackUrl = musicLink.url;
+                                }
                             }
                         } else if (musicLink) {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
@@ -1617,6 +1814,10 @@
      */
     async function sendOneProactiveVisionFrame() {
         try {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
             var dataUrl = null;
@@ -1650,6 +1851,10 @@
                 }
             }
 
+            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({
                     action: 'stream_data',
@@ -1684,13 +1889,13 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
-        if (!S.proactiveVisionEnabled || !S.isRecording) return;
+        if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!S.proactiveVisionEnabled || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -1894,14 +2099,16 @@
             return;
         }
 
+        var privacyBlocksVision = !isProactiveVisionEnabledNow();
+
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording) {
+        if (S.isRecording && !privacyBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }
@@ -1930,10 +2137,14 @@
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
+            _homeTutorialFeatureSuppressedByEvent = true;
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+        } else if (detail.active === false) {
+            _homeTutorialFeatureSuppressedByEvent = false;
         }
     });
 

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 FactDedupResolver — vector-aware deduplication of newly-written facts.
 
@@ -19,19 +33,21 @@ threshold:
 
 Why an LLM is in the loop:
 
-  * Cosine alone can't distinguish "主人喜欢猫" from "主人讨厌猫".
+  * Cosine alone can't distinguish "主人喜欢猫" (the user likes cats) from
+    "主人讨厌猫" (the user hates cats).
     Both surface forms vary by 1 token but ride opposite poles.
   * Hash-based dedup remains the first line of defence (catches exact
     repeats, no LLM cost) and the FTS5 lightweight near-dup check
     handles strong textual overlap.  This module addresses the
-    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" — that
-    legacy dedup misses entirely.
+    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" ("very
+    interested in cats" / "recently got a cat") — that legacy dedup
+    misses entirely.
 
 When the EmbeddingService is disabled, no candidates are ever
 enqueued, so ``aresolve`` always sees an empty queue and the legacy
 hash + FTS5 dedup path is the entire dedup pipeline — exactly the
 behaviour pre-P2.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import asyncio
@@ -259,16 +275,17 @@ class FactDedupResolver:
         to repeatedly scan the entire history on every sweep, only
         check the new arrivals against existing rows.
 
-        Pairs are entity-scoped: ``主人喜欢猫`` (entity=master) should
-        not collide with ``关系融洽`` (entity=relationship) even if
-        the embeddings happen to be close. Cross-entity overlap is
-        weird enough that we'd rather defer it to manual review.
+        Pairs are entity-scoped: ``主人喜欢猫`` ("the user likes cats",
+        entity=master) should not collide with ``关系融洽`` ("harmonious
+        relationship", entity=relationship) even if the embeddings happen
+        to be close. Cross-entity overlap is weird enough that we'd rather
+        defer it to manual review.
 
         Pairs are absorbed-aware on the existing side: an existing
         fact already absorbed into a reflection is skipped. Re-merging
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
-        """
+        """  # noqa: DOCSTRING_CJK
         results: list[dict] = []
         # Pre-bucket by entity so the inner loop only walks relevant rows.
         by_entity: dict[str, list[dict]] = {}
@@ -387,7 +404,7 @@ class FactDedupResolver:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
-        from utils.llm_client import create_chat_llm
+        from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         pending = await self.aload_pending(name)
@@ -424,13 +441,15 @@ class FactDedupResolver:
             # timeout=60: 持 FactDedup 锁但只阻 embedding worker enqueue
             # （background→background），用户路径无感。
             # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
-            llm = create_chat_llm(
+            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so the dedup-decisions JSON isn't truncated
             )
             try:
-                resp = await llm.ainvoke(prompt)
+                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # dedup prompt assembled from FACT_DEDUP_BATCH_LIMIT-capped fact pairs.
             finally:
                 await llm.aclose()
             raw = resp.content.strip()
@@ -510,16 +529,18 @@ class FactDedupResolver:
     async def _abump_dedup_attempts_and_dead_letter_locked(
         self, name: str, batch_items: list[dict],
     ) -> None:
-        """aresolve LLM 失败时的 liveness 兜底（caller MUST hold _get_alock）。
+        """Liveness fallback when the aresolve LLM fails (caller MUST hold _get_alock).
 
-        给本批 pending pair bump ``resolve_attempts``；累计 ≥
-        ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 pair 直接从 queue 删除并 WARN。
+        Bumps ``resolve_attempts`` for this batch's pending pairs; pairs whose
+        total reaches ``MEMORY_LIVENESS_MAX_ATTEMPTS`` are removed from the queue
+        with a WARN.
 
-        Why: 毒 pair（LLM 永远 parse 不出 / safety filter / prompt 过长）让
-        队头每个 tick 都被送进同样 prompt 同样失败 → 整条 dedup pipeline 永久
-        卡死该角色。caller 已持着 _get_alock，所以不再 async with；这跟
-        ``_aresolve_locked`` 里 ``_aapply_decisions`` / ``aload_pending`` /
-        ``_asave_pending`` 全在 lock 内同一规则。
+        Why: a poison pair (LLM can never parse it / safety filter / oversized
+        prompt) sends the queue head into the same prompt with the same failure
+        every tick → the whole dedup pipeline deadlocks for that character
+        forever. The caller already holds _get_alock, so no `async with` here;
+        this matches ``_aapply_decisions`` / ``aload_pending`` /
+        ``_asave_pending`` all running inside the lock in ``_aresolve_locked``.
         """
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         if not batch_items:
