@@ -171,6 +171,7 @@ def _get_or_create_game_session_debug_log(
         if activate:
             entry["status"] = "active"
             entry["ended_at"] = None
+            entry["ended_time"] = None
             _drop_other_game_session_debug_logs(key)
     return entry
 
@@ -255,7 +256,6 @@ def append_game_session_debug_log(
         if entry is None:
             return None
         if entry.get("status") != "active":
-            cleanup_game_session_debug_logs()
             return None
         entry["seq"] = int(entry.get("seq") or 0) + 1
         now = time.time()

@@ -365,7 +365,7 @@ def test_game_debug_logs_append_refreshes_active_idle_ttl():
     game_log.enable_game_session_debug_log("soccer", "soccer-active-refresh", lanlan_name="Lan")
     entry = game_log.find_game_session_debug_log("soccer-active-refresh", "soccer")
     assert entry is not None
-    stale_updated_at = now - game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS + 1
+    stale_updated_at = now - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
     entry["updated_at"] = stale_updated_at
 
     item = game_log.append_game_session_debug_log(
@@ -379,6 +379,24 @@ def test_game_debug_logs_append_refreshes_active_idle_ttl():
     assert item is not None
     assert game_log.find_game_session_debug_log("soccer-active-refresh", "soccer") is not None
     assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+def test_game_debug_logs_reactivation_clears_ended_metadata():
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-reactivate", lanlan_name="Lan", reason="test")
+    ended_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+    assert ended_entry is not None
+    assert ended_entry["ended_at"] is not None
+    assert ended_entry["ended_time"]
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    reactivated_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+
+    assert reactivated_entry is not None
+    assert reactivated_entry["status"] == "active"
+    assert reactivated_entry["ended_at"] is None
+    assert reactivated_entry["ended_time"] is None
 
 
 @pytest.mark.unit
@@ -441,6 +459,73 @@ async def test_game_debug_logs_route_end_records_completed_before_session_ended(
 
     assert result["ok"] is True
     entry = game_log.find_game_session_debug_log("soccer-route-end", "soccer")
+    assert entry is not None
+    assert entry["status"] == "ended"
+    assert [item["event"] for item in entry["entries"]] == [
+        "route_end_requested",
+        "route_end_completed",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_defers_concurrent_heartbeat_close(monkeypatch):
+    release_finalize = asyncio.Event()
+
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-route-race", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-route-race", lanlan_name="Lan")
+
+        async def existing_finalize_task():
+            await release_finalize.wait()
+            return {
+                "archive": {
+                    "game_type": "soccer",
+                    "session_id": "soccer-route-race",
+                    "lanlan_name": "Lan",
+                    "game_started": True,
+                },
+                "archive_memory": {"ok": True, "status": "submitted"},
+                "game_session_closed": False,
+                "debug_log_ended": False,
+                "exit_reason": "heartbeat_timeout",
+                "postgame_context_snapshot": {},
+            }
+
+        heartbeat_task = asyncio.create_task(existing_finalize_task())
+        state["_exit_task"] = heartbeat_task
+        state["_exit_close_debug_log_request"] = True
+
+        end_task = asyncio.create_task(game_router._complete_game_end_from_payload(
+            "soccer",
+            {
+                "session_id": "soccer-route-race",
+                "lanlan_name": "Lan",
+                "gameStarted": True,
+            },
+            default_reason="route_end",
+        ))
+        for _ in range(20):
+            if state.get("_exit_defer_debug_log_close"):
+                break
+            await asyncio.sleep(0)
+        assert state.get("_exit_defer_debug_log_close") is True
+
+        release_finalize.set()
+        heartbeat_result = await heartbeat_task
+        result = await end_task
+
+    assert heartbeat_result["debug_log_ended"] is True
+    assert result["ok"] is True
+    entry = game_log.find_game_session_debug_log("soccer-route-race", "soccer")
     assert entry is not None
     assert entry["status"] == "ended"
     assert [item["event"] for item in entry["entries"]] == [

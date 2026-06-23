@@ -101,6 +101,10 @@ def test_soccer_template_posts_session_debug_errors():
     assert "sessionDebugLogEnabled: false" in html
     assert "sessionDebugLogEnablePromise: null" in html
     assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
+    assert "function resetSoccerSessionDebugLogEnableState()" in html
+    assert "resetSoccerSessionDebugLogEnableState();" in html
+    assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
+    assert "if (data.ok) {\n\t        _llm.sessionDebugLogEnabled = true;" in html
     assert "enableSoccerSessionDebugLog('keyboard_l')" in html
     assert "await enableSoccerSessionDebugLog('auto_route_start')" in html
     assert "session_id: _llm.sessionId" in html

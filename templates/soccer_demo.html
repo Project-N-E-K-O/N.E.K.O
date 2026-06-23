@@ -3336,6 +3336,11 @@
       keepalive: true,
     }).then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })));
   }
+  function resetSoccerSessionDebugLogEnableState() {
+    _llm.sessionDebugLogEnabled = false;
+    _llm.sessionDebugLogEnableInFlight = false;
+    _llm.sessionDebugLogEnablePromise = null;
+  }
   function enableSoccerSessionDebugLog(reason = 'keyboard') {
     if (_llm.sessionDebugLogEnabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
     if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
@@ -3378,7 +3383,8 @@
         .finally(() => { _llm.sessionDebugLogEnableInFlight = false; });
       return _llm.sessionDebugLogEnablePromise;
     }
-    _llm.sessionDebugLogEnablePromise = _enableSoccerDebugLogWithHeaders(reason)
+    _llm.sessionDebugLogEnablePromise = _getLocalMutationHeaders()
+      .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
       .then(onEnabled)
       .catch(onFailed)
       .finally(() => { _llm.sessionDebugLogEnableInFlight = false; });
@@ -3936,6 +3942,7 @@
 	  async function _startGameRoute() {
 	    try {
 	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
+	      resetSoccerSessionDebugLogEnableState();
 	      await enableSoccerSessionDebugLog('auto_route_start');
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
@@ -3944,6 +3951,7 @@
 	      });
 	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
+	        _llm.sessionDebugLogEnabled = true;
 	        _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
 	        _applyPreGameContext(data.state);

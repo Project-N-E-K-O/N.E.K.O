@@ -4552,8 +4552,10 @@ async def _finalize_game_route_state(
         state["_exit_close_session_request"] = False
     if close_debug_log:
         state["_exit_close_debug_log_request"] = True
-    elif "_exit_close_debug_log_request" not in state:
-        state["_exit_close_debug_log_request"] = False
+    else:
+        state["_exit_defer_debug_log_close"] = True
+        if "_exit_close_debug_log_request" not in state:
+            state["_exit_close_debug_log_request"] = False
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -4570,7 +4572,11 @@ async def _finalize_game_route_state(
                 # return dict is the single source of truth handed back to
                 # every shielded await.
                 result["game_session_closed"] = True
-        if state.get("_exit_close_debug_log_request") and not result.get("debug_log_ended"):
+        if (
+            state.get("_exit_close_debug_log_request")
+            and not state.get("_exit_defer_debug_log_close")
+            and not result.get("debug_log_ended")
+        ):
             _mark_game_session_debug_log_ended(
                 str(state.get("game_type") or ""),
                 str(state.get("session_id") or "default"),
@@ -4692,7 +4698,7 @@ async def _finalize_game_route_state_inner(
             str(state.get("lanlan_name") or ""),
         )
     debug_log_ended = False
-    if state.get("_exit_close_debug_log_request"):
+    if state.get("_exit_close_debug_log_request") and not state.get("_exit_defer_debug_log_close"):
         _mark_game_session_debug_log_ended(
             str(state.get("game_type") or ""),
             str(state.get("session_id") or "default"),
@@ -8368,6 +8374,10 @@ async def _complete_game_end_from_payload(
         },
     )
     _mark_game_session_debug_log_ended(game_type, session_id, lanlan_name=lanlan_name, reason=exit_reason)
+    if state:
+        state["_exit_defer_debug_log_close"] = False
+        if "finalized" in locals() and isinstance(finalized, dict):
+            finalized["debug_log_ended"] = True
     return result
 
 
