@@ -24,11 +24,12 @@ from __future__ import annotations
 import asyncio
 
 import brain.task_executor as te
-from brain.task_executor import DirectTaskExecutor
 
-# The gate reads AGENT_ACTION_GATE_* as module-level names imported into
-# brain.task_executor (the repo's `from config import (...)` convention), so the
-# knobs are patched on that module here, not on the `config` module.
+# Single import style for brain.task_executor: reference both the class
+# (``te.DirectTaskExecutor``) and the gate knobs (``te.AGENT_ACTION_GATE_*``)
+# through the module. The knobs are module-level names imported into
+# brain.task_executor (the repo's `from config import (...)` convention), so
+# they are patched on that module here, not on the `config` module.
 
 
 def _exec():
@@ -36,7 +37,7 @@ def _exec():
     # ComputerUseAdapter; these tests never invoke a real adapter method (the
     # brake returns before availability checks, and the proceed paths hit only
     # the guarded ``is_available`` access which fails closed to "not available").
-    return DirectTaskExecutor(computer_use=object())
+    return te.DirectTaskExecutor(computer_use=object())
 
 
 class _SpyCU:
@@ -94,7 +95,7 @@ def test_gate_brakes_on_confident_chat(monkeypatch):
     monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
     monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
     cu = _SpyCU()
-    ex = DirectTaskExecutor(computer_use=cu)
+    ex = te.DirectTaskExecutor(computer_use=cu)
     msgs = [{"role": "user", "text": "今天天气真好心情不错"}]
     # computer_use only, action_intent below the line, no deterministic signal →
     # the gate brakes and returns None before any availability check / LLM call.
