@@ -550,7 +550,8 @@ class TestAssistFollowsCore:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_get_core_config_api_returns_kimi_code_key(self, monkeypatch):
-        """GET 必须回填 assistApiKeyKimiCode，否则前端读到空、重存会覆盖已存密钥。"""
+        """GET must echo back assistApiKeyKimiCode; otherwise the frontend reads
+        an empty value and a re-save overwrites the stored secret."""
         from main_routers import config_router
 
         async def fake_read_json_async(_path):
