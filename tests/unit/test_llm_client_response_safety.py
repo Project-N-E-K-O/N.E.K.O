@@ -288,6 +288,75 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         client.close()
 
 
+def test_chat_anthropic_explicit_empty_extra_body_skips_default(monkeypatch):
+    captured = {}
+    recorded = []
+
+    class _Usage:
+        def model_dump(self):
+            return {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "cache_read_input_tokens": 3,
+            }
+
+    class _TextBlock:
+        type = "text"
+        text = "ok"
+
+    class _Resp:
+        content = [_TextBlock()]
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _Resp()
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.messages = _Messages()
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(
+        llm_client_module,
+        "_record_anthropic_token_usage",
+        lambda model, usage: recorded.append((model, dict(usage))),
+    )
+
+    client = llm_client_module.ChatAnthropic(
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        api_key="sk-test",
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    try:
+        default_payload = client._build_payload([{"role": "user", "content": "hi"}])
+        assert default_payload["thinking"] == {"type": "disabled"}
+
+        response = client.invoke([{"role": "user", "content": "hi"}], extra_body=None)
+
+        assert response.content == "ok"
+        assert "thinking" not in captured
+        assert recorded == [
+            (
+                "claude-test",
+                {"input_tokens": 11, "output_tokens": 7, "cache_read_input_tokens": 3},
+            )
+        ]
+    finally:
+        client.close()
+
+
 def test_chat_anthropic_max_completion_tokens_property_sync(monkeypatch):
     class _FakeAnthropic:
         def __init__(self, **kwargs):
@@ -302,6 +371,7 @@ def test_chat_anthropic_max_completion_tokens_property_sync(monkeypatch):
 
     monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
     monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="claude-test",
@@ -512,6 +582,7 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
 
     monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
     monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="kimi-for-coding",

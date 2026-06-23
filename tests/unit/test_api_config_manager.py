@@ -1761,6 +1761,25 @@ class TestGptsovitsEnabledSaveMigration:
         assert api_config['provider_type'] == 'anthropic'
 
     @pytest.mark.unit
+    def test_kimi_code_does_not_fallback_to_vision_for_agent(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'kimi_code',
+            'assistApiKeyKimiCode': 'sk-kimi-code-test',
+            'enableCustomApi': False,
+        })
+
+        config_manager._core_config_cache = None
+        api_config = config_manager.get_model_api_config('agent')
+        ready, reasons = config_manager.is_agent_api_ready()
+
+        assert api_config['model'] == ''
+        assert api_config['model'] != 'kimi-for-coding'
+        assert api_config['provider_type'] == 'anthropic'
+        assert ready is False
+        assert reasons
+
+    @pytest.mark.unit
     def test_provider_type_follow_cycle_does_not_recurse(self, config_manager):
         _write_core_config(config_manager, {
             'coreApi': 'qwen',

@@ -1746,10 +1746,26 @@ def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: s
     return result
 
 
-def _normalize_provider_type(profile: dict[str, Any] | None) -> str:
+def _looks_like_anthropic_messages_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/").lower()
+    if host == "api.anthropic.com":
+        return True
+    return host == "api.kimi.com" and (path == "/coding" or path.startswith("/coding/"))
+
+
+def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
     if provider_type not in ("openai_compatible", "anthropic", "websocket"):
         return "openai_compatible"
+    if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
+        return "anthropic"
     return provider_type
 
 
@@ -1870,7 +1886,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 return
             urls = _normalize_provider_url_candidates(profile, "openrouter_url")
             model = profile.get("conversation_model", "")
-            provider_type = _normalize_provider_type(profile)
+            provider_type = _normalize_provider_type(profile, urls[0] if urls else profile.get("openrouter_url", ""))
 
         # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
         if len(urls) < 2:
@@ -2079,7 +2095,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
-            provider_type = _normalize_provider_type(profile)
+            provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         else:
@@ -2096,7 +2112,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = fallback_url
                 url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
-                provider_type = _normalize_provider_type(assist_profile)
+                provider_type = _normalize_provider_type(assist_profile, url_stripped)
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
@@ -2116,7 +2132,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
-        provider_type = _normalize_provider_type({"provider_type": req.provider_type})
+        provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url_stripped)
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 

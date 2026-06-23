@@ -238,6 +238,41 @@ class TestSchemaValidation:
         assert result["resolved_url"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
         assert "https://dashscope-us.aliyuncs.com/compatible-mode/v1" in calls
 
+    async def test_builtin_assist_infers_anthropic_probe_from_url(self):
+        """Built-in Anthropic URLs without provider_type still use the Anthropic probe."""
+        fake_config = {
+            "assist_api_providers": {
+                "claude": {
+                    "name": "Claude",
+                    "openrouter_url": "https://api.anthropic.com/v1",
+                    "conversation_model": "claude-sonnet-test",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_anthropic",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_anthropic, patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                provider_key="claude",
+                provider_scope="assist",
+                api_key="sk-anthropic",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        mock_anthropic.assert_awaited_once_with(
+            "https://api.anthropic.com/v1",
+            "sk-anthropic",
+            model="claude-sonnet-test",
+            is_free=False,
+        )
+        mock_openai.assert_not_awaited()
+
     async def test_builtin_mimo_assist_accepts_token_plan_url_override(self):
         """MiMo Token Plan may override the built-in MiMo assist endpoint."""
         calls = []

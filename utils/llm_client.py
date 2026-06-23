@@ -41,10 +41,24 @@ from urllib.parse import urlparse
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
 try:
+    import anthropic as _anthropic
     from anthropic import Anthropic, AsyncAnthropic
 except Exception:  # pragma: no cover - anthropic may be absent in minimal installs
+    _anthropic = None  # type: ignore
     Anthropic = None  # type: ignore
     AsyncAnthropic = None  # type: ignore
+
+_ANTHROPIC_RETRY_EXCEPTION_TYPES = tuple(
+    exc_type
+    for exc_type in (
+        getattr(_anthropic, "APIConnectionError", None),
+        getattr(_anthropic, "APITimeoutError", None),
+        getattr(_anthropic, "AuthenticationError", None),
+        getattr(_anthropic, "InternalServerError", None),
+        getattr(_anthropic, "RateLimitError", None),
+    )
+    if isinstance(exc_type, type)
+)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -961,6 +975,21 @@ def _merge_anthropic_usage(target: dict[str, Any], usage: Any) -> None:
     target.update(_anthropic_usage_to_dict(usage))
 
 
+def anthropic_retry_error_types() -> tuple[type[BaseException], ...]:
+    """Return Anthropic SDK error classes that should follow the chat retry path."""
+    return _ANTHROPIC_RETRY_EXCEPTION_TYPES
+
+
+def _record_anthropic_token_usage(model: str, usage_dict: dict[str, Any]) -> None:
+    if not usage_dict:
+        return
+    try:
+        from utils.token_tracker import record_anthropic_usage
+        record_anthropic_usage(model=model, usage=usage_dict)
+    except Exception:
+        pass
+
+
 def _convert_openai_content_to_anthropic(content: Any) -> list[dict]:
     """Convert an OpenAI message content value to Anthropic content blocks."""
     blocks: list[dict] = []
@@ -1292,7 +1321,7 @@ class ChatAnthropic:
     def max_completion_tokens(self, value: Any) -> None:
         self._max_tokens = _coerce_anthropic_max_tokens(value)
 
-    def _build_payload(self, messages: Any) -> dict:
+    def _build_payload(self, messages: Any, *, include_default_extra_body: bool = True) -> dict:
         system, anthropic_messages = _normalize_messages_to_anthropic(messages)
         payload: dict[str, Any] = {
             "model": self.model,
@@ -1303,7 +1332,7 @@ class ChatAnthropic:
         payload["max_tokens"] = int(self.max_tokens)
         if self.temperature is not None:
             payload["temperature"] = self.temperature
-        if self.extra_body:
+        if include_default_extra_body and self.extra_body:
             _apply_anthropic_body_fields(payload, self.extra_body)
         # Substitute character placeholders the same way ChatOpenAI does.
         active = _active_character.get()
@@ -1329,7 +1358,7 @@ class ChatAnthropic:
                 max_tokens, default=int(payload.get("max_tokens") or self.max_tokens)
             )
         overrides.pop("stream", None)
-        extra_body = overrides.pop("extra_body", None)
+        extra_body = overrides.pop("extra_body", _SENTINEL)
         if extra_body:
             _apply_anthropic_body_fields(payload, extra_body)
         # Per-call OpenAI tool payloads use a different schema and this wrapper
@@ -1346,9 +1375,16 @@ class ChatAnthropic:
                 _apply_anthropic_body_fields(payload, {key: value})
         return payload
 
+    def _build_payload_for_call(self, messages: Any, overrides: dict[str, Any]) -> dict[str, Any]:
+        include_default_extra_body = "extra_body" not in overrides
+        payload = self._build_payload(
+            messages,
+            include_default_extra_body=include_default_extra_body,
+        )
+        return self._apply_overrides(payload, overrides)
+
     async def ainvoke(self, messages: Any, **overrides: Any) -> LLMResponse:
-        payload = self._build_payload(messages)
-        payload = self._apply_overrides(payload, overrides)
+        payload = self._build_payload_for_call(messages, overrides)
         resp = await self._aclient.messages.create(**payload)
         text_parts = []
         for block in resp.content:
@@ -1356,12 +1392,12 @@ class ChatAnthropic:
                 text_parts.append(getattr(block, "text", ""))
         content = strip_thinking_segments("".join(text_parts))
         usage = getattr(resp, "usage", None)
-        usage_dict = usage.model_dump() if usage else {}
+        usage_dict = _anthropic_usage_to_dict(usage)
+        _record_anthropic_token_usage(self.model, usage_dict)
         return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
-        payload = self._build_payload(messages)
-        payload = self._apply_overrides(payload, overrides)
+        payload = self._build_payload_for_call(messages, overrides)
         resp = self._client.messages.create(**payload)
         text_parts = []
         for block in resp.content:
@@ -1369,12 +1405,12 @@ class ChatAnthropic:
                 text_parts.append(getattr(block, "text", ""))
         content = strip_thinking_segments("".join(text_parts))
         usage = getattr(resp, "usage", None)
-        usage_dict = usage.model_dump() if usage else {}
+        usage_dict = _anthropic_usage_to_dict(usage)
+        _record_anthropic_token_usage(self.model, usage_dict)
         return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
-        payload = self._build_payload(messages)
-        payload = self._apply_overrides(payload, overrides)
+        payload = self._build_payload_for_call(messages, overrides)
         stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
         async with stream as response_stream:
@@ -1402,6 +1438,7 @@ class ChatAnthropic:
                     message = getattr(event, "message", None)
                     _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
         if usage_dict:
+            _record_anthropic_token_usage(self.model, usage_dict)
             yield LLMStreamChunk(
                 content="",
                 usage_metadata=usage_dict,
@@ -1410,15 +1447,17 @@ class ChatAnthropic:
 
     async def ainvoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object."""
-        payload = self._build_payload(messages)
-        payload = self._apply_overrides(payload, overrides)
-        return await self._aclient.messages.create(**payload)
+        payload = self._build_payload_for_call(messages, overrides)
+        resp = await self._aclient.messages.create(**payload)
+        _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
+        return resp
 
     def invoke_raw(self, messages: Any, **overrides: Any):
         """Return the raw Anthropic Message object (sync)."""
-        payload = self._build_payload(messages)
-        payload = self._apply_overrides(payload, overrides)
-        return self._client.messages.create(**payload)
+        payload = self._build_payload_for_call(messages, overrides)
+        resp = self._client.messages.create(**payload)
+        _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
+        return resp
 
     async def aclose(self) -> None:
         await self._aclient.close()

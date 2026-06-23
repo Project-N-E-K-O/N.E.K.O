@@ -19,7 +19,17 @@ import json
 import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, LLMStreamChunk, ThinkingStreamStripper, strip_thinking_segments, create_chat_llm, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    LLMStreamChunk,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    strip_thinking_segments,
+    create_chat_llm,
+    create_chat_llm_async,
+)
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -32,6 +42,14 @@ from main_logic.tool_calling import (
     parse_arguments_json,
 )
 from utils.llm_tool_leak_filter import ToolLeakFilter, log_tool_leak_filtered
+
+_LLM_RETRY_ERROR_TYPES = (
+    APIConnectionError,
+    AuthenticationError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
 
 # google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
 # （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
@@ -2760,7 +2778,7 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
@@ -3286,7 +3304,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
+                except _LLM_RETRY_ERROR_TYPES as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
