@@ -1364,6 +1364,7 @@
     streak_20: ['二十连也太久了', '这回合还没结束？']
   };
   var generatedQuickLines = {};
+  var generatedQuickLinesRequestSeq = 0;
   var YUI_PASSIVE_LINES_DUEL = {
     line_in: ['这球压得挺准', '边线都帮你了'],
     net_touch: ['擦网也敢打啊', '这球贴得真险'],
@@ -2256,17 +2257,36 @@
   }
   function getRequestLanguage() {
     var candidates = [];
+    var hasResolvedI18nLanguage = false;
+    function pushResolvedLanguage(value) {
+      var lang = String(value || '').trim();
+      if (!lang || lang === 'undefined' || lang === 'null') return false;
+      candidates.push(lang.replace('_', '-'));
+      hasResolvedI18nLanguage = true;
+      return true;
+    }
     try {
       var params = new URLSearchParams(window.location.search);
-      candidates.push(params.get('i18n_language'), params.get('lang'), params.get('locale'));
+      pushResolvedLanguage(params.get('i18n_language')) || pushResolvedLanguage(params.get('lang')) || pushResolvedLanguage(params.get('locale'));
     } catch (_) {}
-    try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
-    try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
+    try {
+      var i18nInstance = window.i18n || window.i18next;
+      if (i18nInstance && i18nInstance.language && i18nInstance.isInitialized) pushResolvedLanguage(i18nInstance.language);
+    } catch (_) {}
+    try {
+      if (window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE) {
+        pushResolvedLanguage(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE);
+      }
+    } catch (_) {}
+    var documentLang = '';
+    try { documentLang = (document.documentElement && document.documentElement.lang) || ''; } catch (_) {}
+    var documentLangIsTemplateDefault = /^zh(?:-CN)?$/i.test(documentLang) && !hasResolvedI18nLanguage;
+    if (documentLang && !documentLangIsTemplateDefault) candidates.push(documentLang);
+    candidates.push(navigator.language || '');
     try { candidates.push(localStorage.getItem('i18nextLng')); } catch (_) {}
-    candidates.push((document.documentElement && document.documentElement.lang) || '', navigator.language || '');
     for (var i = 0; i < candidates.length; i++) {
       var lang = String(candidates[i] || '').trim();
-      if (lang) return lang.replace('_', '-');
+      if (lang && lang !== 'undefined' && lang !== 'null') return lang.replace('_', '-');
     }
     return 'zh';
   }
@@ -2538,12 +2558,16 @@
   }
   function loadGeneratedQuickLines() {
     if (debugMode) return;
+    var quickLinesRequestSeq = ++generatedQuickLinesRequestSeq;
+    var quickLinesRequestLanguage = getRequestLanguage();
     var QUICK_LINE_KEYS = [
       'line_in', 'net_touch', 'zone_in', 'out', 'net',
       'shot_missed', 'game_over', 'long_aim', 'close_to_record',
       'new_record', 'streak_5', 'streak_10', 'streak_15', 'streak_20',
     ];
-    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: getRequestLanguage() }, 5000).then(function (res) {
+    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: quickLinesRequestLanguage }, 5000).then(function (res) {
+      if (quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return;
+      if (quickLinesRequestLanguage !== getRequestLanguage()) return;
       if (!res || !res.lines) return;
       QUICK_LINE_KEYS.forEach(function (key) {
         var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
@@ -9752,6 +9776,9 @@
   });
   addBadmintonEventListener(window, 'localechange', function () {
     invalidateBadmintonCourtCache();
+    generatedQuickLinesRequestSeq++;
+    generatedQuickLines = {};
+    if (routeActive) loadGeneratedQuickLines();
     applyStaticI18n();
     updateHud();
     updateThemeButton();

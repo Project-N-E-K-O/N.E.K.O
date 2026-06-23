@@ -355,6 +355,22 @@ _BADMINTON_QUICK_LINES_FALLBACK_EN: Dict[str, list[str]] = {
     "streak_15": ["Fifteen is wild", "This run is steady"],
     "streak_20": ["Twenty?!", "This round is absurd"],
 }
+_BADMINTON_QUICK_LINES_FALLBACK_JA: Dict[str, list[str]] = {
+    "line_in": ["ラインぎりぎり！", "いい落としどころ"],
+    "net_touch": ["ネットに触れたけど入った", "今の角度、危なかったね"],
+    "zone_in": ["ゾーンに入ったよ", "落点が鋭いね"],
+    "out": ["少しアウト", "ちょっと長かったね"],
+    "net": ["ネットに捕まったね", "ラケット面を少し上げて"],
+    "shot_missed": ["まだいけるよ", "落ち着いてもう一回"],
+    "game_over": ["もう一回やる？", "この一本、覚えておくね"],
+    "long_aim": ["そろそろ振って", "待ちすぎると固まるよ"],
+    "close_to_record": ["記録まであと少し", "もう一拍、安定させて"],
+    "new_record": ["新記録だね！", "今のは認めるよ"],
+    "streak_5": ["五連続だね", "調子が上がってきた"],
+    "streak_10": ["十連続？すごいね", "かなり安定してる"],
+    "streak_15": ["十五連続はすごい", "このラリー、粘るね"],
+    "streak_20": ["二十連続？！", "まだ終わらないの？"],
+}
 _badminton_quick_lines_cache: OrderedDict[str, Dict[str, list[str]]] = OrderedDict()
 _BADMINTON_QUICK_LINES_CACHE_MAX = 32
 _badminton_chat_rate_windows: OrderedDict[str, list[float]] = OrderedDict()
@@ -1865,7 +1881,12 @@ def _get_badminton_quick_lines_fallback(language: str | None = None) -> Dict[str
         normalized = normalize_language_code(str(language or ""), format="short") if language else ""
     except Exception:
         normalized = ""
-    source = _BADMINTON_QUICK_LINES_FALLBACK if normalized == "zh" else _BADMINTON_QUICK_LINES_FALLBACK_EN
+    if normalized == "zh":
+        source = _BADMINTON_QUICK_LINES_FALLBACK
+    elif normalized == "ja":
+        source = _BADMINTON_QUICK_LINES_FALLBACK_JA
+    else:
+        source = _BADMINTON_QUICK_LINES_FALLBACK_EN
     return {key: list(lines) for key, lines in source.items()}
 
 
