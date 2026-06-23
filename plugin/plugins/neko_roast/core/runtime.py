@@ -12,6 +12,7 @@ from typing import Any
 from ..adapters.bili_auth_service import BiliAuthService
 from ..adapters.neko_dispatcher import NekoDispatcher
 from ..modules._base import ReservedModule
+from ..modules.active_engagement import ActiveEngagementModule
 from ..modules.avatar_roast import AvatarRoastModule
 from ..modules.bili_identity import BiliIdentityModule
 from ..modules.bili_live_ingest import BiliLiveIngestModule
@@ -19,6 +20,7 @@ from ..modules.danmaku_response import DanmakuResponseModule
 from ..modules.developer_sandbox import DeveloperSandboxModule
 from ..modules.live_events import LiveEventsModule
 from ..modules.viewer_profile import ViewerProfileModule
+from ..modules.warmup_hosting import WarmupHostingModule
 from ..stores.audit_store import AuditStore
 from ..stores.avatar_cache import AvatarCache
 from ..stores.credential_store import CredentialStore
@@ -82,6 +84,8 @@ class RoastRuntime:
         self._idle_hosting_consecutive_failures: int = 0
         self._idle_hosting_sleep = asyncio.sleep
         self._idle_hosting_now = time.monotonic
+        self._active_engagement_last_attempt_at: float = 0.0
+        self._active_engagement_now = time.monotonic
         self._config_lock: asyncio.Lock | None = None
 
         self.bili_live_ingest = BiliLiveIngestModule()
@@ -89,6 +93,8 @@ class RoastRuntime:
         self.viewer_profile = ViewerProfileModule()
         self.avatar_roast = AvatarRoastModule()
         self.danmaku_response = DanmakuResponseModule()
+        self.active_engagement = ActiveEngagementModule()
+        self.warmup_hosting = WarmupHostingModule()
         self.developer_sandbox = DeveloperSandboxModule()
         self.live_events = LiveEventsModule()
         self.pipeline = RoastPipeline(self)
@@ -100,6 +106,8 @@ class RoastRuntime:
             self.viewer_profile,
             self.avatar_roast,
             self.danmaku_response,
+            self.active_engagement,
+            self.warmup_hosting,
             self.developer_sandbox,
             self.live_events,
             ReservedModule("bili_dm_ingest", "B站私信输入"),
@@ -517,6 +525,121 @@ class RoastRuntime:
         self.record_result(result)
         return result
 
+    async def trigger_warmup_hosting(self) -> InteractionResult:
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        event = self._warmup_hosting_event(live_state)
+
+        if self.config.live_mode != "solo_stream":
+            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_solo_stream")
+        state = str(live_state.get("state") or "")
+        if state == "paused":
+            return self._record_warmup_hosting_skip(event, "warmup_hosting.paused")
+        if state == "blocked":
+            return self._record_warmup_hosting_skip(event, "warmup_hosting.blocked")
+        if state != "warmup":
+            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_warmup")
+        if not bool(live_state.get("warmup_hosting_candidate")):
+            return self._record_warmup_hosting_skip(event, "warmup_hosting.not_candidate")
+        return await self.pipeline.handle_event(event)
+
+    async def maybe_trigger_warmup_hosting(self) -> InteractionResult | None:
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        if not bool(live_state.get("warmup_hosting_candidate")):
+            return None
+        return await self.trigger_warmup_hosting()
+
+    def _warmup_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+        return ViewerEvent(
+            uid="__neko_warmup__",
+            nickname="NEKO",
+            danmaku_text="",
+            source="warmup_hosting",
+            live_mode=self.config.live_mode,
+            raw={
+                "trigger": "auto_warmup_hosting",
+                "live_state": dict(live_state),
+            },
+        )
+
+    def _record_warmup_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
+        result = InteractionResult(
+            accepted=False,
+            status="skipped",
+            event=event,
+            reason=reason,
+            steps=[PipelineStep("warmup_hosting_gate", "skipped", reason)],
+        )
+        self.audit.record("warmup_hosting_skipped", reason, level="info", detail={"mode": self.config.live_mode})
+        self.record_result(result)
+        return result
+
+    async def trigger_active_engagement(self) -> InteractionResult:
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        active_status = self.active_engagement_status(live_status, live_state)
+        event = self._active_engagement_event(live_state)
+
+        if self.config.live_mode != "solo_stream":
+            return self._record_active_engagement_skip(event, "active_engagement.not_solo_stream")
+        state = str(live_state.get("state") or "")
+        if state == "paused":
+            return self._record_active_engagement_skip(event, "active_engagement.paused")
+        if state == "blocked":
+            return self._record_active_engagement_skip(event, "active_engagement.blocked")
+        if state != "quiet":
+            return self._record_active_engagement_skip(event, "active_engagement.not_quiet")
+        if not bool(active_status.get("candidate")):
+            return self._record_active_engagement_skip(event, "active_engagement.not_candidate")
+        return await self.pipeline.handle_event(event)
+
+    async def maybe_trigger_active_engagement(self) -> InteractionResult | None:
+        now = float(self._active_engagement_now())
+        if now - self._active_engagement_last_attempt_at < self._active_engagement_min_interval_seconds():
+            return None
+        live_connection = self.live_connection_snapshot()
+        live_status = self.live_status_summary(live_connection)
+        health_rows = self.runtime_health_rows()
+        live_state = self.live_state_summary(live_status, health_rows)
+        active_status = self.active_engagement_status(live_status, live_state)
+        if not bool(active_status.get("eligible")):
+            return None
+
+        self._active_engagement_last_attempt_at = now
+        return await self.trigger_active_engagement()
+
+    def _active_engagement_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+        return ViewerEvent(
+            uid="__neko_active__",
+            nickname="NEKO",
+            danmaku_text="",
+            source="active_engagement",
+            live_mode=self.config.live_mode,
+            raw={
+                "trigger": "manual_active_engagement",
+                "live_state": dict(live_state),
+            },
+        )
+
+    def _record_active_engagement_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
+        result = InteractionResult(
+            accepted=False,
+            status="skipped",
+            event=event,
+            reason=reason,
+            steps=[PipelineStep("active_engagement_gate", "skipped", reason)],
+        )
+        self.audit.record("active_engagement_skipped", reason, level="info", detail={"mode": self.config.live_mode})
+        self.record_result(result)
+        return result
+
     def _start_idle_hosting_loop(self) -> None:
         task = self._idle_hosting_task
         if task is not None and not task.done():
@@ -538,6 +661,8 @@ class RoastRuntime:
         while True:
             await self._idle_hosting_sleep(self._IDLE_HOSTING_CHECK_INTERVAL_SECONDS)
             try:
+                await self.maybe_trigger_warmup_hosting()
+                await self.maybe_trigger_active_engagement()
                 await self.maybe_trigger_idle_hosting()
             except asyncio.CancelledError:
                 raise
@@ -553,12 +678,18 @@ class RoastRuntime:
         health_rows = self.runtime_health_rows()
         live_state = self.live_state_summary(live_status, health_rows)
         idle_hosting_status = self.idle_hosting_status(live_state)
+        active_engagement_status = self.active_engagement_status(live_status, live_state)
+        live_director_status = self.live_director_status(live_status, live_state, idle_hosting_status, active_engagement_status)
+        solo_test_readiness = self.solo_test_readiness(live_status, live_state, live_director_status)
         return {
             "config": self.config.to_dict(),
             "live_connection": live_connection,
             "live_status": live_status,
             "live_state": live_state,
             "idle_hosting_status": idle_hosting_status,
+            "active_engagement_status": active_engagement_status,
+            "live_director_status": live_director_status,
+            "solo_test_readiness": solo_test_readiness,
             "speech_explanation": self.speech_explanation(live_status, live_state),
             # 观众档案改走本地 JSON（不依赖宿主 PluginStore，见 docs/devlog.md）。
             # store_enabled 保留旧字段名兼容面板，现指"档案目录是否可写=能否持久化"。
@@ -658,6 +789,9 @@ class RoastRuntime:
         elif safety_status == "paused":
             state = "paused"
             reason = "manual_paused"
+        elif last_activity_age_sec is None and self.config.live_mode == "solo_stream":
+            state = "warmup"
+            reason = "solo_stream_warmup"
         elif last_activity_age_sec is None or last_activity_age_sec > idle_threshold:
             state = "idle"
             reason = "no_recent_activity"
@@ -671,12 +805,19 @@ class RoastRuntime:
             and status.get("summary") in {"ready_to_stream", "test_only"}
             and float(status.get("cooldown_remaining") or 0.0) <= 0.0
         )
+        warmup_hosting_candidate = (
+            self.config.live_mode == "solo_stream"
+            and state == "warmup"
+            and status.get("summary") in {"ready_to_stream", "test_only"}
+            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
+        )
 
         return {
             "state": state,
             "reason": reason,
             "mode": self.config.live_mode,
             "mode_role": mode_role,
+            "warmup_hosting_candidate": warmup_hosting_candidate,
             "idle_hosting_candidate": idle_hosting_candidate,
             "last_activity_age_sec": last_activity_age_sec,
             "engaged_threshold_seconds": float(engaged_threshold),
@@ -711,6 +852,181 @@ class RoastRuntime:
             "min_interval_seconds": float(min_interval),
             "consecutive_failures": int(self._idle_hosting_consecutive_failures),
         }
+
+    def active_engagement_status(
+        self,
+        live_status: dict[str, Any] | None = None,
+        live_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        status = live_status or self.live_status_summary()
+        state = live_state or self.live_state_summary(status)
+        state_name = str(state.get("state") or "")
+        candidate = (
+            self.config.live_mode == "solo_stream"
+            and state_name == "quiet"
+            and status.get("summary") in {"ready_to_stream", "test_only"}
+            and float(status.get("cooldown_remaining") or 0.0) <= 0.0
+        )
+        now = float(self._active_engagement_now())
+        min_interval = self._active_engagement_min_interval_seconds()
+        elapsed = max(0.0, now - float(self._active_engagement_last_attempt_at or 0.0))
+        cooldown_remaining = 0.0
+        if self._active_engagement_last_attempt_at > 0:
+            cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
+        eligible = bool(candidate)
+        reason = "eligible"
+        if self.config.live_mode != "solo_stream":
+            reason = "not_solo_stream"
+        elif state_name in {"paused", "blocked"}:
+            reason = state_name
+        elif state_name != "quiet":
+            reason = "not_quiet"
+        elif status.get("summary") not in {"ready_to_stream", "test_only"}:
+            reason = str(status.get("reason") or "live_status_not_ready")
+        elif float(status.get("cooldown_remaining") or 0.0) > 0.0:
+            reason = "cooldown"
+        elif cooldown_remaining > 0.0:
+            reason = "minimum_interval"
+            eligible = False
+        return {
+            "candidate": bool(candidate),
+            "eligible": eligible,
+            "reason": reason,
+            "cooldown_remaining": cooldown_remaining,
+            "min_interval_seconds": float(min_interval),
+        }
+
+    def live_director_status(
+        self,
+        live_status: dict[str, Any] | None = None,
+        live_state: dict[str, Any] | None = None,
+        idle_hosting_status: dict[str, Any] | None = None,
+        active_engagement_status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        status = live_status or self.live_status_summary()
+        state = live_state or self.live_state_summary(status)
+        idle_status = idle_hosting_status or self.idle_hosting_status(state)
+        active_status = active_engagement_status or self.active_engagement_status(status, state)
+        mode = str(state.get("mode") or self.config.live_mode)
+        state_name = str(state.get("state") or "")
+
+        next_auto_action = "none"
+        eligible = False
+        reason = "waiting_for_viewer"
+        cooldown_remaining = 0.0
+        min_interval_seconds = 0.0
+
+        if mode != "solo_stream":
+            reason = "companion_mode"
+        elif state_name == "paused":
+            reason = "paused"
+        elif state_name == "blocked":
+            reason = "blocked"
+        elif state_name == "warmup":
+            next_auto_action = "warmup_hosting"
+            eligible = bool(state.get("warmup_hosting_candidate"))
+            reason = "solo_warmup" if eligible else "warmup_hosting_not_ready"
+        elif state_name == "quiet":
+            next_auto_action = "active_engagement"
+            eligible = bool(active_status.get("eligible"))
+            reason = "solo_quiet" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
+            cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
+            min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
+        elif state_name == "idle":
+            next_auto_action = "idle_hosting"
+            eligible = bool(idle_status.get("eligible"))
+            reason = "solo_idle" if eligible else str(idle_status.get("reason") or "idle_hosting_not_ready")
+            cooldown_remaining = float(idle_status.get("cooldown_remaining") or 0.0)
+            min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
+        elif state_name == "engaged":
+            reason = "recent_activity"
+
+        return {
+            "next_auto_action": next_auto_action,
+            "eligible": eligible,
+            "reason": reason,
+            "cooldown_remaining": round(max(0.0, cooldown_remaining), 1),
+            "min_interval_seconds": float(min_interval_seconds),
+            "mode": mode,
+            "live_state": state_name,
+        }
+
+    def solo_test_readiness(
+        self,
+        live_status: dict[str, Any] | None = None,
+        live_state: dict[str, Any] | None = None,
+        live_director_status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        status = live_status or self.live_status_summary()
+        state = live_state or self.live_state_summary(status)
+        director = live_director_status or self.live_director_status(status, state)
+        mode = str(state.get("mode") or self.config.live_mode)
+        status_summary = str(status.get("summary") or "")
+        is_solo = mode == "solo_stream"
+        live_ready = status_summary in {"ready_to_stream", "test_only"}
+        ready = bool(is_solo and live_ready)
+        if not is_solo:
+            summary = "not_solo_stream"
+        elif not live_ready:
+            summary = "live_not_ready"
+        elif bool(status.get("dry_run")):
+            summary = "ready_for_test"
+        else:
+            summary = "ready_for_live_test"
+
+        blocked_status = "ready" if ready else "blocked"
+        items = [
+            {
+                "id": "preflight",
+                "status": "ready" if live_ready else "blocked",
+                "reason": str(status.get("reason") or ""),
+            },
+            {
+                "id": "warmup_hosting",
+                "status": blocked_status,
+                "reason": "available" if ready else summary,
+            },
+            {
+                "id": "avatar_roast",
+                "status": blocked_status,
+                "reason": "available" if ready else summary,
+            },
+            {
+                "id": "danmaku_response",
+                "status": blocked_status,
+                "reason": "available" if ready else summary,
+            },
+            {
+                "id": "active_engagement",
+                "status": blocked_status,
+                "reason": str(director.get("reason") or "available") if ready else summary,
+            },
+            {
+                "id": "idle_hosting",
+                "status": blocked_status,
+                "reason": "available" if ready else summary,
+            },
+            {
+                "id": "pacing_control",
+                "status": blocked_status,
+                "reason": str(getattr(self.config, "activity_level", "standard")),
+            },
+        ]
+        return {
+            "ready": ready,
+            "summary": summary,
+            "mode": mode,
+            "dry_run": bool(status.get("dry_run")),
+            "next_auto_action": str(director.get("next_auto_action") or "none"),
+            "items": items,
+        }
+
+    def _active_engagement_min_interval_seconds(self) -> float:
+        return {
+            "quiet": 300.0,
+            "active": 120.0,
+            "standard": 180.0,
+        }.get(str(getattr(self.config, "activity_level", "standard")), 180.0)
 
     def _idle_hosting_min_interval_seconds(self) -> float:
         return {
@@ -760,10 +1076,13 @@ class RoastRuntime:
         elif status_summary == "temporarily_not_speaking":
             summary = "temporarily_not_speaking"
             reason = status_reason
+        elif bool(state.get("warmup_hosting_candidate")):
+            summary = "waiting_for_activity"
+            reason = "solo_stream_warmup"
         elif bool(state.get("idle_hosting_candidate")):
             summary = "waiting_for_activity"
             reason = "idle_hosting_candidate"
-        elif state_name in {"quiet", "idle"}:
+        elif state_name in {"warmup", "quiet", "idle"}:
             summary = "waiting_for_activity"
             reason = state_reason or state_name
         elif latest_status == "pushed":
@@ -787,6 +1106,7 @@ class RoastRuntime:
             "live_state": state_name,
             "live_state_reason": state_reason,
             "cooldown_remaining": round(float(status.get("cooldown_remaining") or 0.0), 1),
+            "warmup_hosting_candidate": bool(state.get("warmup_hosting_candidate")),
             "idle_hosting_candidate": bool(state.get("idle_hosting_candidate")),
             "last_result_status": latest_status,
             "last_result_reason": latest_reason,
@@ -807,6 +1127,10 @@ class RoastRuntime:
             route = self._route_from_result(result)
             if source == "idle_hosting":
                 line = f"{route} / idle_hosting: solo quiet-room host beat"
+            elif source == "warmup_hosting":
+                line = f"{route} / warmup_hosting: solo opening host beat"
+            elif source == "active_engagement":
+                line = f"{route} / active_engagement: solo engagement beat"
             else:
                 identity = result.get("identity") if isinstance(result.get("identity"), dict) else {}
                 who = str(identity.get("nickname") or event.get("nickname") or event.get("uid") or "viewer")
@@ -830,14 +1154,14 @@ class RoastRuntime:
     def _route_from_result(result: dict[str, Any]) -> str:
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         source = str(event.get("source") or "")
-        if source in {"idle_hosting", "active_engagement"}:
+        if source in {"idle_hosting", "active_engagement", "warmup_hosting"}:
             return source
         steps = result.get("steps") if isinstance(result.get("steps"), list) else []
         for step in reversed(steps):
             if not isinstance(step, dict):
                 continue
             step_id = str(step.get("id") or "")
-            if step_id in {"danmaku_response", "avatar_roast", "idle_hosting", "active_engagement"}:
+            if step_id in {"danmaku_response", "avatar_roast", "idle_hosting", "active_engagement", "warmup_hosting"}:
                 return step_id
         return source or "unknown"
 

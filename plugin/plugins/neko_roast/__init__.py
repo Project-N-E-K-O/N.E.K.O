@@ -294,6 +294,26 @@ class NekoRoastPlugin(NekoPluginBase):
         result = await self._runtime().trigger_idle_hosting()
         return Ok(result.to_public_dict())
 
+    @ui.action(id="trigger_warmup_hosting", label=tr("entries.trigger_warmup_hosting.name", default="Trigger warmup hosting"), group="safety", order=52, refresh_context=True)
+    @plugin_entry(
+        id="trigger_warmup_hosting",
+        name=tr("entries.trigger_warmup_hosting.name", default="Trigger warmup hosting"),
+        description=tr("entries.trigger_warmup_hosting.description", default="Manually trigger one solo-stream opening host beat when NEKO has just started."),
+    )
+    async def trigger_warmup_hosting(self, **_):
+        result = await self._runtime().trigger_warmup_hosting()
+        return Ok(result.to_public_dict())
+
+    @ui.action(id="trigger_active_engagement", label=tr("entries.trigger_active_engagement.name", default="Trigger active engagement"), group="safety", order=55, refresh_context=True)
+    @plugin_entry(
+        id="trigger_active_engagement",
+        name=tr("entries.trigger_active_engagement.name", default="Trigger active engagement"),
+        description=tr("entries.trigger_active_engagement.description", default="Manually trigger one solo-stream active engagement beat when NEKO is in a quiet moment."),
+    )
+    async def trigger_active_engagement(self, **_):
+        result = await self._runtime().trigger_active_engagement()
+        return Ok(result.to_public_dict())
+
     @ui.action(id="submit_viewer_event", label=tr("panel.actions.submitSandbox", default="发射模拟弹幕"), group="developer", order=20, refresh_context=True)
     @plugin_entry(
         id="submit_viewer_event",

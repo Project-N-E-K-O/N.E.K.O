@@ -18,9 +18,11 @@ from plugin.plugins.neko_roast.core.contracts import (
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
 from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
 from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
+from plugin.plugins.neko_roast.modules.active_engagement import ActiveEngagementModule
 from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
 from plugin.plugins.neko_roast.modules.bili_identity import BiliIdentityModule
 from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_roast.modules.warmup_hosting import WarmupHostingModule
 
 
 def test_roast_config_defaults_to_dry_run_for_real_room_safety():
@@ -133,6 +135,43 @@ def test_idle_hosting_prompt_uses_activity_level_strategy():
     active_request = active_module.build_request(event, identity, profile)
     assert "pacing: active" in active_request.prompt_text
     assert "You may ask one specific, low-pressure question." in active_request.prompt_text
+
+
+def test_active_engagement_prompt_is_one_light_solo_topic():
+    module = ActiveEngagementModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(activity_level="active", roast_strength="sharp", dry_run=True),
+        recent_interaction_context=lambda limit=3: ["danmaku_response / live_danmaku from viewer: 猫猫聊点什么"],
+    )
+    event = ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream")
+    identity = ViewerIdentity(uid=event.uid, nickname=event.nickname)
+    profile = ViewerProfile(uid=event.uid, nickname=event.nickname)
+
+    request = module.build_request(event, identity, profile)
+
+    assert request.dry_run is True
+    assert "[NEKO Live active engagement]" in request.prompt_text
+    assert "one concrete, low-pressure question" in request.prompt_text
+    assert "Do not pretend a viewer sent a message" in request.prompt_text
+    assert "Do not use generic host slogans" in request.prompt_text
+    assert "Continuity rule" in request.prompt_text
+
+
+def test_warmup_hosting_prompt_is_opening_not_idle_filler():
+    module = WarmupHostingModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True))
+    event = ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream")
+    identity = ViewerIdentity(uid=event.uid, nickname=event.nickname)
+    profile = ViewerProfile(uid=event.uid, nickname=event.nickname)
+
+    request = module.build_request(event, identity, profile)
+
+    assert request.dry_run is True
+    assert "[NEKO Live solo warmup hosting]" in request.prompt_text
+    assert "opening a solo_stream" in request.prompt_text
+    assert "not a cold-room filler" in request.prompt_text
+    assert "Do not pretend a viewer sent a message" in request.prompt_text
+    assert "Output only NEKO's line" in request.prompt_text
 
 
 def test_utc_now_iso_returns_timezone_aware_utc_timestamp():

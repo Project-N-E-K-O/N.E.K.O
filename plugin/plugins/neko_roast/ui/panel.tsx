@@ -48,6 +48,8 @@ type DashboardState = {
   safety?: Record<string, any>
   live_status?: Record<string, any>
   live_state?: Record<string, any>
+  live_director_status?: Record<string, any>
+  solo_test_readiness?: Record<string, any>
   modules?: Array<Record<string, any>>
   recent_profiles?: Array<Record<string, any>>
   recent_results?: Array<Record<string, any>>
@@ -55,6 +57,7 @@ type DashboardState = {
   recent_audit?: Array<Record<string, any>>
   speech_explanation?: Record<string, any>
   idle_hosting_status?: Record<string, any>
+  active_engagement_status?: Record<string, any>
 }
 
 const configDefaults = {
@@ -101,7 +104,7 @@ function liveStatusTone(summary: string): "success" | "warning" | "danger" | "de
 }
 
 function liveStateTone(state: string): "success" | "warning" | "danger" | "default" {
-  if (state === "engaged") return "success"
+  if (state === "engaged" || state === "warmup") return "success"
   if (state === "quiet" || state === "idle" || state === "paused") return "warning"
   if (state === "blocked") return "danger"
   return "default"
@@ -114,6 +117,18 @@ function speechExplanationTone(summary: string): "success" | "warning" | "danger
   return "default"
 }
 
+function soloReadinessTone(ready: boolean, summary: string): "success" | "warning" | "danger" | "default" {
+  if (ready) return "success"
+  if (summary === "not_solo_stream") return "default"
+  return "warning"
+}
+
+function soloReadinessItemTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "ready") return "success"
+  if (status === "blocked") return "warning"
+  return "default"
+}
+
 function formatLatencyMs(value: any): string {
   const ms = Number(value)
   if (!Number.isFinite(ms) || ms < 0) return "-"
@@ -123,12 +138,13 @@ function formatLatencyMs(value: any): string {
 
 function interactionRoute(result: any): string {
   const source = String((result && result.event && result.event.source) || "")
+  if (source === "warmup_hosting") return "warmup_hosting"
   if (source === "idle_hosting") return "idle_hosting"
   if (source === "active_engagement") return "active_engagement"
   const steps = Array.isArray(result && result.steps) ? result.steps : []
   const routeStep = [...steps].reverse().find((step: any) => {
     const id = String((step && step.id) || "")
-    return id === "danmaku_response" || id === "avatar_roast" || id === "idle_hosting" || id === "active_engagement"
+    return id === "danmaku_response" || id === "avatar_roast" || id === "warmup_hosting" || id === "idle_hosting" || id === "active_engagement"
   })
   if (routeStep && routeStep.id) return String(routeStep.id)
   return source || "-"
@@ -136,7 +152,7 @@ function interactionRoute(result: any): string {
 
 function interactionRouteTone(route: string): "success" | "warning" | "danger" | "default" {
   if (route === "avatar_roast" || route === "danmaku_response") return "success"
-  if (route === "idle_hosting") return "warning"
+  if (route === "warmup_hosting" || route === "idle_hosting") return "warning"
   if (route === "active_engagement") return "default"
   return "default"
 }
@@ -263,8 +279,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const safety = safeState.safety || {}
   const liveStatus = safeState.live_status || {}
   const liveState = safeState.live_state || {}
+  const liveDirectorStatus = safeState.live_director_status || {}
+  const soloTestReadiness = safeState.solo_test_readiness || {}
   const speechExplanation = safeState.speech_explanation || {}
   const idleHostingStatus = safeState.idle_hosting_status || {}
+  const activeEngagementStatus = safeState.active_engagement_status || {}
   const profiles = Array.isArray(safeState.recent_profiles) ? safeState.recent_profiles : []
   const results = Array.isArray(safeState.recent_results) ? safeState.recent_results : []
   const sandboxResults = Array.isArray(safeState.recent_sandbox_results) ? safeState.recent_sandbox_results : []
@@ -552,16 +571,29 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStateLastActivityAge = liveState.last_activity_age_sec === null || liveState.last_activity_age_sec === undefined ? "-" : `${Number(liveState.last_activity_age_sec || 0).toFixed(1)}s`
   const liveStateQuietAfter = `${Number(liveState.engaged_threshold_seconds || 0).toFixed(0)}s`
   const liveStateIdleAfter = `${Number(liveState.idle_threshold_seconds || 0).toFixed(0)}s`
+  const warmupHostingCandidate = !!liveState.warmup_hosting_candidate
   const idleHostingCandidate = !!liveState.idle_hosting_candidate
   const idleHostingEligible = !!idleHostingStatus.eligible
   const idleHostingReason = String(idleHostingStatus.reason || "not_candidate")
   const idleHostingCooldown = Number(idleHostingStatus.cooldown_remaining || 0)
   const idleHostingMinInterval = Number(idleHostingStatus.min_interval_seconds || 0)
+  const activeEngagementCandidate = !!activeEngagementStatus.candidate
+  const activeEngagementEligible = !!activeEngagementStatus.eligible
+  const activeEngagementReason = String(activeEngagementStatus.reason || "not_quiet")
+  const activeEngagementCooldown = Number(activeEngagementStatus.cooldown_remaining || 0)
+  const activeEngagementMinInterval = Number(activeEngagementStatus.min_interval_seconds || 0)
   const speechSummary = String(speechExplanation.summary || "cannot_stream")
   const speechReason = String(speechExplanation.reason || "room_not_configured")
   const speechLastStatus = String(speechExplanation.last_result_status || "")
   const speechLastReason = String(speechExplanation.last_result_reason || "")
   const speechLastSource = String(speechExplanation.last_result_source || "")
+  const liveDirectorNextAction = String(liveDirectorStatus.next_auto_action || "none")
+  const liveDirectorEligible = !!liveDirectorStatus.eligible
+  const liveDirectorReason = String(liveDirectorStatus.reason || "waiting_for_viewer")
+  const liveDirectorCooldown = Number(liveDirectorStatus.cooldown_remaining || 0)
+  const soloTestReady = !!soloTestReadiness.ready
+  const soloTestSummary = String(soloTestReadiness.summary || "live_not_ready")
+  const soloTestItems = Array.isArray(soloTestReadiness.items) ? soloTestReadiness.items : []
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
@@ -672,6 +704,47 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
               {speechLastSource ? ` / ${speechLastSource}` : ""}
             </Text>
           ) : null}
+        </Stack>
+      </Card>
+      <Card title={t("panel.soloTestReadiness.title")}>
+        <Stack gap={12}>
+          <Grid cols={2}>
+            <StatCard
+              label={t("panel.columns.status")}
+              value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={t(`panel.soloTestReadiness.summary.${soloTestSummary}`)} />}
+            />
+            <StatCard
+              label={t("panel.liveDirector.nextAutoAction")}
+              value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />}
+            />
+          </Grid>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px" }}>
+            {soloTestItems.map((item: any) => {
+              const id = String(item.id || "preflight")
+              const status = String(item.status || "blocked")
+              return (
+                <div
+                  key={id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "8px",
+                    minHeight: "36px",
+                    padding: "8px 10px",
+                    border: "1px solid var(--border)",
+                    borderRadius: "8px",
+                    background: "var(--surface)",
+                  }}
+                >
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t(`panel.soloTestReadiness.item.${id}`)}
+                  </span>
+                  <StatusBadge tone={soloReadinessItemTone(status)} label={t(`panel.soloTestReadiness.status.${status}`)} />
+                </div>
+              )
+            })}
+          </div>
         </Stack>
       </Card>
       <Card title={t("panel.room.title")}>
@@ -852,6 +925,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={latestRoute} />} />
           <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
         </Grid>
+        <Grid cols={3}>
+          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />} />
+          <StatCard label={t("panel.columns.reason")} value={t(`panel.liveDirector.reason.${liveDirectorReason}`)} />
+          <StatCard label={t("panel.liveDirector.cooldown")} value={`${liveDirectorCooldown.toFixed(1)}s`} />
+        </Grid>
         <Alert tone={speechExplanationTone(speechSummary)}>
           {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
         </Alert>
@@ -933,15 +1011,49 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Card>
   )
 
+  const renderWarmupHostingCard = () => (
+    <Card title={t("panel.interaction.module.warmupHosting.title")}>
+      <Stack gap={12}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+          <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={t("panel.interaction.module.warmupHosting.badge")} />
+          <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={t(`panel.warmupHostingCandidate.${warmupHostingCandidate ? "true" : "false"}`)} />
+        </div>
+        <Text>{t("panel.interaction.module.warmupHosting.desc")}</Text>
+        <Grid cols={2}>
+          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
+          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />} />
+        </Grid>
+        {renderTagRow([
+          { key: "panel.interaction.tags.openingBeat", tone: "success" },
+          { key: "panel.interaction.tags.safetyRequired" },
+        ])}
+        <Button tone="info" onClick={() => callSimple("trigger_warmup_hosting")}>{t("panel.actions.triggerWarmupHosting")}</Button>
+      </Stack>
+    </Card>
+  )
+
   const renderActiveEngagementCard = () => (
     <Card title={t("panel.interaction.module.activeEngagement.title")}>
       <Stack gap={12}>
-        <StatusBadge tone="default" label={t("panel.interaction.module.activeEngagement.badge")} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+          <StatusBadge tone={activeEngagementEligible ? "success" : "warning"} label={t("panel.interaction.module.activeEngagement.badge")} />
+          <StatusBadge tone={activeEngagementCandidate ? "success" : "default"} label={t(`panel.activeEngagementCandidate.${activeEngagementCandidate ? "true" : "false"}`)} />
+        </div>
         <Text>{t("panel.interaction.module.activeEngagement.desc")}</Text>
+        <Text>{t(`panel.activeEngagementStatus.reason.${activeEngagementReason}`)}</Text>
+        <Grid cols={2}>
+          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
+          <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
+        </Grid>
+        <Grid cols={2}>
+          <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${activeEngagementCooldown.toFixed(1)}s`} />
+          <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${activeEngagementMinInterval.toFixed(1)}s`} />
+        </Grid>
         {renderTagRow([
-          { key: "panel.interaction.tags.future" },
+          { key: "panel.interaction.tags.activeQuestion", tone: "success" },
           { key: "panel.interaction.tags.safetyRequired" },
         ])}
+        <Button tone="info" onClick={() => callSimple("trigger_active_engagement")}>{t("panel.actions.triggerActiveEngagement")}</Button>
       </Stack>
     </Card>
   )
@@ -971,6 +1083,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       {currentDecisionCard}
       {safeModuleCard("avatar_roast", t("panel.interaction.module.avatarRoast.title"), () => renderAvatarRoastCard(interactionModuleById.avatar_roast))}
       {safeModuleCard("danmaku_response", t("panel.interaction.module.danmakuResponse.title"), () => renderDanmakuResponseCard(interactionModuleById.danmaku_response))}
+      {safeModuleCard("warmup_hosting", t("panel.interaction.module.warmupHosting.title"), renderWarmupHostingCard)}
       {safeModuleCard("idle_hosting", t("panel.interaction.module.idleHosting.title"), renderIdleHostingCard)}
       {safeModuleCard("active_engagement", t("panel.interaction.module.activeEngagement.title"), renderActiveEngagementCard)}
     </Stack>

@@ -40,12 +40,16 @@ Independent Mode is now past the first implementation and acceptance check and s
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
 - Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters. It now controls both quiet/idle state thresholds and Idle Hosting minimum intervals.
 - Danmaku Response transition slice is implemented in the current development branch: first appearance still uses `avatar_roast`; later ordinary danmaku from the same UID uses `danmaku_response` instead of being blocked by the first-appearance once gate.
+- Active Engagement v0 is implemented as a conservative solo-stream quiet-moment trigger with both automatic and manual paths. It is meant for controlled live-effect validation only: one small replyable topic, long minimum intervals, and no Gift / SC / Guard coupling.
+- Live Director status is exposed in the dashboard to explain the next automatic speaking action: none, active engagement, or idle hosting, including whether it is eligible and how long it must wait.
+- Solo stream readiness is exposed in the dashboard as a streamer-facing checklist. It aggregates preflight, warmup, first-viewer roast, follow-up danmaku reply, light active topic, idle hosting, and pacing control into one readiness conclusion; it is not a separate output path or test backend.
+- Warmup Hosting is implemented for solo-stream opening moments before any recent room activity exists. It gives NEKO an opening host beat so the first autonomous line does not sound like cold-room filler.
 - The current validation target is not another event type. It is a controlled solo-stream validation with low danmaku, occasional danmaku, and no-danmaku moments.
 - The next product decision should be based on controlled validation:
   - if NEKO is too quiet or too noisy, tune the quiet / standard / active pacing thresholds next;
   - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
   - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
-  - if the baseline feels stable, prepare a 3-5 streamer closed beta before adding Active Engagement.
+  - if Active Engagement feels too pushy, raise its minimum interval or turn it back into manual-only validation.
 
 ## Current Development Split
 
@@ -126,6 +130,8 @@ Goal: validate whether NEKO starts to feel like a livestream host.
 
 This is the fastest slice for proving Independent Mode product value. In low-danmaku or no-danmaku moments, NEKO should make short, light hosting moves that prevent silence without becoming repetitive, pushy, or awkward.
 
+Opening moments are handled separately by Warmup Hosting: when solo stream has just started and there is no recent room activity, NEKO should open the room instead of treating the room as already idle.
+
 Idle Hosting should avoid:
 
 - long monologues;
@@ -189,6 +195,8 @@ Current behavior: quiet waits longer before classifying the room as idle, uses a
 Goal: let NEKO proactively create moments viewers want to answer.
 
 This slice has high value, but it is the most likely to fail. It should come after Idle Hosting and Pacing Control have been validated.
+
+Current v0 scope: conservative auto trigger plus manual trigger, solo-stream quiet moments only. It should create one short, specific, low-pressure topic and still use the same test mode, pause, safety, pacing, and dispatcher behavior as every other speaking path. It must remain easy to tune down if live tests show generic or pushy wording.
 
 Failure shapes to avoid:
 
@@ -261,6 +269,45 @@ Suggested observation sheet:
 | 25:00-30:00 | no danmaku |  |  |  |  |  |  |
 
 Record only what affects the live feel. Do not turn this into an engineering trace; the question is whether the stream feels alive.
+
+## Solo Stream Validation Checklist
+
+Use this checklist before a controlled solo-stream test. It is for product validation, not debugging internals.
+
+### Streamer trust
+
+- The dashboard gives one clear conclusion: ready for dry-run test, ready for live test, switch to solo stream first, or live room not ready.
+- The streamer can see whether `dry_run` is on before NEKO speaks.
+- If NEKO is silent, the dashboard explains the visible reason without requiring module knowledge.
+- Pause and resume are visible and easy to reach.
+
+### Dead-air control
+
+- NEKO can start with a warmup host line when solo stream has just begun.
+- In no-danmaku moments, NEKO can fill silence with one short line instead of a long monologue.
+- Idle Hosting avoids saying the room is empty or begging viewers to comment.
+- The streamer can tell whether the next automatic action is warmup, active engagement, idle hosting, or none.
+
+### Danmaku continuity
+
+- First viewer appearance still feels like an entrance moment.
+- Later danmaku from the same viewer gets a normal follow-up reply, not another avatar / ID roast.
+- The panel copy makes it clear that "once per viewer" means first-appearance roast only.
+- Recent results make it possible to see whether the route was `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, or `active_engagement`.
+
+### Pacing safety
+
+- Quiet / standard / active is understandable without explaining thresholds.
+- NEKO does not speak again immediately after a recent output.
+- Active Engagement stays conservative and does not feel like template hosting.
+- If NEKO feels too noisy, the next tuning action is to lower activity level or raise intervals, not add more event types.
+
+### Persona fit
+
+- NEKO sounds like the same N.E.K.O persona in opening, replies, idle lines, and light active topics.
+- Lines are short enough for live TTS.
+- NEKO leaves viewers a natural reply point.
+- Failed lines should be judged by live feel first: generic, pushy, repetitive, too quiet, or too noisy.
 
 ### 2. One Friendly Streamer Shadow Test
 

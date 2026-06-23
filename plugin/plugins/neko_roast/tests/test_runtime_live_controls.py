@@ -84,6 +84,8 @@ def runtime(tmp_path: Path) -> RoastRuntime:
     rt = RoastRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
     rt.avatar_roast.ctx = rt
+    rt.active_engagement.ctx = rt
+    rt.warmup_hosting.ctx = rt
     rt.bili_identity.ctx = rt
     return rt
 
@@ -327,14 +329,14 @@ async def test_speech_explanation_keeps_dry_run_result_visible(runtime: RoastRun
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
 
-    await runtime.trigger_idle_hosting()
+    await runtime.trigger_warmup_hosting()
     state = await runtime.dashboard_state()
 
     assert state["speech_explanation"]["summary"] == "test_only"
     assert state["speech_explanation"]["reason"] == "dry_run"
     assert state["speech_explanation"]["last_result_status"] == "dry_run"
     assert state["speech_explanation"]["last_result_reason"] == "dispatcher.dry_run"
-    assert state["speech_explanation"]["last_result_source"] == "idle_hosting"
+    assert state["speech_explanation"]["last_result_source"] == "warmup_hosting"
 
 
 @pytest.mark.asyncio
@@ -348,9 +350,9 @@ async def test_speech_explanation_marks_solo_idle_as_waiting_for_idle_hosting(ru
 
     state = await runtime.dashboard_state()
 
-    assert state["live_state"]["idle_hosting_candidate"] is True
+    assert state["live_state"]["warmup_hosting_candidate"] is True
     assert state["speech_explanation"]["summary"] == "waiting_for_activity"
-    assert state["speech_explanation"]["reason"] == "idle_hosting_candidate"
+    assert state["speech_explanation"]["reason"] == "solo_stream_warmup"
 
 
 def _created_at_age(seconds: int) -> str:
@@ -433,6 +435,24 @@ async def test_live_state_marks_activity_gap_as_quiet(runtime: RoastRuntime) -> 
 
 
 @pytest.mark.asyncio
+async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "warmup"
+    assert state["live_state"]["reason"] == "solo_stream_warmup"
+    assert state["live_state"]["warmup_hosting_candidate"] is True
+    assert state["live_director_status"]["next_auto_action"] == "warmup_hosting"
+    assert state["live_director_status"]["reason"] == "solo_warmup"
+
+
+@pytest.mark.asyncio
 async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -462,6 +482,7 @@ async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRunti
     runtime._idle_hosting_now = lambda: 150.0
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
 
     state = await runtime.dashboard_state()
 
@@ -588,6 +609,7 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
 
     result = await runtime.trigger_idle_hosting()
 
@@ -651,6 +673,7 @@ async def test_auto_idle_hosting_triggers_when_solo_stream_is_idle(runtime: Roas
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
 
     result = await runtime.maybe_trigger_idle_hosting()
 
@@ -690,6 +713,242 @@ async def test_auto_idle_hosting_respects_minimum_interval(runtime: RoastRuntime
 
     assert result is None
     assert list(runtime.recent_results) == []
+
+
+@pytest.mark.asyncio
+async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["active_engagement_status"]["candidate"] is True
+    assert state["active_engagement_status"]["eligible"] is True
+    assert state["active_engagement_status"]["reason"] == "eligible"
+
+
+@pytest.mark.asyncio
+async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    result = await runtime.trigger_active_engagement()
+
+    assert result.status == "dry_run"
+    assert result.event.source == "active_engagement"
+    assert any(step.id == "active_engagement" and step.status == "ok" for step in result.steps)
+    assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    result = await runtime.trigger_active_engagement()
+
+    assert result.status == "skipped"
+    assert result.reason == "active_engagement.not_solo_stream"
+
+
+@pytest.mark.asyncio
+async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    result = await runtime.maybe_trigger_active_engagement()
+
+    assert result is not None
+    assert result.status == "dry_run"
+    assert result.event.source == "active_engagement"
+    assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._active_engagement_last_attempt_at = 100.0
+    runtime._active_engagement_now = lambda: 150.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    result = await runtime.maybe_trigger_active_engagement()
+
+    assert result is None
+    assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_auto_active_engagement_does_not_record_skip_when_not_candidate(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=30)
+
+    result = await runtime.maybe_trigger_active_engagement()
+
+    assert result is None
+    assert len(runtime.recent_results) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_warmup_hosting_triggers_once_for_new_solo_stream(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    result = await runtime.maybe_trigger_warmup_hosting()
+
+    assert result is not None
+    assert result.status == "dry_run"
+    assert result.event.source == "warmup_hosting"
+    assert any(step.id == "warmup_hosting" and step.status == "ok" for step in result.steps)
+    assert runtime.recent_results[-1]["event"]["source"] == "warmup_hosting"
+
+
+@pytest.mark.asyncio
+async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+
+    result = await runtime.maybe_trigger_warmup_hosting()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_live_director_status_picks_active_engagement_for_solo_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    state = await runtime.dashboard_state()
+
+    director = state["live_director_status"]
+    assert director["next_auto_action"] == "active_engagement"
+    assert director["eligible"] is True
+    assert director["reason"] == "solo_quiet"
+
+
+@pytest.mark.asyncio
+async def test_live_director_status_picks_idle_hosting_for_solo_idle(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+
+    state = await runtime.dashboard_state()
+
+    director = state["live_director_status"]
+    assert director["next_auto_action"] == "idle_hosting"
+    assert director["eligible"] is True
+    assert director["reason"] == "solo_idle"
+
+
+@pytest.mark.asyncio
+async def test_live_director_status_does_not_auto_host_for_co_stream_quiet(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    state = await runtime.dashboard_state()
+
+    director = state["live_director_status"]
+    assert director["next_auto_action"] == "none"
+    assert director["eligible"] is False
+    assert director["reason"] == "companion_mode"
+
+
+@pytest.mark.asyncio
+async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    readiness = state["solo_test_readiness"]
+    assert readiness["ready"] is True
+    assert readiness["summary"] == "ready_for_test"
+    assert readiness["mode"] == "solo_stream"
+    items = {item["id"]: item for item in readiness["items"]}
+    assert set(items) == {
+        "preflight",
+        "warmup_hosting",
+        "avatar_roast",
+        "danmaku_response",
+        "active_engagement",
+        "idle_hosting",
+        "pacing_control",
+    }
+    assert all(item["status"] == "ready" for item in items.values())
+
+
+@pytest.mark.asyncio
+async def test_solo_test_readiness_blocks_companion_mode(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "co_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    readiness = state["solo_test_readiness"]
+    assert readiness["ready"] is False
+    assert readiness["summary"] == "not_solo_stream"
+    assert readiness["mode"] == "co_stream"
 
 
 @pytest.mark.asyncio

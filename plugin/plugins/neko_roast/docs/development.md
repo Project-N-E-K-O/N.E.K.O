@@ -197,6 +197,10 @@ Protected Modules 是需要核心维护者 review 的高风险区域。触碰这
 - `viewer_profile`：维护观众档案和首次触发判断。
 - `avatar_roast`：构造首次出场的头像 / ID / 第一句话锐评请求，并集中产出完整锐评指令（见“输出边界”的自适应焦点规则）。
 - `danmaku_response`：构造同一观众后续普通弹幕的接话请求。它不做头像 / ID 首评，不写首评计数，不绕过 pipeline / safety guard / dispatcher；用于让 Independent Mode 下的持续对话不被 `roast_once_per_uid` 整体挡掉。
+- `active_engagement`：构造猫猫独播安静状态下的一次主动营业请求。当前 v0 支持保守自动触发和手动触发，不接 Gift / SC / Guard；它必须继续经过 pipeline / safety guard / dispatcher，用于后续统一直播验证猫猫能否自然抛出一个观众愿意接的话题。
+- `warmup_hosting`：构造猫猫独播刚开始、尚无近期互动时的一次开场暖场请求。它与 `idle_hosting` 分开，避免开播第一句话听起来像冷场补位；同样必须经过 pipeline / safety guard / dispatcher。
+- `live_director_status`：面板状态聚合，不新增输出路径；它只解释下一次自动开口会是 `none` / `warmup_hosting` / `active_engagement` / `idle_hosting`、当前是否 eligible、以及还要等多久，方便统一直播测试时判断猫猫为什么不说话。
+- `solo_test_readiness`: dashboard-only streamer readiness aggregation for solo-stream validation. It summarizes preflight, warmup hosting, first-viewer roast, follow-up danmaku reply, active engagement, idle hosting, and pacing control; it does not add a new output path, bypass safety, or replace runtime status.
 - `developer_sandbox`：提供离线 UID / URL 调试入口。
 - `live_events`：直播事件中枢（P2.5）。经 `event_bus` **订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"` 事件**，解包信封 `raw` 取富模型 `LiveDanmaku`，冷却期缓冲候选互动、按 `get_score()` 打分，冷却结束择优（舰长/总督/SC、礼物、粉丝牌、用户等级、长文本优先）取分最高者投 `pipeline`；空闲态首条仍即时锐评。礼物/SC/上舰当前复用既有 pipeline 产出端，专属致谢 / 朗读 prompt 留待后续 P3 handler。详见下文「直播事件中枢」。
 

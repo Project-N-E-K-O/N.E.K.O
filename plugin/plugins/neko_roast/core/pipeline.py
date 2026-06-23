@@ -41,7 +41,7 @@ class RoastPipeline:
             identity = await self.ctx.bili_identity.resolve(event)
             steps.append(PipelineStep("bili_identity", "ok" if not identity.error else "failed", identity.error))
 
-            is_transient_event = event.source in {"developer_sandbox", "idle_hosting"}
+            is_transient_event = event.source in {"developer_sandbox", "idle_hosting", "active_engagement", "warmup_hosting"}
             if is_transient_event:
                 profile = ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
                 steps.append(PipelineStep("viewer_profile", "skipped", f"{event.source} uses transient profile"))
@@ -70,7 +70,17 @@ class RoastPipeline:
                     self.ctx.audit.record("pipeline_skipped", reason, level="info", detail={"uid": identity.uid})
                     return result
 
-                if is_repeat_live_danmaku:
+                if event.source == "warmup_hosting":
+                    steps.append(PipelineStep("viewer_gate", "ok", "warmup_hosting"))
+                    request = self.ctx.warmup_hosting.build_request(event, identity, profile)
+                    should_mark_roasted = False
+                    response_module_id = "warmup_hosting"
+                elif event.source == "active_engagement":
+                    steps.append(PipelineStep("viewer_gate", "ok", "active_engagement"))
+                    request = self.ctx.active_engagement.build_request(event, identity, profile)
+                    should_mark_roasted = False
+                    response_module_id = "active_engagement"
+                elif is_repeat_live_danmaku:
                     steps.append(PipelineStep("viewer_gate", "ok", "repeat_danmaku"))
                     request = self.ctx.danmaku_response.build_request(event, identity, profile)
                     should_mark_roasted = False

@@ -37,7 +37,9 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 2. Idle Hosting / 冷场陪播：状态推导、手动触发和自动触发基础能力已落地并完成首轮验收。
 3. Pacing Control / 节奏控制：quiet / standard / active 三档基础能力已落地并完成首轮验收；当前三档会同时影响 quiet/idle 状态阈值和 Idle Hosting 最小间隔。
 4. Danmaku Response / 后续弹幕接话：作为 Active Engagement 前的过渡 Slice，已在当前开发分支接入。同一 UID 首次出场仍走 `avatar_roast`，后续普通弹幕走 `danmaku_response`。
-5. 下一步：进入受控猫猫独播验证，先看 30 分钟低弹幕 / 偶发弹幕 / 无弹幕场景是否不尴尬，并重点验证同一观众“第一条首评、第二条接话”是否自然，再决定是否引入 Active Engagement。
+5. Active Engagement / 主动营业：已接入保守 v0，只在猫猫独播的安静状态下触发一次轻话题；支持自动触发与手动触发，不接 Gift / SC / Guard。
+6. Warmup Hosting / 开场暖场：已接入猫猫独播开场状态，避免开播第一句被当成冷场陪播。
+7. 下一步：进入受控猫猫独播验证，先看 30 分钟低弹幕 / 偶发弹幕 / 无弹幕场景是否不尴尬，并重点验证开场暖场、首评、后续接话、冷场陪播、节奏控制和主动营业是否自然。
 
 Gift / SC / Guard 专属行为先视为增强项，不作为 Independent Mode 成立条件。
 
