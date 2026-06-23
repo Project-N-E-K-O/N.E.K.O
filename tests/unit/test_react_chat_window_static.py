@@ -1197,7 +1197,7 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     assert "completed: contextSynced" in choice_block
     assert "contextSyncPending: !contextSynced" in choice_block
     assert "activeSession = null;" in choice_block
-    assert "fetch('/api/game/new_user_icebreaker/context'" in script
+    assert "fetch('/api/icebreaker/context'" in script
     assert "return !!(body && body.ok === true);" in script
 
 

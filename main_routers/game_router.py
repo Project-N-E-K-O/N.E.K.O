@@ -105,6 +105,8 @@ from utils.game_log import (
     append_game_session_debug_log as _append_game_session_debug_log,
     find_game_session_debug_log as _find_game_session_debug_log,
     GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+    GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
+    GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
     list_game_session_debug_log_summaries,
     mark_game_session_debug_log_active as _mark_game_session_debug_log_active,
     mark_game_session_debug_log_ended as _mark_game_session_debug_log_ended,
@@ -138,7 +140,8 @@ async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, l
         "sessions": list_game_session_debug_log_summaries(str(game_type or "").strip()),
         "retention": {
             "entry_limit": GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
-            "ended_session_cleanup": "disabled",
+            "retained_completed_session_limit": GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
+            "retained_completed_session_ttl_seconds": GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
         },
     }
 
@@ -249,7 +252,6 @@ _game_sessions: Dict[str, dict] = {}
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
-MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
 _BADMINTON_SCORE_SESSION_TTL_SECONDS = 10 * 60
 _BADMINTON_SCORING_MODES = {"shooter", "duel"}
 _BADMINTON_GAME_TYPES = {"badminton"}
@@ -6795,6 +6797,15 @@ async def game_chat(game_type: str, request: Request):
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
     """Declare that the game window is open and main external inputs are hijacked."""
+    if str(game_type or "") == "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "not_a_game_route",
+                "route": "/api/icebreaker/route/start",
+            },
+        )
     try:
         data = await request.json()
     except Exception:
@@ -6909,8 +6920,6 @@ async def game_route_start(game_type: str, request: Request):
             if _is_badminton_game_type(game_type):
                 state["mode"] = _normalize_badminton_mode(data.get("mode"))
             _update_route_start_state_from_payload(state, data)
-            if game_type == "new_user_icebreaker":
-                state["heartbeat_enabled"] = False
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
@@ -6926,8 +6935,7 @@ async def game_route_start(game_type: str, request: Request):
     # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
     if (
-        game_type != "new_user_icebreaker"
-        and state.get("game_route_active")
+        state.get("game_route_active")
         and str(state.get("session_id") or "") == session_id
     ):
         await _push_game_window_state_change(
@@ -7348,148 +7356,18 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     return result
 
 
-@router.post("/{game_type}/context")
-async def game_project_context(game_type: str, request: Request):
-    """Append game-scoped UI dialogue into the active project session history."""
-    if str(game_type or "") != "new_user_icebreaker":
-        raise HTTPException(
-            status_code=400,
-            detail={"ok": False, "reason": "unsupported_game_type", "game_type": game_type},
-        )
-
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-    if not isinstance(data, dict):
-        return {"ok": False, "reason": "invalid_body"}
-
-    from .system_router import _validate_local_mutation_request
-
-    validation_error = _validate_local_mutation_request(
-        request,
-        payload=data,
-        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
-    )
-    if validation_error is not None:
-        return validation_error
-
-    role = str(data.get("role") or "").strip()
-    text = str(data.get("text") or "").strip()
-    if role not in {"assistant", "user"}:
-        return {"ok": False, "reason": "invalid_role"}
-    if not text:
-        return {"ok": False, "reason": "missing_text"}
-    if len(text) > MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH:
-        return {"ok": False, "reason": "invalid_text_length"}
-    event = data.get("event") if isinstance(data.get("event"), dict) else {}
-    request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
-
-    if "lanlan_name" not in data:
-        return {"ok": False, "reason": "missing_lanlan_name"}
-    raw_lanlan_name = data.get("lanlan_name")
-    if raw_lanlan_name is None or str(raw_lanlan_name).strip() == "":
-        return {"ok": False, "reason": "missing_lanlan_name"}
-    lanlan_name = _resolve_lanlan_name(raw_lanlan_name)
-    if not lanlan_name:
-        return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
-
-    session_id = str(data.get("session_id") or "")
-    state = _get_active_game_route_state(lanlan_name, game_type)
-    if not state:
-        closed_response = _game_route_closed_session_response(
-            data,
-            session_id=session_id,
-            lanlan_name=lanlan_name,
-            method="project_session_history",
-        )
-        if closed_response:
-            return closed_response
-        return {
-            "ok": False,
-            "reason": "route_not_active",
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "method": "project_session_history",
-        }
-    stale_response = _game_route_stale_session_response(
-        state,
-        session_id,
-        lanlan_name=lanlan_name,
-        method="project_session_history",
-    )
-    if stale_response:
-        return stale_response
-
-    mgr = get_session_manager().get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
-
-    append_context = getattr(mgr, "append_context", None)
-    try:
-        if not callable(append_context):
-            return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
-        append_result = await append_context(
-            source="game.icebreaker",
-            role=role,
-            text=text,
-            audience="model",
-            timing="when_ready",
-            lifetime="session_family",
-            request_id=request_id or None,
-            ordering_key=session_id or None,
-            metadata={
-                "game_type": game_type,
-                "session_id": session_id,
-            },
-        )
-    except Exception as exc:
-        logger.warning(
-            "new_user_icebreaker context append failed for %s: %s",
-            lanlan_name,
-            exc,
-            exc_info=True,
-        )
-        return {
-            "ok": False,
-            "reason": "context_write_failed",
-            "error": str(exc),
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "session_id": str(data.get("session_id") or ""),
-        }
-    if getattr(append_result, "deduped", False):
-        return {
-            "ok": True,
-            "deduped": True,
-            "method": "project_session_history",
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "session_id": session_id,
-        }
-    ok = getattr(append_result, "appended", False)
-    if not ok:
-        return {
-            "ok": False,
-            "reason": getattr(append_result, "reason", None) or "context_write_failed",
-            "lanlan_name": lanlan_name,
-            "game_type": game_type,
-            "session_id": session_id,
-        }
-
-    return {
-        "ok": True,
-        "method": "project_session_history",
-        "lanlan_name": lanlan_name,
-        "game_type": game_type,
-        "session_id": session_id,
-    }
-
-
 @router.post("/{game_type}/speak")
 async def game_project_speak(game_type: str, request: Request):
     """Formal B-layer output: speak A.line through the existing project TTS pipeline."""
+    if str(game_type or "") == "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "not_a_game_route",
+                "route": "/api/icebreaker/speak",
+            },
+        )
     try:
         data = await request.json()
     except Exception:
@@ -8281,6 +8159,15 @@ async def _complete_game_end_from_payload(
     *,
     default_reason: str = "game_end",
 ) -> dict:
+    if str(game_type or "") == "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "not_a_game_route",
+                "route": "/api/icebreaker/route/end",
+            },
+        )
     session_id = str(data.get('session_id', 'default'))
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     # 包括 /route/end 与 /end 两条入口；postgame 投递依赖 mgr.user_language
