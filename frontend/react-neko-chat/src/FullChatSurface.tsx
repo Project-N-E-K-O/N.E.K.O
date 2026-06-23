@@ -3715,7 +3715,7 @@ export default function FullChatSurface({
             setToolMenuOpen(false);
           }}
         >
-          <span aria-hidden="true">×</span>
+          <span className="composer-tool-clear-icon" aria-hidden="true" />
         </button>
       ) : null}
       {toolMenuOpen ? (
@@ -4184,7 +4184,7 @@ export default function FullChatSurface({
               closeCompactInputToolFanFromUserClick();
             }}
           >
-            <span aria-hidden="true">×</span>
+            <span className="composer-tool-clear-icon" aria-hidden="true" />
           </button>
         ) : null}
       </div>
