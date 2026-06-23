@@ -7403,12 +7403,13 @@ def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
                 delayMs: 0,
             });
             await waitFrames(20);
+            const afterAuto = scroll.scrollTop;
             const scrollToBottomReturn = shared.scrollSubtitleToBottom(scroll);
             const afterScrollToBottom = scroll.scrollTop;
             return {
                 active: display.dataset.subtitleDanmakuActive || '',
                 afterRender,
-                afterAuto: scroll.scrollTop,
+                afterAuto,
                 afterStateUpdate,
                 afterScrollToBottom,
                 itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
