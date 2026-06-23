@@ -356,12 +356,12 @@ def test_memory_browser_home_all_reset_falls_back_to_prompt_reset_api_without_ma
     mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
     mock_page.locator(".tutorial-cascader-option[data-tutorial-home-all='true']").click()
 
-    with mock_page.expect_event("dialog") as dialog_info:
-        mock_page.locator("#tutorial-reset-btn").click()
+    with mock_page.expect_response("**/api/tutorial-prompt/reset"):
+        with mock_page.expect_event("dialog") as dialog_info:
+            mock_page.locator("#tutorial-reset-btn").click()
 
     dialog = dialog_info.value
-    with mock_page.expect_response("**/api/tutorial-prompt/reset"):
-        dialog.accept()
+    dialog.accept()
     mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
 
     assert mock_page.evaluate("window.__tutorialResetCalls") == [
