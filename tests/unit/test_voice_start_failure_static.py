@@ -40,7 +40,7 @@ def _balanced_js_block_end(source: str, brace: int) -> int:
     previous_significant: str | None = None
 
     def can_start_regex(previous: str | None) -> bool:
-        return previous is None or previous in "({[=,:;!&|?+-*~^<>"
+        return previous is None or previous in "({[=,:;!&|?~^<>"
 
     index = brace
     while index < len(source):
@@ -68,6 +68,7 @@ def _balanced_js_block_end(source: str, brace: int) -> int:
                 escaped = True
             elif char == quote:
                 quote = None
+                previous_significant = "operand"
             index += 1
             continue
 
@@ -291,7 +292,12 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
     source = _read(APP_BUTTONS_PATH)
     start_flow = _mic_button_start_flow(source)
-    failure = start_flow.split("} catch (error) {", 1)[1].split("screenButton.classList.remove('active');", 1)[0]
+    catch_split = start_flow.split("} catch (error) {", 1)
+    assert len(catch_split) == 2, "missing outer catch in mic button start flow"
+    cleanup_marker = "screenButton.classList.remove('active');"
+    cleanup_split = catch_split[1].split(cleanup_marker, 1)
+    assert len(cleanup_split) == 2, "missing screen button cleanup in mic button failure flow"
+    failure = cleanup_split[0]
 
     sync_call = "window.syncVoiceChatComposerHidden(preserveGoodbyeUi);"
     assert "S.voiceStartPending = false;" in failure
