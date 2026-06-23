@@ -1141,7 +1141,7 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                 if converted and converted.get("id") not in seen_tool_use_ids:
                     blocks.append(converted)
                     seen_tool_use_ids.add(str(converted.get("id")))
-            pending_tool_use_ids = seen_tool_use_ids
+            pending_tool_use_ids |= seen_tool_use_ids
         elif role == "user":
             pending_tool_use_ids = set()
         anthropic_messages.append({"role": role, "content": blocks or [{"type": "text", "text": "..."}]})

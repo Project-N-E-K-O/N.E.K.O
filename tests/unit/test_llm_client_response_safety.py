@@ -394,6 +394,34 @@ def test_anthropic_message_normalization_dedupes_existing_tool_use_blocks():
     ]
 
 
+def test_anthropic_message_normalization_keeps_pending_tool_use_across_assistant_text():
+    _system, messages = llm_client_module._normalize_messages_to_anthropic([
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{\"q\":\"neko\"}"},
+                }
+            ],
+        },
+        {"role": "assistant", "content": "Let me check..."},
+        {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+    ])
+
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"] == [
+        {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "neko"}},
+        {"type": "text", "text": "Let me check..."},
+    ]
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "result"}
+    ]
+
+
 def test_anthropic_message_normalization_downgrades_orphan_tool_result():
     _system, messages = llm_client_module._normalize_messages_to_anthropic([
         {"role": "user", "content": "start"},
