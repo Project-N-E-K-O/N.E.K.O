@@ -255,6 +255,12 @@
         } catch (err) {
             console.warn('[猫娘切换] 清理 goodbye 聊天框状态失败:', err);
         }
+
+        try {
+            window.dispatchEvent(new CustomEvent('neko:goodbye-state-cleared', {
+                detail: { reason: reason }
+            }));
+        } catch (_) {}
     }
 
     function supportsLocalModelRuntime() {

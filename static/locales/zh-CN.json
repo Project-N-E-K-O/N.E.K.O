@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "羽毛球挑战 - Badminton",
+         "exit": "退出",
          "loading": {
              "title": "正在进入羽毛球场",
              "subtitle": "加载场地、角色和音效..."

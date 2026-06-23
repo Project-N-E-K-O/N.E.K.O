@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "Badminton Challenge",
+         "exit": "Exit",
          "loading": {
              "title": "Entering the badminton court",
              "subtitle": "Loading the court, characters, and audio..."

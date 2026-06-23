@@ -103,7 +103,9 @@ from utils.game_route_state import (
 )
 from utils.game_log import (
     append_game_session_debug_log as _append_game_session_debug_log,
+    enable_game_session_debug_log as _enable_game_session_debug_log,
     find_game_session_debug_log as _find_game_session_debug_log,
+    GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS,
     GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
     GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
     GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
@@ -111,6 +113,7 @@ from utils.game_log import (
     mark_game_session_debug_log_active as _mark_game_session_debug_log_active,
     mark_game_session_debug_log_ended as _mark_game_session_debug_log_ended,
     public_game_session_debug_log,
+    touch_game_session_debug_log as _touch_game_session_debug_log,
 )
 from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 from utils.logger_config import get_module_logger
@@ -140,6 +143,7 @@ async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, l
         "sessions": list_game_session_debug_log_summaries(str(game_type or "").strip()),
         "retention": {
             "entry_limit": GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+            "active_idle_ttl_seconds": GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS,
             "retained_completed_session_limit": GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
             "retained_completed_session_ttl_seconds": GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
         },
@@ -183,6 +187,51 @@ pre {{ white-space: pre-wrap; word-break: break-word; line-height: 1.35; }}
 </body>
 </html>"""
     )
+
+
+@router.post("/logs/enable")
+async def game_log_enable(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
+    game_type = str(data.get("game_type") or data.get("gameType") or "game").strip()
+    lanlan_name = str(data.get("lanlan_name") or data.get("lanlanName") or "").strip()
+    if not session_id:
+        return {"ok": False, "reason": "missing_session_id"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
+    entry = _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
+    if entry is None:
+        return {"ok": False, "reason": "enable_failed", "session_id": session_id, "game_type": game_type}
+    item = _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="route",
+        event="session_log_enabled",
+        source=str(data.get("source") or "backend"),
+        message="小游戏场次诊断日志已手动启用",
+        details={"reason": str(data.get("reason") or "manual")},
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "game_type": game_type,
+        "seq": item.get("seq") if isinstance(item, dict) else None,
+    }
 
 
 @router.post("/logs")
@@ -4472,6 +4521,7 @@ async def _finalize_game_route_state(
     *,
     reason: str,
     close_game_session: bool = False,
+    close_debug_log: bool = True,
 ) -> dict:
     """Run the game route exit flow once, including archive submission.
 
@@ -4501,6 +4551,12 @@ async def _finalize_game_route_state(
         state["_exit_close_session_request"] = True
     elif "_exit_close_session_request" not in state:
         state["_exit_close_session_request"] = False
+    if close_debug_log:
+        state["_exit_close_debug_log_request"] = True
+    else:
+        state["_exit_defer_debug_log_close"] = True
+        if "_exit_close_debug_log_request" not in state:
+            state["_exit_close_debug_log_request"] = False
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -4517,6 +4573,18 @@ async def _finalize_game_route_state(
                 # return dict is the single source of truth handed back to
                 # every shielded await.
                 result["game_session_closed"] = True
+        if (
+            state.get("_exit_close_debug_log_request")
+            and not state.get("_exit_defer_debug_log_close")
+            and not result.get("debug_log_ended")
+        ):
+            _mark_game_session_debug_log_ended(
+                str(state.get("game_type") or ""),
+                str(state.get("session_id") or "default"),
+                lanlan_name=str(state.get("lanlan_name") or ""),
+                reason=reason,
+            )
+            result["debug_log_ended"] = True
         return result
 
     task = asyncio.create_task(_finalize_game_route_state_inner(state, reason=reason))
@@ -4630,11 +4698,21 @@ async def _finalize_game_route_state_inner(
             str(state.get("session_id") or "default"),
             str(state.get("lanlan_name") or ""),
         )
+    debug_log_ended = False
+    if state.get("_exit_close_debug_log_request") and not state.get("_exit_defer_debug_log_close"):
+        _mark_game_session_debug_log_ended(
+            str(state.get("game_type") or ""),
+            str(state.get("session_id") or "default"),
+            lanlan_name=str(state.get("lanlan_name") or ""),
+            reason=reason,
+        )
+        debug_log_ended = True
 
     return {
         "archive": archive,
         "archive_memory": memory_result,
         "game_session_closed": session_closed,
+        "debug_log_ended": debug_log_ended,
         "exit_reason": reason,
         "realtime_restore": realtime_restore,
         "postgame_context_snapshot": postgame_context_snapshot,
@@ -6819,20 +6897,6 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
-    _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
-    _append_game_session_debug_log(
-        game_type,
-        session_id,
-        lanlan_name=lanlan_name,
-        category="route",
-        event="route_start_requested",
-        message="小游戏路由开始请求",
-        details={
-            "neko_initiated": bool(data.get("nekoInitiated")),
-            "mode": data.get("mode") or "",
-            "memory_tail_count": data.get("game_memory_tail_count", data.get("gameMemoryTailCount")),
-        },
-    )
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -6888,6 +6952,22 @@ async def game_route_start(game_type: str, request: Request):
                     close_game_session=True,
                 )
 
+            if game_type == "soccer":
+                _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
+            _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
+            _append_game_session_debug_log(
+                game_type,
+                session_id,
+                lanlan_name=lanlan_name,
+                category="route",
+                event="route_start_requested",
+                message="小游戏路由开始请求",
+                details={
+                    "neko_initiated": bool(data.get("nekoInitiated")),
+                    "mode": data.get("mode") or "",
+                    "memory_tail_count": data.get("game_memory_tail_count", data.get("gameMemoryTailCount")),
+                },
+            )
             neko_initiated = bool(data.get("nekoInitiated"))
             neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
             state = _activate_game_route(
@@ -7142,6 +7222,7 @@ async def game_route_heartbeat(game_type: str, request: Request):
     now = time.time()
     state["last_heartbeat_at"] = now
     state["last_activity"] = now
+    _touch_game_session_debug_log(game_type, str(state.get("session_id") or session_id or "default"), lanlan_name=lanlan_name)
     _update_route_visibility_from_payload(state, data)
     _update_route_start_state_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
@@ -8217,46 +8298,51 @@ async def _complete_game_end_from_payload(
         # started soccer route.
         supersede_lock = _get_supersede_lock(lanlan_name)
         end_route_lock = _get_route_lock(lanlan_name, game_type)
-        async with supersede_lock:
-            async with end_route_lock:
-                finalized = await _finalize_game_route_state(
-                    state,
-                    reason=exit_reason,
-                    close_game_session=True,
-                )
-        archive = finalized["archive"]
-        archive_memory = finalized["archive_memory"]
-        if (
-            _is_badminton_game_type(game_type)
-            and state.get("game_started") is True
-            and _badminton_end_payload_completed_round(data)
-        ):
-            score_session_totals = _badminton_score_totals_from_data(state.get("finalScore"))
-            if score_session_totals:
-                _remember_badminton_score_session(
-                    lanlan_name,
-                    session_id,
-                    score_session_mode,
-                    score_session_totals,
-                )
-        if _game_memory_postgame_context_enabled(archive) is False:
-            postgame_options["enabled"] = False
-        if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
-            postgame_options["enabled"] = False
-        postgame_result = await _deliver_game_postgame(
-            game_type,
-            session_id,
-            lanlan_name,
-            archive,
-            postgame_options,
-            postgame_snapshot=finalized.get("postgame_context_snapshot"),
-        )
-        # B5: closing the LLM session is the inner finalize's job (now
-        # that ``close_game_session=True`` reliably propagates via
-        # OR-merge). Calling ``_close_and_remove_session`` again here
-        # would race a finalize-from-heartbeat-sweep at the same key and
-        # double-close the underlying ``OmniOfflineClient``.
-        closed = bool(finalized.get("game_session_closed"))
+        try:
+            async with supersede_lock:
+                async with end_route_lock:
+                    finalized = await _finalize_game_route_state(
+                        state,
+                        reason=exit_reason,
+                        close_game_session=True,
+                        close_debug_log=False,
+                    )
+            archive = finalized["archive"]
+            archive_memory = finalized["archive_memory"]
+            if (
+                _is_badminton_game_type(game_type)
+                and state.get("game_started") is True
+                and _badminton_end_payload_completed_round(data)
+            ):
+                score_session_totals = _badminton_score_totals_from_data(state.get("finalScore"))
+                if score_session_totals:
+                    _remember_badminton_score_session(
+                        lanlan_name,
+                        session_id,
+                        score_session_mode,
+                        score_session_totals,
+                    )
+            if _game_memory_postgame_context_enabled(archive) is False:
+                postgame_options["enabled"] = False
+            if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
+                postgame_options["enabled"] = False
+            postgame_result = await _deliver_game_postgame(
+                game_type,
+                session_id,
+                lanlan_name,
+                archive,
+                postgame_options,
+                postgame_snapshot=finalized.get("postgame_context_snapshot"),
+            )
+            # B5: closing the LLM session is the inner finalize's job (now
+            # that ``close_game_session=True`` reliably propagates via
+            # OR-merge). Calling ``_close_and_remove_session`` again here
+            # would race a finalize-from-heartbeat-sweep at the same key and
+            # double-close the underlying ``OmniOfflineClient``.
+            closed = bool(finalized.get("game_session_closed"))
+        except BaseException:
+            state["_exit_defer_debug_log_close"] = False
+            raise
     else:
         # No active route matched — fall through to the legacy direct close
         # so an out-of-sync ``/game_end`` (e.g. page reloaded after the
@@ -8294,6 +8380,10 @@ async def _complete_game_end_from_payload(
         },
     )
     _mark_game_session_debug_log_ended(game_type, session_id, lanlan_name=lanlan_name, reason=exit_reason)
+    if state:
+        state["_exit_defer_debug_log_close"] = False
+        if "finalized" in locals() and isinstance(finalized, dict):
+            finalized["debug_log_ended"] = True
     return result
 
 

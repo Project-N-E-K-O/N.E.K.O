@@ -4256,6 +4256,7 @@
     },
      "badminton": {
          "title": "Desafío de bádminton",
+         "exit": "Salir",
          "loading": {
              "title": "Entrando a la cancha de bádminton",
              "subtitle": "Cargando la cancha, los personajes y el audio..."
