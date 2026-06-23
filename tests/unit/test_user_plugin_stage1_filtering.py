@@ -12,7 +12,9 @@ class _FakeLLM:
         self.calls = []
 
     async def ainvoke(self, messages):
-        self.calls.append(messages)
+        # Copy the outer list: the assessor mutates `messages` in place on the
+        # correction retry, which would otherwise rewrite this captured snapshot.
+        self.calls.append(list(messages))
         return _FakeResponse(self.content)
 
 
@@ -24,7 +26,9 @@ class _SeqLLM:
         self.calls = []
 
     async def ainvoke(self, messages):
-        self.calls.append(messages)
+        # Copy the outer list: the assessor mutates `messages` in place on the
+        # correction retry, which would otherwise rewrite this captured snapshot.
+        self.calls.append(list(messages))
         idx = min(len(self.calls) - 1, len(self._contents) - 1)
         return _FakeResponse(self._contents[idx])
 
