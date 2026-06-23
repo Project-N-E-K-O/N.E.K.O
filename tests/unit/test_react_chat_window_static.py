@@ -1135,7 +1135,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
-def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
+def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
@@ -1146,8 +1146,8 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "message && message.bypassDedup === true" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_drag_chat_cursor'" not in bypass_block
+    assert "action === 'yui_guide_arc_chat_cursor'" not in bypass_block
     assert "action === 'yui_guide_set_compact_history_open'" in bypass_block
     assert "action === 'yui_guide_set_compact_chat_fixed_layout'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
