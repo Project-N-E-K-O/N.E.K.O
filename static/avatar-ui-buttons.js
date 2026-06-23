@@ -300,6 +300,12 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_ITEM_ASSET_URLS = Object.freeze([
     '/static/assets/neko-idle/thought-items/fish-cookie.png',
     '/static/assets/neko-idle/thought-items/toy-mouse.png'
 ]);
+const _NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL = '/static/assets/neko-idle/cat1-question-mark.png';
+const _NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS = 10 * 1000;
+const _NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE = Object.freeze(['up', 'up', 'down', 'down', 'left', 'left', 'right', 'right']);
+const _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX = 18;
+const _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO = 0.78;
+const _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX = 36;
 const _NEKO_IDLE_CAT1_EAT_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat1-eat.gif';
 const _NEKO_IDLE_CAT1_EAT_SOUND_URL = '/static/assets/neko-idle/cat1-voice-eat.mp3';
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
@@ -669,6 +675,198 @@ function _runAfterNekoIdleSoundStarted(state, audio, callback) {
         return;
     }
     run();
+}
+
+function _getNekoIdleCat1QuestionMarkAssetUrl() {
+    return `${_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`;
+}
+
+function _getNekoIdleCat1QuestionMarkLayerAssetUrl() {
+    try {
+        return new URL(_getNekoIdleCat1QuestionMarkAssetUrl(), window.location.href).href;
+    } catch (_) {
+        return _getNekoIdleCat1QuestionMarkAssetUrl();
+    }
+}
+
+function _getNekoIdleCat1QuestionMarkState(button) {
+    if (!button) return null;
+    if (!button.__nekoIdleCat1QuestionMarkState) {
+        button.__nekoIdleCat1QuestionMarkState = {
+            active: false,
+            token: 0,
+            timer: 0,
+            mark: null
+        };
+    }
+    return button.__nekoIdleCat1QuestionMarkState;
+}
+
+function _ensureNekoIdleCat1QuestionMarkElement(button) {
+    if (!button) return null;
+    const state = _getNekoIdleCat1QuestionMarkState(button);
+    if (!state) return null;
+    let mark = state.mark && state.mark.isConnected ? state.mark : null;
+    if (!mark) {
+        mark = document.createElement('span');
+        mark.className = 'neko-idle-cat1-question-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        Object.assign(mark.style, {
+            position: 'fixed',
+            left: '0',
+            top: '0',
+            width: '72px',
+            height: '72px',
+            minWidth: '38px',
+            minHeight: '38px',
+            transform: 'translate(-50%, -100%) scale(0.96)',
+            opacity: '0',
+            visibility: 'hidden',
+            pointerEvents: 'none',
+            zIndex: _NEKO_IDLE_RETURN_DEFAULT_Z_INDEX,
+            transition: 'opacity 180ms ease, transform 180ms ease, visibility 0s linear 180ms'
+        });
+        const img = document.createElement('img');
+        img.className = 'neko-idle-cat1-question-mark-art';
+        img.alt = '';
+        img.draggable = false;
+        img.src = _getNekoIdleCat1QuestionMarkAssetUrl();
+        Object.assign(img.style, {
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+            userSelect: 'none'
+        });
+        mark.appendChild(img);
+        document.body.appendChild(mark);
+        state.mark = mark;
+    }
+    const img = mark.querySelector('.neko-idle-cat1-question-mark-art');
+    if (img) {
+        const src = _getNekoIdleCat1QuestionMarkAssetUrl();
+        if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+    }
+    return mark;
+}
+
+function _positionNekoIdleCat1QuestionMark(mark, button) {
+    if (!mark || !button || typeof button.getBoundingClientRect !== 'function') return false;
+    const rect = button.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const size = Math.round(Math.max(38, Math.min(96, Math.max(rect.width, rect.height) * 0.42)));
+    const left = Math.round(rect.left + rect.width * 0.52);
+    const top = Math.round(rect.top + rect.height * 0.08);
+    mark.style.width = `${size}px`;
+    mark.style.height = `${size}px`;
+    mark.style.left = `${left}px`;
+    mark.style.top = `${top}px`;
+    return true;
+}
+
+function _getNekoIdleCat1QuestionMarkScreenRect(mark) {
+    if (!mark) return null;
+    const styleLeft = parseFloat(mark.style.left);
+    const styleTop = parseFloat(mark.style.top);
+    const styleWidth = parseFloat(mark.style.width);
+    const styleHeight = parseFloat(mark.style.height);
+    if (![styleLeft, styleTop, styleWidth, styleHeight].every(Number.isFinite) ||
+        styleWidth <= 0 || styleHeight <= 0) {
+        return null;
+    }
+    const screenX = Number(window.screenX);
+    const screenY = Number(window.screenY);
+    const offsetX = Number.isFinite(screenX) ? screenX : 0;
+    const offsetY = Number.isFinite(screenY) ? screenY : 0;
+    return {
+        left: Math.round(offsetX + styleLeft - styleWidth / 2),
+        top: Math.round(offsetY + styleTop - styleHeight),
+        width: Math.round(styleWidth),
+        height: Math.round(styleHeight)
+    };
+}
+
+function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason) {
+    const state = button && button.__nekoIdleCat1QuestionMarkState;
+    const mark = state && state.mark && state.mark.isConnected ? state.mark : null;
+    try {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-question-mark-layer', {
+            detail: {
+                active: !!active,
+                reason: reason || '',
+                assetUrl: _getNekoIdleCat1QuestionMarkLayerAssetUrl(),
+                screenRect: active ? _getNekoIdleCat1QuestionMarkScreenRect(mark) : null,
+                visibleMs: _NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS
+            }
+        }));
+    } catch (_) {}
+}
+
+function _clearNekoIdleCat1QuestionMark(button) {
+    const state = button && button.__nekoIdleCat1QuestionMarkState;
+    if (!state) return;
+    state.token += 1;
+    state.active = false;
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = 0;
+    }
+    const mark = state.mark;
+    _dispatchNekoIdleCat1QuestionMarkLayer(button, false, 'clear');
+    if (mark) {
+        mark.style.opacity = '0';
+        mark.style.visibility = 'hidden';
+        mark.style.transform = 'translate(-50%, -100%) scale(0.96)';
+        mark.style.transition = 'opacity 180ms ease, transform 180ms ease, visibility 0s linear 180ms';
+        if (mark.parentNode) {
+            mark.parentNode.removeChild(mark);
+        }
+    }
+    state.mark = null;
+}
+
+function _showNekoIdleCat1QuestionMark(button) {
+    if (!button) return false;
+    const state = _getNekoIdleCat1QuestionMarkState(button);
+    const mark = _ensureNekoIdleCat1QuestionMarkElement(button);
+    if (!state || !mark) return false;
+    if (!_positionNekoIdleCat1QuestionMark(mark, button)) {
+        state.token += 1;
+        state.active = false;
+        if (state.timer) {
+            clearTimeout(state.timer);
+            state.timer = 0;
+        }
+        if (mark.parentNode) {
+            mark.parentNode.removeChild(mark);
+        }
+        state.mark = null;
+        return false;
+    }
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = 0;
+    }
+    state.active = true;
+    state.token += 1;
+    const token = state.token;
+    mark.style.transition = 'opacity 180ms ease, transform 180ms ease, visibility 0s';
+    mark.style.transform = 'translate(-50%, -100%) scale(1)';
+    if (!window.__NEKO_MULTI_WINDOW__) {
+        mark.style.visibility = 'visible';
+        mark.style.opacity = '1';
+    } else {
+        mark.style.visibility = 'hidden';
+        mark.style.opacity = '0';
+    }
+    _dispatchNekoIdleCat1QuestionMarkLayer(button, true, 'show');
+    state.timer = setTimeout(() => {
+        const latestState = button.__nekoIdleCat1QuestionMarkState;
+        if (!latestState || !latestState.active || latestState.token !== token) return;
+        _clearNekoIdleCat1QuestionMark(button);
+    }, _NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS);
+    return true;
 }
 
 function _getNekoIdleCat1EatActionState(button) {
@@ -2021,7 +2219,8 @@ function _getNekoIdleReturnDragActionState(button) {
             rapidActive: false,
             rapidTimer: 0,
             rapidToken: 0,
-            rapidMotion: null
+            rapidMotion: null,
+            questionMarkSequence: null
         };
     }
     return button.__nekoIdleReturnDragActionState;
@@ -2272,6 +2471,23 @@ function _resetNekoIdleCat1RapidDragMotion(button) {
     };
 }
 
+function _resetNekoIdleCat1QuestionMarkSequence(button) {
+    const state = _getNekoIdleReturnDragActionState(button);
+    if (!state) return;
+    state.questionMarkSequence = {
+        originX: null,
+        originY: null,
+        lastAcceptedX: null,
+        lastAcceptedY: null,
+        lastAcceptedDeltaX: 0,
+        lastAcceptedDeltaY: 0,
+        phaseOriginDeltaX: 0,
+        phaseOriginDeltaY: 0,
+        acceptedDirection: '',
+        progress: 0
+    };
+}
+
 function _restoreNekoIdleCat1NormalDragArt(button) {
     if (!button) return;
     const state = button.__nekoIdleReturnDragActionState;
@@ -2426,6 +2642,110 @@ function _handleNekoIdleCat1RapidDragMotionForContainer(container, detail) {
     return false;
 }
 
+function _getNekoIdleQuestionMarkAxisValue(vector, direction) {
+    if (!vector) return 0;
+    switch (direction) {
+        case 'up': return -vector.dy;
+        case 'down': return vector.dy;
+        case 'left': return -vector.dx;
+        case 'right': return vector.dx;
+        default: return 0;
+    }
+}
+
+function _isNekoIdleQuestionMarkAxisDominant(vector, direction) {
+    if (!vector) return false;
+    const axis = _getNekoIdleQuestionMarkAxisValue(vector, direction);
+    const crossAxis = direction === 'up' || direction === 'down'
+        ? Math.abs(vector.dx)
+        : Math.abs(vector.dy);
+    return axis >= _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX &&
+        crossAxis <= axis * _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO;
+}
+
+function _isNekoIdleQuestionMarkCenterOverlap(vector) {
+    if (!vector) return false;
+    return Math.abs(vector.dx) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX &&
+        Math.abs(vector.dy) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX;
+}
+
+function _isNekoIdleQuestionMarkExpectedDirection(vector, expected) {
+    return _isNekoIdleQuestionMarkAxisDominant(vector, expected);
+}
+
+function _isNekoIdleQuestionMarkExpectedZone(vector, expected) {
+    return _isNekoIdleQuestionMarkAxisDominant(vector, expected) ||
+        _isNekoIdleQuestionMarkCenterOverlap(vector);
+}
+
+function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail) {
+    const button = _getNekoIdleReturnButtonFromContainer(container);
+    if (!button) return false;
+    const state = _getNekoIdleReturnDragActionState(button);
+    const tier = _normalizeNekoIdleReturnTier(state && state.tier);
+    if (!state || !state.active || tier !== _NEKO_IDLE_TIER_CAT1) return false;
+    if (!_isNekoIdleCat1RapidDragCurrentTier(button)) return false;
+
+    const point = _getNekoIdleDragMotionPoint(detail);
+    if (!point) return false;
+    if (!state.questionMarkSequence) _resetNekoIdleCat1QuestionMarkSequence(button);
+    const sequence = state.questionMarkSequence;
+    if (sequence.originX === null || sequence.originY === null) {
+        sequence.originX = point.x;
+        sequence.originY = point.y;
+        sequence.lastAcceptedX = point.x;
+        sequence.lastAcceptedY = point.y;
+        sequence.lastAcceptedDeltaX = 0;
+        sequence.lastAcceptedDeltaY = 0;
+        sequence.phaseOriginDeltaX = 0;
+        sequence.phaseOriginDeltaY = 0;
+        return false;
+    }
+
+    const rawDeltaX = Number(detail && detail.deltaX);
+    const rawDeltaY = Number(detail && detail.deltaY);
+    const dx = Number.isFinite(rawDeltaX) ? rawDeltaX : point.x - sequence.originX;
+    const dy = Number.isFinite(rawDeltaY) ? rawDeltaY : point.y - sequence.originY;
+    const zoneVector = {
+        dx: dx - sequence.phaseOriginDeltaX,
+        dy: dy - sequence.phaseOriginDeltaY,
+        distance: Math.hypot(dx - sequence.phaseOriginDeltaX, dy - sequence.phaseOriginDeltaY)
+    };
+    const expected = _NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE[sequence.progress] || '';
+
+    const lastAcceptedX = Number(sequence.lastAcceptedX);
+    const lastAcceptedY = Number(sequence.lastAcceptedY);
+    if (!Number.isFinite(lastAcceptedX) || !Number.isFinite(lastAcceptedY)) return false;
+    const stepVector = {
+        dx: dx - sequence.lastAcceptedDeltaX,
+        dy: dy - sequence.lastAcceptedDeltaY,
+        distance: Math.hypot(dx - sequence.lastAcceptedDeltaX, dy - sequence.lastAcceptedDeltaY)
+    };
+    const zoneMatches = _isNekoIdleQuestionMarkExpectedZone(zoneVector, expected);
+    const stepMatches = _isNekoIdleQuestionMarkExpectedDirection(stepVector, expected);
+    if (!zoneMatches || !stepMatches) {
+        return false;
+    }
+
+    sequence.progress += 1;
+    sequence.lastAcceptedX = point.x;
+    sequence.lastAcceptedY = point.y;
+    sequence.lastAcceptedDeltaX = dx;
+    sequence.lastAcceptedDeltaY = dy;
+    sequence.acceptedDirection = expected;
+    const shown = sequence.progress >= _NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE.length;
+    if (sequence.progress % 2 === 0) {
+        sequence.phaseOriginDeltaX = dx;
+        sequence.phaseOriginDeltaY = dy;
+    }
+
+    if (shown) {
+        _resetNekoIdleCat1QuestionMarkSequence(button);
+        return _showNekoIdleCat1QuestionMark(button);
+    }
+    return false;
+}
+
 function _setNekoIdleReturnDragActionClasses(button, active) {
     if (!button) return;
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -2499,6 +2819,7 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     state.token += 1;
     state.tier = tier;
     _resetNekoIdleCat1RapidDragMotion(button);
+    _resetNekoIdleCat1QuestionMarkSequence(button);
     button.__nekoIdleReturnDragAssetTier = tier;
     button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);
     _cancelNekoIdleCat1Journey(button, {
@@ -2527,6 +2848,7 @@ function _finishNekoIdleReturnDragAction(button, options = {}) {
         tier: button.getAttribute('data-neko-idle-tier')
     });
     _clearNekoIdleCat1RapidDragReaction(button);
+    _resetNekoIdleCat1QuestionMarkSequence(button);
     button.__nekoIdleReturnDragAssetUrl = '';
     button.__nekoIdleReturnDragAssetTier = _NEKO_IDLE_TIER_NONE;
     state.active = false;
@@ -5187,6 +5509,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     _syncNekoIdleSleepSoundForTier(normalizedTier);
     _syncNekoIdleCat1AmbientSoundForTier(normalizedTier);
     if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
+        _clearNekoIdleCat1QuestionMark(button);
         _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
         _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
         _cancelNekoIdleCat1Journey(button);
@@ -5310,6 +5633,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
             return;
         }
         if (detail.reason === 'return-ball-drag-motion') {
+            _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(detail.container, detail);
             _handleNekoIdleCat1RapidDragMotionForContainer(detail.container, detail);
             return;
         }
@@ -5925,6 +6249,7 @@ const AvatarButtonMixin = {
                     return;
                 }
                 e.stopPropagation();
+                _clearNekoIdleCat1QuestionMark(returnBtn);
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
                 _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });

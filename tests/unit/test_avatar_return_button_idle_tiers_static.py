@@ -40,6 +40,7 @@ CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-i
 CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-4.gif"
 CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-5.gif"
 CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-funny.mp3"
+CAT1_QUESTION_MARK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-question-mark.png"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 THOUGHT_BUBBLE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble.gif"
 THOUGHT_BUBBLE_POP_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cloud-thought-bubble-pop.gif"
@@ -139,6 +140,162 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     )
     assert "cat-idle-cat-move-3.gif" in cat3_drag_pool
     assert "cat-idle-cat-move-4.gif" in cat3_drag_pool
+
+
+def test_cat1_question_mark_triggers_from_drag_direction_sequence():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    pages_router_paths = {str(path.relative_to(PROJECT_ROOT)) for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS}
+
+    assert CAT1_QUESTION_MARK_ASSET_PATH.exists()
+    assert "static/assets/neko-idle/cat1-question-mark.png" in pages_router_paths
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL = '/static/assets/neko-idle/cat1-question-mark.png'" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS = 10 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE = Object.freeze(['up', 'up', 'down', 'down', 'left', 'left', 'right', 'right'])" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
+    assert "neko:cat1-question-mark" not in source
+    assert "function _resetNekoIdleCat1QuestionMarkSequence(button)" in source
+    assert "function _getNekoIdleQuestionMarkAxisValue(vector, direction)" in source
+    assert "function _isNekoIdleQuestionMarkAxisDominant(vector, direction)" in source
+    assert "function _isNekoIdleQuestionMarkCenterOverlap(vector)" in source
+    assert "function _isNekoIdleQuestionMarkExpectedDirection(vector, expected)" in source
+    assert "function _isNekoIdleQuestionMarkExpectedZone(vector, expected)" in source
+    assert "function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail)" in source
+    assert "function _showNekoIdleCat1QuestionMark(button)" in source
+    assert "function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason)" in source
+    assert "function _getNekoIdleCat1QuestionMarkLayerAssetUrl()" in source
+    assert "function _clearNekoIdleCat1QuestionMark(button)" in source
+    assert "function _positionNekoIdleCat1QuestionMark(mark, button)" in source
+    assert "'neko:idle-cat1-question-mark-layer'" in source
+
+    _assert_source_order(
+        source,
+        "cat1 question mark drag sequence",
+        "return-ball-drag-active",
+        "_startNekoIdleReturnDragActionForContainer(detail.container);",
+        "return-ball-drag-motion",
+        "_handleNekoIdleCat1QuestionMarkDragSequenceForContainer(detail.container, detail);",
+        "_handleNekoIdleCat1RapidDragMotionForContainer(detail.container, detail);",
+    )
+    independent_action_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1IndependentActionActive(button)",
+        "function _isAnyNekoIdleCat1IndependentActionActive()",
+        "cat1 independent action gate",
+    )
+    any_independent_action_block = _source_slice_between(
+        source,
+        "function _isAnyNekoIdleCat1IndependentActionActive()",
+        "function _clearNekoIdleCat1PlayActionTimers(state)",
+        "cat1 any independent action gate",
+    )
+    show_block = _source_slice_between(
+        source,
+        "function _showNekoIdleCat1QuestionMark(button)",
+        "function _getNekoIdleCat1EatActionState(button)",
+        "cat1 question mark show",
+    )
+    clear_block = _source_slice_between(
+        source,
+        "function _clearNekoIdleCat1QuestionMark(button)",
+        "function _showNekoIdleCat1QuestionMark(button)",
+        "cat1 question mark clear",
+    )
+    drag_state_block = _source_slice_between(
+        source,
+        "function _getNekoIdleReturnDragActionState(button)",
+        "function _isNekoIdleReturnDragActionActive(button)",
+        "return drag action state",
+    )
+    drag_start_block = _source_slice_between(
+        source,
+        "function _startNekoIdleReturnDragActionForContainer(container)",
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "return drag action start",
+    )
+    drag_finish_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleReturnDragAction(button, options = {})",
+        "function _finishNekoIdleReturnDragActionForContainer(container, options = {})",
+        "return drag action finish",
+    )
+    sequence_handler_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail)",
+        "function _setNekoIdleReturnDragActionClasses(button, active)",
+        "cat1 question mark sequence handler",
+    )
+    assert "_isNekoIdleCat1QuestionMarkActive" not in independent_action_block
+    assert "_isAnyNekoIdleCat1QuestionMarkActive" not in any_independent_action_block
+    assert "cat1-question-mark-trace" not in source
+    assert "nekoIdleCat1QuestionMarkDragTrace" not in source
+    assert "questionMarkTrace" not in source
+    assert "_cancelNekoIdleCat1Journey" not in show_block
+    assert "_scheduleNekoIdleCat1JourneySync" not in clear_block
+    assert "if (!window.__NEKO_MULTI_WINDOW__) {" in show_block
+    assert "_dispatchNekoIdleCat1QuestionMarkLayer(button, true, 'show');" in show_block
+    assert "_dispatchNekoIdleCat1QuestionMarkLayer(button, false, 'clear');" in clear_block
+    assert "new URL(_getNekoIdleCat1QuestionMarkAssetUrl(), window.location.href).href" in source
+    assert "assetUrl: _getNekoIdleCat1QuestionMarkLayerAssetUrl()" in source
+    assert "screenRect: {" in source
+    screen_rect_block = _source_slice_between(
+        source,
+        "function _getNekoIdleCat1QuestionMarkScreenRect(mark)",
+        "function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason)",
+        "cat1 question mark screen rect",
+    )
+    assert "parseFloat(mark.style.left)" in screen_rect_block
+    assert "parseFloat(mark.style.top)" in screen_rect_block
+    assert "parseFloat(mark.style.width)" in screen_rect_block
+    assert "parseFloat(mark.style.height)" in screen_rect_block
+    assert "rect.width <= 0 || rect.height <= 0" not in screen_rect_block
+    assert "questionMarkSequence: null" in drag_state_block
+    assert "_resetNekoIdleCat1QuestionMarkSequence(button);" in drag_start_block
+    assert "_resetNekoIdleCat1QuestionMarkSequence(button);" in drag_finish_block
+    assert "originX: null" in source
+    assert "originY: null" in source
+    assert "lastAcceptedDeltaX: 0" in source
+    assert "lastAcceptedDeltaY: 0" in source
+    assert "phaseOriginDeltaX: 0" in source
+    assert "phaseOriginDeltaY: 0" in source
+    assert "state.active" in sequence_handler_block
+    assert "_NEKO_IDLE_TIER_CAT1" in sequence_handler_block
+    assert "Number(detail && detail.deltaX)" in sequence_handler_block
+    assert "Number(detail && detail.deltaY)" in sequence_handler_block
+    assert "dx - sequence.phaseOriginDeltaX" in sequence_handler_block
+    assert "dy - sequence.phaseOriginDeltaY" in sequence_handler_block
+    assert "dx - sequence.lastAcceptedDeltaX" in sequence_handler_block
+    assert "dy - sequence.lastAcceptedDeltaY" in sequence_handler_block
+    assert "if (sequence.progress % 2 === 0)" in sequence_handler_block
+    assert "sequence.phaseOriginDeltaX = dx;" in sequence_handler_block
+    assert "sequence.phaseOriginDeltaY = dy;" in sequence_handler_block
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE[sequence.progress]" in sequence_handler_block
+    assert "_isNekoIdleQuestionMarkExpectedZone(zoneVector, expected)" in sequence_handler_block
+    assert "_isNekoIdleQuestionMarkExpectedDirection(stepVector, expected)" in sequence_handler_block
+    assert "const zoneMatches = _isNekoIdleQuestionMarkExpectedZone(zoneVector, expected);" in sequence_handler_block
+    assert "const stepMatches = _isNekoIdleQuestionMarkExpectedDirection(stepVector, expected);" in sequence_handler_block
+    assert "if (!zoneMatches || !stepMatches)" in sequence_handler_block
+    assert "return false;" in sequence_handler_block
+    assert "if (shown)" in sequence_handler_block
+    assert "_showNekoIdleCat1QuestionMark(button)" in sequence_handler_block
+    assert "if (reset)" not in sequence_handler_block
+    assert "sequence.progress = direction === _NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE[0] ? 1 : 0;" not in sequence_handler_block
+    assert "_isNekoIdleQuestionMarkAxisDominant(vector, expected)" in source
+    assert "_isNekoIdleQuestionMarkCenterOverlap(vector)" in source
+    assert "crossAxis <= axis * _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" in source
+    assert "axis >= crossAxis * _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" not in source
+    assert "Math.abs(vector.dx) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
+    assert "Math.abs(vector.dy) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
+    assert "case 'up': return vector.dy <= -_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
+    assert "case 'down': return vector.dy >= _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
+    assert "case 'left': return vector.dx <= -_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
+    assert "case 'right': return vector.dx >= _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
+    assert "document.body.appendChild(mark)" in source
+    assert "position: 'fixed'" in source
+    assert "button.getBoundingClientRect()" in source
+    assert "button.appendChild(mark)" not in source
+    assert "is-cat1-question-mark-active" not in source
 
 
 def test_model_cat_transition_contract_is_present():
