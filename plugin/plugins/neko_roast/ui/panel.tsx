@@ -121,6 +121,35 @@ function formatLatencyMs(value: any): string {
   return `${Math.round(ms / 1000)}s`
 }
 
+function interactionRoute(result: any): string {
+  const source = String((result && result.event && result.event.source) || "")
+  if (source === "idle_hosting") return "idle_hosting"
+  if (source === "active_engagement") return "active_engagement"
+  const steps = Array.isArray(result && result.steps) ? result.steps : []
+  const routeStep = [...steps].reverse().find((step: any) => {
+    const id = String((step && step.id) || "")
+    return id === "danmaku_response" || id === "avatar_roast" || id === "idle_hosting" || id === "active_engagement"
+  })
+  if (routeStep && routeStep.id) return String(routeStep.id)
+  return source || "-"
+}
+
+function interactionRouteTone(route: string): "success" | "warning" | "danger" | "default" {
+  if (route === "avatar_roast" || route === "danmaku_response") return "success"
+  if (route === "idle_hosting") return "warning"
+  if (route === "active_engagement") return "default"
+  return "default"
+}
+
+function latestEventLabel(result: any): string {
+  const event = (result && result.event) || {}
+  const identity = (result && result.identity) || {}
+  const who = String(identity.nickname || event.nickname || event.uid || "-")
+  const text = String(event.danmaku_text || "").trim()
+  if (text) return `${who}: ${text}`
+  return who
+}
+
 function ToggleSwitch(props: { checked: boolean; label?: any; disabled?: boolean; tone?: string; onChange: (value: boolean) => void }) {
   const checked = !!props.checked
   const disabled = !!props.disabled
@@ -520,6 +549,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveModeRole = String(liveState.mode_role || (liveMode === "solo_stream" ? "solo_host" : "companion"))
   const liveStateName = String(liveState.state || "blocked")
   const liveStateReason = String(liveState.reason || "blocked_by_live_status")
+  const liveStateLastActivityAge = liveState.last_activity_age_sec === null || liveState.last_activity_age_sec === undefined ? "-" : `${Number(liveState.last_activity_age_sec || 0).toFixed(1)}s`
+  const liveStateQuietAfter = `${Number(liveState.engaged_threshold_seconds || 0).toFixed(0)}s`
+  const liveStateIdleAfter = `${Number(liveState.idle_threshold_seconds || 0).toFixed(0)}s`
   const idleHostingCandidate = !!liveState.idle_hosting_candidate
   const idleHostingEligible = !!idleHostingStatus.eligible
   const idleHostingReason = String(idleHostingStatus.reason || "not_candidate")
@@ -608,6 +640,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <StatCard label={t("panel.fields.mode")} value={t(`panel.liveModeRole.${liveMode}`)} />
             <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
             <StatCard label={t("panel.columns.reason")} value={t(`panel.liveStateReason.${liveStateReason}`)} />
+          </Grid>
+          <Grid cols={3}>
+            <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
+            <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
+            <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
           </Grid>
           <Text>{t(`panel.liveModeRoleHint.${liveModeRole}`)}</Text>
           <Alert tone={liveStatusTone(liveStatusSummary)}>
@@ -723,13 +760,14 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   // Render module-declared config fields.
   const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
+    const configKey = name as keyof RoastConfig
     const cur = config[name]
     const label = f && f.label ? t(f.label) : name
     const hint = f && f.hint ? t(f.hint) : ""
     if (f && f.type === "boolean") {
       return (
-        <Stack key={name || fi} gap={4}>
-          <ToggleSwitch checked={cur === undefined ? !!f.default : !!cur} label={label} onChange={(v) => { configForm.setField(name, v); saveConfig({ [name]: v }) }} />
+        <Stack gap={4}>
+          <ToggleSwitch checked={cur === undefined ? !!f.default : !!cur} label={label} onChange={(v) => { configForm.setField(configKey, v); saveConfig({ [name]: v }) }} />
           {hint ? <Text>{hint}</Text> : null}
         </Stack>
       )
@@ -738,7 +776,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       const opts = Array.isArray(f.options) ? f.options : []
       const curVal = String(cur === undefined ? (f.default ?? "") : cur)
       return (
-        <Field key={name || fi} label={label}>
+        <Field label={label}>
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             {opts.map((o: any, oi: number) => {
               const selected = String(o.value) === curVal
@@ -746,7 +784,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                 <button
                   key={String(o.value) || oi}
                   type="button"
-                  onClick={() => { configForm.setField(name, String(o.value)); saveConfig({ [name]: String(o.value) }) }}
+                  onClick={() => { configForm.setField(configKey, String(o.value)); saveConfig({ [name]: String(o.value) }) }}
                   style={{
                     padding: "6px 16px",
                     borderRadius: "999px",
@@ -768,14 +806,23 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       )
     }
     return (
-      <Field key={name || fi} label={label}>
-        <Input value={String(cur === undefined ? ((f && f.default) ?? "") : cur)} onChange={(v) => { configForm.setField(name, v); saveConfig({ [name]: v }) }} />
+      <Field label={label}>
+        <Input value={String(cur === undefined ? ((f && f.default) ?? "") : cur)} onChange={(v) => { configForm.setField(configKey, v); saveConfig({ [name]: v }) }} />
       </Field>
     )
   }
 
-  // Interaction modules render from their declared schemas.
+  // Interaction modules render from their declared schemas plus NEKO Live behavior lanes.
   const interactionModules = modules.filter((m: any) => String((m && m.domain) || "") === "interaction")
+  const interactionModuleById = interactionModules.reduce((acc: Record<string, any>, item: any) => {
+    if (item && item.id) acc[String(item.id)] = item
+    return acc
+  }, {})
+  const latestResult = results.length ? results[0] : null
+  const latestRoute = latestResult ? interactionRoute(latestResult) : "-"
+  const latestResultStatus = latestResult ? String(latestResult.status || "-") : "-"
+  const latestResultReason = latestResult ? String(latestResult.reason || "") : ""
+  const latestLatency = latestResult ? formatLatencyMs(latestResult.response_latency_ms) : "-"
 
   // Live roast card header state.
   const roastEnabled = !!config.live_enabled
@@ -786,18 +833,56 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         : <StatusBadge tone="warning" label={t("panel.modules.standby")} />)
     : <StatusBadge tone="default" label={t("panel.modules.off")} />
 
-  // Live roast core card.
-  const renderRoastCard = (m: any) => (
-    <Card key={m.id || "avatar_roast"}>
+  const renderTagRow = (items: Array<{ key: string; tone?: "success" | "warning" | "danger" | "default" }>) => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+      {items.map((item) => (
+        <span key={item.key}>
+          <StatusBadge tone={item.tone || "default"} label={t(item.key)} />
+        </span>
+      ))}
+    </div>
+  )
+
+  const currentDecisionCard = (
+    <Card title={t("panel.interaction.currentDecision.title")}>
+      <Stack gap={12}>
+        <Text>{t("panel.interaction.currentDecision.subtitle")}</Text>
+        <Grid cols={3}>
+          <StatCard label={t("panel.interaction.currentDecision.latestEvent")} value={latestResult ? latestEventLabel(latestResult) : t("panel.interaction.currentDecision.noResult")} />
+          <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={latestRoute} />} />
+          <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
+        </Grid>
+        <Alert tone={speechExplanationTone(speechSummary)}>
+          {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
+        </Alert>
+        {latestResultReason ? (
+          <Text>
+            {t("panel.interaction.currentDecision.skipReason")}: {latestResultReason}
+          </Text>
+        ) : null}
+      </Stack>
+    </Card>
+  )
+
+  // First-appearance roast card.
+  const renderAvatarRoastCard = (m: any) => (
+    <Card>
       <Stack gap={12}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-            <span style={{ color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{m.title || m.id}</span>
+            <span style={{ color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{t("panel.interaction.module.avatarRoast.title")}</span>
+            <StatusBadge tone="success" label={t("panel.interaction.module.avatarRoast.badge")} />
             {roastBadge}
           </div>
           <ToggleSwitch checked={roastEnabled} tone="success" onChange={(v) => { configForm.setField("live_enabled", v); saveConfig({ live_enabled: v }) }} />
         </div>
-        {Array.isArray(m.config_schema) && m.config_schema.length ? (
+        <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
+        {renderTagRow([
+          { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
+          { key: "panel.interaction.tags.oncePerUid", tone: "warning" },
+          { key: "panel.interaction.tags.safetyRequired" },
+        ])}
+        {m && Array.isArray(m.config_schema) && m.config_schema.length ? (
           <Stack gap={12}>
             {m.config_schema.map((f: any, fi: number) => renderConfigField(f, fi))}
           </Stack>
@@ -806,16 +891,57 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Card>
   )
 
-  // Generic card for future interaction modules.
-  const renderGenericModuleCard = (m: any, mi: number) => (
-    <Card key={m.id || mi} title={m.title || m.id}>
+  const renderDanmakuResponseCard = (m: any) => (
+    <Card title={t("panel.interaction.module.danmakuResponse.title")}>
       <Stack gap={12}>
-        {moduleBadge(m)}
-        {Array.isArray(m.config_schema) && m.config_schema.length ? (
-          <Stack gap={12}>
-            {m.config_schema.map((f: any, fi: number) => renderConfigField(f, fi))}
-          </Stack>
-        ) : null}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+          <StatusBadge tone={m ? "success" : "warning"} label={m ? t("panel.interaction.module.danmakuResponse.badge") : t("panel.modules.soon")} />
+          {m ? moduleBadge(m) : null}
+        </div>
+        <Text>{t("panel.interaction.module.danmakuResponse.desc")}</Text>
+        {renderTagRow([
+          { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
+          { key: "panel.interaction.tags.noAvatarCount", tone: "warning" },
+          { key: "panel.interaction.tags.safetyRequired" },
+        ])}
+      </Stack>
+    </Card>
+  )
+
+  const renderIdleHostingCard = () => (
+    <Card title={t("panel.interaction.module.idleHosting.title")}>
+      <Stack gap={12}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+          <StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={t("panel.interaction.module.idleHosting.badge")} />
+          <StatusBadge tone={idleHostingCandidate ? "success" : "default"} label={t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)} />
+        </div>
+        <Text>{t("panel.interaction.module.idleHosting.desc")}</Text>
+        <Grid cols={2}>
+          <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
+          <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
+        </Grid>
+        <Grid cols={2}>
+          <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
+          <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
+        </Grid>
+        <Text>{t(`panel.idleHostingStatus.reason.${idleHostingReason}`)}</Text>
+        {renderTagRow([
+          { key: "panel.interaction.tags.cooldown", tone: "warning" },
+          { key: "panel.interaction.tags.safetyRequired" },
+        ])}
+      </Stack>
+    </Card>
+  )
+
+  const renderActiveEngagementCard = () => (
+    <Card title={t("panel.interaction.module.activeEngagement.title")}>
+      <Stack gap={12}>
+        <StatusBadge tone="default" label={t("panel.interaction.module.activeEngagement.badge")} />
+        <Text>{t("panel.interaction.module.activeEngagement.desc")}</Text>
+        {renderTagRow([
+          { key: "panel.interaction.tags.future" },
+          { key: "panel.interaction.tags.safetyRequired" },
+        ])}
       </Stack>
     </Card>
   )
@@ -829,7 +955,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     } catch (err) {
       const msg = err && (err as any).message ? String((err as any).message) : ""
       return (
-        <Card key={key} title={title}>
+        <Card title={title}>
           <Stack gap={8}>
             <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
             <Alert tone="danger">{t("panel.modules.renderError")}</Alert>
@@ -842,13 +968,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
   const modulesSection = (
     <Stack>
-      {interactionModules.map((m: any, mi: number) =>
-        safeModuleCard(
-          (m && m.id) || `interaction-${mi}`,
-          (m && (m.title || m.id)) || "?",
-          () => (m && m.id === "avatar_roast" ? renderRoastCard(m) : renderGenericModuleCard(m, mi)),
-        ),
-      )}
+      {currentDecisionCard}
+      {safeModuleCard("avatar_roast", t("panel.interaction.module.avatarRoast.title"), () => renderAvatarRoastCard(interactionModuleById.avatar_roast))}
+      {safeModuleCard("danmaku_response", t("panel.interaction.module.danmakuResponse.title"), () => renderDanmakuResponseCard(interactionModuleById.danmaku_response))}
+      {safeModuleCard("idle_hosting", t("panel.interaction.module.idleHosting.title"), renderIdleHostingCard)}
+      {safeModuleCard("active_engagement", t("panel.interaction.module.activeEngagement.title"), renderActiveEngagementCard)}
     </Stack>
   )
 

@@ -10,13 +10,14 @@ NEKO Live is the live-scene capability plugin for the N.E.K.O main persona. The 
 
 > Can NEKO independently sustain a 30-minute livestream in a 10-50 viewer room without awkward silence?
 
-The current gap is not live ingest, danmaku response, or output plumbing. The current gap is **live pacing**:
+The current gap is not live ingest or output plumbing. The main gap is **live pacing**, with one required conversation bridge before broader proactive hosting:
 
 - when NEKO should speak;
 - what NEKO should say;
 - how often NEKO should speak;
 - how NEKO avoids awkward self-talk;
 - how NEKO invites viewers to reply.
+- how NEKO keeps replying to the same viewer after the first appearance roast.
 
 Product success is not measured by the number of supported event types. It is measured by whether a real small streamer can trust NEKO to keep a 30-minute room alive.
 
@@ -37,10 +38,11 @@ Independent Mode is now past the first implementation and acceptance check and s
 
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
-- Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters.
+- Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters. It now controls both quiet/idle state thresholds and Idle Hosting minimum intervals.
+- Danmaku Response transition slice is implemented in the current development branch: first appearance still uses `avatar_roast`; later ordinary danmaku from the same UID uses `danmaku_response` instead of being blocked by the first-appearance once gate.
 - The current validation target is not another event type. It is a controlled solo-stream validation with low danmaku, occasional danmaku, and no-danmaku moments.
 - The next product decision should be based on controlled validation:
-  - if NEKO is too quiet or too noisy, do Pacing Control next;
+  - if NEKO is too quiet or too noisy, tune the quiet / standard / active pacing thresholds next;
   - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
   - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
   - if the baseline feels stable, prepare a 3-5 streamer closed beta before adding Active Engagement.
@@ -142,6 +144,32 @@ Idle Hosting wording principles:
 - keep the line in NEKO's main persona;
 - leave room for viewers to answer.
 
+Idle Hosting and Danmaku Response should use recent lightweight interaction context to avoid repeating the same opening, punchline shape, or host beat. This is not a long-term memory system; it is only a short live-room continuity aid for the current session.
+
+### Transition Slice: Danmaku Response
+
+Goal: let NEKO keep a normal conversation after the first appearance roast.
+
+This slice exists because Independent Mode cannot rely on `avatar_roast` as a generic reply template. `avatar_roast` should remain the viewer's first-appearance moment: avatar, ID, and the first message. Later ordinary danmaku from the same UID should be answered by `danmaku_response`.
+
+Danmaku Response should:
+
+- answer the current danmaku, not re-roast the viewer's avatar or ID;
+- keep one short line suitable for live TTS;
+- preserve NEKO's fixed persona;
+- work in both `solo_stream` and `co_stream`, with different interruption posture;
+- keep test mode, pause, safety, pacing, and dispatcher behavior intact.
+
+Danmaku Response should avoid:
+
+- repeating first-appearance templates;
+- treating every message like a new viewer entrance;
+- generic customer-service replies;
+- engagement bait before the viewer has actually offered a topic.
+- reusing the same response shape from the immediately previous interaction.
+
+This slice should be validated before Active Engagement. NEKO should first prove she can receive and continue audience conversation before she tries to proactively create topics.
+
 ### Slice 4: Pacing Control
 
 Goal: prevent Idle Hosting from becoming spam or awkward chatter.
@@ -153,6 +181,8 @@ The streamer should not tune many parameters. Use a small number of simple live 
 - active.
 
 Pacing Control is the safety valve for Independent Mode. It should keep NEKO from speaking too often, speaking too rarely, or interrupting useful audience interaction.
+
+Current behavior: quiet waits longer before classifying the room as idle, uses a longer Idle Hosting interval, and biases Idle Hosting toward soft observations instead of direct questions. Active enters idle sooner, allows shorter Idle Hosting intervals, and may ask one specific low-pressure question. Standard keeps the middle baseline.
 
 ### Slice 3: Active Engagement
 
@@ -175,6 +205,7 @@ MVP must include:
 - a clear Independent Mode entry;
 - preflight check;
 - "why not speaking" status;
+- normal follow-up danmaku response after first appearance;
 - Idle Hosting;
 - basic pacing control;
 - NEKO fixed-persona live-scene behavior;

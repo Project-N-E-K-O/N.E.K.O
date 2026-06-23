@@ -15,6 +15,7 @@ from ..modules._base import ReservedModule
 from ..modules.avatar_roast import AvatarRoastModule
 from ..modules.bili_identity import BiliIdentityModule
 from ..modules.bili_live_ingest import BiliLiveIngestModule
+from ..modules.danmaku_response import DanmakuResponseModule
 from ..modules.developer_sandbox import DeveloperSandboxModule
 from ..modules.live_events import LiveEventsModule
 from ..modules.viewer_profile import ViewerProfileModule
@@ -87,6 +88,7 @@ class RoastRuntime:
         self.bili_identity = BiliIdentityModule()
         self.viewer_profile = ViewerProfileModule()
         self.avatar_roast = AvatarRoastModule()
+        self.danmaku_response = DanmakuResponseModule()
         self.developer_sandbox = DeveloperSandboxModule()
         self.live_events = LiveEventsModule()
         self.pipeline = RoastPipeline(self)
@@ -97,6 +99,7 @@ class RoastRuntime:
             self.bili_identity,
             self.viewer_profile,
             self.avatar_roast,
+            self.danmaku_response,
             self.developer_sandbox,
             self.live_events,
             ReservedModule("bili_dm_ingest", "B站私信输入"),
@@ -643,6 +646,7 @@ class RoastRuntime:
         rows = health_rows if health_rows is not None else self.runtime_health_rows()
         safety_status = str(status.get("safety_status") or self.safety_guard.status())
         mode_role = "solo_host" if self.config.live_mode == "solo_stream" else "companion"
+        engaged_threshold, idle_threshold = self._live_state_threshold_seconds()
 
         state = "engaged"
         reason = "recent_activity"
@@ -654,10 +658,10 @@ class RoastRuntime:
         elif safety_status == "paused":
             state = "paused"
             reason = "manual_paused"
-        elif last_activity_age_sec is None or last_activity_age_sec > self._LIVE_STATE_IDLE_SECONDS:
+        elif last_activity_age_sec is None or last_activity_age_sec > idle_threshold:
             state = "idle"
             reason = "no_recent_activity"
-        elif last_activity_age_sec > self._LIVE_STATE_ENGAGED_SECONDS:
+        elif last_activity_age_sec > engaged_threshold:
             state = "quiet"
             reason = "quiet_activity_gap"
 
@@ -675,6 +679,8 @@ class RoastRuntime:
             "mode_role": mode_role,
             "idle_hosting_candidate": idle_hosting_candidate,
             "last_activity_age_sec": last_activity_age_sec,
+            "engaged_threshold_seconds": float(engaged_threshold),
+            "idle_threshold_seconds": float(idle_threshold),
         }
 
     def idle_hosting_status(self, live_state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -712,6 +718,16 @@ class RoastRuntime:
             "active": 60.0,
             "standard": float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS),
         }.get(str(getattr(self.config, "activity_level", "standard")), float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS))
+
+    def _live_state_threshold_seconds(self) -> tuple[float, float]:
+        return {
+            "quiet": (90.0, 300.0),
+            "active": (30.0, 90.0),
+            "standard": (float(self._LIVE_STATE_ENGAGED_SECONDS), float(self._LIVE_STATE_IDLE_SECONDS)),
+        }.get(
+            str(getattr(self.config, "activity_level", "standard")),
+            (float(self._LIVE_STATE_ENGAGED_SECONDS), float(self._LIVE_STATE_IDLE_SECONDS)),
+        )
 
     def speech_explanation(
         self,
@@ -778,6 +794,52 @@ class RoastRuntime:
             "last_result_age_sec": latest_age,
             "last_result_latency_ms": latest_latency,
         }
+
+    def recent_interaction_context(self, *, limit: int = 3) -> list[str]:
+        lines: list[str] = []
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            source = str(event.get("source") or "unknown")
+            route = self._route_from_result(result)
+            if source == "idle_hosting":
+                line = f"{route} / idle_hosting: solo quiet-room host beat"
+            else:
+                identity = result.get("identity") if isinstance(result.get("identity"), dict) else {}
+                who = str(identity.get("nickname") or event.get("nickname") or event.get("uid") or "viewer")
+                text = str(event.get("danmaku_text") or "").strip()
+                line = f"{route} / {source} from {who}"
+                if text:
+                    line += f": {self._compact_context_text(text)}"
+            lines.append(line)
+            if len(lines) >= max(1, int(limit)):
+                break
+        return lines
+
+    @staticmethod
+    def _compact_context_text(value: str, *, limit: int = 80) -> str:
+        text = " ".join(str(value).split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _route_from_result(result: dict[str, Any]) -> str:
+        event = result.get("event") if isinstance(result.get("event"), dict) else {}
+        source = str(event.get("source") or "")
+        if source in {"idle_hosting", "active_engagement"}:
+            return source
+        steps = result.get("steps") if isinstance(result.get("steps"), list) else []
+        for step in reversed(steps):
+            if not isinstance(step, dict):
+                continue
+            step_id = str(step.get("id") or "")
+            if step_id in {"danmaku_response", "avatar_roast", "idle_hosting", "active_engagement"}:
+                return step_id
+        return source or "unknown"
 
     @staticmethod
     def _last_live_activity_age_sec(rows: list[dict[str, Any]]) -> float | None:

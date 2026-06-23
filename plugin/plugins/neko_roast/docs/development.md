@@ -36,8 +36,9 @@
        safety_guard.before_event()      连接/暂停/队列闸门
     -> bili_identity.resolve()           UID→昵称/头像/META（登录态过 -352）
     -> viewer_profile.upsert() / 沙盒临时
-    -> viewer_gate.check_once_per_uid()  每 UID 一次
-    -> avatar_roast.build_request()      自适应焦点锐评 prompt
+    -> viewer_gate.check_once_per_uid()  每 UID 一次出场锐评；后续普通弹幕不整体跳过
+    -> avatar_roast.build_request()      首次出场：头像 / ID / 第一句话自适应焦点锐评 prompt
+       or danmaku_response.build_request() 后续普通弹幕：接住当前弹幕，不复用首评模板
     -> safety_guard.before_output()      限流
     -> neko_dispatcher.push_roast()      唯一出口；dry_run 时短路
   -> plugin.push_message -> main_server → 视觉模型 → 猫开口
@@ -194,7 +195,8 @@ Protected Modules 是需要核心维护者 review 的高风险区域。触碰这
 - `bili_live_ingest`：归一化直播弹幕事件、提供直播间状态查询（带反 -352 + 友好降级，见「直播间查询与 -352 风控」），并**持有真实弹幕监听器**——吞并自 `bilibili_danmaku` 的 `DanmakuListener`（同目录 `danmaku_core.py` + `livedanmaku.py`：WS 连接 + WBI 签名 + 临时 buvid3 反 -352 + zlib/brotli 解压 + 心跳 + 多服务器故障转移 + 断线重连）。`runtime.connect/disconnect_live_room` 启停监听；`stop_listening` 用 `wait_for` 给 ws close 加超时，避免关闭握手拖慢断开。**富模型 `on_event` 回调把 `LiveDanmaku` 包成 `LiveEvent` 发布到 `event_bus`**（按命令名映射 `type`），由订阅者按类型消费（轻量 `on_danmaku`→pipeline 直连已退役，防同一条弹幕双锐评）。见「直播事件中枢（EventBus）」。登录态（若有）传入 `DanmakuListener` 与 lookup（见「B站登录态」）。弹幕本身不含头像，头像由下游 `bili_identity` 按 UID 抓取。
 - `bili_identity`：解析 UID、昵称、头像 URL；缺少昵称或头像时按 UID 查询 B 站基础资料，并尝试抓取头像供本次 NEKO 视觉输入使用。同时解析头像形态 META：是否默认头像（noface）、是否动图（大会员动态头像，只取代表帧）、挂件/装扮名（出框头像来源）；抓取或识别失败时安全降级（`avatar_vision_ok=False`），不阻断锐评。
 - `viewer_profile`：维护观众档案和首次触发判断。
-- `avatar_roast`：构造头像与 ID 锐评请求，并集中产出完整锐评指令（见“输出边界”的自适应焦点规则）。
+- `avatar_roast`：构造首次出场的头像 / ID / 第一句话锐评请求，并集中产出完整锐评指令（见“输出边界”的自适应焦点规则）。
+- `danmaku_response`：构造同一观众后续普通弹幕的接话请求。它不做头像 / ID 首评，不写首评计数，不绕过 pipeline / safety guard / dispatcher；用于让 Independent Mode 下的持续对话不被 `roast_once_per_uid` 整体挡掉。
 - `developer_sandbox`：提供离线 UID / URL 调试入口。
 - `live_events`：直播事件中枢（P2.5）。经 `event_bus` **订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"` 事件**，解包信封 `raw` 取富模型 `LiveDanmaku`，冷却期缓冲候选互动、按 `get_score()` 打分，冷却结束择优（舰长/总督/SC、礼物、粉丝牌、用户等级、长文本优先）取分最高者投 `pipeline`；空闲态首条仍即时锐评。礼物/SC/上舰当前复用既有 pipeline 产出端，专属致谢 / 朗读 prompt 留待后续 P3 handler。详见下文「直播事件中枢」。
 
@@ -223,7 +225,8 @@ ViewerEvent
   -> bili_identity.resolve()
   -> viewer_profile.upsert() / 沙盒临时 profile
   -> viewer_gate.check_once_per_uid()
-  -> avatar_roast.build_request()
+  -> avatar_roast.build_request()          first appearance
+     or danmaku_response.build_request()   repeat live danmaku
   -> safety_guard.before_output()
   -> neko_dispatcher.push_roast()
   -> audit_store.record()
@@ -354,6 +357,16 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 `safety_guard.before_output()` 按 `rate_limit_seconds` 控制**最小锐评间隔**：直播态下两次锐评投递之间至少隔这么多秒，期间到达的事件返回 `skipped`（reason `rate limited`），不投给猫猫——避免爆量房间猫猫连珠炮。开发者沙盒事件（`source == "developer_sandbox"`）不受限流，保证即时调试反馈。`rate_limit_seconds = 0` 关闭限流。`safety_guard.resume()` 会重置间隔计时。
 
 > 更新（P2.5，已接入）：值优选由 `live_events` 中枢接管。冷却期内不再 skip 掉所有人，而是缓冲候选互动、按 `get_score` 择优，冷却结束投分最高者；空闲态首条仍即时锐评不缓冲。`rate_limit_seconds` 现在既是 `before_output` 的硬限流闸门，也是中枢的开窗时长，二者对齐——中枢 flush 出来的胜者不会反被 `before_output` 判限流。当前参与同窗竞争的类型为 `DANMU_MSG` / `SEND_GIFT` / `SUPER_CHAT_MESSAGE` / `GUARD_BUY`。详见「直播事件中枢」。
+
+## 直播活跃度（activity_level）
+
+`activity_level` 是主播侧的三档节奏控制，不暴露复杂阈值参数：
+
+- `quiet`：更耐心，较晚进入 `idle`，Idle Hosting 间隔更长。
+- `standard`：默认节奏，保留当前低弹幕独播基线。
+- `active`：更积极，较早进入 `idle`，Idle Hosting 间隔更短。
+
+当前实现同时影响三类决策：`live_state_summary()` 的 `quiet` / `idle` 阈值、`idle_hosting_status()` 的最小陪播间隔，以及 Idle Hosting prompt 的主持姿态。`quiet` 更偏轻观察、少直接提问；`active` 允许一个具体、低压力的小问题；`standard` 保持中间策略。面板会展示最近活动间隔、多久算安静、多久算冷场，便于主播理解为什么猫猫现在说或不说。
 
 ## 富模型弹幕解析（`livedanmaku.LiveDanmaku.from_danmaku`）
 
@@ -495,6 +508,12 @@ danmaku_core on_event(cmd, 富模型)
 
 `avatar_roast` 通过 `bili_identity` 解析出的 META 决定头像规则：`avatar_vision_ok=False`（没取到/识别不了）或默认头像 → 只能就“头像配置（默认/会动/带挂件）或昵称”发挥；能看到头像 → 可锐评其具体内容。
 
+`danmaku_response.build_request()` 只用于同一 UID 已经完成出场锐评后的普通 `live_danmaku` 后续接话。`roast_once_per_uid` 的语义因此收敛为“每个观众只做一次出场锐评”，而不是“每个观众只能让 NEKO 回应一次”。后续弹幕仍必须经过 viewer profile、safety guard、dispatcher、dry_run 和 pacing；成功输出不调用 `viewer_profile.mark_roasted()`，避免把普通聊天回复继续累计成首评次数。
+
+`danmaku_response` 的 prompt 只围绕当前弹幕接话：不能重复首次出场、头像、ID 或进场锐评模板；除非当前弹幕本身相关，否则不主动评价头像或昵称；独播（`solo_stream`）提示 NEKO 是台前唯一主播，需要自然接住话题；同播（`co_stream`）提示低打断，给主播留空间。
+
+`recent_interaction_context()` 会从最近成功投递或 dry_run 的互动结果中提取轻量上下文（路由、事件来源、观众弹幕或 idle hosting beat），供 `danmaku_response` 和 `idle_hosting` prompt 使用。它不假装掌握猫猫最终 TTS 文本，也不把完整历史 prompt 塞回模型；目标只是让下一次接话知道刚发生过什么，并明确避免复用同一个开场、包袱形状或主持节拍。
+
 NEKO 输出由 `adapters/neko_dispatcher.py` 中的 `NekoDispatcher.push_roast()` 统一负责，pipeline 通过 `self.ctx.dispatcher.push_roast(request)` 进入。`push_roast()` 直接使用 `request.prompt_text` 作为文本 part，再按可见性附加头像 image part（压缩后超预算则省略并在文本里说明降级），不再自行拼装字段；然后调用：
 
 ```python
@@ -576,7 +595,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-23：`uv run pytest plugin/plugins/neko_roast/tests -q` → **97 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-23：`uv run pytest plugin/plugins/neko_roast/tests -q` → **122 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

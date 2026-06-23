@@ -54,16 +54,33 @@ class RoastPipeline:
                 uid_lock = self._uid_locks.setdefault(identity.uid, asyncio.Lock())
                 await uid_lock.acquire()
             try:
-                if uid_lock is not None and await self.ctx.viewer_profile.has_roasted(identity.uid):
+                already_roasted = False
+                if uid_lock is not None:
+                    already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
+                is_repeat_live_danmaku = (
+                    uid_lock is not None
+                    and event.source == "live_danmaku"
+                    and bool((event.danmaku_text or "").strip())
+                    and already_roasted
+                )
+                if uid_lock is not None and already_roasted and not is_repeat_live_danmaku:
                     reason = "uid already roasted"
                     steps.append(PipelineStep("viewer_gate", "skipped", reason))
                     result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, reason=reason, steps=steps)
                     self.ctx.audit.record("pipeline_skipped", reason, level="info", detail={"uid": identity.uid})
                     return result
-                steps.append(PipelineStep("viewer_gate", "ok"))
 
-                request = self.ctx.avatar_roast.build_request(event, identity, profile)
-                steps.append(PipelineStep("avatar_roast", "ok"))
+                if is_repeat_live_danmaku:
+                    steps.append(PipelineStep("viewer_gate", "ok", "repeat_danmaku"))
+                    request = self.ctx.danmaku_response.build_request(event, identity, profile)
+                    should_mark_roasted = False
+                    response_module_id = "danmaku_response"
+                else:
+                    steps.append(PipelineStep("viewer_gate", "ok"))
+                    request = self.ctx.avatar_roast.build_request(event, identity, profile)
+                    should_mark_roasted = not is_transient_event
+                    response_module_id = "avatar_roast"
+                steps.append(PipelineStep(response_module_id, "ok"))
 
                 output_decision = self.ctx.safety_guard.before_output(event)
                 if not output_decision.allowed:
@@ -120,7 +137,7 @@ class RoastPipeline:
                     return result
 
                 steps.append(PipelineStep("neko_dispatcher", "ok", output))
-                if not is_transient_event:
+                if should_mark_roasted:
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
                         steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))

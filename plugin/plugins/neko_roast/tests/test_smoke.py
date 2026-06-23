@@ -35,8 +35,32 @@ def test_panel_renders_live_status_summary():
     assert "panel.speechExplanation." in source
     assert "idle_hosting_status" in source
     assert "panel.idleHostingStatus." in source
+    assert "last_activity_age_sec" in source
+    assert "engaged_threshold_seconds" in source
+    assert "idle_threshold_seconds" in source
+    assert "panel.liveState.lastActivityAge" in source
+    assert "panel.liveState.quietAfter" in source
+    assert "panel.liveState.idleAfter" in source
     assert "response_latency_ms" in source
     assert "panel.columns.responseLatency" in source
+
+
+def test_panel_renders_interaction_module_split_and_speaking_decision():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+
+    assert "panel.interaction.currentDecision.title" in source
+    assert "panel.interaction.currentDecision.latestEvent" in source
+    assert "panel.interaction.currentDecision.route" in source
+    assert "panel.interaction.currentDecision.lastResult" in source
+    assert "avatar_roast" in source
+    assert "danmaku_response" in source
+    assert "idle_hosting" in source
+    assert "active_engagement" in source
+    assert "panel.interaction.module.avatarRoast.desc" in source
+    assert "panel.interaction.module.danmakuResponse.desc" in source
+    assert "panel.interaction.module.idleHosting.desc" in source
+    assert "panel.interaction.module.activeEngagement.desc" in source
 
 
 def test_trigger_idle_hosting_is_exposed_as_hosted_ui_action():
@@ -86,6 +110,9 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStateReason.no_recent_activity",
         "panel.liveStateReason.manual_paused",
         "panel.liveStateReason.blocked_by_live_status",
+        "panel.liveState.lastActivityAge",
+        "panel.liveState.quietAfter",
+        "panel.liveState.idleAfter",
         "panel.idleHostingCandidate.true",
         "panel.idleHostingCandidate.false",
         "panel.idleHostingStatus.title",
@@ -123,6 +150,31 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.reason.recently_skipped",
         "panel.speechExplanation.reason.failed",
         "panel.speechExplanation.reason.dispatcher.dry_run",
+        "panel.interaction.currentDecision.title",
+        "panel.interaction.currentDecision.subtitle",
+        "panel.interaction.currentDecision.latestEvent",
+        "panel.interaction.currentDecision.route",
+        "panel.interaction.currentDecision.lastResult",
+        "panel.interaction.currentDecision.skipReason",
+        "panel.interaction.currentDecision.noResult",
+        "panel.interaction.module.avatarRoast.title",
+        "panel.interaction.module.avatarRoast.desc",
+        "panel.interaction.module.avatarRoast.badge",
+        "panel.interaction.module.danmakuResponse.title",
+        "panel.interaction.module.danmakuResponse.desc",
+        "panel.interaction.module.danmakuResponse.badge",
+        "panel.interaction.module.idleHosting.title",
+        "panel.interaction.module.idleHosting.desc",
+        "panel.interaction.module.idleHosting.badge",
+        "panel.interaction.module.activeEngagement.title",
+        "panel.interaction.module.activeEngagement.desc",
+        "panel.interaction.module.activeEngagement.badge",
+        "panel.interaction.tags.currentDanmaku",
+        "panel.interaction.tags.noAvatarCount",
+        "panel.interaction.tags.safetyRequired",
+        "panel.interaction.tags.oncePerUid",
+        "panel.interaction.tags.future",
+        "panel.interaction.tags.cooldown",
     }
 
     for locale_path in sorted((root / "i18n").glob("*.json")):

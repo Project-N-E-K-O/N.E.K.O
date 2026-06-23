@@ -6,6 +6,7 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
+from .._prompt_context import recent_context_block
 
 
 class AvatarRoastModule(BaseModule):
@@ -45,8 +46,9 @@ class AvatarRoastModule(BaseModule):
         profile: ViewerProfile,
     ) -> InteractionRequest:
         strength = self.ctx.config.roast_strength if self.ctx else "normal"
+        activity_level = self.ctx.config.activity_level if self.ctx else "standard"
         prompt_text = (
-            self._build_idle_hosting_prompt(event, strength)
+            self._build_idle_hosting_prompt(event, strength, activity_level, recent_context_block(self.ctx))
             if event.source == "idle_hosting"
             else self._build_prompt(event, identity, strength)
         )
@@ -60,17 +62,24 @@ class AvatarRoastModule(BaseModule):
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
         )
 
-    def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str) -> str:
+    def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str, activity_level: str = "standard", recent_context: str = "") -> str:
         strength_hint = {
             "gentle": "warm and soft",
             "sharp": "playfully sharp, but still easy to answer",
             "normal": "balanced and lightly playful",
         }.get(strength, "balanced and lightly playful")
+        pacing_hint = {
+            "quiet": "Prefer a soft observation over a direct question.",
+            "active": "You may ask one specific, low-pressure question.",
+            "standard": "Use a balanced host beat: one small observation or one easy question.",
+        }.get(str(activity_level), "Use a balanced host beat: one small observation or one easy question.")
         facts = [
             "scene: NEKO is the only host on stage in solo_stream",
             "task: solo idle hosting",
             "goal: sound like NEKO hosting the room, not a system filler",
             f"tone: {strength_hint}",
+            f"pacing: {activity_level}",
+            f"pacing rule: {pacing_hint}",
         ]
         rules = [
             "Say exactly one short live-host line as NEKO.",
@@ -78,14 +87,16 @@ class AvatarRoastModule(BaseModule):
             "Make it feel like a spontaneous host beat, with a little NEKO personality and no formal opening.",
             "Do not pretend a viewer sent a message.",
             "Do not use generic welcome slogans, direct interaction requests, or attendance-check lines.",
-            "Do not mention viewer absence, silence metrics, queues, cooldowns, dry_run, or system state.",
+            "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
             "Output only the line NEKO should say.",
         ]
         return (
             "[NEKO Live solo idle hosting]\n"
             + "\n".join(facts)
-            + "\n\nRules:\n"
+            + "\n\n"
+            + recent_context
+            + "\nRules:\n"
             + "\n".join(f"- {rule}" for rule in rules)
         )
 

@@ -369,6 +369,35 @@ def _record_result_at(runtime: RoastRuntime, *, age_seconds: int, status: str = 
     )
 
 
+def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: RoastRuntime) -> None:
+    first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku")
+    second_event = ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting")
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=first_event,
+            steps=[PipelineStep("avatar_roast", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="dry_run",
+            event=second_event,
+            reason="dispatcher.dry_run",
+            steps=[PipelineStep("avatar_roast", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=2)
+
+    assert context == [
+        "idle_hosting / idle_hosting: solo quiet-room host beat",
+        "avatar_roast / live_danmaku from viewer: 第一次来",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
@@ -463,6 +492,37 @@ async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: Ro
     active_state = await runtime.dashboard_state()
     assert active_state["idle_hosting_status"]["min_interval_seconds"] == 60.0
     assert active_state["idle_hosting_status"]["cooldown_remaining"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_activity_level_controls_live_state_thresholds(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=120)
+
+    runtime.config.activity_level = "quiet"
+    quiet_state = await runtime.dashboard_state()
+    assert quiet_state["live_state"]["state"] == "quiet"
+    assert quiet_state["live_state"]["idle_hosting_candidate"] is False
+    assert quiet_state["live_state"]["engaged_threshold_seconds"] == 90.0
+    assert quiet_state["live_state"]["idle_threshold_seconds"] == 300.0
+
+    runtime.config.activity_level = "standard"
+    standard_state = await runtime.dashboard_state()
+    assert standard_state["live_state"]["state"] == "quiet"
+    assert standard_state["live_state"]["engaged_threshold_seconds"] == 60.0
+    assert standard_state["live_state"]["idle_threshold_seconds"] == 180.0
+
+    runtime.config.activity_level = "active"
+    active_state = await runtime.dashboard_state()
+    assert active_state["live_state"]["state"] == "idle"
+    assert active_state["live_state"]["idle_hosting_candidate"] is True
+    assert active_state["live_state"]["engaged_threshold_seconds"] == 30.0
+    assert active_state["live_state"]["idle_threshold_seconds"] == 90.0
 
 
 @pytest.mark.asyncio
