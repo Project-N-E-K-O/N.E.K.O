@@ -851,7 +851,10 @@ def test_badminton_demo_exposes_electron_exit_button():
     assert "var badmintonExitButton = document.getElementById('badminton-exit-button');" in html
     assert "function closeBadmintonWindow() {" in html
     assert "var host = window.nekoHost;" in html
-    assert "Promise.resolve(host.closeWindow()).catch(function () {" in html
+    assert "Promise.resolve(host.closeWindow())" in html
+    assert ".then(function (result) {" in html
+    assert "if (result && result.ok === false) {" in html
+    assert ".catch(function () {" in html
     assert "try { window.close(); } catch (_) {}" in html
     assert "badmintonExitButton.addEventListener('click', closeBadmintonWindow);" in html
 

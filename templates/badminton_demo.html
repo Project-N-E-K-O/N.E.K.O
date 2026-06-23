@@ -2094,9 +2094,15 @@
     var host = window.nekoHost;
     if (host && typeof host.closeWindow === 'function') {
       try {
-        Promise.resolve(host.closeWindow()).catch(function () {
-          try { window.close(); } catch (_) {}
-        });
+        Promise.resolve(host.closeWindow())
+          .then(function (result) {
+            if (result && result.ok === false) {
+              try { window.close(); } catch (_) {}
+            }
+          })
+          .catch(function () {
+            try { window.close(); } catch (_) {}
+          });
         return;
       } catch (_) {}
     }
