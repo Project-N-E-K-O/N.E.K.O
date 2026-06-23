@@ -26,6 +26,10 @@ from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Request
 
+from config.prompts.prompts_game import (
+    DRAWING_GUESS_WORD_DATA,
+    get_drawing_guess_direct_hint_template,
+)
 from utils.logger_config import get_module_logger
 
 
@@ -123,47 +127,9 @@ class DrawingGuessWord:
     labels: dict[str, str]
 
 
-WORDS: tuple[DrawingGuessWord, ...] = (
-    DrawingGuessWord("apple", "food", {"en": "apple", "ja": "りんご", "ko": "사과", "zh-CN": "苹果", "zh-TW": "蘋果", "ru": "яблоко", "pt": "maçã", "es": "manzana"}),
-    DrawingGuessWord("banana", "food", {"en": "banana", "ja": "バナナ", "ko": "바나나", "zh-CN": "香蕉", "zh-TW": "香蕉", "ru": "банан", "pt": "banana", "es": "banana"}),
-    DrawingGuessWord("cat", "animal", {"en": "cat", "ja": "猫", "ko": "고양이", "zh-CN": "猫", "zh-TW": "貓", "ru": "кот", "pt": "gato", "es": "gato"}),
-    DrawingGuessWord("dog", "animal", {"en": "dog", "ja": "犬", "ko": "강아지", "zh-CN": "狗", "zh-TW": "狗", "ru": "собака", "pt": "cachorro", "es": "perro"}),
-    DrawingGuessWord("fish", "animal", {"en": "fish", "ja": "魚", "ko": "물고기", "zh-CN": "鱼", "zh-TW": "魚", "ru": "рыба", "pt": "peixe", "es": "pez"}),
-    DrawingGuessWord("bird", "animal", {"en": "bird", "ja": "鳥", "ko": "새", "zh-CN": "鸟", "zh-TW": "鳥", "ru": "птица", "pt": "pássaro", "es": "pájaro"}),
-    DrawingGuessWord("rabbit", "animal", {"en": "rabbit", "ja": "うさぎ", "ko": "토끼", "zh-CN": "兔子", "zh-TW": "兔子", "ru": "кролик", "pt": "coelho", "es": "conejo"}),
-    DrawingGuessWord("turtle", "animal", {"en": "turtle", "ja": "亀", "ko": "거북이", "zh-CN": "乌龟", "zh-TW": "烏龜", "ru": "черепаха", "pt": "tartaruga", "es": "tortuga"}),
-    DrawingGuessWord("flower", "nature", {"en": "flower", "ja": "花", "ko": "꽃", "zh-CN": "花", "zh-TW": "花", "ru": "цветок", "pt": "flor", "es": "flor"}),
-    DrawingGuessWord("tree", "nature", {"en": "tree", "ja": "木", "ko": "나무", "zh-CN": "树", "zh-TW": "樹", "ru": "дерево", "pt": "árvore", "es": "árbol"}),
-    DrawingGuessWord("sun", "nature", {"en": "sun", "ja": "太陽", "ko": "해", "zh-CN": "太阳", "zh-TW": "太陽", "ru": "солнце", "pt": "sol", "es": "sol"}),
-    DrawingGuessWord("moon", "nature", {"en": "moon", "ja": "月", "ko": "달", "zh-CN": "月亮", "zh-TW": "月亮", "ru": "луна", "pt": "lua", "es": "luna"}),
-    DrawingGuessWord("star", "nature", {"en": "star", "ja": "星", "ko": "별", "zh-CN": "星星", "zh-TW": "星星", "ru": "звезда", "pt": "estrela", "es": "estrella"}),
-    DrawingGuessWord("cloud", "nature", {"en": "cloud", "ja": "雲", "ko": "구름", "zh-CN": "云", "zh-TW": "雲", "ru": "облако", "pt": "nuvem", "es": "nube"}),
-    DrawingGuessWord("umbrella", "object", {"en": "umbrella", "ja": "傘", "ko": "우산", "zh-CN": "雨伞", "zh-TW": "雨傘", "ru": "зонт", "pt": "guarda-chuva", "es": "paraguas"}),
-    DrawingGuessWord("cup", "object", {"en": "cup", "ja": "コップ", "ko": "컵", "zh-CN": "杯子", "zh-TW": "杯子", "ru": "чашка", "pt": "copo", "es": "taza"}),
-    DrawingGuessWord("book", "object", {"en": "book", "ja": "本", "ko": "책", "zh-CN": "书", "zh-TW": "書", "ru": "книга", "pt": "livro", "es": "libro"}),
-    DrawingGuessWord("chair", "object", {"en": "chair", "ja": "椅子", "ko": "의자", "zh-CN": "椅子", "zh-TW": "椅子", "ru": "стул", "pt": "cadeira", "es": "silla"}),
-    DrawingGuessWord("bed", "object", {"en": "bed", "ja": "ベッド", "ko": "침대", "zh-CN": "床", "zh-TW": "床", "ru": "кровать", "pt": "cama", "es": "cama"}),
-    DrawingGuessWord("clock", "object", {"en": "clock", "ja": "時計", "ko": "시계", "zh-CN": "时钟", "zh-TW": "時鐘", "ru": "часы", "pt": "relógio", "es": "reloj"}),
-    DrawingGuessWord("key", "object", {"en": "key", "ja": "鍵", "ko": "열쇠", "zh-CN": "钥匙", "zh-TW": "鑰匙", "ru": "ключ", "pt": "chave", "es": "llave"}),
-    DrawingGuessWord("phone", "object", {"en": "phone", "ja": "スマホ", "ko": "휴대폰", "zh-CN": "手机", "zh-TW": "手機", "ru": "телефон", "pt": "celular", "es": "teléfono"}),
-    DrawingGuessWord("car", "vehicle", {"en": "car", "ja": "車", "ko": "자동차", "zh-CN": "汽车", "zh-TW": "汽車", "ru": "машина", "pt": "carro", "es": "coche"}),
-    DrawingGuessWord("bus", "vehicle", {"en": "bus", "ja": "バス", "ko": "버스", "zh-CN": "公交车", "zh-TW": "公車", "ru": "автобус", "pt": "ônibus", "es": "autobús"}),
-    DrawingGuessWord("bicycle", "vehicle", {"en": "bicycle", "ja": "自転車", "ko": "자전거", "zh-CN": "自行车", "zh-TW": "腳踏車", "ru": "велосипед", "pt": "bicicleta", "es": "bicicleta"}),
-    DrawingGuessWord("boat", "vehicle", {"en": "boat", "ja": "船", "ko": "배", "zh-CN": "船", "zh-TW": "船", "ru": "лодка", "pt": "barco", "es": "barco"}),
-    DrawingGuessWord("train", "vehicle", {"en": "train", "ja": "電車", "ko": "기차", "zh-CN": "火车", "zh-TW": "火車", "ru": "поезд", "pt": "trem", "es": "tren"}),
-    DrawingGuessWord("airplane", "vehicle", {"en": "airplane", "ja": "飛行機", "ko": "비행기", "zh-CN": "飞机", "zh-TW": "飛機", "ru": "самолет", "pt": "avião", "es": "avión"}),
-    DrawingGuessWord("house", "place", {"en": "house", "ja": "家", "ko": "집", "zh-CN": "房子", "zh-TW": "房子", "ru": "дом", "pt": "casa", "es": "casa"}),
-    DrawingGuessWord("door", "object", {"en": "door", "ja": "ドア", "ko": "문", "zh-CN": "门", "zh-TW": "門", "ru": "дверь", "pt": "porta", "es": "puerta"}),
-    DrawingGuessWord("hat", "object", {"en": "hat", "ja": "帽子", "ko": "모자", "zh-CN": "帽子", "zh-TW": "帽子", "ru": "шляпа", "pt": "chapéu", "es": "sombrero"}),
-    DrawingGuessWord("shoe", "object", {"en": "shoe", "ja": "靴", "ko": "신발", "zh-CN": "鞋子", "zh-TW": "鞋子", "ru": "ботинок", "pt": "sapato", "es": "zapato"}),
-    DrawingGuessWord("cake", "food", {"en": "cake", "ja": "ケーキ", "ko": "케이크", "zh-CN": "蛋糕", "zh-TW": "蛋糕", "ru": "торт", "pt": "bolo", "es": "pastel"}),
-    DrawingGuessWord("pizza", "food", {"en": "pizza", "ja": "ピザ", "ko": "피자", "zh-CN": "披萨", "zh-TW": "披薩", "ru": "пицца", "pt": "pizza", "es": "pizza"}),
-    DrawingGuessWord("ice_cream", "food", {"en": "ice cream", "ja": "アイス", "ko": "아이스크림", "zh-CN": "冰淇淋", "zh-TW": "冰淇淋", "ru": "мороженое", "pt": "sorvete", "es": "helado"}),
-    DrawingGuessWord("toothbrush", "object", {"en": "toothbrush", "ja": "歯ブラシ", "ko": "칫솔", "zh-CN": "牙刷", "zh-TW": "牙刷", "ru": "зубная щетка", "pt": "escova de dentes", "es": "cepillo de dientes"}),
-    DrawingGuessWord("guitar", "object", {"en": "guitar", "ja": "ギター", "ko": "기타", "zh-CN": "吉他", "zh-TW": "吉他", "ru": "гитара", "pt": "violão", "es": "guitarra"}),
-    DrawingGuessWord("ball", "object", {"en": "ball", "ja": "ボール", "ko": "공", "zh-CN": "球", "zh-TW": "球", "ru": "мяч", "pt": "bola", "es": "pelota"}),
-    DrawingGuessWord("kite", "object", {"en": "kite", "ja": "凧", "ko": "연", "zh-CN": "风筝", "zh-TW": "風箏", "ru": "воздушный змей", "pt": "pipa", "es": "cometa"}),
-    DrawingGuessWord("heart", "shape", {"en": "heart", "ja": "ハート", "ko": "하트", "zh-CN": "爱心", "zh-TW": "愛心", "ru": "сердце", "pt": "coração", "es": "corazón"}),
+WORDS: tuple[DrawingGuessWord, ...] = tuple(
+    DrawingGuessWord(word_id, category, dict(labels))
+    for word_id, category, labels in DRAWING_GUESS_WORD_DATA
 )
 
 _WORD_BY_ID = {word.id: word for word in WORDS}
@@ -795,17 +761,7 @@ def _safe_word_hint_options(word: DrawingGuessWord, locale: str) -> list[str]:
 
 def _direct_word_hint(word: DrawingGuessWord, locale: str) -> str:
     label = _word_label(word, locale)
-    templates = {
-        "en": 'Try aiming your guess right at "{answer}" now.',
-        "ja": "ここまで来たら「{answer}」の方向で見てみて。",
-        "ko": '이쯤이면 "{answer}" 쪽으로 딱 찍어봐.',
-        "zh-CN": "都提示到这份上了，就往“{answer}”这个方向猜吧。",
-        "zh-TW": "都提示到這份上了，就往「{answer}」這個方向猜吧。",
-        "ru": 'Теперь целься прямо в вариант "{answer}".',
-        "pt": 'Agora mira direto em "{answer}".',
-        "es": 'Ahora apunta directo a "{answer}".',
-    }
-    return templates.get(locale, templates["en"]).format(answer=label)
+    return get_drawing_guess_direct_hint_template(locale).format(answer=label)
 
 
 def _next_safe_word_hint(
