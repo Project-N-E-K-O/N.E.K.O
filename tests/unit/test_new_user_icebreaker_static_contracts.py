@@ -323,6 +323,25 @@ def test_icebreaker_route_is_separate_from_game_route_active_state():
     assert 'action="opened"' in game_router
 
 
+def test_icebreaker_route_is_finalized_when_renderer_websocket_disconnects():
+    websocket_router = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+    cleanup_block = websocket_router.split('logger.info(f"Cleaning up WebSocket resources: {websocket.client}")', 1)[1].split(
+        "if is_current and lanlan_name in session_manager:",
+        1,
+    )[0]
+
+    assert "finalize_icebreaker_route" in websocket_router
+    assert "get_active_icebreaker_route_session_id" in websocket_router
+    assert "icebreaker_session_id = get_active_icebreaker_route_session_id(lanlan_name)" in cleanup_block
+    assert "if is_current and icebreaker_session_id:" in cleanup_block
+    assert "try:" in cleanup_block
+    assert "finalize_icebreaker_route(" in cleanup_block
+    assert "session_id=icebreaker_session_id" in cleanup_block
+    assert 'reason="websocket_disconnect"' in cleanup_block
+    assert "except Exception as exc:" in cleanup_block
+    assert "_get_active_game_route_state" not in cleanup_block
+
+
 def test_icebreaker_context_reuses_existing_session_context_paths():
     core = (ROOT / "main_logic" / "core.py").read_text(encoding="utf-8")
 
@@ -548,6 +567,29 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
     )
+
+
+def test_icebreaker_unload_ends_active_route_without_completing_day():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert "function endIcebreakerRouteOnPageExit(reason)" in runtime
+    assert "navigator.sendBeacon" in runtime
+    assert "keepalive: true" in runtime
+    assert "window.addEventListener('pagehide', function () {" in runtime
+    assert "window.addEventListener('beforeunload', function () {" in runtime
+    assert "window.addEventListener('unload', function () {" in runtime
+    assert "endIcebreakerRouteOnPageExit('icebreaker_pagehide')" in runtime
+    assert "endIcebreakerRouteOnPageExit('icebreaker_beforeunload')" in runtime
+    assert "endIcebreakerRouteOnPageExit('icebreaker_unload')" in runtime
+    assert "icebreaker_visibility_hidden" not in runtime
+    assert "document.addEventListener('visibilitychange'" not in runtime
+
+    cleanup_block = runtime.split("function endIcebreakerRouteOnPageExit(reason)", 1)[1].split(
+        "function loadScripts()",
+        1,
+    )[0]
+    assert "markDay(" not in cleanup_block
+    assert "completed" not in cleanup_block
 
 
 def test_icebreaker_waits_long_enough_for_react_chat_host():

@@ -1787,6 +1787,8 @@
 		"tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。",
 		"tutorialHomeDayLabel": "第 {{day}} 天",
 		"tutorialHomeDayColumn": "主页七日新手教程",
+		"tutorialHomeAllReset": "全部重置",
+		"tutorialHomeAllResetSuccess": "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。",
 		"refreshed": "记忆已更新，下次对话将使用新记忆",
 		"refreshingContext": "正在刷新上下文...",
 		"storageLocation": "存储位置",
@@ -1819,9 +1821,7 @@
 		"storagePreflightRequired": "请先完成预检",
 		"storageRestartStarting": "正在准备重启...",
 		"storageRestartInitiated": "已请求重启。应用即将进入维护状态，请等待重启完成。",
-		"storageRestartFailed": "重启请求失败",
-		"tutorialHomeAllReset": "全部重置",
-		"tutorialHomeAllResetSuccess": "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。"
+		"storageRestartFailed": "重启请求失败"
 	},
 	"storage": {
 		"bootstrapError": "无法读取存储位置初始化信息，请重试。",
@@ -4037,6 +4037,12 @@
 			"title": "更新信息"
 		}
 	},
+	"survey": {
+		"title": "问卷调查",
+		"submit": "提交",
+		"skip": "跳过",
+		"requiredHint": "这道题需要先回答哦"
+	},
 	"proactive": {
 		"meme": {
 			"title": "表情包",
@@ -4250,6 +4256,7 @@
 	},
 	"badminton": {
 		"title": "羽毛球挑战 - Badminton",
+		"exit": "退出",
 		"loading": {
 			"title": "正在进入羽毛球场",
 			"subtitle": "加载场地、角色和音效..."
@@ -4412,6 +4419,10 @@
 			"difficulty": "难度 {{difficulty}}",
 			"nekoShoot": "Yui 挥拍",
 			"nekoSmash": "Yui 扣杀！",
+			"nekoSave": "Yui 救球！",
+			"yuiCheatInk": "Yui 扔了墨汁",
+			"yuiCheatBanana": "Yui 丢了香蕉皮",
+			"yuiCheatBananaSlip": "踩到香蕉皮了",
 			"nekoThinking": "Yui 思考中",
 			"nekoTurn": "Yui 回合",
 			"copyNeko": "复刻Neko",
@@ -4429,11 +4440,7 @@
 			"state": {
 				"on": "开启",
 				"off": "关闭"
-			},
-			"nekoSave": "Yui 救球！",
-			"yuiCheatInk": "Yui 扔了墨汁",
-			"yuiCheatBanana": "Yui 丢了香蕉皮",
-			"yuiCheatBananaSlip": "踩到香蕉皮了"
+			}
 		},
 		"tutorial": {
 			"aim": "上下移动鼠标调整羽毛球角度",
@@ -4695,14 +4702,6 @@
 				"我看见你的拍面了",
 				"别盯太久，手会僵哦"
 			],
-			"easterEgg": {
-				"lateNight": "这么晚了还在羽毛球？",
-				"xmas": "铃铛都挂上了，还要挥拍喵？",
-				"newYear": "新年快乐喵",
-				"lineIn3": "你是不是开挂了",
-				"lineIn5": "……我要检查一下边线",
-				"net3": "……要不你去旁边休息一下？"
-			},
 			"yuiCheat": {
 				"banana": [
 					"小心脚下，香蕉皮来了",
@@ -4730,6 +4729,14 @@
 					"视野被挡住的时候，我已经得分啦",
 					"这团墨汁的战术效果不错吧"
 				]
+			},
+			"easterEgg": {
+				"lateNight": "这么晚了还在羽毛球？",
+				"xmas": "铃铛都挂上了，还要挥拍喵？",
+				"newYear": "新年快乐喵",
+				"lineIn3": "你是不是开挂了",
+				"lineIn5": "……我要检查一下边线",
+				"net3": "……要不你去旁边休息一下？"
 			}
 		},
 		"mood": {
@@ -4835,165 +4842,6 @@
 		"memoryOption": {
 			"label": "本局对话进入记忆（默认不开启）",
 			"hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
-		}
-	},
-	"drawingGuess": {
-		"title": "你画我猜",
-		"eyebrow": "陪伴活动",
-		"subtitle": "和猫娘一起画画、猜图和聊天。",
-		"status": {
-			"loadingCharacter": "正在读取当前角色",
-			"missingCharacter": "等待角色信息",
-			"ready": "准备好了",
-			"starting": "正在启动游戏路由",
-			"active": "路由已接管",
-			"ending": "正在结束",
-			"ended": "已结束",
-			"failed": "路由启动失败",
-			"heartbeatLost": "路由已失效"
-		},
-		"layout": {
-			"character": "角色",
-			"session": "会话",
-			"canvasTitle": "画布",
-			"tools": "绘画工具",
-			"canvasWaitingTitle": "画布准备中",
-			"canvasWaiting": "开始后会先由猫娘画，你来猜；随后你有 5 分钟画图给她猜。",
-			"actions": "游戏操作",
-			"sideResize": "调整模型和聊天区域占比",
-			"modelTitle": "猫娘在场",
-			"modelFallbackTitle": "模型槽位已预留",
-			"modelFallback": "后续会在这里加载当前角色 Live2D 或 VRM；加载失败时也会保留同位置 fallback。",
-			"chatTitle": "游戏聊天"
-		},
-		"tools": {
-			"brush": "画笔",
-			"eraser": "橡皮",
-			"bucket": "油漆桶",
-			"undo": "撤销",
-			"redo": "重做",
-			"color": "颜色",
-			"size": "粗细",
-			"basicColors": "基础颜色",
-			"historyColors": "历史颜色"
-		},
-		"tutorial": {
-			"title": "开始前",
-			"intro": "这一局会各画一次、各猜一次。你可以边画边聊天，画满 5 分钟会自动交给她猜。",
-			"memoryTitle": "记忆选项",
-			"memoryNone": "不记录，仅本次玩。",
-			"memorySummary": "可以记录一句游戏概要。"
-		},
-		"actions": {
-			"start": "开始",
-			"end": "结束",
-			"retryCharacter": "重新读取角色",
-			"send": "发送",
-			"done": "画好了",
-			"nextRound": "下一轮",
-			"clearCanvas": "清空画布",
-			"downloadSvg": "下载猫娘画作",
-			"downloadPng": "下载我的画"
-		},
-		"voice": {
-			"connected": "语音已接入这一局。",
-			"connectHint": "先在主页面开启语音，这一局会自动接管。",
-			"connectedNotice": "主页面语音已接入这一局。",
-			"connectHintNotice": "请先在主页面开启语音；开启后这一局会自动接管。",
-			"routeNotReady": "先等游戏路由准备好，再使用语音。",
-			"buttonLabel": "语音聊天"
-		},
-		"exitConfirm": {
-			"title": "要离开吗？",
-			"message": "最终结算已经整理好了。要离开这个小游戏页面吗？",
-			"stay": "待会",
-			"leave": "离开页面",
-			"reopen": "离开？"
-		},
-		"memory": {
-			"noneShort": "不记录",
-			"summaryShort": "概要"
-		},
-		"phases": {
-			"tutorial": "教程",
-			"loading_round": "加载中",
-			"ended": "已结束",
-			"ai_drawing": "猫娘作画中",
-			"user_guessing": "你来猜",
-			"drawing_pick": "抽题中",
-			"user_drawing": "你来画",
-			"ai_guessing": "猫娘猜图中",
-			"ai_guess_feedback": "给她提示",
-			"summary": "结算",
-			"final_summary": "最终结算"
-		},
-		"modelStates": {
-			"loading": "模型加载中",
-			"idle": "待机中",
-			"drawing": "画画中",
-			"thinking": "思考中",
-			"guessing": "猜图中",
-			"talking": "聊天中",
-			"happy": "开心中"
-		},
-		"modelControls": {
-			"group": "模型视图调节",
-			"scale": "模型大小",
-			"x": "水平位置",
-			"y": "垂直位置",
-			"reset": "重置模型视图"
-		},
-		"messages": {
-			"welcome": "准备好后，我们会先确认当前角色并接管小游戏路由。",
-			"missingCharacter": "请带角色打开这个页面，或先读取当前角色。",
-			"startFailed": "路由启动失败：{{reason}}",
-			"routeActive": "{{name}} 的游戏路由已接管。",
-			"roundStart": "新一轮开始。",
-			"aiDrawingReady": "她画好了，轮到你猜。",
-			"roundFailed": "这一轮启动失败：{{reason}}",
-			"requestTimeout": "请求超时了，再试一次吧。",
-			"guessTimeout": "时间到，答案是 {{answer}}。",
-			"inputFailed": "这句话没送到，再试一次。",
-			"answerReveal": "答案：{{answer}}",
-			"drawingPickTitle": "抽取题目中",
-			"drawingPickSubtitle": "先别动笔，她正在从牌库里抽几张题目牌。",
-			"drawingPickReady": "选一张题目牌来画。",
-			"drawingPickReveal": "已选：{{answer}}",
-			"userDrawPrompt": "你的题目是：{{answer}}。画给她猜吧。",
-			"blankCanvas": "先给她画几笔吧。",
-			"aiDrawingWaiting": "猫娘正在绘画中",
-			"aiGuessing": "她正在看你的画...",
-			"aiGuessLine": "她猜：{{guess}}",
-			"aiNeedsHint": "可以先继续聊天；想让她再猜时再给提示。",
-			"summaryReady": "结算页准备好了。",
-			"canvasCleared": "画布已清空。",
-			"userSupplemented": "你补画好了，她会立刻再猜一次。"
-		},
-		"input": {
-			"placeholder": "先等路由准备好",
-			"guessPlaceholder": "输入你的猜测，或者要一个提示",
-			"drawingPlaceholder": "画画时也可以聊天",
-			"hintPlaceholder": "先继续聊天；想让她再猜时再给提示",
-			"summaryPlaceholder": "可以聊聊这一局，或者开始下一轮",
-			"ariaLabel": "聊天输入框"
-		},
-		"timer": {
-			"seconds": "{{seconds}} 秒"
-		},
-		"summary": {
-			"title": "本轮结算",
-			"outcome": {
-				"userWin": "你赢啦，但这局重点是一起玩。",
-				"nekoWin": "她赢啦，可以允许她小小得意一下。",
-				"tie": "平局，刚好很适合再来一轮。"
-			},
-			"score": "你 {{user}} - {{neko}} 猫娘",
-			"userDrawAnswer": "你的画题：{{answer}}",
-			"nekoArt": "猫娘画作",
-			"userArt": "你的画作",
-			"finalTitle": "最终结算",
-			"roundLabel": "第 {{round}} 轮",
-			"noRounds": "还没有完成的轮次。"
 		}
 	},
 	"basketball": {
@@ -5386,10 +5234,163 @@
 			"surprisedPrefix": "诶？！"
 		}
 	},
-	"survey": {
-		"title": "问卷调查",
-		"submit": "提交",
-		"skip": "跳过",
-		"requiredHint": "这道题需要先回答哦"
+	"drawingGuess": {
+		"title": "你画我猜",
+		"eyebrow": "陪伴活动",
+		"subtitle": "和猫娘一起画画、猜图和聊天。",
+		"status": {
+			"loadingCharacter": "正在读取当前角色",
+			"missingCharacter": "等待角色信息",
+			"ready": "准备好了",
+			"starting": "正在启动游戏路由",
+			"active": "路由已接管",
+			"ending": "正在结束",
+			"ended": "已结束",
+			"failed": "路由启动失败",
+			"heartbeatLost": "路由已失效"
+		},
+		"layout": {
+			"character": "角色",
+			"session": "会话",
+			"canvasTitle": "画布",
+			"tools": "绘画工具",
+			"canvasWaitingTitle": "画布准备中",
+			"canvasWaiting": "开始后会先由猫娘画，你来猜；随后你有 5 分钟画图给她猜。",
+			"actions": "游戏操作",
+			"sideResize": "调整模型和聊天区域占比",
+			"modelTitle": "猫娘在场",
+			"modelFallbackTitle": "模型槽位已预留",
+			"modelFallback": "后续会在这里加载当前角色 Live2D 或 VRM；加载失败时也会保留同位置 fallback。",
+			"chatTitle": "游戏聊天"
+		},
+		"tools": {
+			"brush": "画笔",
+			"eraser": "橡皮",
+			"bucket": "油漆桶",
+			"undo": "撤销",
+			"redo": "重做",
+			"color": "颜色",
+			"size": "粗细",
+			"basicColors": "基础颜色",
+			"historyColors": "历史颜色"
+		},
+		"tutorial": {
+			"title": "开始前",
+			"intro": "这一局会各画一次、各猜一次。你可以边画边聊天，画满 5 分钟会自动交给她猜。",
+			"memoryTitle": "记忆选项",
+			"memoryNone": "不记录，仅本次玩。",
+			"memorySummary": "可以记录一句游戏概要。"
+		},
+		"actions": {
+			"start": "开始",
+			"end": "结束",
+			"retryCharacter": "重新读取角色",
+			"send": "发送",
+			"done": "画好了",
+			"nextRound": "下一轮",
+			"clearCanvas": "清空画布",
+			"downloadSvg": "下载猫娘画作",
+			"downloadPng": "下载我的画"
+		},
+		"voice": {
+			"connected": "语音已接入这一局。",
+			"connectHint": "先在主页面开启语音，这一局会自动接管。",
+			"connectedNotice": "主页面语音已接入这一局。",
+			"connectHintNotice": "请先在主页面开启语音；开启后这一局会自动接管。",
+			"routeNotReady": "先等游戏路由准备好，再使用语音。",
+			"buttonLabel": "语音聊天"
+		},
+		"exitConfirm": {
+			"title": "要离开吗？",
+			"message": "最终结算已经整理好了。要离开这个小游戏页面吗？",
+			"stay": "待会",
+			"leave": "离开页面",
+			"reopen": "离开？"
+		},
+		"memory": {
+			"noneShort": "不记录",
+			"summaryShort": "概要"
+		},
+		"phases": {
+			"tutorial": "教程",
+			"loading_round": "加载中",
+			"ended": "已结束",
+			"ai_drawing": "猫娘作画中",
+			"user_guessing": "你来猜",
+			"drawing_pick": "抽题中",
+			"user_drawing": "你来画",
+			"ai_guessing": "猫娘猜图中",
+			"ai_guess_feedback": "给她提示",
+			"summary": "结算",
+			"final_summary": "最终结算"
+		},
+		"modelStates": {
+			"loading": "模型加载中",
+			"idle": "待机中",
+			"drawing": "画画中",
+			"thinking": "思考中",
+			"guessing": "猜图中",
+			"talking": "聊天中",
+			"happy": "开心中"
+		},
+		"modelControls": {
+			"group": "模型视图调节",
+			"scale": "模型大小",
+			"x": "水平位置",
+			"y": "垂直位置",
+			"reset": "重置模型视图"
+		},
+		"messages": {
+			"welcome": "准备好后，我们会先确认当前角色并接管小游戏路由。",
+			"missingCharacter": "请带角色打开这个页面，或先读取当前角色。",
+			"startFailed": "路由启动失败：{{reason}}",
+			"routeActive": "{{name}} 的游戏路由已接管。",
+			"roundStart": "新一轮开始。",
+			"aiDrawingReady": "她画好了，轮到你猜。",
+			"roundFailed": "这一轮启动失败：{{reason}}",
+			"requestTimeout": "请求超时了，再试一次吧。",
+			"guessTimeout": "时间到，答案是 {{answer}}。",
+			"inputFailed": "这句话没送到，再试一次。",
+			"answerReveal": "答案：{{answer}}",
+			"drawingPickTitle": "抽取题目中",
+			"drawingPickSubtitle": "先别动笔，她正在从牌库里抽几张题目牌。",
+			"drawingPickReady": "选一张题目牌来画。",
+			"drawingPickReveal": "已选：{{answer}}",
+			"userDrawPrompt": "你的题目是：{{answer}}。画给她猜吧。",
+			"blankCanvas": "先给她画几笔吧。",
+			"aiDrawingWaiting": "猫娘正在绘画中",
+			"aiGuessing": "她正在看你的画...",
+			"aiGuessLine": "她猜：{{guess}}",
+			"aiNeedsHint": "可以先继续聊天；想让她再猜时再给提示。",
+			"summaryReady": "结算页准备好了。",
+			"canvasCleared": "画布已清空。",
+			"userSupplemented": "你补画好了，她会立刻再猜一次。"
+		},
+		"input": {
+			"placeholder": "先等路由准备好",
+			"guessPlaceholder": "输入你的猜测，或者要一个提示",
+			"drawingPlaceholder": "画画时也可以聊天",
+			"hintPlaceholder": "先继续聊天；想让她再猜时再给提示",
+			"summaryPlaceholder": "可以聊聊这一局，或者开始下一轮",
+			"ariaLabel": "聊天输入框"
+		},
+		"timer": {
+			"seconds": "{{seconds}} 秒"
+		},
+		"summary": {
+			"title": "本轮结算",
+			"outcome": {
+				"userWin": "你赢啦，但这局重点是一起玩。",
+				"nekoWin": "她赢啦，可以允许她小小得意一下。",
+				"tie": "平局，刚好很适合再来一轮。"
+			},
+			"score": "你 {{user}} - {{neko}} 猫娘",
+			"userDrawAnswer": "你的画题：{{answer}}",
+			"nekoArt": "猫娘画作",
+			"userArt": "你的画作",
+			"finalTitle": "最终结算",
+			"roundLabel": "第 {{round}} 轮",
+			"noRounds": "还没有完成的轮次。"
+		}
 	}
 }

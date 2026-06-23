@@ -843,6 +843,27 @@ def test_badminton_aiming_overlay_does_not_double_draw_ink():
 
 
 @pytest.mark.unit
+def test_badminton_demo_exposes_electron_exit_button():
+    html = _badminton_html()
+
+    assert 'id="badminton-exit-button"' in html
+    assert 'data-i18n="badminton.exit"' in html
+    assert "var badmintonExitButton = document.getElementById('badminton-exit-button');" in html
+    assert "function closeBadmintonBrowserFallback() {" in html
+    assert "try { window.close(); } catch (_) {}" in html
+    assert "if (!window.closed) window.location.assign('/');" in html
+    assert "}, 150);" in html
+    assert "function closeBadmintonWindow() {" in html
+    assert "var host = window.nekoHost;" in html
+    assert "Promise.resolve(host.closeWindow())" in html
+    assert ".then(function (result) {" in html
+    assert "if (result && result.ok === false) {" in html
+    assert "closeBadmintonBrowserFallback();" in html
+    assert ".catch(function () {" in html
+    assert "badmintonExitButton.addEventListener('click', closeBadmintonWindow);" in html
+
+
+@pytest.mark.unit
 def test_badminton_court_render_uses_static_canvas_cache():
     html = _badminton_html()
 

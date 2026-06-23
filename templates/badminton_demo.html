@@ -121,10 +121,18 @@
   #game-audio-controls label { display: contents; }
   #game-audio-controls input { width: 100%; accent-color: #ffca3a; }
   #game-audio-controls output { min-width: 38px; text-align: right; color: rgba(247,251,255,0.72); }
+  #badminton-exit-button,
   #theme-button {
     height: 30px; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
     background: rgba(255,255,255,0.10); color: #f7fbff;
     font: 12px/1 "PingFang SC", "Segoe UI", sans-serif; cursor: pointer;
+  }
+  #badminton-exit-button {
+    background: rgba(255,255,255,0.14);
+  }
+  #badminton-exit-button:hover,
+  #theme-button:hover {
+    background: rgba(255,255,255,0.20);
   }
   #badminton-start-overlay {
     position: fixed; inset: 0; z-index: 60;
@@ -575,6 +583,7 @@
       <output id="game-sfx-volume-value">85%</output>
     </label>
   </div>
+  <button id="badminton-exit-button" type="button" data-i18n="badminton.exit" data-i18n-fallback="退出">退出</button>
   <button id="theme-button" type="button">切换主题</button>
   <div id="bd-debug-panel" aria-hidden="true">
     <div class="bd-debug-title">
@@ -842,6 +851,7 @@
   var sfxVolumeInput = document.getElementById('game-sfx-volume');
   var bgmVolumeValue = document.getElementById('game-bgm-volume-value');
   var sfxVolumeValue = document.getElementById('game-sfx-volume-value');
+  var badmintonExitButton = document.getElementById('badminton-exit-button');
   var gameMemoryToggle = document.getElementById('bd-game-memory-toggle');
   var debugPanel = document.getElementById('bd-debug-panel');
   var debugReadout = document.getElementById('bd-debug-readout');
@@ -2079,6 +2089,32 @@
     if (bgmEnabled) badmintonGameAudio.setBgmVolume((Number(bgmVolumeInput && bgmVolumeInput.value) || 70) / 100);
     _syncGameAudioVolumeControls();
     updateHud();
+  }
+  function closeBadmintonBrowserFallback() {
+    try { window.close(); } catch (_) {}
+    setTimeout(function () {
+      try {
+        if (!window.closed) window.location.assign('/');
+      } catch (_) {}
+    }, 150);
+  }
+  function closeBadmintonWindow() {
+    var host = window.nekoHost;
+    if (host && typeof host.closeWindow === 'function') {
+      try {
+        Promise.resolve(host.closeWindow())
+          .then(function (result) {
+            if (result && result.ok === false) {
+              closeBadmintonBrowserFallback();
+            }
+          })
+          .catch(function () {
+            closeBadmintonBrowserFallback();
+          });
+        return;
+      } catch (_) {}
+    }
+    closeBadmintonBrowserFallback();
   }
   function formatLeaderboardDate(value) {
     var text = String(value || '');
@@ -9404,6 +9440,7 @@
     });
   }
   if (themeButton) themeButton.addEventListener('click', cycleTheme);
+  if (badmintonExitButton) badmintonExitButton.addEventListener('click', closeBadmintonWindow);
   if (statsButton) statsButton.addEventListener('click', showStatsPanel);
   if (closeStatsButton) closeStatsButton.addEventListener('click', function () {
     statsPanel.classList.remove('show');

@@ -1787,6 +1787,8 @@
 		"tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
 		"tutorialHomeDayLabel": "{{day}}日目",
 		"tutorialHomeDayColumn": "ホーム7日間チュートリアル",
+		"tutorialHomeAllReset": "すべてリセット",
+		"tutorialHomeAllResetSuccess": "ホームの7日間チュートリアルをリセットしました。Nekoを再読み込みすると1日目から始まります。",
 		"refreshed": "メモリが更新されました。次回の会話から新しいメモリが使用されます",
 		"refreshingContext": "コンテキストを更新中...",
 		"storageLocation": "ストレージ位置",
@@ -1819,9 +1821,7 @@
 		"storagePreflightRequired": "先に事前チェックを完了してください",
 		"storageRestartStarting": "再起動を準備しています...",
 		"storageRestartInitiated": "再起動を要求しました。アプリはメンテナンス状態に入ります。再起動完了までお待ちください。",
-		"storageRestartFailed": "再起動要求に失敗しました",
-		"tutorialHomeAllReset": "すべてリセット",
-		"tutorialHomeAllResetSuccess": "ホームの7日間チュートリアルをリセットしました。Nekoを再読み込みすると1日目から始まります。"
+		"storageRestartFailed": "再起動要求に失敗しました"
 	},
 	"storage": {
 		"bootstrapError": "ストレージ初期化情報を読み込めませんでした。もう一度お試しください。",
@@ -4037,6 +4037,12 @@
 			"title": "更新情報"
 		}
 	},
+	"survey": {
+		"title": "アンケート",
+		"submit": "送信",
+		"skip": "スキップ",
+		"requiredHint": "この質問にお答えください"
+	},
 	"proactive": {
 		"meme": {
 			"title": "ミーム",
@@ -4250,6 +4256,7 @@
 	},
 	"badminton": {
 		"title": "バドミントンチャレンジ - Badminton",
+		"exit": "終了",
 		"loading": {
 			"title": "バドミントンコートに入場中",
 			"subtitle": "コート、キャラクター、音声を読み込み中..."
@@ -4412,6 +4419,10 @@
 			"difficulty": "難度 {{difficulty}}",
 			"nekoShoot": "Neko のショット",
 			"nekoSmash": "Yui のスマッシュ！",
+			"nekoSave": "Yui が拾った！",
+			"yuiCheatInk": "Yui が墨を投げた",
+			"yuiCheatBanana": "Yui がバナナの皮を投げた",
+			"yuiCheatBananaSlip": "バナナの皮を踏んだ",
 			"nekoThinking": "Neko が考え中",
 			"nekoTurn": "Neko の番",
 			"copyNeko": "Neko を再現",
@@ -4429,11 +4440,7 @@
 			"state": {
 				"on": "オン",
 				"off": "オフ"
-			},
-			"nekoSave": "Yui が拾った！",
-			"yuiCheatInk": "Yui が墨を投げた",
-			"yuiCheatBanana": "Yui がバナナの皮を投げた",
-			"yuiCheatBananaSlip": "バナナの皮を踏んだ"
+			}
 		},
 		"tutorial": {
 			"aim": "マウスを上下に動かして角度を調整",
@@ -4695,14 +4702,6 @@
 				"もうラケット面は読めてるよ。",
 				"見つめすぎると手が固まるよ。"
 			],
-			"easterEgg": {
-				"lateNight": "こんな時間までショット？",
-				"xmas": "ベルも飾ったのに、まだ打つ？",
-				"newYear": "あけましておめでとう！",
-				"lineIn3": "チートしてない？",
-				"lineIn5": "……ラインを確認しないと。",
-				"net3": "……少し休んだら？"
-			},
 			"yuiCheat": {
 				"banana": [
 					"足元注意、バナナの皮が行くよ。",
@@ -4730,6 +4729,14 @@
 					"視界がふさがっている間に、もう点を取ったよ。",
 					"この墨作戦、なかなか効いたでしょ。"
 				]
+			},
+			"easterEgg": {
+				"lateNight": "こんな時間までショット？",
+				"xmas": "ベルも飾ったのに、まだ打つ？",
+				"newYear": "あけましておめでとう！",
+				"lineIn3": "チートしてない？",
+				"lineIn5": "……ラインを確認しないと。",
+				"net3": "……少し休んだら？"
 			}
 		},
 		"mood": {
@@ -4835,165 +4842,6 @@
 		"memoryOption": {
 			"label": "今回の試合内容を記憶に保存（デフォルトはオフ）",
 			"hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
-		}
-	},
-	"drawingGuess": {
-		"title": "お絵かき当てっこ",
-		"eyebrow": "一緒に遊ぶ時間",
-		"subtitle": "猫娘と一緒に描いて、当てて、話します。",
-		"status": {
-			"loadingCharacter": "現在のキャラクターを読み込み中",
-			"missingCharacter": "キャラクター情報待ち",
-			"ready": "準備完了",
-			"starting": "ゲームルートを開始中",
-			"active": "ルート接続中",
-			"ending": "終了中",
-			"ended": "終了しました",
-			"failed": "ルート開始失敗",
-			"heartbeatLost": "ルートが無効です"
-		},
-		"layout": {
-			"character": "キャラクター",
-			"session": "セッション",
-			"canvasTitle": "キャンバス",
-			"tools": "お絵かきツール",
-			"canvasWaitingTitle": "キャンバス準備中",
-			"canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 5 分で彼女に見せる絵を描きます。",
-			"actions": "ゲーム操作",
-			"sideResize": "モデルとチャットの比率を調整",
-			"modelTitle": "猫娘がそばにいる",
-			"modelFallbackTitle": "モデル枠を確保済み",
-			"modelFallback": "あとで現在のキャラクターの Live2D または VRM をここに読み込みます。失敗しても同じ場所に fallback を表示します。",
-			"chatTitle": "ゲームチャット"
-		},
-		"tools": {
-			"brush": "ブラシ",
-			"eraser": "消しゴム",
-			"bucket": "塗りつぶし",
-			"undo": "元に戻す",
-			"redo": "やり直す",
-			"color": "色",
-			"size": "太さ",
-			"basicColors": "基本色",
-			"historyColors": "履歴の色"
-		},
-		"tutorial": {
-			"title": "始める前に",
-			"intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
-			"memoryTitle": "記憶オプション",
-			"memoryNone": "記録せず、今回だけ遊ぶ。",
-			"memorySummary": "短いゲーム概要を一つ記録する。"
-		},
-		"actions": {
-			"start": "開始",
-			"end": "終了",
-			"retryCharacter": "キャラクター再読み込み",
-			"send": "送信",
-			"done": "描けた",
-			"nextRound": "次のラウンド",
-			"clearCanvas": "キャンバスを消す",
-			"downloadSvg": "猫娘の絵を保存",
-			"downloadPng": "自分の絵を保存"
-		},
-		"voice": {
-			"connected": "このラウンドに音声が接続されています。",
-			"connectHint": "メイン画面で音声を先にオンにすると、このラウンドが引き継ぎます。",
-			"connectedNotice": "メイン画面の音声がこのラウンドに接続されました。",
-			"connectHintNotice": "先にメイン画面で音声をオンにしてください。有効になるとこのラウンドが自動で引き継ぎます。",
-			"routeNotReady": "音声を使う前にゲームルートの準備を待ってください。",
-			"buttonLabel": "Voice chat"
-		},
-		"exitConfirm": {
-			"title": "このページを離れる？",
-			"message": "最終結果をまとめたよ。このミニゲームページを離れる？",
-			"stay": "あとで",
-			"leave": "ページを離れる",
-			"reopen": "離れる？"
-		},
-		"memory": {
-			"noneShort": "記録なし",
-			"summaryShort": "概要"
-		},
-		"phases": {
-			"tutorial": "チュートリアル",
-			"loading_round": "読み込み中",
-			"ended": "終了",
-			"ai_drawing": "猫娘がお絵かき中",
-			"user_guessing": "あなたが当てる番",
-			"drawing_pick": "お題を抽選中",
-			"user_drawing": "あなたが描く番",
-			"ai_guessing": "猫娘が当てる番",
-			"ai_guess_feedback": "ヒントを渡す",
-			"summary": "結果",
-			"final_summary": "最終結果"
-		},
-		"modelStates": {
-			"loading": "モデル読み込み中",
-			"idle": "待機中",
-			"drawing": "描画中",
-			"thinking": "考え中",
-			"guessing": "推理中",
-			"talking": "おしゃべり中",
-			"happy": "ごきげん"
-		},
-		"modelControls": {
-			"group": "モデル表示コントロール",
-			"scale": "モデルの大きさ",
-			"x": "左右位置",
-			"y": "上下位置",
-			"reset": "モデル表示をリセット"
-		},
-		"messages": {
-			"welcome": "準備できたら、現在のキャラクターを確認してミニゲームルートを接続します。",
-			"missingCharacter": "キャラクター付きでこのページを開くか、先に現在のキャラクターを読み込んでください。",
-			"startFailed": "ルート開始に失敗しました: {{reason}}",
-			"routeActive": "{{name}} のゲームルートが有効です。",
-			"roundStart": "新しいラウンドを始めます。",
-			"aiDrawingReady": "彼女が描き終わりました。当ててみてください。",
-			"roundFailed": "ラウンド開始に失敗しました: {{reason}}",
-			"requestTimeout": "リクエストがタイムアウトしました。もう一度試してください。",
-			"guessTimeout": "時間です。答えは {{answer}} でした。",
-			"inputFailed": "送れませんでした。もう一度試してください。",
-			"answerReveal": "答え: {{answer}}",
-			"drawingPickTitle": "お題を選んでいます",
-			"drawingPickSubtitle": "少し待って。彼女が山札からお題カードを何枚か引いています。",
-			"drawingPickReady": "描くカードを1枚選んでください。",
-			"drawingPickReveal": "選択: {{answer}}",
-			"userDrawPrompt": "あなたのお題は {{answer}} です。彼女に見せる絵を描きましょう。",
-			"blankCanvas": "まず少し描いてあげましょう。",
-			"aiDrawingWaiting": "猫娘が描いています",
-			"aiGuessing": "彼女があなたの絵を見ています...",
-			"aiGuessLine": "彼女の答え: {{guess}}",
-			"aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
-			"summaryReady": "結果ページを表示しました。",
-			"canvasCleared": "キャンバスを消しました。",
-			"userSupplemented": "描き足しました。彼女がすぐにもう一度当てます。"
-		},
-		"input": {
-			"placeholder": "ルートの準備を待っています",
-			"guessPlaceholder": "答えを書くか、ヒントを頼む",
-			"drawingPlaceholder": "描きながら話せます",
-			"hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
-			"summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ",
-			"ariaLabel": "Chat input"
-		},
-		"timer": {
-			"seconds": "{{seconds}} 秒"
-		},
-		"summary": {
-			"title": "ラウンド結果",
-			"outcome": {
-				"userWin": "あなたの勝ちです。でも一緒に遊ぶのが本番です。",
-				"nekoWin": "彼女の勝ちです。少しだけ得意げでも許してあげましょう。",
-				"tie": "引き分けです。もう一回にちょうどいいですね。"
-			},
-			"score": "あなた {{user}} - {{neko}} 猫娘",
-			"userDrawAnswer": "あなたのお題: {{answer}}",
-			"nekoArt": "猫娘の絵",
-			"userArt": "あなたの絵",
-			"finalTitle": "最終結果",
-			"roundLabel": "第 {{round}} ラウンド",
-			"noRounds": "完了したラウンドはまだありません。"
 		}
 	},
 	"basketball": {
@@ -5386,10 +5234,163 @@
 			"surprisedPrefix": "えっ？！"
 		}
 	},
-	"survey": {
-		"title": "アンケート",
-		"submit": "送信",
-		"skip": "スキップ",
-		"requiredHint": "この質問にお答えください"
+	"drawingGuess": {
+		"title": "お絵かき当てっこ",
+		"eyebrow": "一緒に遊ぶ時間",
+		"subtitle": "猫娘と一緒に描いて、当てて、話します。",
+		"status": {
+			"loadingCharacter": "現在のキャラクターを読み込み中",
+			"missingCharacter": "キャラクター情報待ち",
+			"ready": "準備完了",
+			"starting": "ゲームルートを開始中",
+			"active": "ルート接続中",
+			"ending": "終了中",
+			"ended": "終了しました",
+			"failed": "ルート開始失敗",
+			"heartbeatLost": "ルートが無効です"
+		},
+		"layout": {
+			"character": "キャラクター",
+			"session": "セッション",
+			"canvasTitle": "キャンバス",
+			"tools": "お絵かきツール",
+			"canvasWaitingTitle": "キャンバス準備中",
+			"canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 5 分で彼女に見せる絵を描きます。",
+			"actions": "ゲーム操作",
+			"sideResize": "モデルとチャットの比率を調整",
+			"modelTitle": "猫娘がそばにいる",
+			"modelFallbackTitle": "モデル枠を確保済み",
+			"modelFallback": "あとで現在のキャラクターの Live2D または VRM をここに読み込みます。失敗しても同じ場所に fallback を表示します。",
+			"chatTitle": "ゲームチャット"
+		},
+		"tools": {
+			"brush": "ブラシ",
+			"eraser": "消しゴム",
+			"bucket": "塗りつぶし",
+			"undo": "元に戻す",
+			"redo": "やり直す",
+			"color": "色",
+			"size": "太さ",
+			"basicColors": "基本色",
+			"historyColors": "履歴の色"
+		},
+		"tutorial": {
+			"title": "始める前に",
+			"intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
+			"memoryTitle": "記憶オプション",
+			"memoryNone": "記録せず、今回だけ遊ぶ。",
+			"memorySummary": "短いゲーム概要を一つ記録する。"
+		},
+		"actions": {
+			"start": "開始",
+			"end": "終了",
+			"retryCharacter": "キャラクター再読み込み",
+			"send": "送信",
+			"done": "描けた",
+			"nextRound": "次のラウンド",
+			"clearCanvas": "キャンバスを消す",
+			"downloadSvg": "猫娘の絵を保存",
+			"downloadPng": "自分の絵を保存"
+		},
+		"voice": {
+			"connected": "このラウンドに音声が接続されています。",
+			"connectHint": "メイン画面で音声を先にオンにすると、このラウンドが引き継ぎます。",
+			"connectedNotice": "メイン画面の音声がこのラウンドに接続されました。",
+			"connectHintNotice": "先にメイン画面で音声をオンにしてください。有効になるとこのラウンドが自動で引き継ぎます。",
+			"routeNotReady": "音声を使う前にゲームルートの準備を待ってください。",
+			"buttonLabel": "Voice chat"
+		},
+		"exitConfirm": {
+			"title": "このページを離れる？",
+			"message": "最終結果をまとめたよ。このミニゲームページを離れる？",
+			"stay": "あとで",
+			"leave": "ページを離れる",
+			"reopen": "離れる？"
+		},
+		"memory": {
+			"noneShort": "記録なし",
+			"summaryShort": "概要"
+		},
+		"phases": {
+			"tutorial": "チュートリアル",
+			"loading_round": "読み込み中",
+			"ended": "終了",
+			"ai_drawing": "猫娘がお絵かき中",
+			"user_guessing": "あなたが当てる番",
+			"drawing_pick": "お題を抽選中",
+			"user_drawing": "あなたが描く番",
+			"ai_guessing": "猫娘が当てる番",
+			"ai_guess_feedback": "ヒントを渡す",
+			"summary": "結果",
+			"final_summary": "最終結果"
+		},
+		"modelStates": {
+			"loading": "モデル読み込み中",
+			"idle": "待機中",
+			"drawing": "描画中",
+			"thinking": "考え中",
+			"guessing": "推理中",
+			"talking": "おしゃべり中",
+			"happy": "ごきげん"
+		},
+		"modelControls": {
+			"group": "モデル表示コントロール",
+			"scale": "モデルの大きさ",
+			"x": "左右位置",
+			"y": "上下位置",
+			"reset": "モデル表示をリセット"
+		},
+		"messages": {
+			"welcome": "準備できたら、現在のキャラクターを確認してミニゲームルートを接続します。",
+			"missingCharacter": "キャラクター付きでこのページを開くか、先に現在のキャラクターを読み込んでください。",
+			"startFailed": "ルート開始に失敗しました: {{reason}}",
+			"routeActive": "{{name}} のゲームルートが有効です。",
+			"roundStart": "新しいラウンドを始めます。",
+			"aiDrawingReady": "彼女が描き終わりました。当ててみてください。",
+			"roundFailed": "ラウンド開始に失敗しました: {{reason}}",
+			"requestTimeout": "リクエストがタイムアウトしました。もう一度試してください。",
+			"guessTimeout": "時間です。答えは {{answer}} でした。",
+			"inputFailed": "送れませんでした。もう一度試してください。",
+			"answerReveal": "答え: {{answer}}",
+			"drawingPickTitle": "お題を選んでいます",
+			"drawingPickSubtitle": "少し待って。彼女が山札からお題カードを何枚か引いています。",
+			"drawingPickReady": "描くカードを1枚選んでください。",
+			"drawingPickReveal": "選択: {{answer}}",
+			"userDrawPrompt": "あなたのお題は {{answer}} です。彼女に見せる絵を描きましょう。",
+			"blankCanvas": "まず少し描いてあげましょう。",
+			"aiDrawingWaiting": "猫娘が描いています",
+			"aiGuessing": "彼女があなたの絵を見ています...",
+			"aiGuessLine": "彼女の答え: {{guess}}",
+			"aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
+			"summaryReady": "結果ページを表示しました。",
+			"canvasCleared": "キャンバスを消しました。",
+			"userSupplemented": "描き足しました。彼女がすぐにもう一度当てます。"
+		},
+		"input": {
+			"placeholder": "ルートの準備を待っています",
+			"guessPlaceholder": "答えを書くか、ヒントを頼む",
+			"drawingPlaceholder": "描きながら話せます",
+			"hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
+			"summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ",
+			"ariaLabel": "Chat input"
+		},
+		"timer": {
+			"seconds": "{{seconds}} 秒"
+		},
+		"summary": {
+			"title": "ラウンド結果",
+			"outcome": {
+				"userWin": "あなたの勝ちです。でも一緒に遊ぶのが本番です。",
+				"nekoWin": "彼女の勝ちです。少しだけ得意げでも許してあげましょう。",
+				"tie": "引き分けです。もう一回にちょうどいいですね。"
+			},
+			"score": "あなた {{user}} - {{neko}} 猫娘",
+			"userDrawAnswer": "あなたのお題: {{answer}}",
+			"nekoArt": "猫娘の絵",
+			"userArt": "あなたの絵",
+			"finalTitle": "最終結果",
+			"roundLabel": "第 {{round}} ラウンド",
+			"noRounds": "完了したラウンドはまだありません。"
+		}
 	}
 }
