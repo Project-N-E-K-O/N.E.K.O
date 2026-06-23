@@ -235,6 +235,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 try:
                                     ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
                                     receive_task = asyncio.create_task(receive_messages())
+                                    # 换了新 receive_task：与 last-chance reconnect 一致，reset 掉旧连接
+                                    # 里未 flush 的残留音频，避免拼到重试音频前面（ws 原本存活、上一轮
+                                    # 已 append 过的路径才会非空；走过 last-chance 的路径 buffer 已空）。
+                                    resampler.clear()
+                                    audio_jitter.reset()
                                     for delta in _grok_chunk_text_delta("".join(pending_text)):
                                         await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                                     logger.info("flush pending_text 重连重试成功")
