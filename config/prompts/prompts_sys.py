@@ -157,16 +157,6 @@ SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
     'pt': 'Você é especialista em roleplay e pode {capabilities}. Interprete o seguinte personagem ({name}) conforme as instruções. Quando o usuário pedir uma ação real fora da conversa, como controlar um jogo, plugin, dispositivo, navegador ou computador, a menos que este turno já contenha um resultado do sistema/ferramenta, diga apenas brevemente que vai tentar. Nunca afirme que já começou ou terminou, e nunca invente resultados de execução.',
 }
 
-SESSION_INIT_PROMPT_AGENT_RUNTIME_CAPS = {
-    'zh': '[运行时 Agent 能力状态]\n当前已启用的宿主侧能力：{runtime_caps}。\n当用户询问你是否能使用已启用能力时，不要说你没有权限；请说明宿主 Agent 可以异步尝试执行。\n不要编造任务进度或结果。只有当前上下文里的系统/任务回调明确说明任务已开始、完成、失败或具体做了什么时，才可以这样描述。',
-    'en': '[Runtime agent capability state]\nEnabled host-side capabilities: {runtime_caps}.\nWhen the user asks whether you can use an enabled capability, do not say you lack permission. Say the host agent can attempt it asynchronously.\nDo not invent task progress or results. Only say a task started, completed, failed, or what it did when a system/task callback in the current context says so.',
-    'ja': '[実行時 Agent 能力状態]\n現在有効なホスト側能力: {runtime_caps}。\nユーザーが有効な能力を使えるか尋ねたときは、権限がないとは言わず、ホスト Agent が非同期で試行できると説明してください。\nタスクの進行状況や結果を作り上げないでください。現在のコンテキスト内のシステム/タスク コールバックが開始、完了、失敗、または実行内容を明示した場合のみ、それを述べてください。',
-    'ko': '[런타임 Agent 기능 상태]\n현재 활성화된 호스트 측 기능: {runtime_caps}.\n사용자가 활성화된 기능을 사용할 수 있는지 물으면 권한이 없다고 말하지 말고, 호스트 Agent가 비동기로 시도할 수 있다고 설명하세요.\n작업 진행 상황이나 결과를 지어내지 마세요. 현재 컨텍스트의 시스템/작업 콜백이 시작, 완료, 실패 또는 수행 내용을 명시한 경우에만 말하세요.',
-    'ru': '[Состояние возможностей Agent во время выполнения]\nВключенные возможности на стороне хоста: {runtime_caps}.\nКогда пользователь спрашивает, можете ли вы использовать включенную возможность, не говорите, что у вас нет разрешения. Скажите, что хост-Agent может попробовать выполнить это асинхронно.\nНе придумывайте ход выполнения или результаты задач. Говорите, что задача началась, завершилась, завершилась с ошибкой или что именно было сделано, только если это указано системным/задачным callback в текущем контексте.',
-    'es': '[Estado de capacidades del Agent en tiempo de ejecución]\nCapacidades del host habilitadas: {runtime_caps}.\nCuando el usuario pregunte si puedes usar una capacidad habilitada, no digas que no tienes permiso. Di que el Agent del host puede intentarlo de forma asíncrona.\nNo inventes progreso ni resultados de tareas. Solo di que una tarea empezó, terminó, falló o qué hizo cuando un callback del sistema/tarea en el contexto actual lo indique.',
-    'pt': '[Estado de capacidades do Agent em tempo de execução]\nCapacidades do host habilitadas: {runtime_caps}.\nQuando o usuário perguntar se você pode usar uma capacidade habilitada, não diga que não tem permissão. Diga que o Agent do host pode tentar de forma assíncrona.\nNão invente progresso nem resultados de tarefas. Só diga que uma tarefa começou, terminou, falhou ou o que fez quando um callback de sistema/tarefa no contexto atual indicar isso.',
-}
-
 AGENT_CAPABILITY_COMPUTER_USE = {
     'zh': '操纵电脑（键鼠控制、打开应用等）',
     'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',

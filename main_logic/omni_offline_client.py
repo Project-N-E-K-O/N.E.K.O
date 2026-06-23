@@ -1781,7 +1781,6 @@ class OmniOfflineClient:
         text: str,
         *,
         system_prefix: str | None = None,
-        ephemeral_system_prefix: str | None = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -1822,10 +1821,6 @@ class OmniOfflineClient:
         ``history_replacement_text`` keeps the full prompt available for the current
         LLM turn, then replaces the just-appended user history entry before the next
         turn reuses ``_conversation_history``.
-
-        ``ephemeral_system_prefix`` is also visible to the current LLM turn, but is
-        removed from the persisted user history in ``finally``. It is for small live
-        runtime facts such as currently enabled host-side agent capabilities.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1855,15 +1850,9 @@ class OmniOfflineClient:
         # 落 history，跟 voice mode user-role 注入对偶。
         _user_text = text.strip()
         _prefix_clean = (system_prefix or "").strip()
-        _ephemeral_prefix_clean = (ephemeral_system_prefix or "").strip()
         _user_text_with_prefix = (
             f"{_prefix_clean}\n\n{_user_text}" if _prefix_clean else _user_text
         )
-        _wire_text_with_prefix = (
-            f"{_ephemeral_prefix_clean}\n\n{_user_text_with_prefix}"
-            if _ephemeral_prefix_clean else _user_text_with_prefix
-        )
-        history_restore_content = None
 
         # Prepare user message content
         if has_images:
@@ -1888,17 +1877,8 @@ class OmniOfflineClient:
             # Add text（已含 system_prefix watermark 前缀，若有）
             content.append({
                 "type": "text",
-                "text": _wire_text_with_prefix,
+                "text": _user_text_with_prefix,
             })
-            if _ephemeral_prefix_clean:
-                history_restore_content = [
-                    {**part} if isinstance(part, dict) else part
-                    for part in content
-                ]
-                history_restore_content[-1] = {
-                    **history_restore_content[-1],
-                    "text": _user_text_with_prefix,
-                }
 
             user_message = HumanMessage(content=content)
             logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
@@ -1907,9 +1887,7 @@ class OmniOfflineClient:
             self._pending_images.clear()
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
-            user_message = HumanMessage(content=_wire_text_with_prefix)
-            if _ephemeral_prefix_clean:
-                history_restore_content = _user_text_with_prefix
+            user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
         history_replacement_index = len(self._conversation_history) - 1
@@ -2938,14 +2916,6 @@ class OmniOfflineClient:
             ):
                 self._conversation_history[history_replacement_index] = HumanMessage(
                     content=history_replacement_text
-                )
-            elif (
-                history_restore_content is not None
-                and 0 <= history_replacement_index < len(self._conversation_history)
-                and self._conversation_history[history_replacement_index] is user_message
-            ):
-                self._conversation_history[history_replacement_index] = HumanMessage(
-                    content=history_restore_content
                 )
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。

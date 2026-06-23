@@ -83,13 +83,6 @@ from config import (
 from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
-    SESSION_INIT_PROMPT_AGENT_DYNAMIC,
-    SESSION_INIT_PROMPT_AGENT_RUNTIME_CAPS,
-    AGENT_CAPABILITY_COMPUTER_USE,
-    AGENT_CAPABILITY_BROWSER_USE,
-    AGENT_CAPABILITY_USER_PLUGIN_USE,
-    AGENT_CAPABILITY_GENERIC,
-    AGENT_CAPABILITY_SEPARATOR,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
@@ -6217,50 +6210,29 @@ class LLMSessionManager:
             res += f"{i['role']} | {i['text']}\n"
         return res
 
-    def _build_runtime_agent_capability_prefix(self) -> str:
-        """Return a short live capability hint for the current text turn."""
-        if not self._is_agent_enabled():
-            return ""
-        runtime_caps = []
-        if self.agent_flags.get('computer_use_enabled'):
-            runtime_caps.append("computer_use (mouse/keyboard)")
-        if self.agent_flags.get('browser_use_enabled'):
-            runtime_caps.append("browser_use")
-        if self.agent_flags.get('user_plugin_enabled'):
-            runtime_caps.append("user_plugin")
-        if self.agent_flags.get('openclaw_enabled'):
-            runtime_caps.append("openclaw")
-        if self.agent_flags.get('openfang_enabled'):
-            runtime_caps.append("openfang")
-        if not runtime_caps:
-            return ""
-        _lang = normalize_language_code(getattr(self, "user_language", "en"), format='short')
-        return _loc(SESSION_INIT_PROMPT_AGENT_RUNTIME_CAPS, _lang).format(
-            runtime_caps=", ".join(runtime_caps),
-        )
-
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
         _lang = normalize_language_code(self.user_language, format='short')
         if self._is_agent_enabled():
-            capability_parts = []
-            if self.agent_flags.get('computer_use_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
-            if self.agent_flags.get('browser_use_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-            if self.agent_flags.get('user_plugin_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
-            caps_text = (
-                _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
-                if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
-            )
-            prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
-                name=self.lanlan_name,
-                capabilities=caps_text,
-            ) + self.lanlan_prompt
-            runtime_capability_prefix = self._build_runtime_agent_capability_prefix()
-            if runtime_capability_prefix:
-                prompt += f"\n\n{runtime_capability_prefix}\n"
+            # Keep the current wrapper structure but revert prompt semantics:
+            # do not distinguish browser/computer/plugin in the initial capability text.
+            # Historical dynamic capability block kept for rollback:
+            # capability_parts = []
+            # if self.agent_flags.get('computer_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+            # if self.agent_flags.get('browser_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+            # if self.agent_flags.get('user_plugin_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+            # caps_text = (
+            #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+            #     if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            # )
+            # prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+            #     name=self.lanlan_name,
+            #     capabilities=caps_text,
+            # ) + self.lanlan_prompt
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         else:
             prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
@@ -9355,9 +9327,6 @@ class LLMSessionManager:
                         "system_prefix": _agent_cb_ctx or None,
                         "thinking_on": _focus_thinking,
                     }
-                    runtime_agent_prefix = self._build_runtime_agent_capability_prefix()
-                    if runtime_agent_prefix:
-                        stream_text_kwargs["ephemeral_system_prefix"] = runtime_agent_prefix
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:
