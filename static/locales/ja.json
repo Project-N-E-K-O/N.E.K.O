@@ -1787,6 +1787,8 @@
         "tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
         "tutorialHomeDayLabel": "{{day}}日目",
         "tutorialHomeDayColumn": "ホーム7日間チュートリアル",
+        "tutorialHomeAllReset": "すべてリセット",
+        "tutorialHomeAllResetSuccess": "ホームの7日間チュートリアルをリセットしました。Nekoを再読み込みすると1日目から始まります。",
         "refreshed": "メモリが更新されました。次回の会話から新しいメモリが使用されます",
         "refreshingContext": "コンテキストを更新中...",
         "storageLocation": "ストレージ位置",

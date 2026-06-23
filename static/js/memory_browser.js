@@ -305,6 +305,7 @@
     }
 
     let selectedTutorialDay = 0;
+    let selectedTutorialHomeAll = false;
 
     const TUTORIAL_CASCADER_PAGE_LABELS = {
         all: '全部页面',
@@ -333,7 +334,28 @@
         return translated && translated !== 'memory.tutorialHomeDayLabel' ? translated : fallback;
     }
 
+    function getTutorialHomeAllResetLabel() {
+        const fallback = '全部重置';
+        if (!window.t || typeof window.t !== 'function') {
+            return fallback;
+        }
+        const translated = window.t('memory.tutorialHomeAllReset', fallback);
+        return translated && translated !== 'memory.tutorialHomeAllReset' ? translated : fallback;
+    }
+
+    function getTutorialHomeAllResetSuccessMessage() {
+        const fallback = '已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。';
+        if (!window.t || typeof window.t !== 'function') {
+            return fallback;
+        }
+        const translated = window.t('memory.tutorialHomeAllResetSuccess', fallback);
+        return translated && translated !== 'memory.tutorialHomeAllResetSuccess' ? translated : fallback;
+    }
+
     function refreshTutorialCascaderDayLabels() {
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-home-all]').forEach(function (option) {
+            option.textContent = getTutorialHomeAllResetLabel();
+        });
         document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
             const day = Number(option.dataset.tutorialDay || 0);
             if (day > 0) {
@@ -347,6 +369,12 @@
         const pageKey = tutorialSelect ? String(tutorialSelect.value || '') : '';
         if (pageKey !== 'home') {
             return { type: pageKey ? 'page' : '', pageKey: pageKey };
+        }
+        if (selectedTutorialHomeAll) {
+            return {
+                type: 'home-all',
+                pageKey: 'home'
+            };
         }
         return {
             type: selectedTutorialDay ? 'home-day' : '',
@@ -377,6 +405,7 @@
         const pageKey = String(tutorialSelect.value || '');
         if (pageKey !== 'home') {
             selectedTutorialDay = 0;
+            selectedTutorialHomeAll = false;
         }
         if (dayColumn) {
             dayColumn.hidden = pageKey !== 'home';
@@ -387,9 +416,14 @@
         document.querySelectorAll('.tutorial-cascader-option[data-tutorial-day]').forEach(function (option) {
             option.classList.toggle('is-selected', Number(option.dataset.tutorialDay) === selectedTutorialDay);
         });
+        document.querySelectorAll('.tutorial-cascader-option[data-tutorial-home-all]').forEach(function (option) {
+            option.classList.toggle('is-selected', selectedTutorialHomeAll);
+        });
         if (valueEl) {
             if (!pageKey) {
                 valueEl.textContent = getTutorialPageLabel('');
+            } else if (pageKey === 'home' && selectedTutorialHomeAll) {
+                valueEl.textContent = getTutorialPageLabel('home') + ' / ' + getTutorialHomeAllResetLabel();
             } else if (pageKey === 'home' && selectedTutorialDay) {
                 valueEl.textContent = getTutorialPageLabel('home') + ' / ' + getTutorialDayLabel(selectedTutorialDay);
             } else {
@@ -398,7 +432,7 @@
         }
 
         const selection = resolveSelectedTutorialReset();
-        tutorialResetBtn.disabled = selection.type !== 'page' && selection.type !== 'home-day';
+        tutorialResetBtn.disabled = selection.type !== 'page' && selection.type !== 'home-day' && selection.type !== 'home-all';
     }
 
     async function resetSelectedTutorial() {
@@ -417,6 +451,22 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            return;
+        }
+        if (selection.type === 'home-all') {
+            if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays === 'function') {
+                await window.AvatarFloatingGuideReset.resetAllAvatarFloatingGuideDays({
+                    source: 'memory_browser_reset_home_all',
+                });
+            } else if (typeof window.resetAllAvatarFloatingGuideDays === 'function') {
+                await window.resetAllAvatarFloatingGuideDays({
+                    source: 'memory_browser_reset_home_all',
+                });
+            }
+            if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
+                await window.universalTutorialManager.resetHomeTutorialPromptState('memory_browser_home_all_reset');
+            }
+            alert(getTutorialHomeAllResetSuccessMessage());
             return;
         }
         if (selection.type === 'page' && typeof window.resetTutorialForPage === 'function') {
@@ -1472,13 +1522,23 @@
                         tutorialSelect.value = pageOption.dataset.tutorialPage || '';
                         if (tutorialSelect.value !== 'home') {
                             selectedTutorialDay = 0;
+                            selectedTutorialHomeAll = false;
                             setTutorialCascaderOpen(false);
                         }
                         syncTutorialResetCascader();
                         return;
                     }
+                    const homeAllOption = event.target.closest('[data-tutorial-home-all]');
+                    if (homeAllOption) {
+                        selectedTutorialHomeAll = true;
+                        selectedTutorialDay = 0;
+                        syncTutorialResetCascader();
+                        setTutorialCascaderOpen(false);
+                        return;
+                    }
                     const dayOption = event.target.closest('[data-tutorial-day]');
                     if (dayOption) {
+                        selectedTutorialHomeAll = false;
                         selectedTutorialDay = Number(dayOption.dataset.tutorialDay || 0);
                         syncTutorialResetCascader();
                         setTutorialCascaderOpen(false);

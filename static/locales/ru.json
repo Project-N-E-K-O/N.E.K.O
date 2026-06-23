@@ -1787,6 +1787,8 @@
         "tutorialPageResetSuccessWithName": "Руководство для «{{pageName}}» сброшено.",
         "tutorialHomeDayLabel": "День {{day}}",
         "tutorialHomeDayColumn": "Семидневный туториал для главной страницы",
+        "tutorialHomeAllReset": "Сбросить все",
+        "tutorialHomeAllResetSuccess": "Семидневный туториал главной страницы сброшен. Перезагрузите Neko, чтобы начать снова с дня 1.",
         "refreshed": "Память обновлена, новая память будет использована в следующем разговоре",
         "refreshingContext": "Обновление контекста...",
         "storageLocation": "Расположение хранилища",

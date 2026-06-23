@@ -1787,6 +1787,8 @@
         "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引導，下次進入該頁面時將重新顯示引導。",
         "tutorialHomeDayLabel": "第 {{day}} 天",
         "tutorialHomeDayColumn": "主頁七日新手教程",
+        "tutorialHomeAllReset": "全部重置",
+        "tutorialHomeAllResetSuccess": "已重置主頁 7 天新手教程，請重新載入 Neko 後從第 1 天開始。",
         "refreshed": "記憶已更新，下次對話將使用新記憶",
         "refreshingContext": "正在刷新上下文...",
         "storageLocation": "儲存位置",

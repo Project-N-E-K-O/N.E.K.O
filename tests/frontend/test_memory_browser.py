@@ -169,6 +169,7 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
     expect(mock_page.locator(".tutorial-cascader-day-column")).to_be_visible()
     expect(mock_page.locator("#tutorial-reset-btn")).to_be_disabled()
+    expect(mock_page.locator(".tutorial-cascader-option[data-tutorial-home-all='true']")).to_have_count(1)
     mock_page.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
     expect(mock_page.locator(".tutorial-reset-value")).to_have_text("主页 / 第 1 天")
     expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
@@ -267,6 +268,58 @@ def test_memory_browser_all_tutorial_reset_includes_avatar_guide_state(
         {"type": "avatar", "options": {"source": "memory_browser_reset_all"}},
         {"type": "legacy", "pageKey": "all"},
     ]
+
+
+@pytest.mark.frontend
+def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialResetCalls = [];
+            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
+                resetAllAvatarFloatingGuideDays: async (options) => {
+                    window.__tutorialResetCalls.push({ type: 'avatar', options });
+                }
+            });
+            window.resetTutorialForPage = async (pageKey) => {
+                window.__tutorialResetCalls.push({ type: 'legacy', pageKey });
+            };
+            window.universalTutorialManager = Object.assign({}, window.universalTutorialManager || {}, {
+                resetHomeTutorialPromptState: async (reason) => {
+                    window.__tutorialResetCalls.push({ type: 'prompt', reason });
+                }
+            });
+        }
+        """
+    )
+
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-home-all='true']").click()
+    expect(mock_page.locator(".tutorial-reset-value")).to_have_text("主页 / 全部重置")
+    expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
+    expect(mock_page.locator("#tutorial-reset-btn")).to_be_enabled()
+
+    with mock_page.expect_event("dialog") as dialog_info:
+        mock_page.locator("#tutorial-reset-btn").click()
+
+    dialog = dialog_info.value
+    dialog_messages = [dialog.message]
+    dialog.accept()
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
+
+    assert mock_page.evaluate("window.__tutorialResetCalls") == [
+        {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
+        {"type": "prompt", "reason": "memory_browser_home_all_reset"},
+    ]
+    assert dialog_messages == ["已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。"]
 
 
 @pytest.mark.frontend

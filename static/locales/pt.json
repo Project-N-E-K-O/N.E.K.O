@@ -1787,6 +1787,8 @@
         "tutorialPageResetSuccessWithName": "O tutorial para \"{{pageName}}\" foi redefinido. Ele será mostrado novamente quando você visitar essa página.",
         "tutorialHomeDayLabel": "Dia {{day}}",
         "tutorialHomeDayColumn": "Tutorial de sete dias da página inicial",
+        "tutorialHomeAllReset": "Redefinir tudo",
+        "tutorialHomeAllResetSuccess": "O tutorial de sete dias da página inicial foi redefinido. Recarregue o Neko para começar novamente a partir do dia 1.",
         "refreshed": "Memória atualizada, nova memória será usada na próxima conversa",
         "refreshingContext": "Atualizando contexto...",
         "storageLocation": "Local de armazenamento",
