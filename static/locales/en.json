@@ -4416,6 +4416,7 @@
              "difficulty": "Difficulty {{difficulty}}",
              "nekoShoot": "Neko's shot",
              "nekoSmash": "Yui smash!",
+             "nekoSave": "Yui saves it!",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
@@ -4457,7 +4458,7 @@
                  ],
                  "game_over": [
                      "Run it back?",
-                     "I will remember that one."
+                     "That is it for this round."
                  ],
                  "long_aim": [
                      "Take the shot.",
@@ -4515,7 +4516,7 @@
                  ],
                  "game_over": [
                      "Run it back?",
-                     "I will remember that one."
+                     "That is it for this round."
                  ],
                  "long_aim": [
                      "Take the shot.",
@@ -4575,9 +4576,9 @@
                  ],
                  "game_over": [
                      "Run it back?",
-                     "I will remember that one.",
-                     "I am keeping this set on the record.",
-                     "Score is written down, no take-backs."
+                     "That is it for this round.",
+                     "Next round, do not run.",
+                     "Scoreboard says enough."
                  ],
                  "long_aim": [
                      "Take the shot.",
@@ -4695,6 +4696,34 @@
                  "I already read your racket face.",
                  "Stare too long and your hand locks up."
              ],
+             "yuiCheat": {
+                 "banana": [
+                     "Watch your step, banana peel incoming.",
+                     "Do not step on it. I tossed it over.",
+                     "Better look closely at this step.",
+                     "Jump over it if you can."
+                 ],
+                 "octopus": [
+                     "Ink incoming. Can you still see?",
+                     "Let me borrow your vision for a second.",
+                     "Do not blink. It is already too late.",
+                     "Catch it even if you cannot see."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "That step was slippery. This point is mine.",
+                     "Banana peel assist successful. Hehe.",
+                     "One slip and the score comes to my side.",
+                     "Mind the floor. Yui gets one more point."
+                 ],
+                 "octopus": [
+                     "The ink covered things perfectly. This point is mine.",
+                     "You still have to return it when you cannot see.",
+                     "While your view was blocked, I already scored.",
+                     "That ink tactic worked pretty well."
+                 ]
+             },
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",
                  "xmas": "The bells are up and you still want to rally?",

@@ -4416,6 +4416,7 @@
              "difficulty": "Dificuldade {{difficulty}}",
             "nekoShoot": "Neko rebate",
             "nekoSmash": "Smash da Yui!",
+            "nekoSave": "Yui salvou!",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Vez da Neko",
              "copyNeko": "Copie a Neko",
@@ -4695,6 +4696,34 @@
                  "Já li a face da sua raquete.",
                  "Olhar demais deixa a mão travada."
              ],
+             "yuiCheat": {
+                 "banana": [
+                     "Cuidado com os pés, lá vem casca de banana.",
+                     "Não pise nela. Eu joguei para aí.",
+                     "Olhe bem esse passo.",
+                     "Se pular por cima, admito que foi bom."
+                 ],
+                 "octopus": [
+                     "Lá vem tinta. Ainda consegue ver?",
+                     "Vou pegar sua visão emprestada por um segundo.",
+                     "Não pisque. Já é tarde.",
+                     "Mesmo sem ver direito, tem que devolver."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "Esse passo escorregou demais. Este ponto é meu.",
+                     "Assistência da casca de banana concluída. Hehe.",
+                     "Uma escorregada e o placar vem para o meu lado.",
+                     "Cuidado com o chão. Yui ganha mais um ponto."
+                 ],
+                 "octopus": [
+                     "A tinta cobriu na medida certa. Este ponto é meu.",
+                     "Mesmo sem ver, ainda tem que devolver.",
+                     "Enquanto sua visão estava bloqueada, eu já marquei.",
+                     "Essa tática da tinta funcionou bem, não foi?"
+                 ]
+             },
              "easterEgg": {
                 "lateNight": "Rebatendo até esta hora?",
                 "xmas": "Os sinos já estão pendurados e você ainda quer rebater?",
