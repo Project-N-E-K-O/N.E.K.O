@@ -119,6 +119,16 @@ def _stale_icebreaker_session_response(state: dict | None, session_id: str, *, l
     return result
 
 
+def _validate_icebreaker_local_mutation(request: Request, data: dict) -> Any:
+    from .system_router import _validate_local_mutation_request
+
+    return _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+
+
 async def _speak_icebreaker_line_via_project_tts(
     mgr: Any,
     line: str,
@@ -157,12 +167,17 @@ async def icebreaker_route_start(request: Request):
         data = {}
     if not isinstance(data, dict):
         data = {}
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
-    session_id = str(data.get("session_id") or "default")
+    session_id = str(data.get("session_id") or "")
+    if not session_id:
+        return {"ok": False, "reason": "missing_session_id"}
 
     async with _get_icebreaker_route_lock(lanlan_name):
         state = activate_icebreaker_route(lanlan_name, session_id)
@@ -177,6 +192,9 @@ async def icebreaker_route_end(request: Request):
         data = {}
     if not isinstance(data, dict):
         data = {}
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
@@ -184,6 +202,16 @@ async def icebreaker_route_end(request: Request):
     session_id = str(data.get("session_id") or "")
     reason = str(data.get("reason") or "icebreaker_end")
     async with _get_icebreaker_route_lock(lanlan_name):
+        active_state = _get_active_icebreaker_route_state(lanlan_name)
+        if active_state and session_id and session_id != str(active_state.get("session_id") or ""):
+            return {
+                "ok": False,
+                "reason": "session_id_mismatch",
+                "handled": False,
+                "lanlan_name": lanlan_name,
+                "method": "route_end",
+                "state": _public_icebreaker_route_state(active_state),
+            }
         state = finalize_icebreaker_route(lanlan_name, session_id=session_id, reason=reason)
     return {"ok": True, "state": _public_icebreaker_route_state(state)}
 
@@ -204,13 +232,7 @@ async def icebreaker_context(request: Request):
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
 
-    from .system_router import _validate_local_mutation_request
-
-    validation_error = _validate_local_mutation_request(
-        request,
-        payload=data,
-        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
-    )
+    validation_error = _validate_icebreaker_local_mutation(request, data)
     if validation_error is not None:
         return validation_error
 
@@ -227,7 +249,7 @@ async def icebreaker_context(request: Request):
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     _absorb_request_language(data, lanlan_name)
-    session_id = str(data.get("session_id") or "")
+    requested_session_id = str(data.get("session_id") or "")
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
     state = _get_active_icebreaker_route_state(lanlan_name)
@@ -241,12 +263,13 @@ async def icebreaker_context(request: Request):
         }
     stale_response = _stale_icebreaker_session_response(
         state,
-        session_id,
+        requested_session_id,
         lanlan_name=lanlan_name,
         method="project_session_history",
     )
     if stale_response:
         return stale_response
+    session_id = requested_session_id or str(state.get("session_id") or "")
 
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
@@ -317,6 +340,9 @@ async def icebreaker_speak(request: Request):
         return {"ok": False, "reason": "invalid_body"}
     if not isinstance(data, dict):
         return {"ok": False, "reason": "invalid_body"}
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
 
     line = _strip_ssml_like_tags(str(data.get("line") or "").strip())
     if not line:
@@ -325,7 +351,7 @@ async def icebreaker_speak(request: Request):
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     _absorb_request_language(data, lanlan_name)
-    session_id = str(data.get("session_id") or "")
+    requested_session_id = str(data.get("session_id") or "")
     state = _get_active_icebreaker_route_state(lanlan_name)
     if not state:
         return {
@@ -338,26 +364,41 @@ async def icebreaker_speak(request: Request):
         }
     stale_response = _stale_icebreaker_session_response(
         state,
-        session_id,
+        requested_session_id,
         lanlan_name=lanlan_name,
         method="project_tts",
     )
     if stale_response:
         return stale_response
+    session_id = requested_session_id or str(state.get("session_id") or "")
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
-    result = await _speak_icebreaker_line_via_project_tts(
-        mgr,
-        line,
-        request_id=str(data.get("request_id") or "") or None,
-        session_id=session_id,
-        mirror_text=data.get("mirror_text", True) is not False,
-        emit_turn_end=data.get("emit_turn_end", True) is not False,
-        interrupt_audio=_coerce_payload_bool(data.get("interrupt_audio")) is True,
-        event=data.get("event") if isinstance(data.get("event"), dict) else {},
-    )
+    try:
+        result = await _speak_icebreaker_line_via_project_tts(
+            mgr,
+            line,
+            request_id=str(data.get("request_id") or "") or None,
+            session_id=session_id,
+            mirror_text=data.get("mirror_text", True) is not False,
+            emit_turn_end=data.get("emit_turn_end", True) is not False,
+            interrupt_audio=_coerce_payload_bool(data.get("interrupt_audio")) is True,
+            event=data.get("event") if isinstance(data.get("event"), dict) else {},
+        )
+    except Exception as exc:
+        logger.warning("icebreaker project_tts failed for %s: %s", lanlan_name, exc, exc_info=True)
+        return {
+            "ok": False,
+            "reason": "project_tts_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+            "session_id": session_id,
+            "method": "project_tts",
+            "audio_sent": False,
+            "voice_source": {"provider": "project_tts", "method": "project_tts"},
+        }
     touch_icebreaker_route(state)
     result.setdefault("lanlan_name", lanlan_name)
     result.setdefault("method", "project_tts")

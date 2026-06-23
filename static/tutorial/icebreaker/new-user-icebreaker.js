@@ -149,6 +149,7 @@
     }
 
     function openSubtitleTranslationForIcebreakerAssistantMessage() {
+        var opened = false;
         try {
             var bridge = window.subtitleBridge;
             if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
@@ -156,6 +157,7 @@
                     persist: false,
                     source: 'new-user-icebreaker-auto-open'
                 });
+                opened = true;
             }
         } catch (error) {
             console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
@@ -168,10 +170,12 @@
                     suppressHostEvent: true,
                     persist: false
                 });
+                opened = true;
             }
         } catch (error) {
             console.warn('[NewUserIcebreaker] subtitle host translation open failed:', error);
         }
+        return opened;
     }
 
     function clearPendingStartDay(dayKey) {
@@ -466,14 +470,15 @@
     function shouldOpenIcebreakerSubtitlePanelOnce() {
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
         if (!sessionId || icebreakerSubtitlePanelOpenedSessionId === sessionId) return false;
-        icebreakerSubtitlePanelOpenedSessionId = sessionId;
         return true;
     }
 
     function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
         if (role !== 'assistant' || contextOk !== true) return;
         if (shouldOpenIcebreakerSubtitlePanelOnce()) {
-            openSubtitleTranslationForIcebreakerAssistantMessage();
+            if (openSubtitleTranslationForIcebreakerAssistantMessage()) {
+                icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+            }
         }
         finalizeIcebreakerAssistantSubtitle(text);
     }
@@ -534,11 +539,13 @@
                 voice_key: String(voiceKey || '')
             }
         };
-        return fetch(ICEBREAKER_API_BASE + '/speak', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(body)
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch(ICEBREAKER_API_BASE + '/speak', {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            });
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();

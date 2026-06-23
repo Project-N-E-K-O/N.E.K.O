@@ -415,7 +415,8 @@ def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal
         1,
     )[0]
     assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
-    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
+    assert "openSubtitleTranslationForIcebreakerAssistantMessage()" in sync_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId" in sync_block
     assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
 
 
@@ -428,13 +429,16 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         "function startIcebreakerRoute(session)",
         1,
     )[0]
+    assert "var opened = false;" in open_block
     assert "window.subtitleBridge" in open_block
     assert "bridge.setSubtitleEnabled(true, {" in open_block
+    assert "opened = true;" in open_block
     assert "persist: false" in open_block
     assert "window.reactChatWindowHost" in open_block
     assert "host.setTranslateEnabled(true" in open_block
     assert "console.warn('[NewUserIcebreaker] subtitle bridge open failed:'" in open_block
     assert "console.warn('[NewUserIcebreaker] subtitle host translation open failed:'" in open_block
+    assert "return opened;" in open_block
 
     start_block = runtime.split("return startIcebreakerRoute(nextSession).then(function (started)", 1)[1].split(
         "activeSession = nextSession;",
@@ -448,8 +452,9 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
     )[0]
     assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
     assert "if (shouldOpenIcebreakerSubtitlePanelOnce()) {" in sync_block
-    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
-    assert sync_block.index("openSubtitleTranslationForIcebreakerAssistantMessage();") < sync_block.index(
+    assert "if (openSubtitleTranslationForIcebreakerAssistantMessage()) {" in sync_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId" in sync_block
+    assert sync_block.index("openSubtitleTranslationForIcebreakerAssistantMessage()") < sync_block.index(
         "finalizeIcebreakerAssistantSubtitle(text);"
     )
     open_once_block = runtime.split("function shouldOpenIcebreakerSubtitlePanelOnce()", 1)[1].split(
@@ -457,7 +462,7 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         1,
     )[0]
     assert "icebreakerSubtitlePanelOpenedSessionId === sessionId" in open_once_block
-    assert "icebreakerSubtitlePanelOpenedSessionId = sessionId;" in open_once_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = sessionId;" not in open_once_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
@@ -490,6 +495,18 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
     assert set_translate_block.index("window.appSettings.saveSettings();") < set_translate_block.index(
         "state.viewProps = Object.assign"
     )
+
+
+def test_icebreaker_project_tts_uses_local_mutation_headers():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
+        1,
+    )[0]
+
+    assert "getLocalMutationHeaders().then(function (headers)" in speak_block
+    assert "headers: headers" in speak_block
+    assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
