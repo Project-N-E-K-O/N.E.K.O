@@ -4453,118 +4453,118 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad."
+                     "La pr?xima, con calma.",
+                     "Reinicia y golpea limpio."
                  ],
                  "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?"
+                     "Esta ronda termina aqu?.",
+                     "?Jugamos otra?"
                  ],
                  "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
+                     "Golpea antes de que caiga.",
+                     "Pensar tanto te congela."
                  ],
                  "close_to_record": [
-                     "Casi récord.",
-                     "Casi récord."
+                     "El r?cord est? cerca.",
+                     "Un golpe firme y llegas."
                  ],
                  "new_record": [
-                     "¡Nuevo récord!",
-                     "¡Nuevo récord!"
+                     "Vale, nuevo r?cord.",
+                     "Ese golpe sali? limpio."
                  ],
                  "streak_5": [
-                     "¡Cinco seguidas!",
-                     "¡Cinco seguidas!"
+                     "Cinco rallies seguidos.",
+                     "Tu ritmo est? calentando."
                  ],
                  "streak_10": [
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas?"
+                     "Diez seguidos, nada mal.",
+                     "No te crezcas todav?a."
                  ],
                  "streak_15": [
-                     "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado."
+                     "Quince y sigues.",
+                     "Ahora te miro en serio."
                  ],
                  "streak_20": [
-                     "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble."
+                     "Veinte ya es demasiado.",
+                     "?Este rally sigue vivo?"
                  ],
                  "line_in": [
-                     "¡En la línea!",
-                     "¡En la línea!"
+                     "En la l?nea, preciso.",
+                     "Buen punto de ca?da."
                  ],
                  "net_touch": [
-                     "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta."
+                     "Se col? por la red.",
+                     "?ngulo arriesgado, vale."
                  ],
                  "zone_in": [
-                     "Cayó dentro.",
-                     "Cayó dentro."
+                     "Justo en la zona.",
+                     "Elegiste bien el sitio."
                  ],
                  "out": [
-                     "Por poco.",
-                     "Por poco."
+                     "Un poco larga.",
+                     "Ese swing se fue de m?s."
                  ],
                  "net": [
-                     "Se quedó en la red.",
-                     "Se quedó en la red."
+                     "La red la atrap?.",
+                     "Levanta la cara de la raqueta."
                  ]
              },
              "shooter": {
                  "shot_missed": [
-                     "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad."
+                     "Reinicia el control.",
+                     "Firme. Yo te sigo."
                  ],
                  "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?"
+                     "Ese control a?n falta.",
+                     "No me hagas correr en vano."
                  ],
                  "long_aim": [
-                    "Golpea ya.",
-                    "Golpea ya."
+                     "R?pido, se me endurece la mano.",
+                     "?A?n eliges ?ngulo?"
                  ],
                  "close_to_record": [
-                     "Casi récord.",
-                     "Casi récord."
+                     "El r?cord est? cerca.",
+                     "No tiembles en este golpe."
                  ],
                  "new_record": [
-                     "¡Nuevo récord!",
-                     "¡Nuevo récord!"
+                     "Vale, nuevo r?cord.",
+                     "La coordinaci?n estuvo decente."
                  ],
                  "streak_5": [
-                     "¡Cinco seguidas!",
-                     "¡Cinco seguidas!"
+                     "Cinco seguidos. No flotes.",
+                     "Este ritmo est? estable."
                  ],
                  "streak_10": [
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas?"
+                     "?Diez seguidos? No presumas.",
+                     "Tienes la mano bastante firme."
                  ],
                  "streak_15": [
-                     "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado."
+                     "?Quince? No te agrandes.",
+                     "Este s? lo sostuviste."
                  ],
                  "streak_20": [
-                     "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble."
+                     "?Veinte? ?A?n seguimos?",
+                     "Esta ronda se puso loca."
                  ],
                  "line_in": [
-                     "¡En la línea!",
-                     "¡En la línea!"
+                     "Vale, fue preciso.",
+                     "Controlaste bien la raqueta."
                  ],
                  "net_touch": [
-                     "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta."
+                     "La rozaste por encima.",
+                     "El ?ngulo arriesgado funcion?."
                  ],
                  "zone_in": [
-                     "Cayó dentro.",
-                     "Cayó dentro."
+                     "No sonr?as. Fue suerte.",
+                     "Elegiste bien la ca?da."
                  ],
                  "out": [
-                     "Por poco.",
-                     "Por poco."
+                     "Un poco menos de fuerza.",
+                     "Te apuraste en esa."
                  ],
                  "net": [
-                     "Se quedó en la red.",
-                     "Se quedó en la red."
+                     "?A d?nde me llevas?",
+                     "Levanta la cara de la raqueta."
                  ]
              },
              "duel": {
@@ -4575,10 +4575,10 @@
                      "No te asustes. Todavía espero el siguiente golpe."
                  ],
                  "game_over": [
-                     "¿Otra partida?",
-                     "¿Otra partida?",
-                     "Esta partida queda anotada.",
-                     "El marcador está escrito. No hay marcha atrás."
+                     "Esta ronda termina aqu?.",
+                     "No huyas en la pr?xima.",
+                     "Este set queda aqu?.",
+                     "El marcador ya dice bastante."
                  ],
                  "long_aim": [
                     "Golpea ya.",
