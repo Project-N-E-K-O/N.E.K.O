@@ -200,6 +200,47 @@ test('SceneOrchestrator can execute explicit timeline playback without using gen
     )));
 });
 
+test('SceneOrchestrator timeline audio uses director-resolved narration', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = {
+        id: 'day2_intro_context',
+        text: '昨天默认台词',
+        voiceKey: 'avatar_floating_day2_intro'
+    };
+    const timelineScene = {
+        audio: {
+            text: '昨天默认台词',
+            voiceKey: 'avatar_floating_day2_intro'
+        }
+    };
+    const director = {
+        resolveAvatarFloatingSceneText(inputScene) {
+            calls.push(['text', inputScene.id]);
+            return '嘿嘿分支台词';
+        },
+        resolveAvatarFloatingSceneVoiceKey(inputScene) {
+            calls.push(['voice', inputScene.id]);
+            return 'avatar_floating_day2_intro_voice_used';
+        },
+        speakGuideLine(text, options) {
+            calls.push(['speak', text, options.voiceKey]);
+            return Promise.resolve();
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+    const audioRuntime = orchestrator.createTimelineAudioRuntime(scene, timelineScene, {});
+
+    audioRuntime.play('avatar_floating_day2_intro', timelineScene.audio);
+    await audioRuntime.waitForEnd();
+
+    assert.deepEqual(calls, [
+        ['text', 'day2_intro_context'],
+        ['voice', 'day2_intro_context'],
+        ['speak', '嘿嘿分支台词', 'avatar_floating_day2_intro_voice_used']
+    ]);
+});
+
 test('SceneOrchestrator can execute legacy scene fields through timeline playback normalizer', async () => {
     const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
     const calls = [];

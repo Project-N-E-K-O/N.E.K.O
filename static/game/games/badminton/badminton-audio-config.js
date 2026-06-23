@@ -10,6 +10,9 @@
   ];
   var racketShuttleSingle = '/static/game/games/badminton/audio/badminton-racket-shuttlecock-single.mp3';
   var racketSwing = '/static/game/games/badminton/audio/zapsplat_sport_badminton_racket_fast_swing_whoosh_001_76396.mp3';
+  var resultWinShort = '/static/game/games/badminton/audio/badminton-result-win-short.mp3';
+  var bananaSlipGoofy = '/static/game/games/badminton/audio/badminton-banana-slip-goofy.mp3';
+  var octopusInkPoof = '/static/game/games/badminton/audio/badminton-octopus-ink-poof.mp3';
 
   var badmintonGameAudioConfig = {
     audioMix: {
@@ -43,7 +46,7 @@
         sad: ['/static/game/games/soccer/audio/Prelude.mp3'],
         surprised: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: 1.5 }],
       },
-      result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: 1.5 }] },
+      result: { gameOver: [{ src: resultWinShort, gainDb: 1.5 }] },
     },
     loopedBgm: {},
     sfx: {
@@ -57,6 +60,10 @@
       },
       shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map(function (src) { return { src: src, gainDb: -2 }; }),
       net: [{ src: racketShuttle, gainDb: -7 }],
+      yuiCheat: {
+        bananaSlip: [{ src: bananaSlipGoofy, gainDb: -1 }],
+        octopusInk: [{ src: octopusInkPoof, gainDb: -2 }],
+      },
       streak: [{ src: '/static/game/games/soccer/audio/Chocobos_S.mp3', gainDb: -6 }],
       record: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: -2 }],
     },

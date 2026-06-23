@@ -2858,6 +2858,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 6px 8px;
     border-radius: 12px;
@@ -2873,11 +2874,13 @@ body.react-chat-window-dragging {
 
 .crop-tool-group {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 2px;
 }
 
 .crop-tool-divider {
+    flex: 0 0 auto;
     width: 1px;
     align-self: stretch;
     margin: 4px;
@@ -3003,6 +3006,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 14px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 8px 14px;
     border-radius: 12px;
