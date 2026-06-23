@@ -1098,6 +1098,88 @@ def _convert_openai_tool_call_to_anthropic(tool_call: Any) -> dict[str, Any] | N
     }
 
 
+def _convert_openai_tool_schema_to_anthropic(tool: Any) -> dict[str, Any] | None:
+    """Convert an OpenAI Chat Completions tool definition to Anthropic schema."""
+    if tool is None:
+        return None
+    if not isinstance(tool, dict):
+        if hasattr(tool, "model_dump"):
+            tool = tool.model_dump()
+        else:
+            tool = {
+                "name": getattr(tool, "name", ""),
+                "description": getattr(tool, "description", ""),
+                "input_schema": getattr(tool, "input_schema", None) or getattr(tool, "parameters", None),
+            }
+
+    fn = tool.get("function") if isinstance(tool, dict) else None
+    if fn is not None and not isinstance(fn, dict):
+        fn = {
+            "name": getattr(fn, "name", ""),
+            "description": getattr(fn, "description", ""),
+            "parameters": getattr(fn, "parameters", None),
+        }
+    fn = fn if isinstance(fn, dict) else {}
+
+    name = str(fn.get("name") or tool.get("name") or "").strip()
+    if not name:
+        return None
+
+    input_schema = fn.get("parameters") or tool.get("input_schema") or tool.get("parameters")
+    if not isinstance(input_schema, dict):
+        input_schema = {"type": "object", "properties": {}}
+    input_schema = dict(input_schema)
+    input_schema.setdefault("type", "object")
+
+    converted: dict[str, Any] = {
+        "name": name,
+        "input_schema": input_schema,
+    }
+    description = fn.get("description") or tool.get("description")
+    if description:
+        converted["description"] = str(description)
+    return converted
+
+
+def _convert_openai_tools_to_anthropic(tools: Any) -> list[dict[str, Any]]:
+    if not tools:
+        return []
+    if isinstance(tools, dict):
+        tools = [tools]
+    converted = []
+    for tool in tools:
+        anthropic_tool = _convert_openai_tool_schema_to_anthropic(tool)
+        if anthropic_tool:
+            converted.append(anthropic_tool)
+    return converted
+
+
+def _convert_openai_tool_choice_to_anthropic(tool_choice: Any) -> dict[str, Any] | None:
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        choice = tool_choice.strip().lower()
+        if choice in {"auto", "any", "none"}:
+            return {"type": choice}
+        if choice in {"required", "required_auto"}:
+            return {"type": "any"}
+        return None
+    if not isinstance(tool_choice, dict):
+        return None
+
+    if isinstance(tool_choice.get("type"), str):
+        choice_type = tool_choice["type"].strip().lower()
+        if choice_type in {"auto", "any", "none"}:
+            return {"type": choice_type}
+        if choice_type == "tool" and tool_choice.get("name"):
+            return {"type": "tool", "name": str(tool_choice["name"])}
+        if choice_type == "function":
+            fn = tool_choice.get("function")
+            if isinstance(fn, dict) and fn.get("name"):
+                return {"type": "tool", "name": str(fn["name"])}
+    return None
+
+
 def _convert_openai_tool_result_to_anthropic(msg: dict) -> dict[str, Any]:
     blocks = _convert_openai_content_to_anthropic(msg.get("content"))
     tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or msg.get("name") or "tool_result")
@@ -1244,8 +1326,8 @@ class ChatAnthropic:
     """Anthropic Messages API client with a ChatOpenAI-compatible surface.
 
     Used for Kimi Code (``https://api.kimi.com/coding``) and native Anthropic
-    endpoints. Text chat and streaming are supported; tool calling is not yet
-    wired through the Anthropic schema and will be ignored with a warning.
+    endpoints. Text chat, streaming, and OpenAI-style tool calling are adapted
+    to the Anthropic Messages API schema.
     """
 
     def __init__(
@@ -1279,12 +1361,6 @@ class ChatAnthropic:
         self.enable_cache_control = enable_cache_control
         self.tools = list(tools) if tools else None
         self.tool_choice = tool_choice
-        if self.tools:
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "ChatAnthropic does not yet support tool calling; tools ignored for model=%s",
-                self.model,
-            )
 
         _api_key = api_key or "sk-placeholder"
         _timeout = timeout or request_timeout
@@ -1334,6 +1410,12 @@ class ChatAnthropic:
             payload["temperature"] = self.temperature
         if include_default_extra_body and self.extra_body:
             _apply_anthropic_body_fields(payload, self.extra_body)
+        anthropic_tools = _convert_openai_tools_to_anthropic(self.tools)
+        if anthropic_tools:
+            payload["tools"] = anthropic_tools
+            anthropic_tool_choice = _convert_openai_tool_choice_to_anthropic(self.tool_choice)
+            if anthropic_tool_choice:
+                payload["tool_choice"] = anthropic_tool_choice
         # Substitute character placeholders the same way ChatOpenAI does.
         active = _active_character.get()
         if active is not None and (active[0] or active[1]):
@@ -1361,11 +1443,21 @@ class ChatAnthropic:
         extra_body = overrides.pop("extra_body", _SENTINEL)
         if extra_body:
             _apply_anthropic_body_fields(payload, extra_body)
-        # Per-call OpenAI tool payloads use a different schema and this wrapper
-        # does not yet parse Anthropic tool_use deltas, so dropping them is safer
-        # than forwarding malformed data that causes a provider-side 400.
-        overrides.pop("tools", None)
-        overrides.pop("tool_choice", None)
+        tools = overrides.pop("tools", _SENTINEL)
+        if tools is not _SENTINEL:
+            anthropic_tools = _convert_openai_tools_to_anthropic(tools)
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
+            else:
+                payload.pop("tools", None)
+                payload.pop("tool_choice", None)
+        tool_choice = overrides.pop("tool_choice", _SENTINEL)
+        if tool_choice is not _SENTINEL:
+            anthropic_tool_choice = _convert_openai_tool_choice_to_anthropic(tool_choice)
+            if anthropic_tool_choice:
+                payload["tool_choice"] = anthropic_tool_choice
+            else:
+                payload.pop("tool_choice", None)
         for key, value in overrides.items():
             if value is None:
                 continue
@@ -1419,21 +1511,54 @@ class ChatAnthropic:
                 if event_type == "message_start":
                     message = getattr(event, "message", None)
                     _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
+                elif event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    if block and getattr(block, "type", "") == "tool_use":
+                        index = int(getattr(event, "index", 0) or 0)
+                        raw_input = getattr(block, "input", None)
+                        arguments = ""
+                        if raw_input:
+                            arguments = _json.dumps(raw_input, ensure_ascii=False)
+                        yield LLMStreamChunk(
+                            content="",
+                            tool_call_deltas=[{
+                                "index": index,
+                                "id": getattr(block, "id", "") or "",
+                                "type": "function",
+                                "function": {
+                                    "name": getattr(block, "name", "") or "",
+                                    "arguments": arguments,
+                                },
+                            }],
+                        )
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     if delta and getattr(delta, "type", "") == "text_delta":
                         text = getattr(delta, "text", "") or ""
                         if text:
                             yield LLMStreamChunk(content=text)
+                    elif delta and getattr(delta, "type", "") == "input_json_delta":
+                        partial_json = getattr(delta, "partial_json", "") or ""
+                        if partial_json:
+                            yield LLMStreamChunk(
+                                content="",
+                                tool_call_deltas=[{
+                                    "index": int(getattr(event, "index", 0) or 0),
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": partial_json},
+                                }],
+                            )
                 elif event_type == "message_delta":
                     finish_reason = None
                     delta = getattr(event, "delta", None)
                     if delta:
                         finish_reason = getattr(delta, "stop_reason", None)
-                        _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
+                    _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
                     _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
                     if finish_reason:
-                        yield LLMStreamChunk(content="", finish_reason=str(finish_reason))
+                        mapped_reason = "tool_calls" if finish_reason == "tool_use" else str(finish_reason)
+                        yield LLMStreamChunk(content="", finish_reason=mapped_reason)
                 elif event_type == "message_stop":
                     message = getattr(event, "message", None)
                     _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))

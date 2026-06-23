@@ -271,7 +271,14 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
             max_completion_tokens=0,
             metadata={"source": "unit", "user_id": "user-1"},
             extra_body={"thinking": {"type": "disabled"}, "metadata": {"user_id": "body-user"}},
-            tools=[{"type": "function", "function": {"name": "noop", "parameters": {}}}],
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "description": "Do nothing",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
             tool_choice="auto",
             stream=True,
         )
@@ -281,8 +288,12 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         assert captured["metadata"] == {"user_id": "user-1"}
         assert captured["thinking"] == {"type": "disabled"}
         assert "stream" not in captured
-        assert "tools" not in captured
-        assert "tool_choice" not in captured
+        assert captured["tools"] == [{
+            "name": "noop",
+            "input_schema": {"type": "object", "properties": {}},
+            "description": "Do nothing",
+        }]
+        assert captured["tool_choice"] == {"type": "auto"}
         assert "extra_body" not in captured
     finally:
         client.close()
@@ -596,6 +607,119 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
         assert chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 3}
         assert "stream" not in captured
         assert captured["model"] == "kimi-for-coding"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_anthropic_stream_converts_tool_use_to_openai_deltas(monkeypatch):
+    captured = {}
+
+    class _ToolBlock:
+        type = "tool_use"
+        id = "toolu_1"
+        name = "lookup"
+        input = {}
+
+    class _ToolStart:
+        type = "content_block_start"
+        index = 0
+        content_block = _ToolBlock()
+
+    class _InputDelta:
+        type = "input_json_delta"
+        partial_json = '{"q":"neko"}'
+
+    class _ToolArgs:
+        type = "content_block_delta"
+        index = 0
+        delta = _InputDelta()
+
+    class _StopDelta:
+        stop_reason = "tool_use"
+
+    class _MessageDelta:
+        type = "message_delta"
+        delta = _StopDelta()
+        usage = None
+
+    class _StreamContext:
+        def __init__(self):
+            self._events = [_ToolStart(), _ToolArgs(), _MessageDelta()]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def __aiter__(self):
+            self._iter = iter(self._events)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iter)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class _Messages:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _StreamContext()
+
+    class _FakeAnthropic:
+        def __init__(self, **_kwargs):
+            self.messages = _Messages()
+
+        def close(self):
+            pass
+
+    class _FakeAsyncAnthropic(_FakeAnthropic):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+
+    client = llm_client_module.ChatAnthropic(
+        model="kimi-for-coding",
+        base_url="https://api.kimi.com/coding",
+        api_key="sk-test",
+    )
+    try:
+        chunks = [
+            chunk async for chunk in client.astream(
+                [{"role": "user", "content": "hi"}],
+                tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                    },
+                }],
+                tool_choice={"type": "function", "function": {"name": "lookup"}},
+            )
+        ]
+        assert captured["tools"] == [{
+            "name": "lookup",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+        }]
+        assert captured["tool_choice"] == {"type": "tool", "name": "lookup"}
+        assert chunks[0].tool_call_deltas == [{
+            "index": 0,
+            "id": "toolu_1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": ""},
+        }]
+        assert chunks[1].tool_call_deltas == [{
+            "index": 0,
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": '{"q":"neko"}'},
+        }]
+        assert chunks[2].finish_reason == "tool_calls"
     finally:
         await client.aclose()
 

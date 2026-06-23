@@ -571,6 +571,8 @@ class TestAssistFollowsCore:
 
         response = await config_router.get_core_config_api()
 
+        assert response['success'] is True
+        assert response['assistApi'] == 'kimi_code'
         assert response['assistApiKeyKimiCode'] == 'sk-kimi-code-stored'
 
     @pytest.mark.unit

@@ -731,6 +731,7 @@ async def get_core_config_api():
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or _fb('silicon'),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or _fb('gemini'),
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
+            "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
@@ -1758,7 +1759,7 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
     path = parsed.path.rstrip("/").lower()
     if host == "api.anthropic.com":
         return True
-    return host == "api.kimi.com" and (path == "/coding" or path.startswith("/coding/"))
+    return host == "api.kimi.com" and path == "/coding"
 
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:

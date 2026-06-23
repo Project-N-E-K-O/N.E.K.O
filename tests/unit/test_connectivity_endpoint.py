@@ -273,6 +273,41 @@ class TestSchemaValidation:
         )
         mock_openai.assert_not_awaited()
 
+    async def test_builtin_assist_keeps_kimi_coding_v1_on_openai_probe(self):
+        """Kimi's documented /coding/v1 OpenAI-compatible URL must not be treated as Messages API."""
+        fake_config = {
+            "assist_api_providers": {
+                "kimi_code": {
+                    "name": "Kimi Code",
+                    "openrouter_url": "https://api.kimi.com/coding/v1",
+                    "conversation_model": "kimi-for-coding",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_anthropic",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_anthropic, patch(
+            "main_routers.config_router._test_openai_compatible",
+            new=AsyncMock(return_value={"success": True}),
+        ) as mock_openai:
+            req = ConnectivityTestRequest(
+                provider_key="kimi_code",
+                provider_scope="assist",
+                api_key="sk-kimi",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        mock_openai.assert_awaited_once_with(
+            "https://api.kimi.com/coding/v1",
+            "sk-kimi",
+            model="kimi-for-coding",
+            is_free=False,
+        )
+        mock_anthropic.assert_not_awaited()
+
     async def test_builtin_mimo_assist_accepts_token_plan_url_override(self):
         """MiMo Token Plan may override the built-in MiMo assist endpoint."""
         calls = []
