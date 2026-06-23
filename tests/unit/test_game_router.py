@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 from .game_route_test_helpers import (
@@ -34,6 +35,15 @@ class _FakeRequest:
 
     async def json(self):
         return self._payload
+
+
+def _assert_not_icebreaker_game_route_error(exc: HTTPException, expected_route: str) -> None:
+    assert exc.status_code == 400
+    assert exc.detail == {
+        "ok": False,
+        "reason": "not_a_game_route",
+        "route": expected_route,
+    }
 
 
 def _put_game_session(lanlan_name, game_type, session_id, session):
@@ -108,6 +118,48 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
         assert "session_active" in events
         assert "route_start_requested" in events
         assert "route_start_completed" in events
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_route_start(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_route_start(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/route/start")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_project_speak(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_project_speak(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1", "line": "hello"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/speak")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_icebreaker_is_rejected_from_game_route_end(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await game_router.game_route_end(
+            "new_user_icebreaker",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "icebreaker-day1"}),
+        )
+
+    _assert_not_icebreaker_game_route_error(exc_info.value, "/api/icebreaker/route/end")
 
 
 @pytest.mark.unit

@@ -74,9 +74,13 @@ def _reset_icebreaker_routes(request):
     from utils import icebreaker_route_state
 
     states_snapshot = dict(icebreaker_route_state._icebreaker_route_states)
+    locks_snapshot = dict(icebreaker_route_state._icebreaker_route_locks)
     try:
         icebreaker_route_state._icebreaker_route_states.clear()
+        icebreaker_route_state._icebreaker_route_locks.clear()
         yield
     finally:
         icebreaker_route_state._icebreaker_route_states.clear()
         icebreaker_route_state._icebreaker_route_states.update(states_snapshot)
+        icebreaker_route_state._icebreaker_route_locks.clear()
+        icebreaker_route_state._icebreaker_route_locks.update(locks_snapshot)

@@ -7356,6 +7356,15 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
 @router.post("/{game_type}/speak")
 async def game_project_speak(game_type: str, request: Request):
     """Formal B-layer output: speak A.line through the existing project TTS pipeline."""
+    if str(game_type or "") == "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "not_a_game_route",
+                "route": "/api/icebreaker/speak",
+            },
+        )
     try:
         data = await request.json()
     except Exception:
@@ -8147,6 +8156,15 @@ async def _complete_game_end_from_payload(
     *,
     default_reason: str = "game_end",
 ) -> dict:
+    if str(game_type or "") == "new_user_icebreaker":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "not_a_game_route",
+                "route": "/api/icebreaker/route/end",
+            },
+        )
     session_id = str(data.get('session_id', 'default'))
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     # 包括 /route/end 与 /end 两条入口；postgame 投递依赖 mgr.user_language

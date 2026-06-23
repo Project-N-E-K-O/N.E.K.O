@@ -314,6 +314,8 @@ def test_icebreaker_route_is_separate_from_game_route_active_state():
 
     assert '"reason": "not_a_game_route"' in game_router
     assert '"/api/icebreaker/route/start"' in game_router
+    assert '"/api/icebreaker/speak"' in game_router
+    assert '"/api/icebreaker/route/end"' in game_router
     assert "activate_icebreaker_route" in icebreaker_router
     assert "_get_active_game_route_state" not in icebreaker_router
     assert "game_window_state_change" not in icebreaker_router
