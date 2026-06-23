@@ -990,6 +990,19 @@ def _record_anthropic_token_usage(model: str, usage_dict: dict[str, Any]) -> Non
         pass
 
 
+def _anthropic_stop_reason_to_finish_reason(stop_reason: Any) -> str | None:
+    if not stop_reason:
+        return None
+    reason = str(stop_reason)
+    return {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_calls",
+        "refusal": "content_filter",
+    }.get(reason, reason)
+
+
 def _convert_openai_content_to_anthropic(content: Any) -> list[dict]:
     """Convert an OpenAI message content value to Anthropic content blocks."""
     blocks: list[dict] = []
@@ -1557,7 +1570,7 @@ class ChatAnthropic:
                     _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
                     _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
                     if finish_reason:
-                        mapped_reason = "tool_calls" if finish_reason == "tool_use" else str(finish_reason)
+                        mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
                         yield LLMStreamChunk(content="", finish_reason=mapped_reason)
                 elif event_type == "message_stop":
                     message = getattr(event, "message", None)

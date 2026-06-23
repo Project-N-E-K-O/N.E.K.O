@@ -55,7 +55,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, ThinkingStreamStripper, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    create_chat_llm_async,
+)
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -73,6 +79,14 @@ from PIL import Image
 #     that's a few milliseconds saved per turn, but more importantly avoids
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
+
+_PROACTIVE_LLM_RETRY_ERROR_TYPES = (
+    asyncio.TimeoutError,
+    APIConnectionError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -6125,7 +6139,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
-                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
+                except _PROACTIVE_LLM_RETRY_ERROR_TYPES as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])

@@ -603,12 +603,21 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
     try:
         chunks = [chunk async for chunk in client.astream([{"role": "user", "content": "hi"}])]
         assert [chunk.content for chunk in chunks] == ["ok", "", ""]
-        assert chunks[1].finish_reason == "end_turn"
+        assert chunks[1].finish_reason == "stop"
         assert chunks[2].usage_metadata == {"input_tokens": 2, "output_tokens": 3}
         assert "stream" not in captured
         assert captured["model"] == "kimi-for-coding"
     finally:
         await client.aclose()
+
+
+def test_anthropic_stop_reasons_map_to_openai_finish_reasons():
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("end_turn") == "stop"
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("stop_sequence") == "stop"
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("max_tokens") == "length"
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("tool_use") == "tool_calls"
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("refusal") == "content_filter"
+    assert llm_client_module._anthropic_stop_reason_to_finish_reason("pause_turn") == "pause_turn"
 
 
 @pytest.mark.asyncio
