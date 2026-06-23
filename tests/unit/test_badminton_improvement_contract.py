@@ -2715,6 +2715,7 @@ def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
     assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
     assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
     assert "function ensureYuiInkOverlayCache() {" in html
+    assert "function drawYuiInkArcRings(ink, t) {" in html
     assert "var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
     assert "centralInk.addColorStop(0, 'rgba(0,0,0,.96)');" in html
     assert "function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {" in html
@@ -2723,6 +2724,12 @@ def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
     assert "for (var speck = 0; speck < 22; speck++) {" in html
     assert "inkCtx.bezierCurveTo(" in html
     assert "aimingCtx.drawImage(inkCanvas," in html
+    assert "drawYuiInkArcRings(ink, t);" in html
+    assert "if (!ink || ink.alpha <= 0.58) return;" in html
+    cache_start = html.index("function ensureYuiInkOverlayCache() {")
+    cache_end = html.index("function drawYuiInkArcRings(ink, t) {", cache_start)
+    cache_section = html[cache_start:cache_end]
+    assert "rgba(114,216,226,.42)" not in cache_section
     assert "function drawInkBlob(" not in html
     assert "var edgeVeil =" not in html
     assert "badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });" in html

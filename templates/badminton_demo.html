@@ -8456,18 +8456,24 @@
       inkCtx.fill();
     }
 
-    inkCtx.globalAlpha = 0.16;
-    inkCtx.strokeStyle = 'rgba(114,216,226,.42)';
-    inkCtx.lineWidth = 1.2;
-    for (var arc = 0; arc < 2; arc++) {
-      var arcY = BASE_H * (0.42 + arc * 0.12);
-      inkCtx.beginPath();
-      inkCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04) * inkScale, BASE_H * 0.10 * inkScale, -0.08 + arc * 0.16, 0, Math.PI * 2);
-      inkCtx.stroke();
-    }
     yuiInkOverlayCache.ready = true;
     yuiInkOverlayCache.key = key;
     return inkCanvas;
+  }
+
+  function drawYuiInkArcRings(ink, t) {
+    if (!ink || ink.alpha <= 0.58) return;
+    var inkScale = YUI_CHEAT_INK_VISUAL_SCALE;
+    aimingCtx.globalAlpha = Math.min(0.16, ink.alpha * 0.18);
+    aimingCtx.strokeStyle = 'rgba(114,216,226,.42)';
+    aimingCtx.lineWidth = 1.2;
+    aimingCtx.lineCap = 'round';
+    for (var arc = 0; arc < 2; arc++) {
+      var arcY = BASE_H * (0.42 + arc * 0.12) + Math.sin(t / 460 + arc) * 4;
+      aimingCtx.beginPath();
+      aimingCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04) * inkScale, BASE_H * 0.10 * inkScale, -0.08 + arc * 0.16, 0, Math.PI * 2);
+      aimingCtx.stroke();
+    }
   }
 
   function drawYuiInkOverlay(now) {
@@ -8487,6 +8493,7 @@
     aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
     aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
     aimingCtx.drawImage(inkCanvas, (BASE_W - drawW) / 2, (BASE_H - drawH) / 2, drawW, drawH);
+    drawYuiInkArcRings(ink, t);
     aimingCtx.restore();
   }
   function drawPlayerReturnHitCue(now) {
