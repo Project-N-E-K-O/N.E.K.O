@@ -979,17 +979,7 @@
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
-            // 失败时恢复文本输入区
-            S.voiceChatActive = false;
-            const textInputArea = document.getElementById('text-input-area');
-            if (textInputArea) {
-                textInputArea.classList.remove('hidden');
-            }
-            if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                window.syncVoiceChatComposerHidden(false);
-            }
-
-            // 失败时移除录音状态类
+            // 麦克风层只撤销本地录音态；语音会话和 composer 由外层启动生命周期统一收口。
             if (_mic) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');

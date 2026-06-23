@@ -4209,13 +4209,18 @@
                 if (S.isRecording) {
                     return;
                 }
+                if (S.voiceStartPending || window.isMicStarting) {
+                    return;
+                }
                 if (!micButton.classList.contains('active')) {
                     micButton.click();
                     return;
                 }
-                if (typeof window.startMicCapture === 'function') {
-                    await window.startMicCapture();
-                }
+                micButton.classList.remove('active');
+                micButton.classList.remove('recording');
+                micButton.disabled = false;
+                micButton.click();
+                return;
             } else {
                 if (!S.isRecording) {
                     return;
