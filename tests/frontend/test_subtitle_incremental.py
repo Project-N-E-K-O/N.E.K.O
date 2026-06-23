@@ -1067,6 +1067,99 @@ def _open_subtitle_harness(
 
 
 @pytest.mark.frontend
+def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-lock-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-goodbye-suppress-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.fetch = () => Promise.resolve({
+                json: () => Promise.resolve({ success: true, language: 'zh' }),
+            });
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            window.subtitleBridge.setSubtitleEnabled(true, { source: 'test-enable' });
+            window.subtitleBridge.markStructured();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const before = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const duringGoodbye = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+
+            window.dispatchEvent(new CustomEvent('live2d-return-click'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterReturn = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+            return { before, duringGoodbye, afterReturn };
+        }
+        """
+    )
+
+    assert result["before"] == {
+        "enabled": True,
+        "renderEnabled": True,
+        "visible": True,
+        "hidden": False,
+        "text": "[markdown]",
+    }
+    assert result["duringGoodbye"] == {
+        "enabled": True,
+        "renderEnabled": True,
+        "visible": False,
+        "hidden": True,
+        "text": "[markdown]",
+    }
+    assert result["afterReturn"] == result["before"]
+
+
+@pytest.mark.frontend
 def test_subtitle_danmaku_renderer_groups_every_two_punctuation_marks(
     mock_page: Page,
 ):
