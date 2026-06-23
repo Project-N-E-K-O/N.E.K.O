@@ -17,7 +17,6 @@
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
-    var icebreakerSubtitlePanelOpenedSessionId = '';
     var contextAppendPromise = Promise.resolve();
 
     function safeJsonParse(raw, fallback) {
@@ -146,36 +145,6 @@
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
         });
-    }
-
-    function openSubtitleTranslationForIcebreakerAssistantMessage() {
-        var opened = false;
-        try {
-            var bridge = window.subtitleBridge;
-            if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
-                bridge.setSubtitleEnabled(true, {
-                    persist: false,
-                    source: 'new-user-icebreaker-auto-open'
-                });
-                opened = true;
-            }
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
-        }
-        try {
-            var host = window.reactChatWindowHost;
-            if (host && typeof host.setTranslateEnabled === 'function') {
-                host.setTranslateEnabled(true, {
-                    syncBridge: false,
-                    suppressHostEvent: true,
-                    persist: false
-                });
-                opened = true;
-            }
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle host translation open failed:', error);
-        }
-        return opened;
     }
 
     function clearPendingStartDay(dayKey) {
@@ -515,19 +484,8 @@
         }
     }
 
-    function shouldOpenIcebreakerSubtitlePanelOnce() {
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
-        if (!sessionId || icebreakerSubtitlePanelOpenedSessionId === sessionId) return false;
-        return true;
-    }
-
     function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
         if (role !== 'assistant' || contextOk !== true) return;
-        if (shouldOpenIcebreakerSubtitlePanelOnce()) {
-            if (openSubtitleTranslationForIcebreakerAssistantMessage()) {
-                icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
-            }
-        }
         finalizeIcebreakerAssistantSubtitle(text);
     }
 
