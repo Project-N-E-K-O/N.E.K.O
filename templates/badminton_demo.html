@@ -2090,6 +2090,14 @@
     _syncGameAudioVolumeControls();
     updateHud();
   }
+  function closeBadmintonBrowserFallback() {
+    try { window.close(); } catch (_) {}
+    setTimeout(function () {
+      try {
+        if (!window.closed) window.location.assign('/');
+      } catch (_) {}
+    }, 150);
+  }
   function closeBadmintonWindow() {
     var host = window.nekoHost;
     if (host && typeof host.closeWindow === 'function') {
@@ -2097,16 +2105,16 @@
         Promise.resolve(host.closeWindow())
           .then(function (result) {
             if (result && result.ok === false) {
-              try { window.close(); } catch (_) {}
+              closeBadmintonBrowserFallback();
             }
           })
           .catch(function () {
-            try { window.close(); } catch (_) {}
+            closeBadmintonBrowserFallback();
           });
         return;
       } catch (_) {}
     }
-    try { window.close(); } catch (_) {}
+    closeBadmintonBrowserFallback();
   }
   function formatLeaderboardDate(value) {
     var text = String(value || '');
