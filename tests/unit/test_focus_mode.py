@@ -4,8 +4,8 @@ Coverage:
 1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
    scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
    hard-cap exit / topic-switch exit-and-clear.
-2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, weight
-   renormalisation, cadence baseline roll.
+2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, direct
+   weighted-sum scoring (no denominator), cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    retention override, reset clearing, master-switch-off degradation.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
@@ -526,7 +526,15 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
     # to read the screen it would AttributeError. A strongly vulnerable message
     # still enters FOCUS regardless of any privacy state.
-    _patch_charge(monkeypatch, enter=1.0)
+    # A keyword-only message saturates at score = FOCUS_SIGNAL_WEIGHTS["keyword"]
+    # (weighted SUM, no denominator). At the PRODUCTION enter (0.6) that would NOT
+    # enter single-turn — an accepted trade-off (the lexicon is a cheap signal, must
+    # stack with emotion or accumulate). This test only asserts the inline path is
+    # privacy-independent (never reads the screen / AttributeErrors), so it pins
+    # enter just below the keyword saturation — derived from config so a future
+    # weight tweak can't silently break it — to isolate that wiring from the bar.
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS

@@ -71,8 +71,9 @@ def test_question_can_trigger_alone_and_merges_with_emotion():
     s = FocusScorer("t")
     res = s.score(user_text="求这道题的极限", emotion_reading=_reading(0.0, 0.2, complexity=0.9))
     assert res.signals["emotion"] is None and res.signals["question"] == 0.9
-    assert abs(res.score - 0.9) < 1e-9  # lone present trigger renormalises to itself
-    # Distress + complex question merge via the weighted average (question lifts
+    # lone present trigger contributes weight×value (no denominator)
+    assert abs(res.score - config.FOCUS_SIGNAL_WEIGHTS["question"] * 0.9) < 1e-9
+    # Distress + complex question merge via the weighted sum (question lifts
     # the score above the emotion-only value, never dilutes it).
     s2 = FocusScorer("t")
     res2 = s2.score(user_text="想搞懂这道题", emotion_reading=_reading(-0.8, 0.9, complexity=0.8))
@@ -162,14 +163,15 @@ def test_score_includes_emotion_and_drops_when_absent():
 
 
 def test_emotion_alone_can_saturate_score():
-    # #2: a saturated distress reading with no keyword/cadence still scores 1.0
-    # (keyword None drops out of the denominator), so emotion triggers Focus
-    # independently of the vulnerability lexicon.
+    # #2: a saturated distress reading (emotion signal 1.0) with no keyword/cadence
+    # contributes its full weight to the score (keyword None drops out), so emotion
+    # alone — 0.7 ≥ FOCUS_CHARGE_ENTER (0.6) — triggers Focus independently of the
+    # vulnerability lexicon.
     s = FocusScorer("t")
     res = s.score(user_text="嗯", emotion_reading=_reading(-1.0, 1.0))
     assert res.signals["keyword"] is None
     assert res.signals["emotion"] == 1.0
-    assert res.score == 1.0
+    assert abs(res.score - config.FOCUS_SIGNAL_WEIGHTS["emotion"]) < 1e-9
 
 
 def test_stale_neutral_emotion_does_not_dilute_keyword():
@@ -180,7 +182,8 @@ def test_stale_neutral_emotion_does_not_dilute_keyword():
     res = s.score(user_text="今天好累，感觉一个人撑不住了", emotion_reading=_reading(0.0, 1.0))
     assert res.signals["emotion"] is None
     assert res.signals["keyword"] is not None and res.signals["keyword"] > 0
-    assert res.score == res.signals["keyword"]  # not diluted by the stale 0
+    # keyword alone contributes weight×value; not diluted by the stale-neutral 0
+    assert abs(res.score - config.FOCUS_SIGNAL_WEIGHTS["keyword"] * res.signals["keyword"]) < 1e-9
 
 
 def test_cadence_alone_does_not_trigger():

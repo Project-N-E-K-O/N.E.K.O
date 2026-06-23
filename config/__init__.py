@@ -1953,8 +1953,10 @@ if not (0.0 < FOCUS_IDLE_REPLIED_RETENTION <= FOCUS_IDLE_SILENT_RETENTION < 1.0)
 FOCUS_CHARGE_ENTER = 0.6
 """进入凝神的电荷阈值，也是「完全激活」点。
 - 用途：charge ≥ 此值 → REGULAR→FOCUS，同时前端边缘辉光在此处非线性跃升 + 起呼吸。
-- 一句重话（强 distress 读数 score≈0.65+，或两个脆弱词）即可单轮秒进；零散脆弱靠
-  累积逼近此值后进入。
+- 单个强信号即可单轮秒进：强 distress 情绪读数（emotion 满格 0.7、≥~0.86 时越阈）或
+  满格复杂提问（question 1.0×0.6=0.6）。脆弱词单独不足以单轮进（keyword 满格 0.5 < 此阈，
+  有意——词表是廉价信号），须叠加 emotion 或跨轮累积；零散信号靠 charge 累积逼近此值后进入。
+  注：score 现为各信号加权和（无分母，见 FOCUS_SIGNAL_WEIGHTS）。
 - charge 不再 cap 在此值——见 FOCUS_CHARGE_CAP，0.6 以上继续累积到 1.0（更亮更持久）。
 - 时间衰减以此为界：charge < ENTER 衰减快（FOCUS_TIME_DECAY_PER_SEC），≥ ENTER（完全激活）
   衰减减半（FOCUS_TIME_DECAY_PER_SEC_ACTIVATED）→ 0.6 以上自然更持久。"""
@@ -1999,22 +2001,28 @@ FOCUS_HARD_CAP_TURNS = 8
 - 上游：SM 的 focus_turn_count 计数器。"""
 
 FOCUS_SIGNAL_WEIGHTS: dict[str, float] = {
-    "keyword": 0.4,       # 用户消息命中脆弱情绪词（词表）
+    "keyword": 0.5,       # 用户消息命中脆弱情绪词（词表）
     "cadence": 0.2,       # 回复字数相对基线骤跌（仅在有 distress 证据时计入）
     "emotion": 0.7,       # master 情绪画像（主信号，**带符号**）：负效价 distress 为正、正效价 joy 为负，见 MasterEmotionTracker
     "question": 0.6,      # master 模型判定「正在问复杂客观问题（数学/逻辑/推理）」的认知加分项
 }
 """FocusScorer 各信号的相对权重（仅 inline 路径——评分只看用户自己说的话）。
-- 用途：scorer 对适用信号子集内权重重新归一后加权平均 → 该轮 score（喂给累加器）。
+- 用途：scorer 对适用信号按权重**直接加权求和（不归一、无分母）** → 该轮 score（喂给
+  累加器）。权重即每个信号的绝对贡献：present 信号加 weight×value 进 score，缺席信号贡献 0。
 - 信号语义分两类：
-  · keyword / emotion / question 是触发信号——缺席返回 None、不进分母（不稀释别的）。
-    emotion 是 keyword 词表的真模型升级（故词表权重 0.4 < 模型情绪 0.7），且**带符号**：
+  · keyword / emotion / question 是触发信号——缺席返回 None、不计入（贡献 0，不稀释别的）。
+    emotion 是 keyword 词表的真模型升级（故词表权重 0.5 < 模型情绪 0.7），且**带符号**：
     负效价 distress 为正、正效价 joy 为负（neutral 返回 None）——开心会把 score/charge
     往下拉。question 是认知轴加分项（问复杂客观题——数学/逻辑/推理——也值得 thinking-on），
     与 distress 正交但并入同一 charge。
-  · cadence 是行为信号——它的 0.0（「字数没骤降」）是有信息的、照常进分母；只有样本
-    不足时返回 None；且**仅在有 distress 证据**（keyword / question / emotion>0）时才计入
-    （否则一句短的开心话会让 cadence 误推 focus）。
+  · cadence 是行为信号——只在样本足够且**有 distress 证据**（keyword / question / emotion>0）
+    时才计入（否则一句短的开心话会让 cadence 误推 focus）。无分母后它的 0.0（「字数没骤降」）
+    贡献 0、等价于缺席，只有字数真的骤降才往 score 加分。
+- ⚠️ 无分母 ⇒ score 不再封顶在 1.0：全信号满格 = 各权重之和（当前 0.5+0.2+0.7+0.6=2.0），
+  下游由 FOCUS_CHARGE_CAP 截。调权重 = 直接调每信号绝对推力，也间接改相对 ENTER 的触发难度。
+- ⚠️ 单信号能否单轮进 ENTER 取决于「权重×满格值 ≥ ENTER」：去分母后 keyword 满格仅 0.5、
+  cadence 0.2，单独都越不过 ENTER(0.6)——脆弱词必须叠加 emotion 或跨轮累积才进（有意：词表
+  是廉价信号）；只有 emotion（≥~0.86）与满格 question（1.0×0.6）能单信号单轮进。
 - emotion 读 master 情绪画像（MasterEmotionTracker）已算好的最近 VA 读数，映射成
   distress = max(0,-valence) × (FOCUS_EMOTION_AROUSAL_FLOOR + (1-floor)×arousal)——
   负效价主导、arousal 带下限放大（见 FOCUS_EMOTION_AROUSAL_FLOOR）。**滞后一拍**
