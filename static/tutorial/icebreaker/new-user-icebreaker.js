@@ -2,7 +2,7 @@
     'use strict';
 
     var SOURCE = 'new_user_icebreaker';
-    var GAME_TYPE = 'new_user_icebreaker';
+    var ICEBREAKER_API_BASE = '/api/icebreaker';
     var STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     var AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
@@ -130,7 +130,7 @@
         }
 
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + path, {
+            return fetch(ICEBREAKER_API_BASE + path, {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -405,7 +405,7 @@
         }
 
         function postContextWithHeaders(headers, allowRetry) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
+            return fetch(ICEBREAKER_API_BASE + '/context', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -534,7 +534,7 @@
                 voice_key: String(voiceKey || '')
             }
         };
-        return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/speak', {
+        return fetch(ICEBREAKER_API_BASE + '/speak', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
@@ -585,7 +585,7 @@
     function setChoicePrompt(node, localeData) {
         var prompt = {
             sessionId: activeSession.sessionId,
-            gameType: GAME_TYPE,
+            gameType: SOURCE,
             options: buildPromptOptions(node, localeData)
         };
         broadcastIcebreakerChoicePrompt(prompt);

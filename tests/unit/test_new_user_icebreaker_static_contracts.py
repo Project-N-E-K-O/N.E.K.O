@@ -18,6 +18,7 @@ UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "unive
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
+ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
 SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
@@ -234,8 +235,10 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     index_html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert "new_user_icebreaker" in runtime
-    assert "var GAME_TYPE = 'new_user_icebreaker'" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/speak'" in runtime
+    assert "var ICEBREAKER_API_BASE = '/api/icebreaker'" in runtime
+    assert "ICEBREAKER_API_BASE + '/speak'" in runtime
+    assert "/api/game/new_user_icebreaker" not in runtime
+    assert "encodeURIComponent(GAME_TYPE)" not in runtime
     assert "mirror_text: false" in runtime
     assert "interrupt_audio: true" in runtime
     assert "voiceKey" in runtime
@@ -278,20 +281,22 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     websocket_router = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
     game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
 
     assert "appendLlmContext(role, messageText" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/context'" in runtime
+    assert "ICEBREAKER_API_BASE + '/context'" in runtime
     assert "request_id: String(extra.requestId || '')" in runtime
-    assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
-    assert "_icebreaker_context_seen_request_ids" not in game_router
-    assert "append_context(" in game_router
-    assert "source=\"game.icebreaker\"" in game_router
-    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in game_router
-    assert "invalid_text_length" in game_router
+    assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in icebreaker_router
+    assert "_icebreaker_context_seen_request_ids" not in icebreaker_router
+    assert "append_context(" in icebreaker_router
+    assert "source=\"icebreaker\"" in icebreaker_router
+    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in icebreaker_router
+    assert "invalid_text_length" in icebreaker_router
     assert "append_icebreaker_context_async" not in game_router
-    assert '@router.post("/{game_type}/context")' in game_router
+    assert '@router.post("/{game_type}/context")' not in game_router
+    assert '@router.post("/context")' in icebreaker_router
     assert "startIcebreakerRoute(nextSession).then(function (started) {" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + path" in runtime
+    assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
     assert "postgameProactive: { enabled: false }" in runtime
@@ -299,16 +304,19 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
 
-def test_icebreaker_route_start_does_not_emit_game_window_or_timeout_heartbeat():
+def test_icebreaker_route_is_separate_from_game_route_active_state():
     game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
     window_open_guard = game_router.split("mgr_for_ws = get_session_manager().get(lanlan_name)", 1)[1].split(
         "else:",
         1,
     )[0]
 
-    assert 'if game_type == "new_user_icebreaker":' in game_router
-    assert 'state["heartbeat_enabled"] = False' in game_router
-    assert 'game_type != "new_user_icebreaker"' in window_open_guard
+    assert '"reason": "not_a_game_route"' in game_router
+    assert '"/api/icebreaker/route/start"' in game_router
+    assert "activate_icebreaker_route" in icebreaker_router
+    assert "_get_active_game_route_state" not in icebreaker_router
+    assert "game_window_state_change" not in icebreaker_router
     assert 'state.get("game_route_active")' in window_open_guard
     assert 'action="opened"' in game_router
 
