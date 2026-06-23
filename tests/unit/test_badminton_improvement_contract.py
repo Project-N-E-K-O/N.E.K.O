@@ -1642,6 +1642,7 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     assert "playResultBgmOnce();" in show_result
     assert "badmintonGameAudio.sync('game-over');" not in show_result.replace("playResultBgmOnce();", "")
     assert "game.resultBgmPlayed = false;" in reset_section
+    assert "badmintonGameAudio.resetSyncKey();" in reset_section
     assert "var _bdResultBgmTriggered = false;" in html
     assert "if (resolved.key === 'gameOver') {" in sync_bgm_section
     assert "if (_bdResultBgmTriggered) return;" in sync_bgm_section
@@ -1668,6 +1669,18 @@ def test_badminton_user_reply_voice_deadline_survives_inflight_guard():
     assert "if (isUserReply) {" in speak_section
     assert "voiceArbiter.inFlight.expiresAt + VOICE_ARBITER_DEFAULTS.tailWaitMs" in speak_section
     assert "entry.expiresAt = Math.max(" in speak_section
+
+
+@pytest.mark.unit
+def test_badminton_voice_deferral_without_deadline_uses_fallback_delay():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    request_start = html.index("function _requestVoicePlayback(entry) {")
+    request_section = html[request_start:html.index("function _flushVoiceArbiter()", request_start)]
+
+    assert "var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;" in request_section
+    assert "var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;" in request_section
+    assert "deadlineMs - 250 || 900" not in request_section
+    assert "_scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));" in request_section
 
 
 @pytest.mark.unit

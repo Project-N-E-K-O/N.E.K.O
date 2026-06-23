@@ -2625,7 +2625,8 @@
     if (playback.active && playback.source === 'playback_state' && playback.remainingMs > entry.tailWaitMs && canDeferWithoutExpiring && !entry.playbackDeferredOnce) {
       entry.playbackDeferredOnce = true;
       _storeVoicePending(entry);
-      _scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, Math.max(120, deadlineMs - 250 || 900)));
+      var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;
+      _scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));
       return Promise.resolve({ ok: false, queued: true, reason: 'voice_deferred_once' });
     }
     var holdMs = Math.max(VOICE_ARBITER_DEFAULTS.inFlightGuardMs, Math.round(_estimateVoiceDuration(entry.line) * 1000));
@@ -5172,6 +5173,7 @@
     game.closeRecordSent = false;
     game.resultRecorded = false;
     game.resultBgmPlayed = false;
+    badmintonGameAudio.resetSyncKey();
     game.globalRank = 0;
     game.globalTotalPlayers = 0;
     clearTimeout(game.duel.timer);
