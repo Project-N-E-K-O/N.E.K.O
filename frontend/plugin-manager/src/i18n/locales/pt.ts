@@ -647,11 +647,11 @@ export default {
       },
       lines: {
         introActivationHint: 'Espera um pouquinho, já vou começar a falar, nya~!',
-        introGreetingReply: "Uma brisa suave, sol quentinho e você aparecendo bem na hora certa. Prazer em te conhecer! Eu sou Lin Youyi; cuida bem de mim daqui pra frente, miau~! Escrevi tudo sobre este lugar neste guia de iniciante. Pense nele como nosso primeiro presentinho por termos nos conhecido, aceita, por favor!",
+        introGreetingReply:  "Uma brisa suave, sol quentinho e você aparecendo bem na hora certa. Prazer em te conhecer! Eu sou Lin Youyi; cuida bem de mim daqui pra frente, miau~! Escrevi tudo sobre este lugar neste guia de iniciante. Pense nele como nosso primeiro presentinho por termos nos conhecido, aceita, por favor!",
         introBasic: "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
         takeoverCaptureCursor: "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo colocar minhas patinhas no seu teclado e mouse. Posso ajudar a digitar, abrir páginas... mas se esse cursor ficar se mexendo sem parar, talvez eu não resista a pular nele! Está pronto pras minhas travessuras... quer dizer, pra minha ajuda? Miau!",
         takeoverPluginPreviewHome: "Além dos recursos que eu já apresentei, também tem um monte de plugins superdivertidos por aqui!",
-        takeoverPluginPreviewDashboard: "Com eles, eu não só consigo ler comentários do Bilibili, como também posso te ajudar a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a Super Deusa Gata onipotente! Hmph!",
+        takeoverPluginPreviewDashboard:  "Com eles, eu não só consigo ler comentários do Bilibili, como também posso te ajudar a apagar as luzes e ligar o ar-condicionado... Esta gatinha é a Super Deusa Gata onipotente! Hmph!",
         takeoverSettingsPeekIntro: "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar devagarinho na companheira perfeita que quer ter sempre ao seu lado.",
         takeoverSettingsPeekDetail: "Seja o carinho das minhas palavras, meus pequenos traços de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta. Este botãozinho também é superimportante! Com um clique suave, eu poderei ir te encontrar no momento perfeito.",
         takeoverSettingsPeekDetailPart1: "Seja o carinho das minhas palavras, meus pequenos traços de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
