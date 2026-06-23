@@ -1610,7 +1610,11 @@ class DirectTaskExecutor:
         if openclaw_enabled:
             try:
                 from brain.openclaw_adapter import OpenClawAdapter
-                if OpenClawAdapter.normalize_magic_command(text):
+                # Full ZERO-LLM rule classifier, not just exact magic words: it
+                # also catches natural-language commands ("取消这个任务" → /stop,
+                # "换个话题" → /new, …). These are no-LLM shortcuts the gate must
+                # keep — only the LLM magic-intent path is fair to skip on chat.
+                if OpenClawAdapter.rule_magic_command(text):
                     return True
             except Exception:
                 return True  # can't run the shortcut → fail open

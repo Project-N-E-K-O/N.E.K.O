@@ -39,11 +39,26 @@ def _exec():
     return DirectTaskExecutor(computer_use=object())
 
 
+class _SpyCU:
+    """computer_use stub that counts is_available() calls, to prove the gate
+    brakes BEFORE the availability probe (not a None that fell through later)."""
+
+    def __init__(self):
+        self.is_available_calls = 0
+
+    def is_available(self):
+        self.is_available_calls += 1
+        return {"ready": True}
+
+
 # ── _deterministic_action_signal: the zero-LLM shortcuts the gate must keep ──
 def test_det_signal_magic_word():
     ex = _exec()
     assert ex._deterministic_action_signal("/clear", openclaw_enabled=True, user_plugin_enabled=False) is True
     assert ex._deterministic_action_signal("stop", openclaw_enabled=True, user_plugin_enabled=False) is True
+    # natural-language magic commands (zero-LLM rule classifier) count too
+    assert ex._deterministic_action_signal("取消这个任务", openclaw_enabled=True, user_plugin_enabled=False) is True
+    assert ex._deterministic_action_signal("换个话题吧", openclaw_enabled=True, user_plugin_enabled=False) is True
     assert ex._deterministic_action_signal("随便聊聊", openclaw_enabled=True, user_plugin_enabled=False) is False
     # magic word is ignored when openclaw is off
     assert ex._deterministic_action_signal("/clear", openclaw_enabled=False, user_plugin_enabled=False) is False
@@ -78,7 +93,8 @@ def test_det_signal_none_when_no_shortcuts():
 def test_gate_brakes_on_confident_chat(monkeypatch):
     monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
     monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
-    ex = _exec()
+    cu = _SpyCU()
+    ex = DirectTaskExecutor(computer_use=cu)
     msgs = [{"role": "user", "text": "今天天气真好心情不错"}]
     # computer_use only, action_intent below the line, no deterministic signal →
     # the gate brakes and returns None before any availability check / LLM call.
@@ -86,6 +102,9 @@ def test_gate_brakes_on_confident_chat(monkeypatch):
         messages=msgs, agent_flags={"computer_use_enabled": True}, action_intent=0.05,
     ))
     assert res is None
+    # Proven to brake AT THE GATE: the availability probe was never reached, so
+    # no assessment / channel work happened — not a None that fell through later.
+    assert cu.is_available_calls == 0
 
 
 def test_gate_consults_deterministic_only_when_braking(monkeypatch):

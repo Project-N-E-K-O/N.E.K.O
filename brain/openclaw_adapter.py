@@ -432,6 +432,18 @@ class OpenClawAdapter:
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}
 
+    @staticmethod
+    def rule_magic_command(user_text: str) -> Optional[str]:
+        """Public zero-LLM magic-command detector: the command a rule match would
+        dispatch, or None. Wraps the rule classifier so callers that need a
+        no-LLM magic-word check (e.g. the analyzer pre-gate) don't reach into the
+        private helper or pay the LLM path. Covers exact magic words AND the
+        natural-language phrase list ("取消这个任务" → /stop, "换个话题" → /new, …)."""
+        result = OpenClawAdapter._classify_magic_intent_with_rules(user_text)
+        if isinstance(result, dict) and result.get("is_magic_intent"):
+            return result.get("command")
+        return None
+
     async def classify_magic_intent(self, user_text: str) -> Dict[str, Any]:
         text = str(user_text or "").strip()
         if not text:

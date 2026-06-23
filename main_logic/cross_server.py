@@ -62,19 +62,24 @@ emotion_pattern = re.compile('<(.*?)>')
 async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
-        # Non-blocking read of the cheap pre-gate signal the master-emotion call
-        # produced at input-time. Lazy import keeps cross_server's module graph
-        # clean. Cache miss / disabled / stale (different turn) / no-signal →
-        # None → the agent gate fails open (runs the assessment). turn_end must
-        # never block on the emotion call, so this only reads an already-cached
-        # value, matched to THIS turn's latest user message.
-        from main_logic.activity.master_emotion import gate_signal_for
-        _latest_user_text = next(
-            (str(m.get("content") or m.get("text") or "")
-             for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
-            "",
-        )
-        action_intent = gate_signal_for(lanlan_name, _latest_user_text)
+        # Optional optimization hint: the cheap pre-gate signal the master-emotion
+        # call produced at input-time, matched to THIS turn's latest user message.
+        # It must NEVER block or abort the publish — wrapped in its own try so any
+        # lazy-import/read failure degrades to None (the agent gate then fails open
+        # and runs its assessment). turn_end also never blocks on the emotion call,
+        # so this only reads an already-cached value. Cache miss / disabled / stale
+        # (different turn) / no-signal → None.
+        action_intent = None
+        try:
+            from main_logic.activity.master_emotion import gate_signal_for
+            _latest_user_text = next(
+                (str(m.get("content") or m.get("text") or "")
+                 for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
+                "",
+            )
+            action_intent = gate_signal_for(lanlan_name, _latest_user_text)
+        except Exception:
+            action_intent = None
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,
