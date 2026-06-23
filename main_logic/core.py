@@ -9917,13 +9917,18 @@ class LLMSessionManager:
                 effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
             delivered = False
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({
-                    "type": "audio_chunk",
-                    "speech_id": effective_speech_id
-                })
-                await self.websocket.send_bytes(tts_audio)
-                self.sync_message_queue.put({"type": "binary", "data": tts_audio})
-                delivered = True
+                try:
+                    await self.websocket.send_json({
+                        "type": "audio_chunk",
+                        "speech_id": effective_speech_id
+                    })
+                    await self.websocket.send_bytes(tts_audio)
+                    self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+                    delivered = True
+                except WebSocketDisconnect:
+                    logger.warning("⚠️ send_speech: WebSocket disconnected")
+                except Exception as e:
+                    logger.warning("⚠️ send_speech primary WS failed; continuing speech taps: %s", e)
             if await self._publish_speech_taps(tts_audio, effective_speech_id):
                 delivered = True
             if delivered:

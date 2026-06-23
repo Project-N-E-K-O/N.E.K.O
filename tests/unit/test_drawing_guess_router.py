@@ -356,6 +356,14 @@ def test_word_matching_accepts_synonyms_and_multilingual_variants():
 
 
 @pytest.mark.unit
+def test_user_guess_extraction_uses_alias_boundaries():
+    assert dgr._extract_user_guess_word("Is it cat?").id == "cat"
+    assert dgr._extract_user_guess_word("\u8fd9\u662f\u72d7\u5417\uff1f").id == "dog"
+    assert dgr._extract_user_guess_word("Is it concatenate?") is None
+    assert dgr._extract_user_guess_word("\u8fd9\u662f\u70ed\u72d7\u5417\uff1f") is None
+
+
+@pytest.mark.unit
 def test_safe_hint_options_do_not_reveal_answer_aliases():
     for word in dgr.WORDS:
         hints = dgr._safe_word_hint_options(word, "en")
@@ -558,6 +566,32 @@ async def test_missing_client_round_token_is_stale_when_session_has_token():
     }))
 
     assert result == {"ok": False, "reason": "stale_round_flow"}
+    assert session["phase"] == "ai_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_draw_rejects_concurrent_session_request():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-busy",
+        "i18n_language": "zh-CN",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-busy"]
+    lock = dgr._get_session_lock(session)
+    await lock.acquire()
+    try:
+        result = await dgr.drawing_guess_ai_draw(_FakeRequest({
+            "lanlan_name": "YUI",
+            "session_id": "dg-busy",
+            "i18n_language": "zh-CN",
+        }))
+    finally:
+        lock.release()
+
+    assert result["ok"] is False
+    assert result["reason"] == "session_busy"
+    assert result["state"]["phase"] == "ai_drawing"
     assert session["phase"] == "ai_drawing"
 
 

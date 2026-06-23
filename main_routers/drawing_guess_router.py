@@ -43,6 +43,7 @@ ROUND_AI_GUESS_SECONDS = 5 * 60
 MAX_AI_GUESS_ATTEMPTS = 3
 USER_DRAW_OPTION_COUNT = 3
 SESSION_TTL_SECONDS = 60 * 60
+SESSION_CLEANUP_INTERVAL_SECONDS = 5 * 60
 MODEL_SVG_TIMEOUT_SECONDS = 18.0
 MODEL_SVG_MAX_ATTEMPTS = 2
 MODEL_SVG_MAX_BYTES = 24_000
@@ -64,6 +65,7 @@ VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
 VISION_GUESS_MAX_CANDIDATES = 40
 _DRAWING_GUESS_CONTEXT_BEGIN = "======以下为开启上下文输入======"
 _DRAWING_GUESS_CONTEXT_END = "======以上为开启上下文输入======"
+_SESSION_LOCK_KEY = "_request_lock"
 
 _SVG_ALLOWED_TAGS = {"svg", "g", "path", "line", "polyline", "polygon", "rect", "circle", "ellipse"}
 _SVG_DRAWING_TAGS = _SVG_ALLOWED_TAGS - {"svg", "g"}
@@ -512,6 +514,7 @@ _WORD_SAFE_HINTS: dict[str, tuple[str, ...]] = {
     ),
 }
 _drawing_guess_sessions: dict[str, dict[str, Any]] = {}
+_session_cleanup_task: asyncio.Task[None] | None = None
 
 
 def _normalize_locale(value: Any) -> str:
@@ -529,6 +532,39 @@ def _normalize_locale(value: Any) -> str:
 
 def _session_key(lanlan_name: str, session_id: str) -> str:
     return f"{lanlan_name}:{session_id}"
+
+
+async def _session_cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
+        try:
+            _cleanup_sessions()
+        except Exception as exc:
+            logger.warning("drawing_guess session cleanup failed: %s", exc)
+
+
+@router.on_event("startup")
+async def _start_session_cleanup_task() -> None:
+    global _session_cleanup_task
+    if _session_cleanup_task is None or _session_cleanup_task.done():
+        _session_cleanup_task = asyncio.create_task(
+            _session_cleanup_loop(),
+            name="drawing_guess_session_cleanup",
+        )
+
+
+@router.on_event("shutdown")
+async def _stop_session_cleanup_task() -> None:
+    global _session_cleanup_task
+    task = _session_cleanup_task
+    _session_cleanup_task = None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _word_label(word: DrawingGuessWord, locale: str) -> str:
@@ -637,6 +673,9 @@ def _word_aliases(word: DrawingGuessWord) -> set[str]:
 
 
 _TEXT_NORMALIZER_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_CJK_ALIAS_PREFIX_CHARS = frozenset("是像猜画畫答为為只条條个個张張")
+_CJK_ALIAS_SUFFIX_CHARS = frozenset("吗嗎吧呢呀啊喵嘛么麼")
 _USER_GUESS_INTENT_RE = re.compile(
     r"(?:"
     r"\b(?:i\s+guess|my\s+guess|is\s+(?:it|this|that)|could\s+it\s+be|maybe\s+(?:it'?s|this\s+is)|looks?\s+like|answer\s+is)\b"
@@ -654,25 +693,60 @@ _AI_RETRY_HINT_RE = re.compile(
 )
 
 
-def _normalize_guess_text(value: Any) -> str:
+def _fold_guess_text(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or "").strip()).casefold()
-    text = "".join(
+    return "".join(
         char
         for char in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(char)
     )
-    return _TEXT_NORMALIZER_RE.sub("", text)
+
+
+def _normalize_guess_text(value: Any) -> str:
+    return _TEXT_NORMALIZER_RE.sub("", _fold_guess_text(value))
+
+
+def _spaced_guess_text(value: Any) -> str:
+    return _TEXT_NORMALIZER_RE.sub(" ", _fold_guess_text(value)).strip()
+
+
+def _cjk_boundary_ok(text: str, start: int, end: int) -> bool:
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    before_ok = not before or not _CJK_CHAR_RE.fullmatch(before) or before in _CJK_ALIAS_PREFIX_CHARS
+    after_ok = not after or not _CJK_CHAR_RE.fullmatch(after) or after in _CJK_ALIAS_SUFFIX_CHARS
+    return before_ok and after_ok
+
+
+def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
+    normalized_text = _normalize_guess_text(text)
+    normalized_alias = _normalize_guess_text(alias)
+    if not normalized_text or not normalized_alias:
+        return False
+    if normalized_text == normalized_alias:
+        return True
+
+    folded_alias = _fold_guess_text(alias)
+    if _CJK_CHAR_RE.search(folded_alias):
+        folded_text = _fold_guess_text(text)
+        start = folded_text.find(folded_alias)
+        while start >= 0:
+            end = start + len(folded_alias)
+            if _cjk_boundary_ok(folded_text, start, end):
+                return True
+            start = folded_text.find(folded_alias, start + 1)
+        return False
+
+    spaced_alias = _spaced_guess_text(alias)
+    if not spaced_alias:
+        return False
+    spaced_text = _spaced_guess_text(text)
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(spaced_alias)}(?![a-z0-9])", spaced_text))
 
 
 def _matches_word(text: Any, word: DrawingGuessWord) -> bool:
-    normalized_text = _normalize_guess_text(text)
-    if not normalized_text:
-        return False
     for alias in _word_aliases(word):
-        normalized_alias = _normalize_guess_text(alias)
-        if not normalized_alias:
-            continue
-        if normalized_text == normalized_alias or normalized_alias in normalized_text:
+        if _contains_alias_with_guess_boundary(text, alias):
             return True
     return False
 
@@ -685,12 +759,8 @@ def _matches_exact_word_alias(text: Any, word: DrawingGuessWord) -> bool:
 
 
 def _mentions_word_alias(text: Any, word: DrawingGuessWord) -> bool:
-    normalized_text = _normalize_guess_text(text)
-    if not normalized_text:
-        return False
     for alias in _word_aliases(word):
-        normalized_alias = _normalize_guess_text(alias)
-        if normalized_alias and (normalized_text == normalized_alias or normalized_alias in normalized_text):
+        if _contains_alias_with_guess_boundary(text, alias):
             return True
     return False
 
@@ -813,6 +883,26 @@ def _cleanup_sessions(now: float | None = None) -> None:
 
 def _touch(session: dict[str, Any]) -> None:
     session["last_activity"] = time.time()
+
+
+def _get_session_lock(session: dict[str, Any]) -> asyncio.Lock:
+    lock = session.get(_SESSION_LOCK_KEY)
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        session[_SESSION_LOCK_KEY] = lock
+    return lock
+
+
+async def _acquire_session_lock(session: dict[str, Any], locale: str) -> tuple[asyncio.Lock | None, dict[str, Any] | None]:
+    lock = _get_session_lock(session)
+    if lock.locked():
+        return None, {
+            "ok": False,
+            "reason": "session_busy",
+            "state": _public_round_state(session, locale),
+        }
+    await lock.acquire()
+    return lock, None
 
 
 def _pick_user_word_options(ai_word: DrawingGuessWord) -> list[DrawingGuessWord]:
@@ -2715,6 +2805,17 @@ async def drawing_guess_ai_draw(request: Request):
     if error:
         return {"ok": False, "reason": error}
     locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    lock, busy = await _acquire_session_lock(session, locale)
+    if busy is not None:
+        return busy
+    try:
+        return await _drawing_guess_ai_draw_locked(data, session, locale)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str, Any], locale: str) -> dict[str, Any]:
     word = _WORD_BY_ID[str(session["ai_word_id"])]
     lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
     drawing = await _generate_model_drawing(word, locale, lanlan_name)
@@ -2762,6 +2863,22 @@ async def _handle_drawing_guess_input_payload(data: dict[str, Any]) -> dict[str,
     text = str(data.get("text") or "").strip()
     if not text:
         return {"ok": False, "reason": "missing_text"}
+    lock, busy = await _acquire_session_lock(session, locale)
+    if busy is not None:
+        return busy
+    try:
+        return await _handle_drawing_guess_input_payload_locked(data, session, locale, text)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+async def _handle_drawing_guess_input_payload_locked(
+    data: dict[str, Any],
+    session: dict[str, Any],
+    locale: str,
+    text: str,
+) -> dict[str, Any]:
     if session.get("phase") != "user_guessing":
         phase = str(session.get("phase") or "")
         lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
@@ -3229,14 +3346,21 @@ async def drawing_guess_vision_guess(request: Request):
     if session.get("phase") not in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         return {"ok": True, "handled": False, "reason": "not_ai_guessing", "state": _public_round_state(session, locale)}
 
-    return await _run_drawing_guess_vision_turn(
-        session=session,
-        locale=locale,
-        lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
-        image_data_url=str(data.get("image_data_url") or ""),
-        user_hint=str(data.get("user_hint") or "").strip(),
-        settle_on_miss=bool(data.get("settle_on_miss") or data.get("time_expired")),
-    )
+    lock, busy = await _acquire_session_lock(session, locale)
+    if busy is not None:
+        return busy
+    try:
+        return await _run_drawing_guess_vision_turn(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            image_data_url=str(data.get("image_data_url") or ""),
+            user_hint=str(data.get("user_hint") or "").strip(),
+            settle_on_miss=bool(data.get("settle_on_miss") or data.get("time_expired")),
+        )
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def _localized_line(locale: str, key: str) -> str:
