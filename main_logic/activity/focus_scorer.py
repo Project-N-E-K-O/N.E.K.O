@@ -221,11 +221,11 @@ def _weighted_sum(signals: dict, weights: dict) -> float:
     contributes nothing, neither dragging the score toward zero nor inflating
     it. Returns 0.0 when no signal applies.
 
-    Without a denominator the sum is unbounded by the weight total (all signals
-    saturated ⇒ ``sum(weights.values())``, which may exceed 1.0); the charge
-    accumulator's ``FOCUS_CHARGE_CAP`` clamps the downstream charge, and a
-    signal that returns exactly ``0.0`` (e.g. cadence "length normal") is
-    equivalent to being absent here.
+    Without a denominator the sum is not renormalised (all signals saturated ⇒
+    ``sum(weights.values())``, which may exceed 1.0); the charge accumulator's
+    ``FOCUS_CHARGE_CAP`` clamps the downstream charge, and a signal that returns
+    exactly ``0.0`` (e.g. cadence "length normal") is equivalent to being absent
+    here.
     """
     total = 0.0
     for name, val in signals.items():
