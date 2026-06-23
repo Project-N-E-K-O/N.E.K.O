@@ -14,8 +14,10 @@
 
 """Focus-mode signal scorer (the Focus trigger).
 
-Produces the single [0, 1] score that ``SessionStateMachine.update_focus``
-feeds into its hysteresis. Scoring is **inline-only**: it reads what the
+Produces the single scalar score that ``SessionStateMachine.update_focus``
+feeds into its hysteresis — a direct weighted sum, NOT bounded to ``[0, 1]``
+(it can reach ``sum(weights)`` ≈ 2.0 or go slightly negative on a happy turn;
+see ``_weighted_sum``). Scoring is **inline-only**: it reads what the
 user just typed (``stream_text``), never the screen. The applicable
 signals are keyword + cadence + emotion — keyword/cadence read the message
 directly, emotion reads the latest master-emotion VA reading the caller hands
@@ -54,8 +56,10 @@ from config.prompts.prompts_focus import scan_vulnerability_keywords
 class FocusScore:
     """Result of one scoring pass: the final score plus the per-signal breakdown.
 
-    ``signals`` holds each sub-signal's value in [0, 1], or ``None`` when
-    it didn't apply to this path — kept for diagnostics / logging so a
+    ``signals`` holds each sub-signal's value (``[0, 1]`` for keyword /
+    cadence / question, SIGNED for emotion — negative on a happy turn), or
+    ``None`` when it didn't apply to this path — kept for diagnostics /
+    logging so a
     tuner can see *why* a turn fed the accumulator a high or low score
     (the score is integrated into the leaky charge; see ``FOCUS_CHARGE_*``).
     """

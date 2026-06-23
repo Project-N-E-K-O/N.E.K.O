@@ -526,13 +526,15 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
     # to read the screen it would AttributeError. A strongly vulnerable message
     # still enters FOCUS regardless of any privacy state.
-    # keyword saturates at weight 0.5 (weighted SUM, no denominator). At the
-    # PRODUCTION enter (0.6) a keyword-only message would NOT enter single-turn —
-    # an accepted trade-off (the lexicon is a cheap signal, must stack with emotion
-    # or accumulate; see FOCUS_SIGNAL_WEIGHTS). This test only asserts the inline
-    # path is privacy-independent (never reads the screen / AttributeErrors), so it
-    # pins enter at the keyword saturation (0.5) to isolate that wiring from the bar.
-    _patch_charge(monkeypatch, enter=0.5)
+    # A keyword-only message saturates at score = FOCUS_SIGNAL_WEIGHTS["keyword"]
+    # (weighted SUM, no denominator). At the PRODUCTION enter (0.6) that would NOT
+    # enter single-turn — an accepted trade-off (the lexicon is a cheap signal, must
+    # stack with emotion or accumulate). This test only asserts the inline path is
+    # privacy-independent (never reads the screen / AttributeErrors), so it pins
+    # enter just below the keyword saturation — derived from config so a future
+    # weight tweak can't silently break it — to isolate that wiring from the bar.
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
