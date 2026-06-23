@@ -4,8 +4,8 @@ Coverage:
 1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
    scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
    hard-cap exit / topic-switch exit-and-clear.
-2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, weight
-   renormalisation, cadence baseline roll.
+2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, direct
+   weighted-sum scoring (no denominator), cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    retention override, reset clearing, master-switch-off degradation.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
@@ -526,7 +526,9 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
     # to read the screen it would AttributeError. A strongly vulnerable message
     # still enters FOCUS regardless of any privacy state.
-    _patch_charge(monkeypatch, enter=1.0)
+    # keyword saturates at weight 0.4 (weighted SUM, no denominator); enter below
+    # that so a strongly vulnerable keyword-only message still enters single-turn.
+    _patch_charge(monkeypatch, enter=0.3)
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
