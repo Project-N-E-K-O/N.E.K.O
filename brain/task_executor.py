@@ -20,6 +20,7 @@ Evaluates ComputerUse / BrowserUse / UserPlugin feasibility in parallel
 import json
 import os
 import re
+import hashlib
 import asyncio
 import time
 from pathlib import Path
@@ -236,9 +237,12 @@ class DirectTaskExecutor:
         self._cached_llms: dict[tuple, ChatOpenAI] = {}
         self._cached_llm_config_key: tuple = ()  # tracks (api_key, base_url, model) to detect config changes
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
-        # plugin_id -> (full_description, generated_short_description)
-        # 只有 LLM 生成的条目会落盘（见 _persist_generated_short_descriptions）；
-        # manifest 自带 short_description 的插件每次加载都能免费重新 prime，无需持久化。
+        # plugin_id -> (description_key, generated_short_description)
+        # description_key = full description 的 hash（见 _desc_key）：既精确反映完整
+        # description 的变化（截断只用于喂 LLM，不能当失效 key），又有界，避免超大
+        # description 撑爆内存/缓存文件。只有 LLM 生成的条目会落盘（见
+        # _persist_generated_short_descriptions）；manifest 自带 short_description
+        # 的插件每次加载都能免费重新 prime，无需持久化。
         self._short_desc_cache_filename = "plugin_short_desc_cache.json"
         self._short_desc_cache: dict[str, tuple[str, str]] = self._load_short_desc_cache()
         # plugin ids currently being generated in a background prewarm task —
@@ -293,6 +297,13 @@ class DirectTaskExecutor:
         """Allow agent_server to inject a custom async provider for plugin discovery."""
         self._external_plugin_provider = provider
 
+    @staticmethod
+    def _desc_key(desc: str) -> str:
+        """Stable, bounded validity key for a plugin description. The cache hits
+        only while the *full* description is unchanged; hashing keeps the key
+        small (a plugin's raw description is uncapped)."""
+        return hashlib.sha256((desc or "").encode("utf-8")).hexdigest()
+
     def _apply_cached_short_descriptions(self, plugins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Apply manifest-provided or previously-generated short_description
         onto each plugin dict. Pure manifest/cache read — NEVER calls the LLM,
@@ -309,9 +320,11 @@ class DirectTaskExecutor:
             short = str(p.get("short_description", "") or "").strip()
             desc = str(p.get("description", "") or "").strip()
             if not short:
-                # Apply cached value if available and description hasn't changed.
+                # Apply cached value if available and the (full) description
+                # hasn't changed. Key off the full description, not the truncated
+                # one used for the LLM prompt, so long-description plugins still hit.
                 cached = self._short_desc_cache.get(pid)
-                if cached and cached[0] == desc:
+                if cached and cached[0] == self._desc_key(desc):
                     p["short_description"] = cached[1]
                     continue
                 if desc:
@@ -319,7 +332,7 @@ class DirectTaskExecutor:
             elif pid:
                 # (a) manifest already carries short_description — use it as-is,
                 # zero LLM. Prime the cache so it survives a desc-unchanged refresh.
-                self._short_desc_cache[pid] = (desc, short)
+                self._short_desc_cache[pid] = (self._desc_key(desc), short)
         return missing
 
     def _schedule_short_desc_prewarm(self, plugins: List[Dict[str, Any]]) -> None:
@@ -352,14 +365,15 @@ class DirectTaskExecutor:
         if not pending:
             return
         pids = {str(p.get("id", "")) for p in pending}
-        inflight |= pids
+        # Resolve the loop BEFORE constructing the coroutine: if there's no
+        # running event loop (sync context), bail out without leaving an
+        # un-awaited coroutine behind. analyze still falls back to full desc.
         try:
-            task = asyncio.create_task(self._prewarm_short_descriptions(pending, pids))
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running event loop (called from a sync context) — skip prewarm;
-            # analyze still falls back to the full description.
-            inflight -= pids
             return
+        inflight |= pids
+        task = loop.create_task(self._prewarm_short_descriptions(pending, pids))
         self._short_desc_prewarm_tasks.add(task)
         task.add_done_callback(self._short_desc_prewarm_tasks.discard)
 
@@ -394,9 +408,12 @@ class DirectTaskExecutor:
                     from utils.tokenize import count_tokens
                     if text and count_tokens(text) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                         p["short_description"] = text
-                        self._short_desc_cache[pid] = (desc, text)
+                        # Key off the FULL description (truncation is prompt-only),
+                        # so apply-time lookup hits even for long-description plugins.
+                        desc_key = self._desc_key(raw_desc)
+                        self._short_desc_cache[pid] = (desc_key, text)
                         if isinstance(pid, str) and pid:
-                            generated[pid] = (desc, text)
+                            generated[pid] = (desc_key, text)
                         # LLM 生成原文不写 logger
                         logger.debug("[Agent] Generated short_description for %s (len=%d chars)", pid, len(text))
                         print(f"[Agent] short_description {pid}: {text[:80]}")
@@ -824,10 +841,11 @@ class DirectTaskExecutor:
     def _load_short_desc_cache(self) -> dict[str, tuple[str, str]]:
         """Load the on-disk short_description cache (LLM-generated entries only).
 
-        Returns ``{plugin_id: (description, short_description)}``. ``description``
-        is the validity key: at apply time we re-generate when the plugin's
-        current description no longer matches the stored one. Best-effort —
-        a missing or corrupt file just yields an empty cache.
+        Returns ``{plugin_id: (description_key, short_description)}``.
+        ``description_key`` is a hash of the full description (see ``_desc_key``):
+        at apply time we re-generate when the plugin's current description no
+        longer hashes to the stored key. Best-effort — a missing or corrupt file
+        just yields an empty cache.
         """
         try:
             path = self._get_short_desc_cache_path()
@@ -849,10 +867,10 @@ class DirectTaskExecutor:
         for pid, item in entries.items():
             if not isinstance(pid, str) or not isinstance(item, dict):
                 continue
-            desc = item.get("desc")
+            key = item.get("key")
             short = item.get("short")
-            if isinstance(desc, str) and isinstance(short, str) and short:
-                cache[pid] = (desc, short)
+            if isinstance(key, str) and isinstance(short, str) and short:
+                cache[pid] = (key, short)
         return cache
 
     def _persist_generated_short_descriptions(self, generated: dict[str, tuple[str, str]]) -> None:
@@ -874,7 +892,7 @@ class DirectTaskExecutor:
         on_disk.update(generated)
         payload = {
             "version": 1,
-            "entries": {pid: {"desc": d, "short": s} for pid, (d, s) in on_disk.items()},
+            "entries": {pid: {"key": k, "short": s} for pid, (k, s) in on_disk.items()},
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

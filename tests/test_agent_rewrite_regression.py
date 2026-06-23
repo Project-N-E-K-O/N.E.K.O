@@ -1919,10 +1919,12 @@ def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
     缓存陈旧的留空并作为后台预热候选返回，绝不在此处现生成。"""
     from brain.task_executor import DirectTaskExecutor
 
+    key = DirectTaskExecutor._desc_key
     executor = object.__new__(DirectTaskExecutor)
     executor._short_desc_cache = {}
-    executor._short_desc_cache["from_cache"] = ("full B", "cached B")
-    executor._short_desc_cache["stale_cache"] = ("old D", "cached D")
+    # 缓存键是完整 description 的 hash（截断只用于喂 LLM，不当失效 key）
+    executor._short_desc_cache["from_cache"] = (key("full B"), "cached B")
+    executor._short_desc_cache["stale_cache"] = (key("old D"), "cached D")
 
     plugins = [
         {"id": "has_manifest", "description": "full A", "short_description": "short A"},
@@ -1937,7 +1939,7 @@ def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
 
     # (a) manifest 自带 → 直接用，并把它写进缓存供后续 refresh 复用
     assert plugins[0]["short_description"] == "short A"
-    assert executor._short_desc_cache["has_manifest"] == ("full A", "short A")
+    assert executor._short_desc_cache["has_manifest"] == (key("full A"), "short A")
     # 缓存命中（desc 未变）→ 应用缓存值
     assert plugins[1]["short_description"] == "cached B"
     # 缓存陈旧（desc 变了）→ 不应用，进 missing 候选
@@ -1955,7 +1957,6 @@ async def test_plugin_list_provider_never_generates_short_description_on_hot_pat
     """验收核心：analyze 热路径（plugin_list_provider）绝不现生成
     short_description。缺失的插件交给后台预热，当次调用立即返回、_get_llm 不被
     同步触发，分析侧安全回退到完整 description。"""
-    import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
     from brain.task_executor import DirectTaskExecutor
 
@@ -1988,17 +1989,18 @@ async def test_plugin_list_provider_never_generates_short_description_on_hot_pat
 
 def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
     """LLM 生成的 short_description 落盘，重启后新实例直接复用、零 LLM；
-    description 作为 key——manifest 变了缓存自动失效重新生成。"""
+    description 的 hash 作为 key——manifest 变了缓存自动失效重新生成。"""
     from types import SimpleNamespace
     from brain.task_executor import DirectTaskExecutor
 
     cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
+    key = DirectTaskExecutor._desc_key
 
-    # 实例一：把一条生成的缓存落盘
+    # 实例一：把一条生成的缓存落盘（key = 完整 description 的 hash）
     exec1 = object.__new__(DirectTaskExecutor)
     exec1._config_manager = cfg
     exec1._short_desc_cache_filename = "plugin_short_desc_cache.json"
-    exec1._persist_generated_short_descriptions({"genplug": ("full desc", "generated short")})
+    exec1._persist_generated_short_descriptions({"genplug": (key("full desc"), "generated short")})
     assert (tmp_path / "plugin_short_desc_cache.json").exists()
 
     # 实例二：从盘上加载（模拟重启）
@@ -2006,18 +2008,36 @@ def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
     exec2._config_manager = cfg
     exec2._short_desc_cache_filename = "plugin_short_desc_cache.json"
     exec2._short_desc_cache = exec2._load_short_desc_cache()
-    assert exec2._short_desc_cache == {"genplug": ("full desc", "generated short")}
+    assert exec2._short_desc_cache == {"genplug": (key("full desc"), "generated short")}
 
     # desc 未变 → 命中持久化缓存，零 LLM，不进 missing
     plugins = [{"id": "genplug", "description": "full desc"}]
     assert exec2._apply_cached_short_descriptions(plugins) == []
     assert plugins[0]["short_description"] == "generated short"
 
-    # desc 变了 → key 校验失效，重新作为生成候选
+    # desc 变了 → hash key 失效，重新作为生成候选
     changed = [{"id": "genplug", "description": "CHANGED desc"}]
     missing = exec2._apply_cached_short_descriptions(changed)
     assert "short_description" not in changed[0]
     assert [p["id"] for p in missing] == ["genplug"]
+
+
+def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
+    """回归（Codex P2）：缓存键基于完整 description 的 hash，截断只用于喂 LLM。
+    超长 description（远超 PLUGIN_INPUT_DESC_MAX_TOKENS）也应命中缓存，而不是因
+    截断后的键与完整 description 不符而反复重新生成。"""
+    from config import PLUGIN_INPUT_DESC_MAX_TOKENS
+    from brain.task_executor import DirectTaskExecutor
+
+    key = DirectTaskExecutor._desc_key
+    long_desc = ("word " * (PLUGIN_INPUT_DESC_MAX_TOKENS * 4)).strip()  # 远超输入截断阈值
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._short_desc_cache = {"big": (key(long_desc), "cached short")}
+
+    plugins = [{"id": "big", "description": long_desc}]
+    assert executor._apply_cached_short_descriptions(plugins) == []
+    assert plugins[0]["short_description"] == "cached short"
 
 
 def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
