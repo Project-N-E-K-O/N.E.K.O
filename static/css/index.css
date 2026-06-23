@@ -2072,6 +2072,7 @@ body.react-chat-window-dragging {
 
 .chat-avatar-preview-card-close {
     flex: 0 0 auto;
+    position: relative;
     width: 28px;
     height: 28px;
     border-radius: 999px;
@@ -2079,12 +2080,34 @@ body.react-chat-window-dragging {
     background: rgba(68, 183, 254, 0.08);
     color: #2497d9;
     cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
+    font-size: 0;
+    line-height: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
     transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.chat-avatar-preview-card-close::before,
+.chat-avatar-preview-card-close::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    background: currentColor;
+    pointer-events: none;
+}
+
+.chat-avatar-preview-card-close::before {
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.chat-avatar-preview-card-close::after {
+    transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 .chat-avatar-preview-card-close:hover {

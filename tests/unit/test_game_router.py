@@ -114,10 +114,66 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
         assert result["state"]["mode"] == "shooter"
         assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
         debug_log = await game_router.game_logs(session_id="debug-badminton", game_type="badminton")
-        events = [item["event"] for item in debug_log["log"]["entries"]]
-        assert "session_active" in events
-        assert "route_start_requested" in events
-        assert "route_start_completed" in events
+        assert debug_log["ok"] is True
+        assert debug_log["missing"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["game_type"] == "soccer"
+        return game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "soccer",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log"}),
+        )
+
+    assert result["ok"] is True
+    debug_log = await game_router.game_logs(session_id="soccer-auto-log", game_type="soccer")
+    assert debug_log["ok"] is True
+    assert debug_log["log"]["status"] == "active"
+    assert [item["event"] for item in debug_log["log"]["entries"]] == [
+        "session_active",
+        "route_start_requested",
+        "route_start_completed",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soccer_route_start_enables_session_debug_log_under_route_locks(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    async def fake_pregame_context(**kwargs):
+        assert kwargs["game_type"] == "soccer"
+        return game_router._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
+
+    lock_observation = {}
+    original_enable = game_router._enable_game_session_debug_log
+
+    def observed_enable(game_type, session_id, *, lanlan_name=""):
+        lock_observation["supersede_locked"] = game_router._get_supersede_lock(lanlan_name).locked()
+        lock_observation["route_locked"] = game_router._get_route_lock(lanlan_name, game_type).locked()
+        return original_enable(game_type, session_id, lanlan_name=lanlan_name)
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", fake_pregame_context)
+    monkeypatch.setattr(game_router, "_enable_game_session_debug_log", observed_enable)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "soccer",
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log-locks"}),
+        )
+
+    assert result["ok"] is True
+    assert lock_observation == {"supersede_locked": True, "route_locked": True}
 
 
 @pytest.mark.unit
@@ -165,6 +221,17 @@ async def test_icebreaker_is_rejected_from_game_route_end(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_debug_log_ingest_and_query():
+    enable_result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-1",
+            "game_type": "soccer",
+            "lanlan_name": "Lan",
+            "source": "test",
+            "reason": "unit",
+        }, path="/api/game/logs/enable"),
+    )
+    assert enable_result["ok"] is True
+
     result = await game_router.game_log_ingest(
         _FakeRequest({
             "session_id": "soccer-debug-1",
@@ -179,12 +246,45 @@ async def test_game_debug_log_ingest_and_query():
     )
 
     assert result["ok"] is True
-    assert result["seq"] == 1
+    assert result["seq"] == 2
     queried = await game_router.game_logs(session_id="soccer-debug-1", game_type="soccer")
     assert queried["ok"] is True
     assert queried["log"]["lanlan_name"] == "Lan"
-    assert queried["log"]["entries"][0]["event"] == "window_error"
-    assert queried["log"]["entries"][0]["details"]["filename"] == "soccer_demo.html"
+    assert queried["log"]["entries"][0]["event"] == "session_log_enabled"
+    assert queried["log"]["entries"][1]["event"] == "window_error"
+    assert queried["log"]["entries"][1]["details"]["filename"] == "soccer_demo.html"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_ingest_does_not_create_session_before_enable():
+    result = await game_router.game_log_ingest(
+        _FakeRequest({
+            "session_id": "soccer-debug-disabled",
+            "game_type": "soccer",
+            "message": "ignored",
+        }, path="/api/game/logs"),
+    )
+
+    assert result["ok"] is False
+    assert result["seq"] is None
+    assert game_log.find_game_session_debug_log("soccer-debug-disabled", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_enable_requires_local_mutation_csrf():
+    result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-enable-csrf",
+            "game_type": "soccer",
+        }, mutation_headers=False, path="/api/game/logs/enable"),
+    )
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 403
+    assert b"csrf_validation_failed" in result.body
+    assert game_log.find_game_session_debug_log("soccer-debug-enable-csrf", "soccer") is None
 
 
 @pytest.mark.unit
@@ -207,6 +307,14 @@ async def test_game_debug_log_ingest_requires_local_mutation_csrf():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate():
+    enable_result = await game_router.game_log_enable(
+        _FakeRequest({
+            "session_id": "soccer-debug-truncate",
+            "game_type": "soccer",
+        }, path="/api/game/logs/enable"),
+    )
+    assert enable_result["ok"] is True
+
     result = await game_router.game_log_ingest(
         _FakeRequest({
             "session_id": "soccer-debug-truncate",
@@ -221,7 +329,7 @@ async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate
 
     assert result["ok"] is True
     queried = await game_router.game_logs(session_id="soccer-debug-truncate", game_type="soccer")
-    entry = queried["log"]["entries"][0]
+    entry = queried["log"]["entries"][1]
     assert len(entry["message"]) < 1500
     assert "<truncated" in entry["message"]
     assert len(entry["details"]["long"]) < 2500
@@ -232,13 +340,13 @@ async def test_game_debug_log_ingest_does_not_preserve_from_false_or_no_truncate
 def test_game_debug_logs_keep_latest_completed_session_until_next_active_session():
     for index in range(3):
         session_id = f"soccer-old-{index}"
-        game_log.mark_game_session_debug_log_active("soccer", session_id, lanlan_name="Lan")
+        game_log.enable_game_session_debug_log("soccer", session_id, lanlan_name="Lan")
         game_log.mark_game_session_debug_log_ended("soccer", session_id, lanlan_name="Lan", reason="test")
 
     summaries_before_new_session = game_log.list_game_session_debug_log_summaries("soccer")
     assert {item["session_id"] for item in summaries_before_new_session} == {"soccer-old-2"}
 
-    game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
+    game_log.enable_game_session_debug_log("soccer", "soccer-new", lanlan_name="Lan")
     summaries = game_log.list_game_session_debug_log_summaries("soccer")
 
     session_ids = {item["session_id"] for item in summaries}
@@ -247,8 +355,8 @@ def test_game_debug_logs_keep_latest_completed_session_until_next_active_session
 
 @pytest.mark.unit
 def test_game_debug_logs_drop_ended_session_when_active_session_exists():
-    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
-    game_log.mark_game_session_debug_log_active("soccer", "soccer-new", lanlan_name="Lan")
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.enable_game_session_debug_log("soccer", "soccer-new", lanlan_name="Lan")
     game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="superseded")
 
     summaries = game_log.list_game_session_debug_log_summaries("soccer")
@@ -257,13 +365,265 @@ def test_game_debug_logs_drop_ended_session_when_active_session_exists():
 
 
 @pytest.mark.unit
+def test_game_debug_logs_new_active_session_drops_old_active_session():
+    game_log.enable_game_session_debug_log("soccer", "soccer-old-active", lanlan_name="LanA")
+
+    assert game_log.find_game_session_debug_log("soccer-old-active", "soccer") is not None
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-new-active", lanlan_name="LanB")
+
+    assert game_log.find_game_session_debug_log("soccer-old-active", "soccer") is None
+    assert {item["session_id"] for item in game_log.list_game_session_debug_log_summaries()} == {"soccer-new-active"}
+
+
+@pytest.mark.unit
+def test_game_debug_logs_drop_idle_active_session_after_ttl():
+    now = 1_000_000.0
+    game_log.enable_game_session_debug_log("soccer", "soccer-idle-active", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("soccer-idle-active", "soccer")
+    assert entry is not None
+    entry["updated_at"] = now - game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS - 1
+
+    game_log.cleanup_game_session_debug_logs(now)
+
+    assert game_log.find_game_session_debug_log("soccer-idle-active", "soccer") is None
+
+
+@pytest.mark.unit
+def test_game_debug_logs_append_refreshes_active_idle_ttl():
+    now = game_log.time.time()
+    game_log.enable_game_session_debug_log("soccer", "soccer-active-refresh", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("soccer-active-refresh", "soccer")
+    assert entry is not None
+    stale_updated_at = now - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
+    entry["updated_at"] = stale_updated_at
+
+    item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-active-refresh",
+        lanlan_name="Lan",
+        event="still_active",
+        message="still active",
+    )
+
+    assert item is not None
+    assert game_log.find_game_session_debug_log("soccer-active-refresh", "soccer") is not None
+    assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+def test_game_debug_logs_reactivation_clears_ended_metadata():
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-reactivate", lanlan_name="Lan", reason="test")
+    ended_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+    assert ended_entry is not None
+    assert ended_entry["ended_at"] is not None
+    assert ended_entry["ended_time"]
+
+    game_log.enable_game_session_debug_log("soccer", "soccer-reactivate", lanlan_name="Lan")
+    reactivated_entry = game_log.find_game_session_debug_log("soccer-reactivate", "soccer")
+
+    assert reactivated_entry is not None
+    assert reactivated_entry["status"] == "active"
+    assert reactivated_entry["ended_at"] is None
+    assert reactivated_entry["ended_time"] is None
+
+
+@pytest.mark.unit
+def test_game_debug_logs_do_not_append_after_session_ended():
+    game_log.enable_game_session_debug_log("soccer", "soccer-ended", lanlan_name="Lan")
+    first_item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-ended",
+        lanlan_name="Lan",
+        event="before_end",
+        message="before end",
+    )
+    assert first_item is not None
+
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended", lanlan_name="Lan", reason="test")
+    entry = game_log.find_game_session_debug_log("soccer-ended", "soccer")
+    assert entry is not None
+    entry_count_after_end = len(entry["entries"])
+
+    late_item = game_log.append_game_session_debug_log(
+        "soccer",
+        "soccer-ended",
+        lanlan_name="Lan",
+        event="after_end",
+        message="after end",
+    )
+
+    assert late_item is None
+    assert entry["status"] == "ended"
+    assert len(entry["entries"]) == entry_count_after_end
+    assert [item["event"] for item in entry["entries"]] == [
+        "before_end",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+def test_game_debug_logs_mark_ended_is_idempotent():
+    game_log.enable_game_session_debug_log("soccer", "soccer-ended-idempotent", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="first")
+    entry = game_log.find_game_session_debug_log("soccer-ended-idempotent", "soccer")
+    assert entry is not None
+    first_ended_at = entry["ended_at"]
+    first_ended_time = entry["ended_time"]
+    first_events = [item["event"] for item in entry["entries"]]
+
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="second")
+
+    assert entry["status"] == "ended"
+    assert entry["ended_at"] == first_ended_at
+    assert entry["ended_time"] == first_ended_time
+    assert [item["event"] for item in entry["entries"]] == first_events == ["session_ended"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_records_completed_before_session_ended(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-route-end", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-route-end", lanlan_name="Lan")
+
+        result = await game_router._complete_game_end_from_payload(
+            "soccer",
+            {
+                "session_id": "soccer-route-end",
+                "lanlan_name": "Lan",
+                "gameStarted": True,
+            },
+            default_reason="route_end",
+        )
+
+    assert result["ok"] is True
+    entry = game_log.find_game_session_debug_log("soccer-route-end", "soccer")
+    assert entry is not None
+    assert entry["status"] == "ended"
+    assert [item["event"] for item in entry["entries"]] == [
+        "route_end_requested",
+        "route_end_completed",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_resets_defer_flag_when_postgame_fails(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        raise RuntimeError("postgame failed")
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-postgame-fails", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-postgame-fails", lanlan_name="Lan")
+
+        with pytest.raises(RuntimeError, match="postgame failed"):
+            await game_router._complete_game_end_from_payload(
+                "soccer",
+                {
+                    "session_id": "soccer-postgame-fails",
+                    "lanlan_name": "Lan",
+                    "gameStarted": True,
+                },
+                default_reason="route_end",
+            )
+
+        assert state.get("_exit_defer_debug_log_close") is False
+
+    entry = game_log.find_game_session_debug_log("soccer-postgame-fails", "soccer")
+    assert entry is not None
+    assert entry["status"] == "active"
+    assert [item["event"] for item in entry["entries"]] == ["route_end_requested"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_logs_route_end_defers_concurrent_heartbeat_close(monkeypatch):
+    release_finalize = asyncio.Event()
+
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        return {"ok": True, "action": "skip", "reason": "test"}
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-route-race", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-route-race", lanlan_name="Lan")
+
+        async def existing_finalize_task():
+            await release_finalize.wait()
+            return {
+                "archive": {
+                    "game_type": "soccer",
+                    "session_id": "soccer-route-race",
+                    "lanlan_name": "Lan",
+                    "game_started": True,
+                },
+                "archive_memory": {"ok": True, "status": "submitted"},
+                "game_session_closed": False,
+                "debug_log_ended": False,
+                "exit_reason": "heartbeat_timeout",
+                "postgame_context_snapshot": {},
+            }
+
+        heartbeat_task = asyncio.create_task(existing_finalize_task())
+        state["_exit_task"] = heartbeat_task
+        state["_exit_close_debug_log_request"] = True
+
+        end_task = asyncio.create_task(game_router._complete_game_end_from_payload(
+            "soccer",
+            {
+                "session_id": "soccer-route-race",
+                "lanlan_name": "Lan",
+                "gameStarted": True,
+            },
+            default_reason="route_end",
+        ))
+        for _ in range(20):
+            if state.get("_exit_defer_debug_log_close"):
+                break
+            await asyncio.sleep(0)
+        assert state.get("_exit_defer_debug_log_close") is True
+
+        release_finalize.set()
+        heartbeat_result = await heartbeat_task
+        result = await end_task
+
+    assert heartbeat_result["debug_log_ended"] is True
+    assert result["ok"] is True
+    entry = game_log.find_game_session_debug_log("soccer-route-race", "soccer")
+    assert entry is not None
+    assert entry["status"] == "ended"
+    assert [item["event"] for item in entry["entries"]] == [
+        "route_end_requested",
+        "route_end_completed",
+        "session_ended",
+    ]
+
+
+@pytest.mark.unit
 def test_game_debug_logs_retention_is_not_partitioned_by_type_or_lanlan():
-    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="LanA")
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="LanA")
     game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="LanA", reason="test")
 
     assert game_log.find_game_session_debug_log("soccer-old", "soccer") is not None
 
-    game_log.mark_game_session_debug_log_active("badminton", "badminton-new", lanlan_name="LanB")
+    game_log.enable_game_session_debug_log("badminton", "badminton-new", lanlan_name="LanB")
 
     assert game_log.find_game_session_debug_log("soccer-old", "soccer") is None
     assert {item["session_id"] for item in game_log.list_game_session_debug_log_summaries()} == {"badminton-new"}
@@ -272,7 +632,7 @@ def test_game_debug_logs_retention_is_not_partitioned_by_type_or_lanlan():
 @pytest.mark.unit
 def test_game_debug_logs_drop_completed_session_after_retention_ttl():
     now = 1_000_000.0
-    game_log.mark_game_session_debug_log_active("soccer", "soccer-old", lanlan_name="Lan")
+    game_log.enable_game_session_debug_log("soccer", "soccer-old", lanlan_name="Lan")
     game_log.mark_game_session_debug_log_ended("soccer", "soccer-old", lanlan_name="Lan", reason="test")
     entry = game_log.find_game_session_debug_log("soccer-old", "soccer")
     assert entry is not None
@@ -3983,6 +4343,50 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_heartbeat_refreshes_enabled_debug_log_idle_ttl(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("match_1", "soccer")
+    assert entry is not None
+    stale_updated_at = game_log.time.time() - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
+    entry["updated_at"] = stale_updated_at
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert state["last_heartbeat_at"] <= entry["updated_at"]
+    assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_heartbeat_does_not_create_debug_log_when_disabled(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert game_log.find_game_session_debug_log("match_1", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_heartbeat_records_hidden_visibility(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
@@ -4011,6 +4415,7 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     _put_game_session("Lan", "soccer", "match_1", fake_session)
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
     _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
 
@@ -4034,7 +4439,12 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     assert result["game_session_closed"] is True
     assert result["archive"]["exit_reason"] == "heartbeat_timeout"
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
+    assert result["debug_log_ended"] is True
     assert submitted[0]["exit_reason"] == "heartbeat_timeout"
+    debug_log = game_log.find_game_session_debug_log("match_1", "soccer")
+    assert debug_log is not None
+    assert debug_log["status"] == "ended"
+    assert [item["event"] for item in debug_log["entries"]] == ["session_ended"]
     fake_session.close.assert_awaited_once()
 
 

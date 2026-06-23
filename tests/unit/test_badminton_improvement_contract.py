@@ -216,7 +216,7 @@ def test_badminton_hidden_tab_keeps_route_alive():
 
     beforeunload_start = html.index("window.addEventListener('beforeunload', function () {")
     beforeunload_section = html[beforeunload_start:html.index("window.addEventListener('localechange'", beforeunload_start)]
-    assert "closeSpeechPlaybackStateBridge();" in beforeunload_section
+    assert "closeSpeechPlaybackStateBridge();" not in beforeunload_section
     assert "endRoute(true);" in beforeunload_section
     assert "var pageVisible = !document.hidden;" in html
     assert "visible: pageVisible" in html
@@ -340,14 +340,14 @@ def test_badminton_yui_bubble_anchors_to_avatar_and_supports_emote_marks():
     html = _badminton_html()
 
     assert "var BADMINTON_BUBBLE_EMOTE_IMAGES = {" in html
-    assert 'font: 16px/1.45 "PingFang SC", "Segoe UI", sans-serif;' in html
-    assert "max-width: 380px; text-align: left;" in html
-    assert "padding: 12px 15px; border-radius: 8px;" in html
+    assert 'font: 17px/1.45 "PingFang SC", "Segoe UI", sans-serif;' in html
+    assert "max-width: min(410px, calc(100vw - 32px)); text-align: left;" in html
+    assert "padding: 13px 17px; border-radius: 8px;" in html
     assert ".neko-bubble-body" in html
     assert ".neko-bubble-text" in html
     assert ".neko-bubble-emote" in html
-    assert "display: flex; align-items: center; gap: 12px;" in html
-    assert "flex: 0 0 72px; width: 72px; height: 72px;" in html
+    assert "display: flex; align-items: center; gap: 14px;" in html
+    assert "flex: 0 0 92px; width: 92px; height: 92px;" in html
     assert "surprised: '/static/game/games/badminton/images/emotes/yui-surprised.png'" in html
     assert "dominant: '/static/game/games/badminton/images/emotes/yui-dominant.png'" in html
     assert "awkward: '/static/game/games/badminton/images/emotes/yui-awkward.png'" in html
@@ -839,7 +839,7 @@ def test_badminton_aiming_overlay_does_not_double_draw_ink():
     draw_section = html[draw_start:draw_end]
     assert draw_section.count("drawYuiInkOverlay(t);") == 1
     assert "drawPlayerReturnHitCue(t);" in draw_section
-    assert "drawPlayerChargeMeter(clamp(game.power, 0, 100), t);" in draw_section
+    assert "drawPlayerChargeMeter(game.charging && canPlayerChargeShot() ? clamp(game.power, 0, 100) : 0, t);" in draw_section
 
 
 @pytest.mark.unit
@@ -890,15 +890,40 @@ def test_badminton_aiming_overlay_skips_idle_frames():
     assert "function isAimingOverlayActive(now) {" in html
     assert "return !!(isIncomingPlayerReturnCandidate()" in html
     assert "getYuiInkState(t).active" in html
+    overlay_start = html.index("function isAimingOverlayActive(now) {")
+    overlay_end = html.index("function drawAiming(now) {", overlay_start)
+    overlay_predicate = html[overlay_start:overlay_end]
+    assert "game.charging && canPlayerChargeShot()" not in overlay_predicate
 
     draw_start = html.index("function drawAiming(now) {")
     draw_end = html.index("function drawPlayerChargeMeter(", draw_start)
     draw_section = html[draw_start:draw_end]
     assert "var overlayActive = isAimingOverlayActive(t);" in draw_section
+    assert "drawPlayerChargeMeter(game.charging && canPlayerChargeShot() ? clamp(game.power, 0, 100) : 0, t);" in draw_section
     assert "if (!overlayActive && !aimingOverlayWasActive) return;" in draw_section
     assert "aimingOverlayWasActive = overlayActive;" in draw_section
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
     assert draw_section.index("if (!overlayActive && !aimingOverlayWasActive) return;") < draw_section.index("aimingCtx.clearRect(0, 0, BASE_W, BASE_H);")
+
+
+@pytest.mark.unit
+def test_badminton_player_charge_meter_uses_dom_transform_not_canvas_shadow():
+    html = _badminton_html()
+
+    assert 'id="player-charge-meter"' in html
+    assert 'id="player-charge-fill"' in html
+    assert "will-change: transform, opacity;" in html
+    assert "var playerChargeMeter = document.getElementById('player-charge-meter');" in html
+    assert "var playerChargeFill = document.getElementById('player-charge-fill');" in html
+
+    charge_start = html.index("function drawPlayerChargeMeter(percent, now) {")
+    charge_end = html.index("function ensureYuiInkOverlayCache()", charge_start)
+    charge_section = html[charge_start:charge_end]
+    assert "setDatasetValueIfChanged(playerChargeMeter, 'active', '1');" in charge_section
+    assert "setStyleIfChanged(playerChargeMeter, playerChargeMeterStyleCache, 'transform'," in charge_section
+    assert "setStyleIfChanged(playerChargeFill, playerChargeFillStyleCache, 'transform', 'scaleX('" in charge_section
+    assert "aimingCtx.shadowBlur" not in charge_section
+    assert "aimingCtx.globalCompositeOperation" not in charge_section
 
 
 @pytest.mark.unit
@@ -925,6 +950,11 @@ def test_badminton_low_risk_frame_time_is_reused_in_overlay_hot_path():
     assert "badmintonFrameNow = ts || performance.now();" in html
     assert "update(dt, badmintonFrameNow);" in html
     assert "drawAiming(badmintonFrameNow);" in html
+    assert "var BADMINTON_HIDDEN_FRAME_DELAY_MS = 250;" in html
+    assert "function scheduleBadmintonNextFrame() {" in html
+    assert "if (document.hidden) {" in html
+    assert "}, BADMINTON_HIDDEN_FRAME_DELAY_MS);" in html
+    assert "scheduleBadmintonNextFrame();" in html
 
     overlay_start = html.index("function isAimingOverlayActive(")
     overlay_end = html.index("function drawAiming(", overlay_start)
@@ -955,6 +985,7 @@ def test_badminton_low_risk_hud_text_updates_are_deduped():
     debug_start = html.index("function updateDebugReadout() {")
     debug_end = html.index("function setDebugVisible(", debug_start)
     debug_section = html[debug_start:debug_end]
+    assert "if (debugPanel && debugPanel.dataset.debugVisible !== 'true') return;" in debug_section
     assert "setTextIfChanged(debugPowerValue, String(Math.round(game.power || 0)));" in debug_section
     assert "setTextIfChanged(debugReadout, readoutText);" in debug_section
 
@@ -1018,6 +1049,10 @@ def test_badminton_low_risk_pointer_move_reuses_control_checks():
     pointer_start = html.index("function handleBadmintonPointerMove(ev) {")
     pointer_end = html.index("function handleBadmintonPointerDown(ev) {", pointer_start)
     pointer_section = html[pointer_start:pointer_end]
+    assert "if (ev && ev.__badmintonPointerMoveHandled) return;" in pointer_section
+    assert "if (ev) ev.__badmintonPointerMoveHandled = true;" in pointer_section
+    assert pointer_section.index("if (ev && ev.__badmintonPointerMoveHandled) return;") < pointer_section.index("rememberPlayerPointer(ev);")
+    assert pointer_section.index("if (ev) ev.__badmintonPointerMoveHandled = true;") < pointer_section.index("rememberPlayerPointer(ev);")
     assert "var canMoveCourt = canPlayerMoveCourt();" in pointer_section
     assert "var canControlShot = canPlayerControlShot();" in pointer_section
     assert "if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in pointer_section
@@ -1093,7 +1128,10 @@ def test_badminton_low_risk_net_contact_effects_reuse_frame_time():
     effects_end = html.index("function drawNetCord()", effects_start)
     effects_section = html[effects_start:effects_end]
     assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in effects_section
-    assert "t - effect.startAt < effect.duration" in effects_section
+    assert "var activeCount = 0;" in effects_section
+    assert "netContactEffects[activeCount++] = retainedEffect;" in effects_section
+    assert "netContactEffects.length = activeCount;" in effects_section
+    assert "netContactEffects = netContactEffects.filter" not in effects_section
     assert "var age = clamp((t - effect.startAt) / effect.duration, 0, 1);" in effects_section
     assert "performance.now()" not in effects_section
 
@@ -1678,15 +1716,15 @@ def test_badminton_user_reply_voice_deadline_survives_inflight_guard():
 
 
 @pytest.mark.unit
-def test_badminton_voice_deferral_without_deadline_uses_fallback_delay():
+def test_badminton_voice_request_does_not_use_browser_playback_bridge():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
     request_start = html.index("function _requestVoicePlayback(entry) {")
     request_section = html[request_start:html.index("function _flushVoiceArbiter()", request_start)]
 
-    assert "var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;" in request_section
-    assert "var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;" in request_section
-    assert "deadlineMs - 250 || 900" not in request_section
-    assert "_scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));" in request_section
+    assert "readVoiceOccupancy()" not in request_section
+    assert "playbackDeferredOnce" not in request_section
+    assert "voice_deferred_once" not in request_section
+    assert "showBubble(entry.line, entry.control);" in request_section
 
 
 @pytest.mark.unit
@@ -1697,27 +1735,20 @@ def test_badminton_debug_voice_mode_allows_tts_when_debugging():
 
     assert "var debugVoiceMode = modeParams ? modeParams.get('debug_voice') === '1' : false;" in html
     assert "var debugVoiceMuted = modeParams ? modeParams.get('debug_mute_voice') === '1' : false;" in html
-    assert "var SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';" in html
-    assert "var SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';" in html
-    assert "function normalizeSpeechPlaybackState(raw) {" in html
-    assert "localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY)" in html
-    assert "new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME)" in html
-    assert "window.addEventListener('storage', function (event) {" in html
-    assert "window.addEventListener('neko-speech-playback-state', function (event) {" in html
-    assert "function readVoiceOccupancy() {" in html
-    assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" in html
-    assert "initSpeechPlaybackStateBridge();" in html
-    assert "function closeSpeechPlaybackStateBridge() {" in html
-    assert "speechPlaybackChannel.close();" in html
-    assert "function speakLineLocally(line) {" in html
-    assert "new SpeechSynthesisUtterance(text)" in html
+    assert "SPEECH_PLAYBACK_STATE_KEY" not in html
+    assert "SPEECH_PLAYBACK_CHANNEL_NAME" not in html
+    assert "function normalizeSpeechPlaybackState(raw) {" not in html
+    assert "function readVoiceOccupancy() {" not in html
+    assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" not in html
+    assert "initSpeechPlaybackStateBridge();" not in html
+    assert "function closeSpeechPlaybackStateBridge() {" not in html
+    assert "function speakLineLocally(line) {" not in html
+    assert "SpeechSynthesisUtterance" not in html
+    assert "speechSynthesis" not in html
     assert "if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();" in mirror_section
     assert "hasProjectVoicePlaybackBridge" not in mirror_section
     assert "missing_project_voice_playback_bridge" not in mirror_section
     assert "lastVoiceRequest = speakPayload;" in mirror_section
-    assert "waitForProjectVoicePlayback(res.speech_id, 1100, speakStartedAt)" in mirror_section
-    assert "lastVoiceFallbackReason = 'project_voice_not_queued';" in mirror_section
-    assert "lastVoiceFallbackReason = 'project_voice_unobserved';" in mirror_section
     assert "reason: 'project_speak_failed'" in mirror_section
     assert "return post('/speak', speakPayload, 3500).then(function (res) {" in mirror_section
 
@@ -1917,7 +1948,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var NET_ROWS = 7;" in html
     assert "var NET_CONTACT_RADIUS = 42;" in html
     assert "var NET_CONTACT_IMPULSE = 320;" in html
-    assert "var NET_CONTACT_HOLD_MS = 230;" in html
+    assert "var NET_CONTACT_HOLD_MS = 90;" in html
     assert "function getSideViewCourtTop() {" in html
     assert "return FLOOR_Y - 62;" in html
     assert "function getSideViewCourtBottom() {" in html
@@ -2033,10 +2064,10 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "ctx.ellipse(court.netX, serviceWearY, 88, 21, 0, 0, Math.PI * 2);" in html
     assert "var shortServiceOffset = halfCourtLength * (1.98 / 6.70);" in html
     assert "var doublesLongServiceInset = halfCourtLength * (0.76 / 6.70);" in html
-    assert "ctx.moveTo(leftShortServiceX, groundTop + 6);" in html
-    assert "ctx.moveTo(rightShortServiceX, groundTop + 6);" in html
-    assert "ctx.moveTo(leftDoublesLongServiceX, groundTop + 6);" in html
-    assert "ctx.moveTo(rightDoublesLongServiceX, groundTop + 6);" in html
+    assert "ctx.moveTo(serviceLines.leftShortServiceX, groundTop + 6);" in html
+    assert "ctx.moveTo(serviceLines.rightShortServiceX, groundTop + 6);" in html
+    assert "ctx.moveTo(serviceLines.leftDoublesLongServiceX, groundTop + 6);" in html
+    assert "ctx.moveTo(serviceLines.rightDoublesLongServiceX, groundTop + 6);" in html
     assert "var netTop = getNetSurfacePoint(0.5, 0);" in html
     assert "var netBottom = getNetSurfacePoint(0.5, 1);" in html
     assert "var leftTop = getNetSurfacePoint(0, 0);" in html
@@ -2056,14 +2087,13 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "ctx.roundRect(postX - 5, topClampY - 2.2, 10, 4.4, 2.1);" not in html
     assert "ctx.strokeStyle = 'rgba(255,68,68,.78)';" not in html
     assert "ctx.strokeStyle = 'rgba(255,68,68,.62)';" not in html
-    assert "for (var speck = 0;" not in html
     assert "ctx.rect(BADMINTON.courtLeft, groundTop - 8, BADMINTON.courtRight - BADMINTON.courtLeft, groundBottom - groundTop + 18);" in html
     assert "ctx.fillRect(court.courtLeft, groundTop, court.courtRight - court.courtLeft, groundBottom - groundTop);" in html
     assert "BADMINTON.courtTop + (BADMINTON.courtBottom - BADMINTON.courtTop) * t" not in html
     assert "ctx.rect(BADMINTON.courtLeft, BADMINTON.courtTop, BADMINTON.courtRight - BADMINTON.courtLeft, BADMINTON.courtBottom - BADMINTON.courtTop);" not in html
     assert "ctx.fillRect(court.courtLeft, court.courtTop, court.courtRight - court.courtLeft, court.courtBottom - court.courtTop);" not in html
     assert "var shadowAlpha = clamp(0.30 - shuttleZ / 760, 0.06, 0.30);" in html
-    assert "ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_VISUAL_R * 1.35 * shadowScale" in html
+    assert "ctx.ellipse(ball.x, FLOOR_Y + 3, SHUTTLE_FLIGHT_VISUAL_R * 1.35 * shadowScale" in html
     assert "var DISTANCE_MARKERS_STORAGE_KEY = 'bd_badminton_distance_markers_enabled';" in html
     assert "var distanceMarkersEnabled = readJson(DISTANCE_MARKERS_STORAGE_KEY, false) === true;" in html
     assert "ctx.fillRect(court.targetLeft" not in html
@@ -2071,11 +2101,14 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "plank:" not in html
     assert "threeLine:" not in html
     assert "laneFill:" not in html
-    assert "playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';" in html
-    assert "playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';" in html
+    assert "setStyleIfChanged(playerSenseiContainer, playerAvatarStyleCache, 'width', PLAYER_AVATAR_W + 'px');" in html
+    assert "setStyleIfChanged(playerSenseiContainer, playerAvatarStyleCache, 'height', PLAYER_AVATAR_H + 'px');" in html
     assert "container.style.width = YUI_SHOOTER_W + 'px';" in html
     assert "container.style.height = YUI_SHOOTER_H + 'px';" in html
-    assert "container.dataset.courtAvatar = 'opponent';" in html
+    assert "container.style.left = sx + 'px';" in html
+    assert "container.style.top = sy + 'px';" in html
+    assert "yuiShooterStyleCache" not in html
+    assert "setDatasetValueIfChanged(container, 'courtAvatar', 'opponent');" in html
     assert "var baseX = getYuiX();" in html
     assert "function getYuiShotOrigin() {" in html
     assert "var origin = impulse.contact || getRacketContactPoint(shotShooter);" in html
@@ -2094,7 +2127,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "shuttle.courtY = origin.x;" in html
     assert "shuttle.z = screenYToCourtZ(origin.y);" in html
     assert "shuttle.vCourtY = shuttle.vx;" in html
-    assert "shuttle.vz = -shuttle.vy;" in html
+    assert "shuttle.vz = -(shuttle.vy || 0);" in html
     assert "var crossedNet = didShuttleCrossMidcourtNet(ball, direction);" in html
     assert "var netCrossing = getMidcourtNetCrossing(ball);" in html
     assert "if (isShuttleInsideNetZ(ball, netCrossing)) {" in html
@@ -2145,8 +2178,9 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var collar =" not in html
     assert "cork.addColorStop(0.58, '#e4b76c');" not in html
     assert "ctx.ellipse(0, radius * 0.34, radius * 0.50, radius * 0.34" not in html
-    assert "var trailGrad = ctx.createLinearGradient(start.x, start.y, ball.x, ball.y);" in html
-    assert "rgba(182,231,255,0)" in html
+    assert "var firstTrailIndex = ball.isSmash ? Math.max(0, trail.length - 5) : 0;" in html
+    assert "ctx.globalAlpha = ball.isSmash ? 0.50 : (ball.wasPerfect ? 0.62 : 0.48);" in html
+    assert "ctx.strokeStyle = ball.isSmash ? 'rgba(255,210,118,.72)' : (ball.wasPerfect ? 'rgba(255,244,178,.62)' : 'rgba(204,241,255,.48)');" in html
     assert "ctx.strokeStyle = 'rgba(255,143,61,.34)';" not in html
     assert "drawShuttlecock(ball.x, ball.y, SHUTTLE_FLIGHT_VISUAL_R, ball.spinAngle || 0);" in html
     assert "if (ball.y < -SHUTTLE_FLIGHT_VISUAL_R * 2) {" in html
@@ -2174,7 +2208,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "function isBadmintonRacketSpriteReady() {" in html
     assert "try { preloadBadmintonRacketSprite(); } catch (_) { badmintonRacketSpriteImage = null; }" in html
     draw_start = html.index("function drawPlayer() {")
-    draw_section = html[draw_start:html.index("function drawAiming()", draw_start)]
+    draw_section = html[draw_start:html.index("function drawAiming(now)", draw_start)]
     assert "var s = PLAYER_FIGURE_SCALE;" in draw_section
     assert "ctx.arc(px, py - 62 * s, 16 * s" in draw_section
     assert "ctx.lineWidth = 8 * s;" in draw_section
@@ -2204,10 +2238,24 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "renderYuiLive2dRacket();" in html
     assert "var shooting = nekoL2dContainer.classList.contains('shooting');" in html
     assert "var charging = nekoL2dContainer.classList.contains('charging');" in html
-    assert "var layoutW = yuiLive2dRacketCanvas.clientWidth || nekoL2dContainer.offsetWidth || rect.width;" in html
-    assert "var modelFrame = getYuiLive2dModelFrame({ width: layoutW, height: layoutH });" in html
+    assert "var saving = nekoL2dContainer.classList.contains('saving');" in html
+    assert "var smashing = nekoL2dContainer.classList.contains('smashing');" in html
+    assert "YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS" in html
+    assert "YUI_LIVE2D_RACKET_IDLE_RENDER_MS" in html
+    assert "var yuiLive2dRacketLayoutCache = { sampledAt: 0, rect: null, layoutW: 0, layoutH: 0, dpr: 0, modelFrame: null };" in html
+    assert "var yuiLive2dRacketLastRenderAt = 0;" in html
+    assert "function resetYuiLive2dRacketLayoutCache() {" in html
+    assert "function getYuiLive2dRacketLayout(now, forceRefresh) {" in html
+    assert "if (!forceRefresh && cached.rect && cached.dpr === dpr && t - (cached.sampledAt || 0) < YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS)" in html
+    assert "var layout = getYuiLive2dRacketLayout(now, activeRacketAction);" in html
+    assert "if (!activeRacketAction && yuiLive2dRacketLastRenderAt && now - yuiLive2dRacketLastRenderAt < YUI_LIVE2D_RACKET_IDLE_RENDER_MS) return;" in html
+    assert "resetYuiLive2dRacketLayoutCache();" in html
+    assert "var modelFrame = layout.modelFrame;" in html
     assert "var fallbackHand = getYuiLive2dFallbackHandPoint(modelFrame, shooting, charging);" in html
-    assert "var drawableHand = getYuiLive2dHandAnchorFromDrawables(rect, modelFrame, layoutW, layoutH, shooting, charging);" in html
+    assert "function getCachedYuiLive2dDrawableHand(domRect, modelFrame, layoutW, layoutH, shooting, charging, now) {" in html
+    assert "YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS" in html
+    assert "var drawableHand = getCachedYuiLive2dDrawableHand(rect, modelFrame, layoutW, layoutH, shooting, charging, now);" in html
+    assert "domRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }" in html
     assert "var handX = drawableHand ? drawableHand.x : fallbackHand.x;" in html
     assert "var handY = drawableHand ? drawableHand.y : fallbackHand.y;" in html
     assert "var racketScale = Math.max(0.98, Math.min(1.08, modelFrame.height / 320));" in html
@@ -2273,7 +2321,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var featherPlaneCount" not in held_shuttle_create_section
     assert "new THREE.ConeGeometry" not in held_shuttle_create_section
     held_shuttle_overlay_start = html.index("function getPlayerVrmHeldShuttleCanvasPoint() {")
-    held_shuttle_overlay_section = html[held_shuttle_overlay_start:html.index("function drawAiming()", held_shuttle_overlay_start)]
+    held_shuttle_overlay_section = html[held_shuttle_overlay_start:html.index("function drawAiming(now)", held_shuttle_overlay_start)]
     assert "playerVrmHeldShuttle.localToWorld(heldPoint);" in held_shuttle_overlay_section
     assert "heldPoint.clone().project(window.badmintonPlayerVrmManager.camera);" in held_shuttle_overlay_section
     assert "var hand = getPlayerVrmBone(vrm, 'leftHand');" in held_shuttle_overlay_section
@@ -2288,7 +2336,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var point = getPlayerHeldShuttleServeHandCanvasPoint() || getPlayerVrmHeldShuttleCanvasPoint();" in held_shuttle_overlay_section
     assert "var corkOffsetX = -Math.sin(heldRotation) * heldRadius * 0.42;" in held_shuttle_overlay_section
     assert "drawBadmintonShuttlecockOnContext(playerSenseiHeldShuttleCtx, shuttleX, shuttleY, heldRadius, heldRotation);" in held_shuttle_overlay_section
-    render_start = html.index("function render() {")
+    render_start = html.index("function render(now) {")
     render_section = html[render_start:html.index("function loop(ts) {", render_start)]
     assert "drawBall();\n    drawPlayerVrmHeldShuttleOverlay();" in render_section
     assert "function attachPlayerHeldShuttleToHand(vrm) {" in html
@@ -2373,7 +2421,7 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
     assert "var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;" in html
     assert "var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';" in html
     assert "var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';" in html
-    assert "return isDuelMode() && (canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);" in html
+    assert "return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);" in html
     assert "function isIncomingPlayerShuttleInReach(ball) {" in html
     assert "var PLAYER_RETURN_REACH_X = 84;" in html
     assert "var PLAYER_RETURN_REACH_Y = 108;" in html
@@ -2388,9 +2436,10 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
     assert "if (isBadmintonLoadingActive()) return;" in mousemove
     assert "if (shouldIgnoreBadmintonPointerEvent(ev)) return;" in mousemove
     assert "rememberPlayerPointer(ev);" in mousemove
-    assert "if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in mousemove
-    assert "if (!canPlayerControlShot()) return;" in mousemove
-    assert mousemove.index("if (!canPlayerControlShot()) return;") < mousemove.index("game.aimAngle =")
+    assert "if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in mousemove
+    assert "var canControlShot = canPlayerControlShot();" in mousemove
+    assert "if (!canControlShot) return;" in mousemove
+    assert mousemove.index("if (!canControlShot) return;") < mousemove.index("game.aimAngle =")
 
     mousedown = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
@@ -2628,6 +2677,10 @@ def test_badminton_shuttle_trail_uses_ring_buffer_without_changing_public_state(
     draw_start = html.index("function drawBackspinBall(ball) {")
     draw_section = html[draw_start:html.index("function drawNet()", draw_start)]
     assert "var trail = getShuttleTrailPoints(ball);" in draw_section
+    assert "var firstTrailIndex = ball.isSmash ? Math.max(0, trail.length - 5) : 0;" in draw_section
+    assert "for (var i = firstTrailIndex + 1; i < trail.length; i++)" in draw_section
+    assert "ctx.createLinearGradient" not in draw_section
+    assert "ctx.shadowBlur" not in draw_section
 
     state_start = html.index("getState: function () {")
     state_section = html[state_start:html.index("resetGame: resetGame", state_start)]
@@ -2661,13 +2714,22 @@ def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
 
     assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
     assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
-    assert "var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
+    assert "function ensureYuiInkOverlayCache() {" in html
+    assert "function drawYuiInkArcRings(ink, t) {" in html
+    assert "var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
     assert "centralInk.addColorStop(0, 'rgba(0,0,0,.96)');" in html
     assert "function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {" in html
     assert "var centerSplashes = [" in html
     assert "for (var drip = 0; drip < 8; drip++) {" in html
     assert "for (var speck = 0; speck < 22; speck++) {" in html
-    assert "aimingCtx.bezierCurveTo(" in html
+    assert "inkCtx.bezierCurveTo(" in html
+    assert "aimingCtx.drawImage(inkCanvas," in html
+    assert "drawYuiInkArcRings(ink, t);" in html
+    assert "if (!ink || ink.alpha <= 0.58) return;" in html
+    cache_start = html.index("function ensureYuiInkOverlayCache() {")
+    cache_end = html.index("function drawYuiInkArcRings(ink, t) {", cache_start)
+    cache_section = html[cache_start:cache_end]
+    assert "rgba(114,216,226,.42)" not in cache_section
     assert "function drawInkBlob(" not in html
     assert "var edgeVeil =" not in html
     assert "badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });" in html
@@ -2728,7 +2790,10 @@ def test_badminton_banana_slip_flips_player_avatar_360_degrees():
 
     assert "function randomYuiBananaCourtX() {" in html
     assert "var x = Number.isFinite(opts.x) ? opts.x : randomYuiBananaCourtX();" in banana_section
-    assert "var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY();" in banana_section
+    assert "var y = Number.isFinite(opts.y) ? opts.y : getPlayerGroundFootY();" in banana_section
+    assert "function getPlayerGroundFootY() {" in html
+    assert "playerGroundFootY: getPlayerGroundFootY()," in html
+    assert "var dy = getPlayerFootY() - item.y;" in html
     assert "getPlayerX()" not in banana_section
     assert "game.playerCourt.targetX + defaultOffset" not in banana_section
     assert "var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;" in html
@@ -2756,24 +2821,33 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var shuttleZ = getShuttleCourtZ(ball, false);" in html
     assert "var yuiContactTopZ = screenYToCourtZ(contact.y - 26);" in html
     assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);" in html
-    assert "var YUI_RACKET_HIT_REACH_X = 38;" in html
-    assert "var YUI_RACKET_HIT_REACH_Y = 54;" in html
+    assert "var YUI_RACKET_HIT_REACH_X = 46;" in html
+    assert "var YUI_RACKET_HIT_REACH_Y = 62;" in html
+    assert "var YUI_RACKET_RESCUE_GATE_REACH_X = 38;" in html
+    assert "var YUI_RACKET_RESCUE_GATE_REACH_Y = 54;" in html
     assert "function getYuiVisibleRacketContactPoint() {" in html
     assert "source: 'live2d-racket-head'" in html
     assert "function getYuiRacketContactPoint() {" in html
     assert "x: getYuiX() + YUI_RACKET_BODY_OFFSET_X," in html
     assert "return getYuiVisibleRacketContactPoint() || getYuiShotOrigin();" in html
+    assert "function getYuiNeutralRacketContactPoint() {" in html
+    assert "source: 'neutral-racket-anchor'" in html
+    assert "function getYuiRacketRangeState(incomingBall, reachX, reachY) {" in html
+    assert "var neutral = getYuiNeutralRacketContactPoint();" in html
+    assert "var visible = getYuiVisibleRacketContactPoint();" in html
+    assert "if (visibleState.normalized < best.normalized) best = visibleState;" in html
     assert "function getYuiRacketHitRangeState(incomingBall) {" in html
-    assert "var racket = getYuiRacketContactPoint();" in html
-    assert "var normalized = Math.pow(dx / YUI_RACKET_HIT_REACH_X, 2) + Math.pow(dy / YUI_RACKET_HIT_REACH_Y, 2);" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);" in html
     assert "function isYuiRacketHitInRange(incomingBall) {" in html
     assert "return getYuiRacketHitRangeState(incomingBall).normalized <= 1;" in html
+    assert "function getYuiRacketRescueGateState(incomingBall) {" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);" in html
     assert "var YUI_RACKET_SAVE_REACH_X = 84;" in html
     assert "var YUI_RACKET_SAVE_REACH_Y = 86;" in html
     assert "function getYuiRacketSaveRangeState(incomingBall) {" in html
-    assert "var normalized = Math.pow(dx / YUI_RACKET_SAVE_REACH_X, 2) + Math.pow(dy / YUI_RACKET_SAVE_REACH_Y, 2);" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);" in html
     assert "function isYuiSmashSaveReachable(incomingBall) {" in html
-    assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
+    assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
     assert "var YUI_SMASH_MIN_SHUTTLE_Z = 64;" in html
     assert "var YUI_SMASH_FULL_SHUTTLE_Z = 138;" in html
     assert "function getYuiSmashHeightQuality(incomingBall) {" in html
@@ -2978,16 +3052,25 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
     assert "function drawReturnChargeTrace(" not in draw_section
     assert "function drawPlayerChargeMeter(" in draw_section
-    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), t);" in draw_section
+    assert "drawPlayerChargeMeter(game.charging && canPlayerChargeShot() ? clamp(game.power, 0, 100) : 0, t);" in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
     assert "if (!canReturnNow) return;" not in draw_section
     assert "var cueAlpha = canReturnNow ? 1 : 0.46;" in draw_section
     assert "'rgba(114,216,255,.055)'" in draw_section
     assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
     assert "drawReturnChargeTrace" not in draw_section
-    assert "var meterX = getPlayerX() - meterW / 2;" in draw_section
-    assert "var meterY = getPlayerY() - 146;" in draw_section
+
+    charge_start = html.index("function drawPlayerChargeMeter(percent, now) {")
+    charge_section = html[charge_start:html.index("function ensureYuiInkOverlayCache()", charge_start)]
+    assert "var meterX = (getPlayerX() - meterW / 2) * screenScaleX;" in charge_section
+    assert "var meterY = (getPlayerY() - 146) * screenScaleY;" in charge_section
+    assert "aimingCtx.shadowBlur" not in charge_section
     assert "aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);" in draw_section
+    return_cue_start = html.index("function drawPlayerReturnHitCue(now) {")
+    return_cue_section = html[return_cue_start:html.index("function drawBall()", return_cue_start)]
+    assert "aimingCtx.createLinearGradient" not in return_cue_section
+    assert "aimingCtx.createRadialGradient" not in return_cue_section
+    assert "aimingCtx.shadowBlur" not in return_cue_section
     assert "var chargePercent = game.charging ? clamp(game.power, 0, 100) : clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
 
     pointer_down = html[

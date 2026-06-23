@@ -677,10 +677,32 @@ def test_badminton_yui_saves_player_smash_just_outside_racket_hit_range(mock_pag
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.__badmintonObservedYuiSave = null;
+          window.__badmintonStopYuiSaveObserver = false;
+          const observe = () => {
+            const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+            const saving = !!document.querySelector('.neko-avatar-container[data-court-avatar="opponent"].saving');
+            if (state && state.pendingSwing && state.pendingSwing.shooter === 'neko' &&
+              state.pendingSwing.save === true) {
+              window.__badmintonObservedYuiSave = {
+                shooter: state.pendingSwing.shooter,
+                save: state.pendingSwing.save,
+                isSmash: state.pendingSwing.isSmash,
+                saving
+              };
+              return;
+            }
+            if (!window.__badmintonStopYuiSaveObserver) requestAnimationFrame(observe);
+          };
+          requestAnimationFrame(observe);
+        }"""
+    )
     setup = page.evaluate(
         """() => {
           const contact = window.BadmintonDemo._debugGetYuiRacketContactPoint();
-          const dx = contact.reachX + 22;
+          const dx = contact.reachX + 32;
           const dy = 10;
           const courtY = contact.x + dx;
           const screenY = contact.y + dy;
@@ -710,19 +732,18 @@ def test_badminton_yui_saves_player_smash_just_outside_racket_hit_range(mock_pag
     assert setup["normalNormalized"] > 1
     assert setup["saveNormalized"] <= 1
 
-    page.wait_for_function(
-        """() => {
-          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
-          const saving = !!document.querySelector('.neko-avatar-container[data-court-avatar="opponent"].saving');
-          return state && state.pendingSwing && state.pendingSwing.shooter === 'neko' &&
-            state.pendingSwing.save === true && saving;
-        }""",
-        timeout=3000,
-    )
-    saved = page.evaluate("window.BadmintonDemo.getState()")
-    assert saved["pendingSwing"]["shooter"] == "neko"
-    assert saved["pendingSwing"]["save"] is True
-    assert saved["pendingSwing"]["isSmash"] is False
+    try:
+        page.wait_for_function(
+            "window.__badmintonObservedYuiSave !== null",
+            timeout=3000,
+        )
+    finally:
+        page.evaluate("window.__badmintonStopYuiSaveObserver = true")
+    saved = page.evaluate("window.__badmintonObservedYuiSave")
+    assert saved["shooter"] == "neko"
+    assert saved["save"] is True
+    assert saved["isSmash"] is False
+    assert saved["saving"] is True
 
 
 @pytest.mark.e2e
@@ -1510,7 +1531,7 @@ def test_badminton_short_deadline_voice_ignores_stuck_playback_state(
 
 
 @pytest.mark.e2e
-def test_badminton_project_voice_unobserved_falls_back_to_local_speech(
+def test_badminton_project_voice_unobserved_does_not_start_local_speech(
     mock_page: Page, running_server: str
 ):
     page = mock_page
@@ -1568,12 +1589,25 @@ def test_badminton_project_voice_unobserved_falls_back_to_local_speech(
         }"""
     )
 
-    page.wait_for_function("window.__spokenText && window.__spokenText.includes('unobserved project voice')", timeout=3000)
+    page.wait_for_function(
+        """() => {
+          const s = window.BadmintonDemo.getState();
+          return !!(
+            s &&
+            s.voice &&
+            s.voice.lastResult &&
+            s.voice.lastResult.speech_id === 'e2e-unobserved-project-voice' &&
+            s.voice.lastFallbackReason === ''
+          );
+        }""",
+        timeout=3000,
+    )
     assert speak_payloads
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert speak_payloads[-1]["line"] == "unobserved project voice"
     assert state["voice"]["lastResult"]["speech_id"] == "e2e-unobserved-project-voice"
-    assert state["voice"]["lastFallbackReason"] == "project_voice_unobserved"
+    assert state["voice"]["lastFallbackReason"] == ""
+    assert page.evaluate("window.__spokenText") == []
 
 
 @pytest.mark.e2e
@@ -1737,6 +1771,46 @@ def test_badminton_default_banana_spawns_on_player_foot_line_with_random_court_x
     assert abs(spawned["itemY"] - spawned["playerFootY"]) <= 1
     assert state["yuiCheat"]["items"][0]["kind"] == "banana"
     assert state["yuiCheat"]["player_effect"]["slipping"] is False
+
+
+@pytest.mark.e2e
+def test_badminton_default_banana_spawns_on_ground_foot_line_while_player_jumps(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    spawned = page.evaluate(
+        """() => new Promise((resolve) => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall();
+          window.BadmintonDemo.jump();
+          function waitForJump() {
+            const jumpingState = window.BadmintonDemo.getState();
+            if (jumpingState.playerJump && jumpingState.playerJump.offset > 18) {
+              const originalRandom = Math.random;
+              Math.random = () => 0.999;
+              try {
+                const item = window.BadmintonDemo._debugSpawnYuiCheat('banana');
+                const state = window.BadmintonDemo.getState();
+                resolve({
+                  itemY: item.y,
+                  playerFootY: state.playerFootY,
+                  playerGroundFootY: state.playerGroundFootY,
+                  jumpOffset: state.playerJump.offset
+                });
+              } finally {
+                Math.random = originalRandom;
+              }
+              return;
+            }
+            requestAnimationFrame(waitForJump);
+          }
+          waitForJump();
+        })"""
+    )
+
+    assert spawned["jumpOffset"] > 18
+    assert spawned["playerFootY"] < spawned["playerGroundFootY"] - 12
+    assert abs(spawned["itemY"] - spawned["playerGroundFootY"]) <= 1
 
 
 @pytest.mark.e2e

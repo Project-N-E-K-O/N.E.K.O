@@ -62,6 +62,29 @@ emotion_pattern = re.compile('<(.*?)>')
 async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
+        # Optional optimization hint: the cheap pre-gate signal the master-emotion
+        # call produced at input-time, matched to THIS turn's latest user message.
+        # It must NEVER block or abort the publish — wrapped in its own try so any
+        # lazy-import/read failure degrades to None (the agent gate then fails open
+        # and runs its assessment). turn_end also never blocks on the emotion call,
+        # so this only reads an already-cached value. Cache miss / disabled / stale
+        # (different turn) / no-signal → None.
+        action_intent = None
+        try:
+            from main_logic.activity.master_emotion import gate_signal_for
+            _latest_user_msg = next(
+                (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
+                None,
+            )
+            # Skip the gate hint when the latest user turn carries attachments:
+            # the actionable intent may live in the image, which the text-only
+            # signal never saw → leave action_intent None so the agent fails open
+            # and assesses the turn (never drop an image-driven task).
+            if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
+                _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
+                action_intent = gate_signal_for(lanlan_name, _latest_user_text)
+        except Exception:
+            action_intent = None
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,
@@ -69,6 +92,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
+            action_intent=action_intent,
         )
         if sent:
             logger.debug(
