@@ -548,6 +548,31 @@ class TestAssistFollowsCore:
         assert response['assistApiKeyQwen'] == ''
 
     @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_core_config_api_returns_kimi_code_key(self, monkeypatch):
+        """GET 必须回填 assistApiKeyKimiCode，否则前端读到空、重存会覆盖已存密钥。"""
+        from main_routers import config_router
+
+        async def fake_read_json_async(_path):
+            return {
+                'coreApiKey': 'sk-core',
+                'coreApi': 'qwen',
+                'assistApi': 'kimi_code',
+                'assistApiKeyKimiCode': 'sk-kimi-code-stored',
+            }
+
+        class FakeConfigManager:
+            def get_runtime_config_path(self, _filename):
+                return 'core_config.json'
+
+        monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
+        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+
+        response = await config_router.get_core_config_api()
+
+        assert response['assistApiKeyKimiCode'] == 'sk-kimi-code-stored'
+
+    @pytest.mark.unit
     def test_free_core_defaults_assist_to_free_when_key_missing(self, config_manager):
         """Legacy file with only coreApi=free and no saved assistApi: assist follows free.
 

@@ -743,6 +743,7 @@ async def get_core_config_api():
             "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
+            "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
