@@ -46,7 +46,6 @@ let subtitleEnabled = initialSubtitleSettings
         ? window.appState.subtitleEnabled
         : localStorage.getItem('subtitleEnabled') === 'true');
 let subtitleSuppressedByGoodbye = false;
-let subtitleGoodbyeSuppressWasEnabled = false;
 
 function isSubtitleTranslationOwner() {
     return !(window.__NEKO_MULTI_WINDOW__ &&
@@ -689,7 +688,6 @@ function ensureSubtitleVisibleIfEnabled() {
  * 把字幕显示元素隐藏并清空文字（开关关闭或手动 hideSubtitle 时使用）
  */
 function hideSubtitle() {
-    subtitleGoodbyeSuppressWasEnabled = false;
     const display = document.getElementById('subtitle-display');
     if (!display) return;
     const subtitleText = document.getElementById('subtitle-text');
@@ -963,7 +961,6 @@ function suppressSubtitleForGoodbye() {
     if (!isSubtitleTranslationOwner()) {
         return;
     }
-    subtitleGoodbyeSuppressWasEnabled = !!subtitleEnabled;
     subtitleSuppressedByGoodbye = true;
     hideSubtitleDisplayOnly('subtitle-goodbye-suppress');
 }
@@ -972,10 +969,8 @@ function restoreSubtitleAfterGoodbye() {
     if (!subtitleSuppressedByGoodbye) {
         return;
     }
-    var shouldRestoreVisible = !!subtitleEnabled || subtitleGoodbyeSuppressWasEnabled;
     subtitleSuppressedByGoodbye = false;
-    subtitleGoodbyeSuppressWasEnabled = false;
-    if (shouldRestoreVisible && subtitleEnabled) {
+    if (subtitleEnabled) {
         showSubtitleWithoutOriginalAndRestartCurrentTurn();
     } else {
         syncSubtitleRenderState('subtitle-goodbye-restore-disabled');
@@ -993,6 +988,7 @@ function bindGoodbyeSubtitleVisibility() {
     returnEvents.forEach(function(eventName) {
         window.addEventListener(eventName, restoreSubtitleAfterGoodbye);
     });
+    window.addEventListener('neko:goodbye-state-cleared', restoreSubtitleAfterGoodbye);
 }
 
 /**

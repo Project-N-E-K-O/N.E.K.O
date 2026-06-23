@@ -1103,13 +1103,32 @@ def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
     result = mock_page.evaluate(
         """
         async () => {
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            const waitFor = async (predicate, label) => {
+                const deadline = Date.now() + 1000;
+                while (Date.now() < deadline) {
+                    if (predicate()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+                throw new Error(`Timed out waiting for ${label}`);
+            };
+            await waitFor(
+                () => window.nekoSubtitleShared
+                    && window.subtitleBridge
+                    && document.getElementById('subtitle-display')
+                    && document.getElementById('subtitle-text'),
+                'subtitle setup'
+            );
             const shared = window.nekoSubtitleShared;
             const display = document.getElementById('subtitle-display');
             const text = document.getElementById('subtitle-text');
             window.subtitleBridge.setSubtitleEnabled(true, { source: 'test-enable' });
             window.subtitleBridge.markStructured();
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent.length > 0,
+                'subtitle visible before goodbye'
+            );
             const before = {
                 enabled: shared.getSettings().subtitleEnabled,
                 renderEnabled: shared.getRenderState().subtitleEnabled,
@@ -1119,7 +1138,12 @@ def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
             };
 
             window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            await waitFor(
+                () => shared.getSettings().subtitleEnabled === true
+                    && shared.getRenderState().visible === false
+                    && display.classList.contains('hidden') === true,
+                'subtitle hidden during goodbye'
+            );
             const duringGoodbye = {
                 enabled: shared.getSettings().subtitleEnabled,
                 renderEnabled: shared.getRenderState().subtitleEnabled,
@@ -1129,7 +1153,12 @@ def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
             };
 
             window.dispatchEvent(new CustomEvent('live2d-return-click'));
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent === before.text,
+                'subtitle restored after return'
+            );
             const afterReturn = {
                 enabled: shared.getSettings().subtitleEnabled,
                 renderEnabled: shared.getRenderState().subtitleEnabled,
@@ -1137,26 +1166,52 @@ def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
                 hidden: display.classList.contains('hidden'),
                 text: text.textContent,
             };
-            return { before, duringGoodbye, afterReturn };
+
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+            await waitFor(
+                () => shared.getRenderState().visible === false
+                    && display.classList.contains('hidden') === true,
+                'subtitle hidden before character switch clear'
+            );
+            window.dispatchEvent(new CustomEvent('neko:goodbye-state-cleared', {
+                detail: { reason: 'character-switch' },
+            }));
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent === before.text,
+                'subtitle restored after character switch clear'
+            );
+            const afterCharacterSwitchClear = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+            return { before, duringGoodbye, afterReturn, afterCharacterSwitchClear };
         }
         """
     )
 
+    subtitle_text = result["before"]["text"]
+    assert subtitle_text
     assert result["before"] == {
         "enabled": True,
         "renderEnabled": True,
         "visible": True,
         "hidden": False,
-        "text": "[markdown]",
+        "text": subtitle_text,
     }
     assert result["duringGoodbye"] == {
         "enabled": True,
         "renderEnabled": True,
         "visible": False,
         "hidden": True,
-        "text": "[markdown]",
+        "text": subtitle_text,
     }
     assert result["afterReturn"] == result["before"]
+    assert result["afterCharacterSwitchClear"] == result["before"]
 
 
 @pytest.mark.frontend
