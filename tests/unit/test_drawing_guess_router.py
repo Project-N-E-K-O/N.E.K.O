@@ -360,6 +360,9 @@ def test_user_guess_extraction_uses_alias_boundaries():
     assert dgr._extract_user_guess_word("Is it cat?").id == "cat"
     assert dgr._extract_user_guess_word("\u8fd9\u662f\u72d7\u5417\uff1f").id == "dog"
     assert dgr._extract_user_guess_word("Is it concatenate?") is None
+    assert dgr._extract_user_guess_word("is that it?") is None
+    assert dgr._extract_user_guess_word("is it pineapple?") is None
+    assert dgr._extract_user_guess_word("is it scar?") is None
     assert dgr._extract_user_guess_word("\u8fd9\u662f\u70ed\u72d7\u5417\uff1f") is None
 
 
@@ -1554,6 +1557,45 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
     )
 
     assert result is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_vision_guess_revalidates_phase_after_session_lock(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-stale-phase",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-vision-stale-phase"]
+    session["phase"] = "ai_guessing"
+    session["user_word_id"] = "banana"
+
+    class _FakeLock:
+        def release(self):
+            pass
+
+    async def fake_acquire(session_arg, _locale):
+        session_arg["phase"] = "summary"
+        return _FakeLock(), None
+
+    async def fail_vision_turn(**_kwargs):
+        raise AssertionError("stale phase should not run vision turn")
+
+    monkeypatch.setattr(dgr, "_acquire_session_lock", fake_acquire)
+    monkeypatch.setattr(dgr, "_run_drawing_guess_vision_turn", fail_vision_turn)
+
+    result = await dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-stale-phase",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-used",
+    }))
+
+    assert result["ok"] is True
+    assert result["handled"] is False
+    assert result["reason"] == "not_ai_guessing"
+    assert result["state"]["phase"] == "summary"
 
 
 @pytest.mark.unit

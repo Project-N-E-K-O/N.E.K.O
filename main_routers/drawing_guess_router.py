@@ -3350,6 +3350,8 @@ async def drawing_guess_vision_guess(request: Request):
     if busy is not None:
         return busy
     try:
+        if session.get("phase") not in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
+            return {"ok": True, "handled": False, "reason": "not_ai_guessing", "state": _public_round_state(session, locale)}
         return await _run_drawing_guess_vision_turn(
             session=session,
             locale=locale,

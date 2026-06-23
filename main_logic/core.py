@@ -9923,8 +9923,11 @@ class LLMSessionManager:
                         "speech_id": effective_speech_id
                     })
                     await self.websocket.send_bytes(tts_audio)
-                    self.sync_message_queue.put({"type": "binary", "data": tts_audio})
                     delivered = True
+                    try:
+                        self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+                    except Exception as e:
+                        logger.warning("⚠️ send_speech sync queue mirror failed: %s", e)
                 except WebSocketDisconnect:
                     logger.warning("⚠️ send_speech: WebSocket disconnected")
                 except Exception as e:
