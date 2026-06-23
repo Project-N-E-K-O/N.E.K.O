@@ -216,7 +216,7 @@ def test_badminton_hidden_tab_keeps_route_alive():
 
     beforeunload_start = html.index("window.addEventListener('beforeunload', function () {")
     beforeunload_section = html[beforeunload_start:html.index("window.addEventListener('localechange'", beforeunload_start)]
-    assert "closeSpeechPlaybackStateBridge();" in beforeunload_section
+    assert "closeSpeechPlaybackStateBridge();" not in beforeunload_section
     assert "endRoute(true);" in beforeunload_section
     assert "var pageVisible = !document.hidden;" in html
     assert "visible: pageVisible" in html
@@ -950,6 +950,11 @@ def test_badminton_low_risk_frame_time_is_reused_in_overlay_hot_path():
     assert "badmintonFrameNow = ts || performance.now();" in html
     assert "update(dt, badmintonFrameNow);" in html
     assert "drawAiming(badmintonFrameNow);" in html
+    assert "var BADMINTON_HIDDEN_FRAME_DELAY_MS = 250;" in html
+    assert "function scheduleBadmintonNextFrame() {" in html
+    assert "if (document.hidden) {" in html
+    assert "}, BADMINTON_HIDDEN_FRAME_DELAY_MS);" in html
+    assert "scheduleBadmintonNextFrame();" in html
 
     overlay_start = html.index("function isAimingOverlayActive(")
     overlay_end = html.index("function drawAiming(", overlay_start)
@@ -980,6 +985,7 @@ def test_badminton_low_risk_hud_text_updates_are_deduped():
     debug_start = html.index("function updateDebugReadout() {")
     debug_end = html.index("function setDebugVisible(", debug_start)
     debug_section = html[debug_start:debug_end]
+    assert "if (debugPanel && debugPanel.dataset.debugVisible !== 'true') return;" in debug_section
     assert "setTextIfChanged(debugPowerValue, String(Math.round(game.power || 0)));" in debug_section
     assert "setTextIfChanged(debugReadout, readoutText);" in debug_section
 
@@ -1043,6 +1049,10 @@ def test_badminton_low_risk_pointer_move_reuses_control_checks():
     pointer_start = html.index("function handleBadmintonPointerMove(ev) {")
     pointer_end = html.index("function handleBadmintonPointerDown(ev) {", pointer_start)
     pointer_section = html[pointer_start:pointer_end]
+    assert "if (ev && ev.__badmintonPointerMoveHandled) return;" in pointer_section
+    assert "if (ev) ev.__badmintonPointerMoveHandled = true;" in pointer_section
+    assert pointer_section.index("if (ev && ev.__badmintonPointerMoveHandled) return;") < pointer_section.index("rememberPlayerPointer(ev);")
+    assert pointer_section.index("if (ev) ev.__badmintonPointerMoveHandled = true;") < pointer_section.index("rememberPlayerPointer(ev);")
     assert "var canMoveCourt = canPlayerMoveCourt();" in pointer_section
     assert "var canControlShot = canPlayerControlShot();" in pointer_section
     assert "if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in pointer_section
@@ -1118,7 +1128,10 @@ def test_badminton_low_risk_net_contact_effects_reuse_frame_time():
     effects_end = html.index("function drawNetCord()", effects_start)
     effects_section = html[effects_start:effects_end]
     assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in effects_section
-    assert "t - effect.startAt < effect.duration" in effects_section
+    assert "var activeCount = 0;" in effects_section
+    assert "netContactEffects[activeCount++] = retainedEffect;" in effects_section
+    assert "netContactEffects.length = activeCount;" in effects_section
+    assert "netContactEffects = netContactEffects.filter" not in effects_section
     assert "var age = clamp((t - effect.startAt) / effect.duration, 0, 1);" in effects_section
     assert "performance.now()" not in effects_section
 
@@ -1703,15 +1716,15 @@ def test_badminton_user_reply_voice_deadline_survives_inflight_guard():
 
 
 @pytest.mark.unit
-def test_badminton_voice_deferral_without_deadline_uses_fallback_delay():
+def test_badminton_voice_request_does_not_use_browser_playback_bridge():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
     request_start = html.index("function _requestVoicePlayback(entry) {")
     request_section = html[request_start:html.index("function _flushVoiceArbiter()", request_start)]
 
-    assert "var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;" in request_section
-    assert "var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;" in request_section
-    assert "deadlineMs - 250 || 900" not in request_section
-    assert "_scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));" in request_section
+    assert "readVoiceOccupancy()" not in request_section
+    assert "playbackDeferredOnce" not in request_section
+    assert "voice_deferred_once" not in request_section
+    assert "showBubble(entry.line, entry.control);" in request_section
 
 
 @pytest.mark.unit
@@ -1722,27 +1735,20 @@ def test_badminton_debug_voice_mode_allows_tts_when_debugging():
 
     assert "var debugVoiceMode = modeParams ? modeParams.get('debug_voice') === '1' : false;" in html
     assert "var debugVoiceMuted = modeParams ? modeParams.get('debug_mute_voice') === '1' : false;" in html
-    assert "var SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';" in html
-    assert "var SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';" in html
-    assert "function normalizeSpeechPlaybackState(raw) {" in html
-    assert "localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY)" in html
-    assert "new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME)" in html
-    assert "window.addEventListener('storage', function (event) {" in html
-    assert "window.addEventListener('neko-speech-playback-state', function (event) {" in html
-    assert "function readVoiceOccupancy() {" in html
-    assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" in html
-    assert "initSpeechPlaybackStateBridge();" in html
-    assert "function closeSpeechPlaybackStateBridge() {" in html
-    assert "speechPlaybackChannel.close();" in html
-    assert "function speakLineLocally(line) {" in html
-    assert "new SpeechSynthesisUtterance(text)" in html
+    assert "SPEECH_PLAYBACK_STATE_KEY" not in html
+    assert "SPEECH_PLAYBACK_CHANNEL_NAME" not in html
+    assert "function normalizeSpeechPlaybackState(raw) {" not in html
+    assert "function readVoiceOccupancy() {" not in html
+    assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" not in html
+    assert "initSpeechPlaybackStateBridge();" not in html
+    assert "function closeSpeechPlaybackStateBridge() {" not in html
+    assert "function speakLineLocally(line) {" not in html
+    assert "SpeechSynthesisUtterance" not in html
+    assert "speechSynthesis" not in html
     assert "if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();" in mirror_section
     assert "hasProjectVoicePlaybackBridge" not in mirror_section
     assert "missing_project_voice_playback_bridge" not in mirror_section
     assert "lastVoiceRequest = speakPayload;" in mirror_section
-    assert "waitForProjectVoicePlayback(res.speech_id, 1100, speakStartedAt)" in mirror_section
-    assert "lastVoiceFallbackReason = 'project_voice_not_queued';" in mirror_section
-    assert "lastVoiceFallbackReason = 'project_voice_unobserved';" in mirror_section
     assert "reason: 'project_speak_failed'" in mirror_section
     assert "return post('/speak', speakPayload, 3500).then(function (res) {" in mirror_section
 
@@ -1942,7 +1948,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var NET_ROWS = 7;" in html
     assert "var NET_CONTACT_RADIUS = 42;" in html
     assert "var NET_CONTACT_IMPULSE = 320;" in html
-    assert "var NET_CONTACT_HOLD_MS = 230;" in html
+    assert "var NET_CONTACT_HOLD_MS = 90;" in html
     assert "function getSideViewCourtTop() {" in html
     assert "return FLOOR_Y - 62;" in html
     assert "function getSideViewCourtBottom() {" in html
@@ -2232,11 +2238,19 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "renderYuiLive2dRacket();" in html
     assert "var shooting = nekoL2dContainer.classList.contains('shooting');" in html
     assert "var charging = nekoL2dContainer.classList.contains('charging');" in html
-    assert "function getYuiLive2dRacketLayout(now) {" not in html
-    assert "YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS" not in html
-    assert "var rect = nekoL2dContainer.getBoundingClientRect();" in html
-    assert "var layoutW = yuiLive2dRacketCanvas.clientWidth || nekoL2dContainer.offsetWidth || rect.width;" in html
-    assert "var modelFrame = getYuiLive2dModelFrame({ width: layoutW, height: layoutH });" in html
+    assert "var saving = nekoL2dContainer.classList.contains('saving');" in html
+    assert "var smashing = nekoL2dContainer.classList.contains('smashing');" in html
+    assert "YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS" in html
+    assert "YUI_LIVE2D_RACKET_IDLE_RENDER_MS" in html
+    assert "var yuiLive2dRacketLayoutCache = { sampledAt: 0, rect: null, layoutW: 0, layoutH: 0, dpr: 0, modelFrame: null };" in html
+    assert "var yuiLive2dRacketLastRenderAt = 0;" in html
+    assert "function resetYuiLive2dRacketLayoutCache() {" in html
+    assert "function getYuiLive2dRacketLayout(now, forceRefresh) {" in html
+    assert "if (!forceRefresh && cached.rect && cached.dpr === dpr && t - (cached.sampledAt || 0) < YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS)" in html
+    assert "var layout = getYuiLive2dRacketLayout(now, activeRacketAction);" in html
+    assert "if (!activeRacketAction && yuiLive2dRacketLastRenderAt && now - yuiLive2dRacketLastRenderAt < YUI_LIVE2D_RACKET_IDLE_RENDER_MS) return;" in html
+    assert "resetYuiLive2dRacketLayoutCache();" in html
+    assert "var modelFrame = layout.modelFrame;" in html
     assert "var fallbackHand = getYuiLive2dFallbackHandPoint(modelFrame, shooting, charging);" in html
     assert "function getCachedYuiLive2dDrawableHand(domRect, modelFrame, layoutW, layoutH, shooting, charging, now) {" in html
     assert "YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS" in html
@@ -2769,7 +2783,10 @@ def test_badminton_banana_slip_flips_player_avatar_360_degrees():
 
     assert "function randomYuiBananaCourtX() {" in html
     assert "var x = Number.isFinite(opts.x) ? opts.x : randomYuiBananaCourtX();" in banana_section
-    assert "var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY();" in banana_section
+    assert "var y = Number.isFinite(opts.y) ? opts.y : getPlayerGroundFootY();" in banana_section
+    assert "function getPlayerGroundFootY() {" in html
+    assert "playerGroundFootY: getPlayerGroundFootY()," in html
+    assert "var dy = getPlayerFootY() - item.y;" in html
     assert "getPlayerX()" not in banana_section
     assert "game.playerCourt.targetX + defaultOffset" not in banana_section
     assert "var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;" in html
@@ -2797,22 +2814,27 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var shuttleZ = getShuttleCourtZ(ball, false);" in html
     assert "var yuiContactTopZ = screenYToCourtZ(contact.y - 26);" in html
     assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);" in html
-    assert "var YUI_RACKET_HIT_REACH_X = 38;" in html
-    assert "var YUI_RACKET_HIT_REACH_Y = 54;" in html
+    assert "var YUI_RACKET_HIT_REACH_X = 46;" in html
+    assert "var YUI_RACKET_HIT_REACH_Y = 62;" in html
     assert "function getYuiVisibleRacketContactPoint() {" in html
     assert "source: 'live2d-racket-head'" in html
     assert "function getYuiRacketContactPoint() {" in html
     assert "x: getYuiX() + YUI_RACKET_BODY_OFFSET_X," in html
     assert "return getYuiVisibleRacketContactPoint() || getYuiShotOrigin();" in html
+    assert "function getYuiNeutralRacketContactPoint() {" in html
+    assert "source: 'neutral-racket-anchor'" in html
+    assert "function getYuiRacketRangeState(incomingBall, reachX, reachY) {" in html
+    assert "var neutral = getYuiNeutralRacketContactPoint();" in html
+    assert "var visible = getYuiVisibleRacketContactPoint();" in html
+    assert "if (visibleState.normalized < best.normalized) best = visibleState;" in html
     assert "function getYuiRacketHitRangeState(incomingBall) {" in html
-    assert "var racket = getYuiRacketContactPoint();" in html
-    assert "var normalized = Math.pow(dx / YUI_RACKET_HIT_REACH_X, 2) + Math.pow(dy / YUI_RACKET_HIT_REACH_Y, 2);" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);" in html
     assert "function isYuiRacketHitInRange(incomingBall) {" in html
     assert "return getYuiRacketHitRangeState(incomingBall).normalized <= 1;" in html
     assert "var YUI_RACKET_SAVE_REACH_X = 84;" in html
     assert "var YUI_RACKET_SAVE_REACH_Y = 86;" in html
     assert "function getYuiRacketSaveRangeState(incomingBall) {" in html
-    assert "var normalized = Math.pow(dx / YUI_RACKET_SAVE_REACH_X, 2) + Math.pow(dy / YUI_RACKET_SAVE_REACH_Y, 2);" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);" in html
     assert "function isYuiSmashSaveReachable(incomingBall) {" in html
     assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
     assert "var YUI_SMASH_MIN_SHUTTLE_Z = 64;" in html

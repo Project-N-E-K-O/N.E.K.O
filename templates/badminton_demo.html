@@ -1016,7 +1016,7 @@
   var NET_BALL_RADIUS = BALL_R + 6;
   var NET_CONTACT_RADIUS = 42;
   var NET_CONTACT_IMPULSE = 320;
-  var NET_CONTACT_HOLD_MS = 230;
+  var NET_CONTACT_HOLD_MS = 90;
   var PLAYER_MOVE_SPEED = 1040;
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
@@ -1047,8 +1047,8 @@
   var YUI_START_X = BADMINTON.netX + (BADMINTON.courtRight - BADMINTON.netX) * 0.58;
   var YUI_START_Y = 405;
   var YUI_RACKET_BODY_OFFSET_X = 58;
-  var YUI_RACKET_HIT_REACH_X = 38;
-  var YUI_RACKET_HIT_REACH_Y = 54;
+  var YUI_RACKET_HIT_REACH_X = 46;
+  var YUI_RACKET_HIT_REACH_Y = 62;
   var YUI_RACKET_SAVE_REACH_X = 84;
   var YUI_RACKET_SAVE_REACH_Y = 86;
   var YUI_SMASH_MIN_SHUTTLE_Z = 64;
@@ -1068,6 +1068,9 @@
   var YUI_CHEAT_INK_VISUAL_SCALE = 0.82;
   var YUI_CHEAT_SCORE_TAUNT_GRACE_MS = 6500;
   var YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS = 64;
+  var YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS = 240;
+  var YUI_LIVE2D_RACKET_IDLE_RENDER_MS = 66;
+  var BADMINTON_HIDDEN_FRAME_DELAY_MS = 250;
   var netNodes = [];
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
@@ -1077,6 +1080,8 @@
   var perfMode = debugMode || (modeParams ? modeParams.get('perf') === '1' : false);
   var currentMode = 'duel';
   var netContactEffects = [];
+  var netPhysicsActiveUntil = 0;
+  var netPhysicsAtRest = true;
   var DUEL_DIFFICULTY = [
     { name: 'max', skillBase: 0.985, growth: 0.004, pressure: 0.025, angleVar: 0.25, powerVar: 0.55, windupMs: 90, reactionMs: 120 },
     { name: 'lv2', skillBase: 0.88, growth: 0.010, pressure: 0.07, angleVar: 0.9, powerVar: 1.6, windupMs: 240, reactionMs: 320 },
@@ -1114,6 +1119,8 @@
   var playerChargeMeterStyleCache = {};
   var playerChargeFillStyleCache = {};
   var yuiLive2dDrawableHandCache = null;
+  var yuiLive2dRacketLayoutCache = { sampledAt: 0, rect: null, layoutW: 0, layoutH: 0, dpr: 0, modelFrame: null };
+  var yuiLive2dRacketLastRenderAt = 0;
   var yuiInkOverlayCache = { canvas: null, ctx: null, key: '', ready: false };
   var badmintonPerfState = {
     frame: 0,
@@ -2400,18 +2407,13 @@
     userReplyProtectedUntil: 0,
     waitingForUserReply: false
   };
-  var SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
-  var SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
-  var speechPlaybackState = null;
-  var speechPlaybackChannel = null;
   var lastVoiceRequest = null;
   var lastVoiceResult = null;
   var lastVoiceFallbackReason = '';
   var lastVoiceMutedReason = '';
   var VOICE_ARBITER_DEFAULTS = {
     tailWaitMs: 850,
-    inFlightGuardMs: 2400,
-    stalePlaybackStateMs: 3500
+    inFlightGuardMs: 2400
   };
   function _voicePriorityForEvent(event) {
     var kind = String(event && event.kind || '');
@@ -2472,163 +2474,6 @@
     voiceArbiter.pending = entry;
     _scheduleVoiceArbiterFlush(entry.tailWaitMs);
   }
-  function normalizeSpeechPlaybackState(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    var updatedAt = Number(raw.updatedAt || 0);
-    if (!isFinite(updatedAt)) return null;
-    var ageMs = Math.max(0, Date.now() - updatedAt);
-    var rawRemainingSeconds = Math.max(0, Number(raw.remainingSeconds || 0));
-    var shouldAdvanceByWallClock = raw.audioContextState !== 'suspended';
-    var remainingSeconds = shouldAdvanceByWallClock
-      ? Math.max(0, rawRemainingSeconds - ageMs / 1000)
-      : rawRemainingSeconds;
-    if (ageMs > VOICE_ARBITER_DEFAULTS.stalePlaybackStateMs && remainingSeconds <= 0.5) return null;
-    return {
-      active: !!raw.active && remainingSeconds > 0.05,
-      speechId: raw.speechId ? String(raw.speechId) : '',
-      turnId: raw.turnId ? String(raw.turnId) : '',
-      remainingSeconds: remainingSeconds,
-      remainingMs: Math.round(remainingSeconds * 1000),
-      updatedAt: updatedAt,
-      ageMs: ageMs,
-      reason: raw.reason || '',
-      source: 'playback_state'
-    };
-  }
-  function readSpeechPlaybackState() {
-    var live = normalizeSpeechPlaybackState(speechPlaybackState);
-    if (live) return live;
-    try {
-      var stored = JSON.parse(localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY) || 'null');
-      var normalized = normalizeSpeechPlaybackState(stored);
-      if (normalized) {
-        speechPlaybackState = stored;
-        return normalized;
-      }
-    } catch (_) {}
-    return { active: false, speechId: '', turnId: '', remainingSeconds: 0, remainingMs: 0, updatedAt: 0, reason: 'missing', source: 'playback_state' };
-  }
-  function initSpeechPlaybackStateBridge() {
-    try {
-      if (typeof BroadcastChannel !== 'undefined') {
-        speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
-        speechPlaybackChannel.onmessage = function (event) {
-          var data = event && event.data;
-          if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
-        };
-      }
-    } catch (_) {}
-    window.addEventListener('storage', function (event) {
-      if (event.key !== SPEECH_PLAYBACK_STATE_KEY || !event.newValue) return;
-      try {
-        var data = JSON.parse(event.newValue);
-        if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
-      } catch (_) {}
-    });
-    window.addEventListener('neko-speech-playback-state', function (event) {
-      var data = event && event.detail;
-      if (data && data.type === 'speech_playback_state') speechPlaybackState = data;
-    });
-    readSpeechPlaybackState();
-  }
-  function closeSpeechPlaybackStateBridge() {
-    if (!speechPlaybackChannel) return;
-    try {
-      speechPlaybackChannel.close();
-    } catch (_) {}
-    speechPlaybackChannel = null;
-  }
-  function readVoiceOccupancy() {
-    var playback = readSpeechPlaybackState();
-    if (playback.active) return playback;
-    if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt) {
-      var inFlightMs = Math.max(100, voiceArbiter.inFlight.expiresAt - Date.now());
-      return {
-        active: true,
-        speechId: '',
-        turnId: '',
-        remainingSeconds: inFlightMs / 1000,
-        remainingMs: inFlightMs,
-        reason: 'local_inflight',
-        source: 'local_inflight'
-      };
-    }
-    var protectedMs = Math.max(0, voiceArbiter.userReplyProtectedUntil - Date.now());
-    if (protectedMs > 0) {
-      return {
-        active: true,
-        speechId: '',
-        turnId: '',
-        remainingSeconds: protectedMs / 1000,
-        remainingMs: protectedMs,
-        reason: 'user_reply_protection',
-        source: 'user_reply_protection'
-      };
-    }
-    return { active: false, speechId: '', turnId: '', remainingSeconds: 0, remainingMs: 0, reason: 'idle', source: 'idle' };
-  }
-  function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {
-    var targetSpeechId = String(speechId || '');
-    var startedAt = Date.now();
-    var minUpdatedAt = Number.isFinite(requestStartedAt) ? requestStartedAt - 100 : startedAt - 100;
-    return new Promise(function (resolve) {
-      function check() {
-        var state = readSpeechPlaybackState();
-        var stateSpeechId = state && state.speechId ? String(state.speechId) : '';
-        var isFresh = !!(state && state.active && state.updatedAt >= minUpdatedAt);
-        var matchesTarget = !!(targetSpeechId && stateSpeechId === targetSpeechId);
-        var matchesAnonymousFreshPlayback = !!(!targetSpeechId && isFresh);
-        if (matchesTarget || matchesAnonymousFreshPlayback) {
-          resolve({ observed: true, state: state });
-          return;
-        }
-        if (Date.now() - startedAt >= (timeoutMs || 1100)) {
-          resolve({ observed: false, state: state });
-          return;
-        }
-        setTimeout(check, 80);
-      }
-      check();
-    });
-  }
-  function pickLocalSpeechVoice(lang) {
-    var synth = window.speechSynthesis;
-    if (!synth || typeof synth.getVoices !== 'function') return null;
-    var voices = synth.getVoices() || [];
-    var normalizedLang = String(lang || '').toLowerCase();
-    var primary = normalizedLang.split('-')[0] || 'zh';
-    for (var i = 0; i < voices.length; i++) {
-      var voice = voices[i];
-      var voiceLang = String(voice && voice.lang || '').toLowerCase();
-      if (voiceLang === normalizedLang) return voice;
-    }
-    for (var j = 0; j < voices.length; j++) {
-      var fallbackVoice = voices[j];
-      var fallbackLang = String(fallbackVoice && fallbackVoice.lang || '').toLowerCase();
-      if (fallbackLang.indexOf(primary) === 0) return fallbackVoice;
-    }
-    return null;
-  }
-  function speakLineLocally(line) {
-    var text = String(line || '').trim();
-    if (!text || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return false;
-    try {
-      var synth = window.speechSynthesis;
-      var utterance = new SpeechSynthesisUtterance(text);
-      var lang = getRequestLanguage() || 'zh-CN';
-      utterance.lang = lang;
-      utterance.rate = 1.03;
-      utterance.pitch = 1.18;
-      utterance.volume = 0.95;
-      var voice = pickLocalSpeechVoice(lang);
-      if (voice) utterance.voice = voice;
-      synth.cancel();
-      synth.speak(utterance);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
   function _mirrorAndSpeak(entry) {
     if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();
     var entrySessionId = entry.sessionId || sessionId;
@@ -2666,43 +2511,21 @@
     lastVoiceRequest = speakPayload;
     lastVoiceResult = null;
     lastVoiceFallbackReason = '';
-    var speakStartedAt = Date.now();
     return post('/mirror-assistant', mirrorPayload, 2500)
       .catch(function () {})
       .then(function () {
         return post('/speak', speakPayload, 3500).then(function (res) {
           lastVoiceResult = res || null;
-          if (!res || !(res.audio_sent || res.audio_queued)) {
-            lastVoiceFallbackReason = 'project_voice_not_queued';
-            speakLineLocally(entry.line);
-            return res;
-          }
-          return waitForProjectVoicePlayback(res.speech_id, 1100, speakStartedAt).then(function (observed) {
-            if (!observed || !observed.observed) {
-              lastVoiceFallbackReason = 'project_voice_unobserved';
-              speakLineLocally(entry.line);
-            }
-            return res;
-          });
+          return res;
         }).catch(function () {
           lastVoiceFallbackReason = 'project_speak_failed';
-          speakLineLocally(entry.line);
-          return { ok: false, local_speech: true, reason: 'project_speak_failed' };
+          lastVoiceResult = { ok: false, reason: 'project_speak_failed' };
+          return lastVoiceResult;
         });
       });
   }
   function _requestVoicePlayback(entry) {
     if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();
-    var playback = readVoiceOccupancy();
-    var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;
-    var canDeferWithoutExpiring = !entry.expiresAt || deadlineMs > entry.tailWaitMs + 250;
-    if (playback.active && playback.source === 'playback_state' && playback.remainingMs > entry.tailWaitMs && canDeferWithoutExpiring && !entry.playbackDeferredOnce) {
-      entry.playbackDeferredOnce = true;
-      _storeVoicePending(entry);
-      var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;
-      _scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));
-      return Promise.resolve({ ok: false, queued: true, reason: 'voice_deferred_once' });
-    }
     var holdMs = Math.max(VOICE_ARBITER_DEFAULTS.inFlightGuardMs, Math.round(_estimateVoiceDuration(entry.line) * 1000));
     voiceArbiter.inFlight = {
       id: entry.id,
@@ -2926,8 +2749,7 @@
       priority: _voicePriorityForEvent(event),
       tailWaitMs: VOICE_ARBITER_DEFAULTS.tailWaitMs,
       expiresAt: event && event.voice_deadline_ms ? Date.now() + Math.max(0, event.voice_deadline_ms) : 0,
-      isUserReply: isUserReply,
-      playbackDeferredOnce: false
+      isUserReply: isUserReply
     };
     if (isUserReply) {
       voiceArbiter.userReplyProtectedUntil = Date.now() + 5000;
@@ -4112,6 +3934,7 @@
     aimingCtx.setTransform(aimingCanvas.width / BASE_W, 0, 0, aimingCanvas.height / BASE_H, 0, 0);
     yuiInkOverlayCache.ready = false;
     yuiInkOverlayCache.key = '';
+    resetYuiLive2dRacketLayoutCache();
     updateYuiPosition(game.distance);
     updatePlayerAvatarPosition();
     updateDuelShooterAvatars();
@@ -4208,7 +4031,7 @@
     var now = performance.now();
     var opts = options || {};
     var x = Number.isFinite(opts.x) ? opts.x : randomYuiBananaCourtX();
-    var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY();
+    var y = Number.isFinite(opts.y) ? opts.y : getPlayerGroundFootY();
     return {
       id: ++game.yuiCheat.seq,
       kind: 'banana',
@@ -4416,6 +4239,9 @@
   function getPlayerFootY() {
     return clamp(getPlayerY() + PLAYER_FOOT_CONTACT_OFFSET_Y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8);
   }
+  function getPlayerGroundFootY() {
+    return clamp(game.playerCourt.y + PLAYER_FOOT_CONTACT_OFFSET_Y, PLAYER_COURT_Y_MIN, BADMINTON.courtBottom - 8);
+  }
   function getPlayerEyeY() {
     return getPlayerY() - 66;
   }
@@ -4495,26 +4321,36 @@
     if (isPlayerServeSetup()) return false;
     return getPlayerSmashQuality(incomingBall) >= 0.22;
   }
+  function getYuiNeutralRacketContactPoint() {
+    var contact = getYuiShotOrigin();
+    return { x: contact.x, y: contact.y, source: 'neutral-racket-anchor' };
+  }
+  function getYuiRacketRangeState(incomingBall, reachX, reachY) {
+    var neutral = getYuiNeutralRacketContactPoint();
+    var visible = getYuiVisibleRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : neutral.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : neutral.y;
+    function stateFor(racket) {
+      var dx = Math.abs(ballX - racket.x);
+      var dy = Math.abs(ballY - racket.y);
+      var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
+      return { dx: dx, dy: dy, normalized: normalized, racket: racket, source: racket.source || '' };
+    }
+    var best = stateFor(neutral);
+    if (visible) {
+      var visibleState = stateFor(visible);
+      if (visibleState.normalized < best.normalized) best = visibleState;
+    }
+    return best;
+  }
   function getYuiRacketHitRangeState(incomingBall) {
-    var racket = getYuiRacketContactPoint();
-    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : racket.x;
-    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : racket.y;
-    var dx = Math.abs(ballX - racket.x);
-    var dy = Math.abs(ballY - racket.y);
-    var normalized = Math.pow(dx / YUI_RACKET_HIT_REACH_X, 2) + Math.pow(dy / YUI_RACKET_HIT_REACH_Y, 2);
-    return { dx: dx, dy: dy, normalized: normalized };
+    return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
   }
   function isYuiRacketHitInRange(incomingBall) {
     return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
   }
   function getYuiRacketSaveRangeState(incomingBall) {
-    var racket = getYuiRacketContactPoint();
-    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : racket.x;
-    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : racket.y;
-    var dx = Math.abs(ballX - racket.x);
-    var dy = Math.abs(ballY - racket.y);
-    var normalized = Math.pow(dx / YUI_RACKET_SAVE_REACH_X, 2) + Math.pow(dy / YUI_RACKET_SAVE_REACH_Y, 2);
-    return { dx: dx, dy: dy, normalized: normalized };
+    return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
   }
   function isYuiSmashSaveReachable(incomingBall) {
     return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
@@ -5064,13 +4900,17 @@
   }
   function updateNetPhysics(dt) {
     if (!netNodes.length) initNetNodes();
+    var t = getBadmintonFrameNow();
     var ball = game.ball;
+    var ballInNet = false;
     if (ball && !ball.resolved) {
       var shuttleCourtY = getShuttleCourtY(ball, false);
       var netHalfWidth = NET_COLLISION_HALF_WIDTH;
-      var ballInNet = isShuttleInsideNetZ(ball, { z: getShuttleCourtZ(ball, false) })
+      ballInNet = isShuttleInsideNetZ(ball, { z: getShuttleCourtZ(ball, false) })
         && Math.abs(shuttleCourtY - getMidcourtNetY()) <= netHalfWidth + (ball.radius || BALL_R) * 0.45;
       if (ballInNet) {
+        netPhysicsActiveUntil = Math.max(netPhysicsActiveUntil, t + 360);
+        netPhysicsAtRest = false;
         for (var col = 0; col < NET_COLS; col++) {
           for (var row = 0; row < NET_ROWS; row++) {
             var n = netNodes[col][row];
@@ -5091,6 +4931,21 @@
           }
         }
       }
+    }
+    if (!ballInNet && t > netPhysicsActiveUntil && !netContactEffects.length) {
+      if (!netPhysicsAtRest) {
+        for (var rc = 0; rc < NET_COLS; rc++) {
+          for (var rr0 = 0; rr0 < NET_ROWS; rr0++) {
+            var restNode = netNodes[rc][rr0];
+            restNode.x = restNode.restX;
+            restNode.y = restNode.restY;
+            restNode.vx = 0;
+            restNode.vy = 0;
+          }
+        }
+        netPhysicsAtRest = true;
+      }
+      return;
     }
     for (var c = 0; c < NET_COLS; c++) {
       for (var r = 0; r < NET_ROWS; r++) {
@@ -5132,6 +4987,8 @@
   function applyNetContactImpulse(ball, crossing) {
     if (!ball) return;
     if (!netNodes.length) initNetNodes();
+    netPhysicsActiveUntil = Math.max(netPhysicsActiveUntil, getBadmintonFrameNow() + 720);
+    netPhysicsAtRest = false;
     var contactX = crossing && Number.isFinite(crossing.screenX) ? crossing.screenX : ball.x;
     var contactY = crossing && Number.isFinite(crossing.screenY) ? crossing.screenY : ball.y;
     var direction = ball.direction === -1 ? -1 : 1;
@@ -5190,6 +5047,8 @@
       strength: strength,
       direction: ball && ball.direction === -1 ? -1 : 1
     });
+    netPhysicsActiveUntil = Math.max(netPhysicsActiveUntil, now + 720);
+    netPhysicsAtRest = false;
     if (netContactEffects.length > 5) netContactEffects = netContactEffects.slice(netContactEffects.length - 5);
     if (debugMode) {
       window.__badmintonNetEffectDebug = {
@@ -7398,9 +7257,14 @@
   function drawNetContactEffects(now) {
     if (!netContactEffects.length) return;
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
-    netContactEffects = netContactEffects.filter(function (effect) {
-      return t - effect.startAt < effect.duration;
-    });
+    var activeCount = 0;
+    for (var effectIndex = 0; effectIndex < netContactEffects.length; effectIndex++) {
+      var retainedEffect = netContactEffects[effectIndex];
+      if (t - retainedEffect.startAt < retainedEffect.duration) {
+        netContactEffects[activeCount++] = retainedEffect;
+      }
+    }
+    netContactEffects.length = activeCount;
     if (!netContactEffects.length) return;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -8202,21 +8066,60 @@
     setYuiLive2dParameter('Param96', active ? pose : 0);
   }
 
+  function resetYuiLive2dRacketLayoutCache() {
+    yuiLive2dRacketLayoutCache.sampledAt = 0;
+    yuiLive2dRacketLayoutCache.rect = null;
+    yuiLive2dRacketLayoutCache.layoutW = 0;
+    yuiLive2dRacketLayoutCache.layoutH = 0;
+    yuiLive2dRacketLayoutCache.dpr = 0;
+    yuiLive2dRacketLayoutCache.modelFrame = null;
+    yuiLive2dDrawableHandCache = null;
+  }
+
+  function getYuiLive2dRacketLayout(now, forceRefresh) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var cached = yuiLive2dRacketLayoutCache;
+    var dpr = window.devicePixelRatio || 1;
+    if (!forceRefresh && cached.rect && cached.dpr === dpr && t - (cached.sampledAt || 0) < YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS) {
+      return cached;
+    }
+    var rect = nekoL2dContainer.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) return null;
+    var layoutW = yuiLive2dRacketCanvas.clientWidth || nekoL2dContainer.offsetWidth || rect.width;
+    var layoutH = yuiLive2dRacketCanvas.clientHeight || nekoL2dContainer.offsetHeight || rect.height;
+    cached.sampledAt = t;
+    cached.rect = rect;
+    cached.layoutW = layoutW;
+    cached.layoutH = layoutH;
+    cached.dpr = dpr;
+    cached.modelFrame = getYuiLive2dModelFrame({ width: layoutW, height: layoutH });
+    return cached;
+  }
+
   function renderYuiLive2dRacket() {
     if (!yuiLive2dRacketCanvas || !yuiLive2dRacketCtx || !nekoL2dContainer || activeAvatarType !== 'live2d') return;
     if (nekoL2dContainer.hidden || currentMode !== 'duel') {
       yuiLive2dRacketCtx.clearRect(0, 0, yuiLive2dRacketCanvas.width || 1, yuiLive2dRacketCanvas.height || 1);
       applyYuiLive2dRacketPose(false, false);
       window.__badmintonYuiRacketDebug = null;
-      yuiLive2dDrawableHandCache = null;
+      resetYuiLive2dRacketLayoutCache();
+      yuiLive2dRacketLastRenderAt = 0;
       return;
     }
     var now = getBadmintonFrameNow();
-    var rect = nekoL2dContainer.getBoundingClientRect();
-    if (rect.width < 20 || rect.height < 20) return;
-    var dpr = window.devicePixelRatio || 1;
-    var layoutW = yuiLive2dRacketCanvas.clientWidth || nekoL2dContainer.offsetWidth || rect.width;
-    var layoutH = yuiLive2dRacketCanvas.clientHeight || nekoL2dContainer.offsetHeight || rect.height;
+    var shooting = nekoL2dContainer.classList.contains('shooting');
+    var charging = nekoL2dContainer.classList.contains('charging');
+    var saving = nekoL2dContainer.classList.contains('saving');
+    var smashing = nekoL2dContainer.classList.contains('smashing');
+    var activeRacketAction = shooting || charging || saving || smashing;
+    if (!activeRacketAction && yuiLive2dRacketLastRenderAt && now - yuiLive2dRacketLastRenderAt < YUI_LIVE2D_RACKET_IDLE_RENDER_MS) return;
+    yuiLive2dRacketLastRenderAt = now;
+    var layout = getYuiLive2dRacketLayout(now, activeRacketAction);
+    if (!layout) return;
+    var rect = layout.rect;
+    var dpr = layout.dpr;
+    var layoutW = layout.layoutW;
+    var layoutH = layout.layoutH;
     var targetW = Math.max(1, Math.round(layoutW * dpr));
     var targetH = Math.max(1, Math.round(layoutH * dpr));
     if (yuiLive2dRacketCanvas.width !== targetW || yuiLive2dRacketCanvas.height !== targetH) {
@@ -8226,10 +8129,8 @@
     var renderCtx = yuiLive2dRacketCtx;
     renderCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     renderCtx.clearRect(0, 0, layoutW, layoutH);
-    var shooting = nekoL2dContainer.classList.contains('shooting');
-    var charging = nekoL2dContainer.classList.contains('charging');
     applyYuiLive2dRacketPose(shooting, charging);
-    var modelFrame = getYuiLive2dModelFrame({ width: layoutW, height: layoutH });
+    var modelFrame = layout.modelFrame;
     var swing = shooting ? 0.62 : (charging ? -0.28 : 0);
     var racketScale = Math.max(0.98, Math.min(1.08, modelFrame.height / 320));
     var fallbackHand = getYuiLive2dFallbackHandPoint(modelFrame, shooting, charging);
@@ -8785,6 +8686,15 @@
       renderYuiLive2dRacket();
     }
     markFirstFrameRendered();
+    scheduleBadmintonNextFrame();
+  }
+  function scheduleBadmintonNextFrame() {
+    if (document.hidden) {
+      setTimeout(function () {
+        requestAnimationFrame(loop);
+      }, BADMINTON_HIDDEN_FRAME_DELAY_MS);
+      return;
+    }
     requestAnimationFrame(loop);
   }
 
@@ -9000,6 +8910,7 @@
   }
   function updateDebugReadout() {
     if (!debugReadout) return;
+    if (debugPanel && debugPanel.dataset.debugVisible !== 'true') return;
     setInputValueIfChanged(debugPowerInput, Math.round(game.power || 0));
     setTextIfChanged(debugPowerValue, String(Math.round(game.power || 0)));
     setCheckedIfChanged(debugGuideInput, !!assists.guide);
@@ -9206,6 +9117,7 @@
           courtServiceLines: getCourtServiceLinePositions(BADMINTON),
           playerServeX: PLAYER_START_X,
           playerFootY: getPlayerFootY(),
+          playerGroundFootY: getPlayerGroundFootY(),
           lastPlayerPointer: lastPlayerPointer ? Object.assign({}, lastPlayerPointer) : null,
           playerJump: {
             offset: getPlayerJumpOffset(),
@@ -9298,8 +9210,7 @@
             lastRequest: lastVoiceRequest,
             lastResult: lastVoiceResult,
             lastFallbackReason: lastVoiceFallbackReason,
-            lastMutedReason: lastVoiceMutedReason,
-            playback: readSpeechPlaybackState()
+            lastMutedReason: lastVoiceMutedReason
           },
         };
       },
@@ -9378,8 +9289,10 @@
     return !!target.closest('button, input, select, textarea, a, [contenteditable="true"]');
   }
   function handleBadmintonPointerMove(ev) {
+    if (ev && ev.__badmintonPointerMoveHandled) return;
     if (isBadmintonLoadingActive()) return;
     if (shouldIgnoreBadmintonPointerEvent(ev)) return;
+    if (ev) ev.__badmintonPointerMoveHandled = true;
     rememberPlayerPointer(ev);
     var canMoveCourt = canPlayerMoveCourt();
     var canControlShot = canPlayerControlShot();
@@ -9529,7 +9442,6 @@
   }
   window.addEventListener('resize', scheduleBadmintonResize);
   window.addEventListener('beforeunload', function () {
-    closeSpeechPlaybackStateBridge();
     endRoute(true);
   });
   window.addEventListener('localechange', function () {
@@ -9547,7 +9459,6 @@
   _syncGameAudioVolumeControls();
   _initBadmintonGameMemoryToggle();
   installBadmintonDemoApi();
-  initSpeechPlaybackStateBridge();
   setDebugVisible((function () {
     return debugMode || localStorage.getItem('bdDebugVisible') === '1';
   })());
