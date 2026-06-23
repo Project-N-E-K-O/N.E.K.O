@@ -302,15 +302,17 @@
         return Math.min(9000, Math.max(1400, value.length * 120));
     }
 
-    function waitBeforeChoicePromptReveal(text) {
+    // 选项揭示延迟：让选项按钮在 assistant 台词上屏、开始播放之后再露出，避免选项与
+    // 台词同时蹦出。注意这只是「视觉」延迟——choicePrompt 仍会立刻下发给 chat host 完成
+    // 输入路由绑定（host 据此把间隙内的自由文本判为 icebreaker free-text 而非普通聊天），
+    // 真正延后的只是按钮的可见性（host 按 revealDelayMs 计时露出）。延迟若改回「扣住
+    // choicePrompt 不下发」会重新打开间隙内输入落到普通聊天的窗口。
+    function computeChoicePromptRevealDelay(text) {
         var speechDuration = estimateSpeechDurationMs(text);
-        var delay = Math.min(
+        return Math.min(
             CHOICE_PROMPT_REVEAL_MAX_DELAY_MS,
             Math.max(CHOICE_PROMPT_REVEAL_MIN_DELAY_MS, speechDuration * CHOICE_PROMPT_REVEAL_SPEECH_RATIO)
         );
-        return new Promise(function (resolve) {
-            window.setTimeout(resolve, delay);
-        });
     }
 
     function resolveLanlanName() {
@@ -651,11 +653,12 @@
         });
     }
 
-    function setChoicePrompt(node, localeData) {
+    function setChoicePrompt(node, localeData, revealDelayMs) {
         var prompt = {
             sessionId: activeSession.sessionId,
             gameType: SOURCE,
-            options: buildPromptOptions(node, localeData)
+            options: buildPromptOptions(node, localeData),
+            revealDelayMs: revealDelayMs > 0 ? revealDelayMs : 0
         };
         broadcastIcebreakerChoicePrompt(prompt);
         if (!shouldRenderIcebreakerOnLocalChatHost()) {
@@ -762,10 +765,8 @@
         }).then(function () {
             if (activeSession !== session || session.nodeId !== nodeId) return false;
             speakLine(text, node.voiceKey || '');
-            return waitBeforeChoicePromptReveal(text).then(function () {
-                if (activeSession !== session || session.nodeId !== nodeId) return false;
-                return setChoicePrompt(node, localeData);
-            });
+            // 立刻下发 choicePrompt 绑定输入路由；按钮可见性由 host 按 revealDelayMs 延后。
+            return setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text));
         });
     }
 
@@ -907,12 +908,8 @@
                         ? session.dayConfig.nodes[nodeId]
                         : null;
                     if (currentNode) {
-                        return waitBeforeChoicePromptReveal(fallbackText).then(function () {
-                            if (activeSession === session && session.nodeId === nodeId) {
-                                return setChoicePrompt(currentNode, localeData);
-                            }
-                            return false;
-                        });
+                        // 同 deliverNode：立刻绑定路由，按钮可见性交给 host 延后揭示。
+                        return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(fallbackText));
                     }
                 }
                 return null;
