@@ -1269,6 +1269,10 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     reset_section = html[reset_start:html.index("function updateHud()", reset_start)]
     result_bgm_start = html.index("function playResultBgmOnce() {")
     result_bgm_section = html[result_bgm_start:html.index("function showResult()", result_bgm_start)]
+    sync_bgm_start = html.index("function syncBgm(reason) {")
+    sync_bgm_section = html[sync_bgm_start:html.index("function resetSyncKey()", sync_bgm_start)]
+    reset_sync_start = html.index("function resetSyncKey() {")
+    reset_sync_section = html[reset_sync_start:html.index("(function scheduleAudioPreload()", reset_sync_start)]
 
     assert "resultBgmPlayed: false," in html
     assert "function playResultBgmOnce() {" in html
@@ -1278,6 +1282,11 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     assert "playResultBgmOnce();" in show_result
     assert "badmintonGameAudio.sync('game-over');" not in show_result.replace("playResultBgmOnce();", "")
     assert "game.resultBgmPlayed = false;" in reset_section
+    assert "var _bdResultBgmTriggered = false;" in html
+    assert "if (resolved.key === 'gameOver') {" in sync_bgm_section
+    assert "if (_bdResultBgmTriggered) return;" in sync_bgm_section
+    assert "_bdResultBgmTriggered = true;" in sync_bgm_section
+    assert "_bdResultBgmTriggered = false;" in reset_sync_section
 
 
 @pytest.mark.unit

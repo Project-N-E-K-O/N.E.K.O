@@ -1434,6 +1434,7 @@
       return true;
     }
     var _bdBgmCurrentKey = '';
+    var _bdResultBgmTriggered = false;
     var _bdSelectedInGameBgm = (function () {
       var variants = Array.isArray(config.bgm.inGame && config.bgm.inGame.variants)
         ? config.bgm.inGame.variants
@@ -1480,6 +1481,10 @@
     function syncBgm(reason) {
       if (!audio) return;
       var resolved = _bdResolvePlaylist();
+      if (resolved.key === 'gameOver') {
+        if (_bdResultBgmTriggered) return;
+        _bdResultBgmTriggered = true;
+      }
       if (resolved.key === _bdBgmCurrentKey && _bdIsCurrentBgmTarget(resolved)) return;
       _bdBgmCurrentKey = resolved.key;
       if (resolved.loopedConfig) {
@@ -1490,6 +1495,7 @@
     }
     function resetSyncKey() {
       _bdBgmCurrentKey = '';
+      _bdResultBgmTriggered = false;
     }
     (function scheduleAudioPreload() {
       if (!audio) return;
