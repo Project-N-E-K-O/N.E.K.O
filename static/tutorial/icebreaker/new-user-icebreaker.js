@@ -11,6 +11,9 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
+    var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
+    var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
     var activeSession = null;
     var pendingStartDay = '';
     var scriptPromise = null;
@@ -297,6 +300,17 @@
         var value = String(text || '');
         if (!value) return 0;
         return Math.min(9000, Math.max(1400, value.length * 120));
+    }
+
+    function waitBeforeChoicePromptReveal(text) {
+        var speechDuration = estimateSpeechDurationMs(text);
+        var delay = Math.min(
+            CHOICE_PROMPT_REVEAL_MAX_DELAY_MS,
+            Math.max(CHOICE_PROMPT_REVEAL_MIN_DELAY_MS, speechDuration * CHOICE_PROMPT_REVEAL_SPEECH_RATIO)
+        );
+        return new Promise(function (resolve) {
+            window.setTimeout(resolve, delay);
+        });
     }
 
     function resolveLanlanName() {
@@ -726,26 +740,32 @@
 
     function deliverNode(nodeId) {
         if (!activeSession) return Promise.resolve();
-        var dayConfig = activeSession.dayConfig;
+        var session = activeSession;
+        var localeData = session.localeData;
+        var dayConfig = session.dayConfig;
         var node = dayConfig && dayConfig.nodes ? dayConfig.nodes[nodeId] : null;
         if (!node) return Promise.resolve();
-        activeSession.nodeId = nodeId;
-        markDay(activeSession.day, {
+        session.nodeId = nodeId;
+        markDay(session.day, {
             started: true,
             completed: false,
-            sessionId: activeSession.sessionId,
+            sessionId: session.sessionId,
             nodeId: nodeId,
             updatedAt: Date.now()
         });
-        var text = getText(activeSession.localeData, node.lineKey);
+        var text = getText(localeData, node.lineKey);
         applyAssistantTextEmotion(text);
         return appendChatMessage('assistant', text, {
-            day: activeSession.day,
+            day: session.day,
             nodeId: nodeId,
             voiceKey: node.voiceKey || ''
         }).then(function () {
+            if (activeSession !== session || session.nodeId !== nodeId) return false;
             speakLine(text, node.voiceKey || '');
-            return setChoicePrompt(node, activeSession.localeData);
+            return waitBeforeChoicePromptReveal(text).then(function () {
+                if (activeSession !== session || session.nodeId !== nodeId) return false;
+                return setChoicePrompt(node, localeData);
+            });
         });
     }
 
@@ -887,7 +907,12 @@
                         ? session.dayConfig.nodes[nodeId]
                         : null;
                     if (currentNode) {
-                        setChoicePrompt(currentNode, localeData);
+                        return waitBeforeChoicePromptReveal(fallbackText).then(function () {
+                            if (activeSession === session && session.nodeId === nodeId) {
+                                return setChoicePrompt(currentNode, localeData);
+                            }
+                            return false;
+                        });
                     }
                 }
                 return null;

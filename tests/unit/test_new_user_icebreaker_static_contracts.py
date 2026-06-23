@@ -550,6 +550,26 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
 
 
+def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
+        "function completeWithHandoff(option)",
+        1,
+    )[0]
+
+    assert "var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;" in runtime
+    assert "function waitBeforeChoicePromptReveal(text)" in runtime
+    assert "var session = activeSession;" in deliver_node_block
+    assert "var localeData = session.localeData;" in deliver_node_block
+    assert "if (activeSession !== session || session.nodeId !== nodeId) return false;" in deliver_node_block
+    assert deliver_node_block.index("speakLine(text, node.voiceKey || '');") < deliver_node_block.index(
+        "return waitBeforeChoicePromptReveal(text).then(function ()"
+    )
+    assert deliver_node_block.index("return waitBeforeChoicePromptReveal(text).then(function ()") < deliver_node_block.index(
+        "return setChoicePrompt(node, localeData);"
+    )
+
+
 def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
@@ -864,6 +884,7 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     assert "nodeId: nodeId" in continuation_block
     assert "sessionId: sessionId" in continuation_block
     assert "var currentNode = session.dayConfig && session.dayConfig.nodes" in continuation_block
+    assert "waitBeforeChoicePromptReveal(fallbackText)" in continuation_block
     assert "setChoicePrompt(currentNode, localeData)" in continuation_block
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
