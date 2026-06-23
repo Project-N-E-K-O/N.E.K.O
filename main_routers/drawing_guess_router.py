@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
@@ -53,6 +54,8 @@ TEXT_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
 VISION_GUESS_TIMEOUT_SECONDS = float(ROUND_AI_GUESS_SECONDS)
 GAME_CHAT_MAX_HISTORY_ITEMS = 16
 GAME_CHAT_MAX_TEXT_CHARS = 260
+MEMORY_SUMMARY_MAX_CHARS = 260
+MEMORY_SUMMARY_TIMEOUT_SECONDS = 8.0
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
 VISION_GUESS_MAX_CANDIDATES = 40
 _DRAWING_GUESS_CONTEXT_BEGIN = "======以下为开启上下文输入======"
@@ -971,6 +974,151 @@ def _safe_llm_error_summary(exc: Exception, *, limit: int = 500) -> str:
     text = re.sub(r"(api[_-]?key['\"]?\s*[:=]\s*['\"]?)[^'\"\s,}]+", r"\1<redacted>", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return _truncate_text(text or type(exc).__name__, limit)
+
+
+def _normalize_memory_consent(value: Any) -> str:
+    return "summary" if str(value or "").strip().lower() == "summary" else "none"
+
+
+def _sanitize_memory_summary_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"data:image/[^,\s]+;base64,[A-Za-z0-9+/=_-]+", "[image omitted]", text, flags=re.IGNORECASE)
+    text = re.sub(r"<svg\b[\s\S]*?</svg>", "[drawing omitted]", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]{0,200}>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return _truncate_text(text, MEMORY_SUMMARY_MAX_CHARS)
+
+
+def _drawing_guess_memory_label(word: DrawingGuessWord | None, locale: str) -> str:
+    if word is None:
+        return ""
+    return _word_public(word, locale)["label"]
+
+
+def _build_drawing_guess_memory_summary(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    correct: bool,
+    answer: DrawingGuessWord,
+    guessed_word: DrawingGuessWord | None,
+    attempts: int,
+) -> str:
+    normalized_locale = _normalize_locale(locale)
+    display_name = str(lanlan_name or session.get("lanlan_name") or "").strip()
+    if not display_name:
+        display_name = "当前角色" if normalized_locale in {"zh-CN", "zh-TW"} else "the character"
+
+    ai_word = _WORD_BY_ID.get(str(session.get("ai_word_id") or ""))
+    ai_label = _drawing_guess_memory_label(ai_word, normalized_locale)
+    user_label = _drawing_guess_memory_label(answer, normalized_locale)
+    guessed_label = _drawing_guess_memory_label(guessed_word, normalized_locale)
+    user_guessed_ai = bool(int(session.get("user_score") or 0))
+    character_guessed_user = bool(correct or int(session.get("ai_score") or 0))
+    attempts_count = max(0, int(attempts or session.get("ai_guess_attempts") or 0))
+
+    if normalized_locale in {"zh-CN", "zh-TW"}:
+        ai_part = (
+            f"{display_name}画的是「{ai_label}」，我{'猜中了' if user_guessed_ai else '没有猜中'}"
+            if ai_label else
+            f"{display_name}先画了一题，我{'猜中了' if user_guessed_ai else '没有猜中'}"
+        )
+        user_part = f"我画的是「{user_label}」，{display_name}{'猜中了' if character_guessed_user else '没有猜中'}"
+        if guessed_label and not character_guessed_user:
+            user_part += f"，最后猜成了「{guessed_label}」"
+        if attempts_count:
+            user_part += f"，一共猜了 {attempts_count} 次"
+        return _sanitize_memory_summary_text(f"我和{display_name}玩了一局你画我猜：{ai_part}；{user_part}。")
+
+    ai_part = (
+        f'{display_name} drew "{ai_label}" and I {"guessed" if user_guessed_ai else "missed"} it'
+        if ai_label else
+        f'{display_name} drew first and I {"guessed" if user_guessed_ai else "missed"} it'
+    )
+    user_part = f'I drew "{user_label}" and {display_name} {"guessed" if character_guessed_user else "missed"} it'
+    if guessed_label and not character_guessed_user:
+        user_part += f' after guessing "{guessed_label}"'
+    if attempts_count:
+        user_part += f" in {attempts_count} attempt{'s' if attempts_count != 1 else ''}"
+    return _sanitize_memory_summary_text(f"I played a drawing guess round with {display_name}: {ai_part}; {user_part}.")
+
+
+async def _post_drawing_guess_memory_summary(lanlan_name: str, summary: str) -> dict[str, Any]:
+    safe_lanlan_name = str(lanlan_name or "").strip()
+    safe_summary = _sanitize_memory_summary_text(summary)
+    if not safe_lanlan_name or not safe_summary:
+        return {"status": "skipped", "reason": "missing_lanlan_or_summary"}
+
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    messages = [{"type": "human", "data": {"content": safe_summary}}]
+    client = get_internal_http_client()
+    response = await client.post(
+        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{quote(safe_lanlan_name, safe='')}",
+        json={"input_history": json.dumps(messages, ensure_ascii=False)},
+        timeout=MEMORY_SUMMARY_TIMEOUT_SECONDS,
+    )
+    data = response.json() if response.content else {}
+    if not response.is_success or (isinstance(data, dict) and data.get("status") == "error"):
+        return {
+            "status": "failed",
+            "reason": "memory_server_error",
+            "status_code": response.status_code,
+        }
+    return {
+        "status": "written",
+        "source": "memory_server_cache",
+        "count": data.get("count") if isinstance(data, dict) else None,
+    }
+
+
+async def _maybe_write_drawing_guess_memory_summary(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    correct: bool,
+    answer: DrawingGuessWord,
+    guessed_word: DrawingGuessWord | None,
+    attempts: int,
+) -> dict[str, Any]:
+    cached_result = session.get("memory_summary_result")
+    if isinstance(cached_result, dict):
+        return dict(cached_result)
+
+    if _normalize_memory_consent(session.get("memory_consent")) != "summary":
+        result = {"status": "skipped", "reason": "memory_consent_none"}
+        session["memory_summary_result"] = result
+        return result
+
+    summary = _build_drawing_guess_memory_summary(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        correct=correct,
+        answer=answer,
+        guessed_word=guessed_word,
+        attempts=attempts,
+    )
+    if not summary:
+        result = {"status": "skipped", "reason": "empty_summary"}
+        session["memory_summary_result"] = result
+        return result
+
+    try:
+        result = await _post_drawing_guess_memory_summary(lanlan_name or str(session.get("lanlan_name") or ""), summary)
+    except Exception as exc:
+        logger.info(
+            "drawing_guess memory summary unavailable: lanlan=%s session=%s err=%s",
+            lanlan_name,
+            session.get("session_id") or "",
+            type(exc).__name__,
+        )
+        result = {"status": "failed", "reason": "memory_server_unavailable"}
+    session["memory_summary_result"] = dict(result)
+    return dict(result)
 
 
 def _append_game_chat(session: dict[str, Any], role: str, text: Any, *, kind: str = "chat") -> None:
@@ -2590,7 +2738,7 @@ async def drawing_guess_round_start(request: Request):
         "safe_hint_history": [],
         "created_at": now,
         "last_activity": now,
-        "memory_consent": str(data.get("memory_consent") or "none"),
+        "memory_consent": _normalize_memory_consent(data.get("memory_consent")),
         "game_chat_history": [],
         "client_round_token": data.get("client_round_token"),
     }
@@ -2962,6 +3110,15 @@ async def drawing_guess_timeout(request: Request):
             guessed_word=None,
             attempts=int(session.get("ai_guess_attempts") or 0),
         )
+        memory_result = await _maybe_write_drawing_guess_memory_summary(
+            session=session,
+            locale=locale,
+            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
+            correct=False,
+            answer=answer,
+            guessed_word=None,
+            attempts=int(session.get("ai_guess_attempts") or 0),
+        )
         _append_game_chat(session, "assistant", line, kind="vision_guess")
         return {
             "ok": True,
@@ -2972,6 +3129,7 @@ async def drawing_guess_timeout(request: Request):
             "message_source": line_source,
             "evaluation_source": evaluation_source,
             "answer": _word_public(answer, locale),
+            "memory": memory_result,
             "state": _public_round_state(session, locale),
         }
     return {"ok": True, "phase": session.get("phase"), "state": _public_round_state(session, locale)}
@@ -3052,8 +3210,18 @@ async def _run_drawing_guess_vision_turn(
 
     evaluation: str | None = None
     evaluation_source: str | None = None
+    memory_result: dict[str, Any] | None = None
     if session["phase"] == "summary":
         evaluation, evaluation_source = await _generate_summary_evaluation(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            correct=correct,
+            answer=answer,
+            guessed_word=guessed_word,
+            attempts=attempts,
+        )
+        memory_result = await _maybe_write_drawing_guess_memory_summary(
             session=session,
             locale=locale,
             lanlan_name=lanlan_name,
@@ -3087,6 +3255,7 @@ async def _run_drawing_guess_vision_turn(
         "confidence": confidence,
         "source": source,
         "answer": _word_public(answer, locale) if session["phase"] == "summary" else None,
+        "memory": memory_result,
         "can_retry": session["phase"] == "ai_guess_feedback",
         "state": _public_round_state(session, locale),
     }

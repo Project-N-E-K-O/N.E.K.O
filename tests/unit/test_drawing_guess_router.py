@@ -404,6 +404,118 @@ async def test_debug_round_start_can_begin_at_word_picking_without_hidden_ai_ans
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_round_start_normalizes_memory_consent():
+    default_result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-memory-default",
+        "i18n_language": "zh-CN",
+        "memory_consent": "saved",
+    }))
+    summary_result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-memory-summary",
+        "i18n_language": "zh-CN",
+        "memory_consent": "summary",
+    }))
+
+    assert default_result["ok"] is True
+    assert summary_result["ok"] is True
+    assert dgr._drawing_guess_sessions["YUI:dg-memory-default"]["memory_consent"] == "none"
+    assert dgr._drawing_guess_sessions["YUI:dg-memory-summary"]["memory_consent"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_summary_skips_without_consent(monkeypatch):
+    async def fail_post(*_args, **_kwargs):
+        raise AssertionError("memory should not be written without explicit summary consent")
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", fail_post)
+    session = {
+        "lanlan_name": "YUI",
+        "session_id": "dg-memory-skip",
+        "memory_consent": "none",
+        "ai_word_id": "apple",
+        "user_score": 1,
+        "ai_score": 0,
+    }
+
+    result = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale="zh-CN",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    )
+
+    assert result == {"status": "skipped", "reason": "memory_consent_none"}
+    assert session["memory_summary_result"] == result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_summary_posts_sanitized_compact_result_once(monkeypatch):
+    captured: list[tuple[str, str]] = []
+
+    async def fake_post(lanlan_name, summary):
+        captured.append((lanlan_name, summary))
+        return {"status": "written", "source": "memory_server_cache", "count": 1}
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", fake_post)
+    session = {
+        "lanlan_name": "YUI",
+        "session_id": "dg-memory-write",
+        "memory_consent": "summary",
+        "ai_word_id": "apple",
+        "user_score": 1,
+        "ai_score": 0,
+        "game_chat_history": [
+            {
+                "role": "user",
+                "kind": "chat",
+                "text": "data:image/png;base64,abcdef <svg><text>secret</text></svg>",
+            }
+        ],
+    }
+
+    result = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale="zh-CN",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    )
+    second = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale="zh-CN",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    )
+
+    assert result == {"status": "written", "source": "memory_server_cache", "count": 1}
+    assert second == result
+    assert len(captured) == 1
+    assert captured[0][0] == "YUI"
+    summary = captured[0][1]
+    assert "YUI" in summary
+    assert "苹果" in summary
+    assert "狗" in summary
+    assert "猫" in summary
+    assert "data:image" not in summary
+    assert "<svg" not in summary
+    assert "secret" not in summary
+    assert len(summary) <= dgr.MEMORY_SUMMARY_MAX_CHARS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_stale_client_round_token_is_rejected_before_mutating_session():
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
