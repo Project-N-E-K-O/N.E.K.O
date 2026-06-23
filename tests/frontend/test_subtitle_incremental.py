@@ -7390,6 +7390,14 @@ def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
             await new Promise((resolve) => setTimeout(resolve, 0));
             const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
             const afterRender = scroll.scrollTop;
+            scroll.scrollTop = maxScrollTop;
+            const wheelDuringDanmaku = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 24,
+            });
+            scroll.dispatchEvent(wheelDuringDanmaku);
+            const afterStateUpdate = scroll.scrollTop;
             shared.requestSubtitleAutoScroll(scroll, {
                 speedPixelsPerSecond: 240,
                 delayMs: 0,
@@ -7401,11 +7409,13 @@ def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
                 active: display.dataset.subtitleDanmakuActive || '',
                 afterRender,
                 afterAuto: scroll.scrollTop,
+                afterStateUpdate,
                 afterScrollToBottom,
                 itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
                 maxScrollTop,
                 scrollableDataset: scroll.dataset.subtitleScrollable,
                 scrollToBottomReturn,
+                wheelPrevented: wheelDuringDanmaku.defaultPrevented,
             };
         }
         """
@@ -7415,9 +7425,11 @@ def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
     assert result["itemCount"] > 0
     assert result["maxScrollTop"] > 0
     assert result["afterRender"] == 0
+    assert result["afterStateUpdate"] == 0
     assert result["afterAuto"] == 0
     assert result["scrollToBottomReturn"] == 0
     assert result["afterScrollToBottom"] == 0
+    assert result["wheelPrevented"] is False
     assert result["scrollableDataset"] == "false"
 
 

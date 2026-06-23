@@ -1165,7 +1165,7 @@
         var scroll = getSubtitleScrollNode(target);
         if (!scroll || !scroll.dataset) return false;
         if (isSubtitleDanmakuScrollActive(scroll)) {
-            scroll.dataset.subtitleScrollable = 'false';
+            resetSubtitleDanmakuScroll(scroll);
             return false;
         }
         var scrollable = isSubtitleScrollScrollable(scroll);
