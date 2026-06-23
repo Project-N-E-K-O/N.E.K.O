@@ -42,6 +42,16 @@ NEKO Live 当前有两条使用路径：
 - dry_run 状态符合本次目的：链路验证保持开启，真实陪跑前手动关闭。
 - 顶部状态刷新后，面板能解释 NEKO 为什么暂时没说话。
 - 节奏档位先用“标准”；如果 NEKO 太安静再切“活跃”，太吵再切“安静”。
+- 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once`，记录 `mode`、`live_status`、`live_state`、`idle_candidate`、`idle_ready` 和 `latency_status`。
+  - `solo_test_focus=chain_only`：dry_run 开启，本轮只验证链路，不判断真实开口。
+  - `solo_test_focus=danmaku_response`：可以发一条真实弹幕，观察弹幕到回复。
+  - `solo_test_focus=idle_hosting`：可以进入冷场补位观察。
+  - `solo_test_focus=latency`：当前优先记录延迟。
+  - `solo_test_focus=setup_mode` / `preflight` / `unblock`：先处理模式、开播前检查或阻断状态。
+  - `solo_test_hint=expect_idle_hosting`：当前可以观察冷场补位是否发生。
+  - `solo_test_hint=watch_latency`：优先记录弹幕到回复的延迟。
+  - `solo_test_hint=wait_idle_cooldown`：冷场候选已满足，但还在最小间隔内。
+  - `solo_test_hint=switch_to_solo_stream` / `fix_preflight` / `wait_until_unblocked`：先处理模式、开播前检查或阻断状态。
 
 30 分钟内按阶段观察：
 
@@ -62,6 +72,26 @@ NEKO Live 当前有两条使用路径：
 - 冷场补位是否重复、油腻或像客服。
 - 锐评强度是否符合当前档位。
 - 主播是否敢继续把台前交给 NEKO。
+
+记录问题时使用同一张表，方便测完直接判断下一步改哪里：
+
+| 时间点 | 当时状态 | 观众/主播动作 | NEKO 表现 | 影响 | 初步归因 |
+|---|---|---|---|---|---|
+| 例如 12:30 | 无弹幕 / idle | 无人发言 | NEKO 3 分钟未补位 | 偏安静 | 节奏太保守 |
+| 例如 18:05 | 偶发弹幕 | 观众发弹幕 | 回复间隔偏长 | 互动断开 | 响应延迟 |
+
+本轮验收只给三个结论：
+
+- 可以继续内测：30 分钟内没有死亡沉默、没有明显刷屏，主播愿意继续把台前交给 NEKO。
+- 需要调参再测：主要问题是太安静、太吵、冷却不合适或档位选择不合适。
+- 需要改话术再测：主要问题是冷场补位重复、油腻、像客服，或不像 NEKO。
+
+测完后的下一步按问题分流：
+
+- 太安静 / 太吵：先调整节奏档位或 Pacing Control。
+- 弹幕到回复慢：记录具体时间点和大约延迟，优先排查响应链路耗时。
+- 冷场话术尴尬：先调整 Idle Hosting 文案，不急着加主动营业。
+- 状态看不懂：先细化 Live Status / 为什么没说话，再继续测试。
 
 ## 详细步骤
 

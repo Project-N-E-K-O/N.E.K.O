@@ -69,12 +69,15 @@ class AvatarRoastModule(BaseModule):
         facts = [
             "scene: NEKO is the only host on stage in solo_stream",
             "task: solo idle hosting",
+            "goal: sound like NEKO hosting the room, not a system filler",
             f"tone: {strength_hint}",
         ]
         rules = [
             "Say exactly one short live-host line as NEKO.",
-            "Use a small observation, a light tease, or an easy question that a quiet viewer can answer.",
+            "Create one tiny live-room topic: a small observation, a light tease, or an easy question that a quiet viewer can answer.",
+            "Make it feel like a spontaneous host beat, with a little NEKO personality and no formal opening.",
             "Do not pretend a viewer sent a message.",
+            "Do not use generic welcome slogans, direct interaction requests, or attendance-check lines.",
             "Do not mention viewer absence, silence metrics, queues, cooldowns, dry_run, or system state.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
             "Output only the line NEKO should say.",

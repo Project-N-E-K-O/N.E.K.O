@@ -54,6 +54,71 @@ function Get-LatencyStatus {
     return "ok"
 }
 
+function Get-SoloTestHint {
+    param(
+        [object]$Mode,
+        [object]$LiveStatus,
+        [object]$LiveState,
+        [object]$IdleCandidate,
+        [object]$IdleReady,
+        [object]$IdleReason,
+        [string]$LatencyStatus
+    )
+    if ("$Mode" -ne "solo_stream") {
+        return "switch_to_solo_stream"
+    }
+    if ("$LiveStatus" -eq "cannot_stream") {
+        return "fix_preflight"
+    }
+    if ("$LiveState" -eq "paused" -or "$LiveState" -eq "blocked") {
+        return "wait_until_unblocked"
+    }
+    if ("$LatencyStatus" -eq "slow" -or "$LatencyStatus" -eq "warn") {
+        return "watch_latency"
+    }
+    if ("$IdleCandidate" -eq "True" -and "$IdleReady" -eq "True") {
+        return "expect_idle_hosting"
+    }
+    if ("$IdleCandidate" -eq "True" -and "$IdleReady" -ne "True") {
+        if ("$IdleReason" -eq "minimum_interval") {
+            return "wait_idle_cooldown"
+        }
+        return "check_idle_gate"
+    }
+    return "observe"
+}
+
+function Get-SoloTestFocus {
+    param(
+        [object]$DryRun,
+        [object]$Mode,
+        [object]$LiveStatus,
+        [object]$LiveState,
+        [object]$IdleCandidate,
+        [object]$IdleReady,
+        [string]$LatencyStatus
+    )
+    if ("$Mode" -ne "solo_stream") {
+        return "setup_mode"
+    }
+    if ("$LiveStatus" -eq "cannot_stream") {
+        return "preflight"
+    }
+    if ("$LiveState" -eq "paused" -or "$LiveState" -eq "blocked") {
+        return "unblock"
+    }
+    if ("$DryRun" -eq "True") {
+        return "chain_only"
+    }
+    if ("$LatencyStatus" -eq "slow" -or "$LatencyStatus" -eq "warn") {
+        return "latency"
+    }
+    if ("$IdleCandidate" -eq "True" -and "$IdleReady" -eq "True") {
+        return "idle_hosting"
+    }
+    return "danmaku_response"
+}
+
 function Read-Context {
     if ($ContextJsonPath) {
         return Get-Content -LiteralPath $ContextJsonPath -Raw | ConvertFrom-Json
@@ -99,6 +164,9 @@ function Write-Snapshot {
 
     $config = $state.config
     $live = $state.live_connection
+    $liveStatus = $state.live_status
+    $liveState = $state.live_state
+    $idleHosting = $state.idle_hosting_status
     $safety = $state.safety
     $speech = $state.speech_explanation
     $recent = @($state.recent_results)
@@ -116,18 +184,29 @@ function Write-Snapshot {
     if ($null -eq $latency -and $null -ne $latest) {
         $latency = $latest.response_latency_ms
     }
+    $latencyStatus = Get-LatencyStatus $latency $WarnLatencyMs $SlowLatencyMs
+    $soloTestHint = Get-SoloTestHint $config.live_mode $liveStatus.summary $liveState.state $liveState.idle_hosting_candidate $idleHosting.eligible $idleHosting.reason $latencyStatus
+    $soloTestFocus = Get-SoloTestFocus $config.dry_run $config.live_mode $liveStatus.summary $liveState.state $liveState.idle_hosting_candidate $idleHosting.eligible $latencyStatus
 
     $parts = @(
         "[neko_roast]",
         "dry_run=$(Get-Field $config.dry_run)",
+        "mode=$(Get-Field $config.live_mode)",
         "live=$(Get-Field $live.state)",
         "connected=$(Get-Field $live.connected)",
+        "live_status=$(Get-Field $liveStatus.summary)",
+        "live_state=$(Get-Field $liveState.state)",
+        "idle_candidate=$(Get-Field $liveState.idle_hosting_candidate)",
+        "idle_ready=$(Get-Field $idleHosting.eligible)",
+        "idle_reason=$(Get-Field $idleHosting.reason)",
         "safety=$(Get-Field $safety.status)",
         "speech=$(Get-Field $speech.summary)",
         "reason=$(Get-Field $speech.reason)",
         "last_result=$lastStatus",
         "latency=$(Format-Latency $latency)",
-        "latency_status=$(Get-LatencyStatus $latency $WarnLatencyMs $SlowLatencyMs)"
+        "latency_status=$latencyStatus",
+        "solo_test_hint=$soloTestHint",
+        "solo_test_focus=$soloTestFocus"
     )
     Write-Output ($parts -join " ")
 }
