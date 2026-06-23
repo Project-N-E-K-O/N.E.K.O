@@ -46,6 +46,14 @@ class _FakeAppendContextManager:
         return {"ok": True, "audio_sent": True}
 
 
+class _FakeConfigManager:
+    def __init__(self, characters=None):
+        self._characters = characters or {"当前猫娘": "Lan"}
+
+    def load_characters(self):
+        return self._characters
+
+
 def _allow_local_mutation(request, payload=None, **kwargs):
     return None
 
@@ -62,6 +70,20 @@ async def test_icebreaker_route_start_does_not_activate_game_route(monkeypatch):
     assert result["state"]["icebreaker_active"] is True
     assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is not None
     assert _get_active_game_route_state("Lan") is None
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_route_start_falls_back_to_current_character(monkeypatch):
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {})
+    monkeypatch.setattr(icebreaker_router, "get_config_manager", lambda: _FakeConfigManager({"当前猫娘": "YUI"}))
+
+    result = await icebreaker_router.icebreaker_route_start(
+        _FakeRequest({"session_id": "icebreaker-day1"})
+    )
+
+    assert result["ok"] is True
+    assert result["state"]["lanlan_name"] == "YUI"
+    assert icebreaker_route_state._get_active_icebreaker_route_state("YUI") is not None
 
 
 @pytest.mark.asyncio
@@ -191,6 +213,28 @@ async def test_icebreaker_speak_uses_independent_project_tts(monkeypatch):
         "emit_turn_end_after": True,
         "interrupt_audio": True,
     })]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_speak_coerces_numeric_false_options(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_speak(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "line": "现在开始跟我聊天吧",
+            "session_id": "icebreaker-day1-test",
+            "mirror_text": 0,
+            "emit_turn_end": 0,
+        })
+    )
+
+    assert result["ok"] is True
+    assert mgr.spoken[0][1]["mirror_text"] is False
+    assert mgr.spoken[0][1]["emit_turn_end_after"] is False
 
 
 @pytest.mark.asyncio

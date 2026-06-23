@@ -29,7 +29,7 @@ from utils.icebreaker_route_state import (
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
 
-from .shared_state import get_session_manager
+from .shared_state import get_config_manager, get_session_manager
 
 
 logger = get_module_logger(__name__, "Icebreaker")
@@ -46,7 +46,14 @@ _SSML_TAG_PATTERN = re.compile(
 
 
 def _resolve_lanlan_name(raw: Any = None) -> str:
-    return str(raw or "").strip()
+    lanlan_name = str(raw or "").strip()
+    if lanlan_name:
+        return lanlan_name
+    try:
+        characters = get_config_manager().load_characters()
+        return str(characters.get("当前猫娘") or "").strip()
+    except Exception:
+        return ""
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
@@ -381,8 +388,8 @@ async def icebreaker_speak(request: Request):
             line,
             request_id=str(data.get("request_id") or "") or None,
             session_id=session_id,
-            mirror_text=data.get("mirror_text", True) is not False,
-            emit_turn_end=data.get("emit_turn_end", True) is not False,
+            mirror_text=_coerce_payload_bool(data.get("mirror_text", True)) is not False,
+            emit_turn_end=_coerce_payload_bool(data.get("emit_turn_end", True)) is not False,
             interrupt_audio=_coerce_payload_bool(data.get("interrupt_audio")) is True,
             event=data.get("event") if isinstance(data.get("event"), dict) else {},
         )
