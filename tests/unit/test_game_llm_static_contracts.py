@@ -85,10 +85,11 @@ def test_soccer_realtime_context_posts_local_mutation_headers():
 @pytest.mark.unit
 def test_soccer_template_posts_session_debug_errors():
     html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
-    debug_block = html.split("function _sendSoccerDebugLog(payload)", 1)[1].split(
-        "function soccerSessionDebugLog",
-        1,
-    )[0]
+    debug_start_anchor = "function _sendSoccerDebugLog(payload)"
+    debug_end_anchor = "function soccerSessionDebugLog"
+    assert debug_start_anchor in html
+    assert debug_end_anchor in html
+    debug_block = html.split(debug_start_anchor, 1)[1].split(debug_end_anchor, 1)[0]
 
     assert "/api/game/logs" in html
     assert "/api/game/logs/enable" in html
@@ -117,8 +118,10 @@ def test_soccer_template_posts_session_debug_errors():
     assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
     assert "await enableSoccerSessionDebugLog('auto_route_start')" not in html
     assert "enableSoccerSessionDebugLog('auto_route_start').catch(() => {});" in html
-    assert "if (data.ok) {\n\t        _llm.sessionDebugLogEnabled = true;" not in html
-    assert "if (_hasSoccerSessionDebugLogSendCredentials()) {\n\t          _llm.sessionDebugLogEnabled = true;" in html
+    assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", html)
+    route_success_block = html.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
+    assert "_hasSoccerSessionDebugLogSendCredentials()" in route_success_block
+    assert "_llm.sessionDebugLogEnabled = true;" in route_success_block
     assert "enableSoccerSessionDebugLog('keyboard_l')" in html
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html
