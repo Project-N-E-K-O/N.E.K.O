@@ -235,6 +235,14 @@ def test_drawing_guess_demo_static_route_contract():
     assert "ROUND_API + '/choose-word'" in script
     assert "ROUND_API + '/timeout'" in script
     assert "ROUND_API + '/vision-guess'" in script
+    assert 'id="voice-route-button" class="dg-voice-button"' in html
+    assert "function handleVoiceRouteButton" in script
+    assert "game_voice_stt_gate" in script
+    assert "function speechRecognitionCtor" not in script
+    assert "function startInternalVoiceRecognition" not in script
+    assert "function stopInternalVoiceRecognition" not in script
+    assert "function submitInternalVoiceTranscript" not in script
+    assert "browser_speech_recognition" not in script
     assert "debugGesture: []" in script
     assert "function recordDebugGesture" in script
     assert "state.debugGesture.join('') === 'LLRR'" in script
@@ -421,10 +429,10 @@ def test_drawing_guess_demo_static_route_contract():
 
 
 @pytest.mark.unit
-def test_drawing_guess_locale_cache_version_bumped_for_color_panel():
+def test_drawing_guess_locale_cache_version_bumped_for_voice_takeover_only():
     script = _i18n_script()
 
-    assert "2026-06-22-drawing-guess-tutorial-i18n" in script
+    assert "2026-06-23-drawing-guess-voice-takeover-only-i18n" in script
 
 
 @pytest.mark.unit
@@ -477,6 +485,11 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.input.placeholder",
         "drawingGuess.input.hintPlaceholder",
         "drawingGuess.input.summaryPlaceholder",
+        "drawingGuess.voice.connected",
+        "drawingGuess.voice.connectHint",
+        "drawingGuess.voice.connectedNotice",
+        "drawingGuess.voice.connectHintNotice",
+        "drawingGuess.voice.routeNotReady",
         "drawingGuess.summary.title",
         "drawingGuess.summary.finalTitle",
         "drawingGuess.summary.roundLabel",

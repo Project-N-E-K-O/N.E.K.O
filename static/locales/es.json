@@ -4827,9 +4827,9 @@
         },
         "voice": {
             "connected": "La voz está conectada a esta ronda.",
-            "connectHint": "Inicia el chat de voz en la página principal; esta ronda lo tomará cuando esté activo.",
-            "connectedNotice": "El chat de voz está conectado a esta ronda.",
-            "connectHintNotice": "Primero inicia el chat de voz en la página principal; cuando esté activo, esta ronda lo tomará.",
+            "connectHint": "Activa primero la voz en la página principal para que esta ronda la tome.",
+            "connectedNotice": "La voz de la página principal está conectada a esta ronda.",
+            "connectHintNotice": "Activa primero la voz en la página principal; esta ronda la tomará cuando esté activa.",
             "routeNotReady": "Espera a que la ruta del juego esté lista antes de usar voz."
         },
         "exitConfirm": {

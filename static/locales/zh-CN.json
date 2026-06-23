@@ -4827,9 +4827,9 @@
         },
         "voice": {
             "connected": "语音已接入这一局。",
-            "connectHint": "在主页面开启语音聊天后，这一局会接管语音。",
-            "connectedNotice": "语音聊天已接入这一局。",
-            "connectHintNotice": "先在主页面开启语音聊天；开启后这一局会自动接管。",
+            "connectHint": "先在主页面开启语音，这一局会自动接管。",
+            "connectedNotice": "主页面语音已接入这一局。",
+            "connectHintNotice": "请先在主页面开启语音；开启后这一局会自动接管。",
             "routeNotReady": "先等游戏路由准备好，再使用语音。"
         },
         "exitConfirm": {

@@ -565,9 +565,11 @@
     els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding;
     els.voiceRouteButton.classList.toggle('is-active', active);
     els.voiceRouteButton.setAttribute('aria-pressed', active ? 'true' : 'false');
-    els.voiceRouteButton.title = active
-      ? t('drawingGuess.voice.connected', 'Voice is connected to this round.')
-      : t('drawingGuess.voice.connectHint', 'Start voice chat on the main page, then this round will take it over.');
+    if (state.voiceRouteActive) {
+      els.voiceRouteButton.title = t('drawingGuess.voice.connected', 'Voice is connected to this round.');
+    } else {
+      els.voiceRouteButton.title = t('drawingGuess.voice.connectHint', 'Open voice on the main page to let this round take it over.');
+    }
     if (els.voiceRouteIcon) {
       els.voiceRouteIcon.src = active ? '/static/icons/mic_icon_on.png' : '/static/icons/mic_icon_off.png';
     }
@@ -1612,6 +1614,7 @@
       if (!res || !res.ok) return;
       if (res.state && res.state.game_route_active === false) {
         state.routeActive = false;
+        state.voiceRouteActive = false;
         stopRouteDrain();
         updateControls();
         return;
@@ -3101,7 +3104,7 @@
       addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
       return;
     }
-    addEventMessage('drawingGuess.voice.connectHintNotice', 'Start voice chat on the main page; this round will take over once it is active.');
+    addEventMessage('drawingGuess.voice.connectHintNotice', 'Open voice on the main page first; this round will take it over when it becomes active.');
   }
 
   function finishGame() {

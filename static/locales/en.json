@@ -4827,9 +4827,9 @@
         },
         "voice": {
             "connected": "Voice is connected to this round.",
-            "connectHint": "Start voice chat on the main page, then this round will take it over.",
-            "connectedNotice": "Voice chat is connected to this round.",
-            "connectHintNotice": "Start voice chat on the main page; this round will take over once it is active.",
+            "connectHint": "Open voice on the main page to let this round take it over.",
+            "connectedNotice": "Main-page voice is connected to this round.",
+            "connectHintNotice": "Open voice on the main page first; this round will take it over when it becomes active.",
             "routeNotReady": "Wait until the game route is ready before using voice."
         },
         "exitConfirm": {

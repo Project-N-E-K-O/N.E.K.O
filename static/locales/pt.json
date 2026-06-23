@@ -4827,9 +4827,9 @@
         },
         "voice": {
             "connected": "A voz está conectada a esta rodada.",
-            "connectHint": "Inicie o chat de voz na página principal; esta rodada vai assumir quando estiver ativo.",
-            "connectedNotice": "O chat de voz está conectado a esta rodada.",
-            "connectHintNotice": "Inicie o chat de voz na página principal; quando estiver ativo, esta rodada vai assumir.",
+            "connectHint": "Ative a voz na página principal para esta rodada assumir.",
+            "connectedNotice": "A voz da página principal está conectada a esta rodada.",
+            "connectHintNotice": "Ative primeiro a voz na página principal; esta rodada assumirá quando ela estiver ativa.",
             "routeNotReady": "Aguarde a rota do jogo ficar pronta antes de usar voz."
         },
         "exitConfirm": {

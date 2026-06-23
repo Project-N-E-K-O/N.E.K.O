@@ -4827,9 +4827,9 @@
         },
         "voice": {
             "connected": "이 라운드에 음성이 연결되어 있어요.",
-            "connectHint": "메인 화면에서 음성 채팅을 시작하면 이 라운드가 이어받아요.",
-            "connectedNotice": "음성 채팅이 이 라운드에 연결되었어요.",
-            "connectHintNotice": "먼저 메인 화면에서 음성 채팅을 시작하세요. 활성화되면 이 라운드가 자동으로 이어받아요.",
+            "connectHint": "메인 화면에서 먼저 음성을 켜면 이 라운드가 이어받아요.",
+            "connectedNotice": "메인 화면 음성이 이 라운드에 연결되었어요.",
+            "connectHintNotice": "메인 화면에서 먼저 음성을 켜 주세요. 켜지면 이 라운드가 자동으로 이어받아요.",
             "routeNotReady": "음성을 사용하기 전에 게임 라우트가 준비될 때까지 기다려 주세요."
         },
         "exitConfirm": {
