@@ -2361,11 +2361,30 @@ class LLMSessionManager:
             # with charge just under the enter bar; if we only cleared on FOCUS,
             # that frozen charge would survive the disabled window and let an
             # unrelated mild cue enter on stale evidence once re-enabled.
-            # update_focus self-clears when the switch is off (idempotent).
+            # update_focus self-clears when the (config) switch is off (idempotent).
             await self.state.update_focus(0.0)
             # Reconcile AGAIN after the self-clear: if the switch was flipped off
             # mid-episode, the clear above is silent (no FOCUS_EXIT), so clear the
             # badge this turn rather than waiting for the next one.
+            await self._reconcile_focus_indicator()
+            return False
+        # Per-user master switch (对话设置 → focusCognitionEnabled): the user can
+        # turn 凝神 off entirely while the global config flag stays on. Defaults on
+        # when unset. The master emotion read is independent (its own pipeline) and
+        # is NOT affected by this gate.
+        try:
+            focus_user_enabled = bool(
+                (await aload_global_conversation_settings()).get('focusCognitionEnabled', True)
+            )
+        except Exception:
+            focus_user_enabled = True
+        if not focus_user_enabled:
+            # Hard-clear (not update_focus(0.0)): with the config flag still on,
+            # update_focus only DECAYS by retention, leaving residual charge and a
+            # FOCUS mode lingering for a turn or two — so the badge/glow wouldn't
+            # drop until the charge bled below exit. clear_focus zeroes everything
+            # silently (no FOCUS_EXIT) so 凝神 turns off at once when the user asks.
+            await self.state.clear_focus()
             await self._reconcile_focus_indicator()
             return False
         if not (user_text and user_text.strip()):
@@ -2432,6 +2451,14 @@ class LLMSessionManager:
         from config import FOCUS_MODE_ENABLED  # live read
         if not FOCUS_MODE_ENABLED:
             return False
+        # Honor the per-user master switch here too (defense in depth): if the
+        # user turned 凝神 off mid-episode, a proactive turn must not keep running
+        # thinking-on before the next inline turn clears the episode.
+        try:
+            if not bool(load_global_conversation_settings().get('focusCognitionEnabled', True)):
+                return False
+        except Exception:
+            pass
         return self.state.mode is CognitionMode.FOCUS
 
     async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
@@ -2530,6 +2557,37 @@ class LLMSessionManager:
                     await ws.send_json(msg)
         except Exception as e:
             logger.debug("[%s] focus_charge ws push failed: %s", self.lanlan_name, e)
+
+    async def _push_focus_thinking(self, active: bool) -> None:
+        """Pulse a transient "model is thinking" signal to the frontend so the
+        chat history can show a thinking-dots bubble while a Focus (凝神) turn runs
+        thinking-on but hasn't emitted any visible content yet. Pushed True right
+        before such a turn streams, cleared (False) the moment the first visible
+        chunk lands (send_lanlan_response) or the turn ends. Idempotent on the
+        cached state so per-chunk callers can clear blindly without spamming.
+        Ephemeral: ws + sync-queue only, never persisted. Best-effort — a ws
+        failure must never disturb the caller.
+
+        getattr default guards bypass-__init__ constructions (bare test mgrs,
+        cross-server / unpickled managers) — they simply have no bubble to sync."""
+        if active == getattr(self, "_focus_thinking_active", False):
+            return
+        self._focus_thinking_active = active
+        msg = {"type": "focus_thinking", "active": active}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_thinking sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
 
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
@@ -3753,6 +3811,10 @@ class LLMSessionManager:
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
+            # First visible content of the turn → the model has finished its
+            # (hidden) 凝神 thinking, so drop the thinking-dots bubble. Idempotent,
+            # so this is a no-op on regular / proactive turns that never lit it.
+            await self._push_focus_thinking(False)
         self.sync_message_queue.put({"type": "json", "data": message})
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
@@ -9329,7 +9391,17 @@ class LLMSessionManager:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:
                         stream_text_kwargs["history_replacement_text"] = memory_text
-                    await self.session.stream_text(data, **stream_text_kwargs)
+                    if _focus_thinking:
+                        # 凝神 turn runs thinking-on: pulse the frontend so the chat
+                        # history shows a thinking-dots bubble until the first visible
+                        # token lands (cleared in send_lanlan_response) or the turn
+                        # ends (the finally below covers tool-only / empty / error turns).
+                        await self._push_focus_thinking(True)
+                    try:
+                        await self.session.stream_text(data, **stream_text_kwargs)
+                    finally:
+                        if _focus_thinking:
+                            await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

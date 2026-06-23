@@ -1766,6 +1766,9 @@ function CompactChatApp({
   // ws message (app-websocket.js → 'neko-focus-state' CustomEvent). Inert by
   // default — the backend only emits it when FOCUS_MODE_ENABLED.
   const [focusActive, setFocusActive] = useState(false);
+  // 凝神 thinking-dots: backend pulses `focus_thinking` (app-websocket.js →
+  // 'neko-focus-thinking') while a Focus turn thinks-on but hasn't spoken yet.
+  const [focusThinking, setFocusThinking] = useState(false);
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
@@ -2814,6 +2817,26 @@ function CompactChatApp({
     };
     window.addEventListener('neko-focus-state', handleFocusState);
     return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // Focus 凝神 thinking-dots: show a "…" bubble at the tail of the history while
+  // a Focus turn is thinking-on but hasn't emitted visible content yet. Cleared
+  // when she starts speaking (backend) or on Focus exit (defensive).
+  useEffect(() => {
+    const handleThinking = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusThinking(Boolean(detail && detail.active));
+    };
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      if (!(detail && detail.active)) setFocusThinking(false);
+    };
+    window.addEventListener('neko-focus-thinking', handleThinking);
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-thinking', handleThinking);
       window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
@@ -6956,6 +6979,7 @@ function CompactChatApp({
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
+      thinking={focusThinking}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
