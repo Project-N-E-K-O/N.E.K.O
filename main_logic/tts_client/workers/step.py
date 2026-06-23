@@ -27,7 +27,7 @@ from utils.config_manager import get_config_manager
 from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE, get_stepfun_tts_default_voice, normalize_stepfun_tts_voice
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -139,6 +139,9 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         pending_text_buffer = ""
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        # StepFun/免费上游首包后第一个 inter-chunk gap 偏大，会让开头几个字 jitter。
+        # 用与 qwen 对偶的共享 jitter buffer 攒出首包领先量盖过去。
+        audio_jitter = make_audio_jitter_buffer(response_queue)
 
         def _build_tts_create_data(sid_: str, lang_hint):
             """Assemble the tts.create data field from the URL and language hint.
@@ -292,12 +295,13 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     # 转换为 numpy 数组
                                     audio_array = np.frombuffer(pcm_data, dtype=np.int16)
                                     # 使用流式重采样器 24000Hz -> 48000Hz
-                                    response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                                    audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                             except Exception as e:
                                 logger.error(f"处理音频数据时出错: {e}")
                         elif event_type in ["tts.response.done", "tts.response.audio.done"]:
                             # 服务器明确表示音频生成完成，设置完成标志
                             logger.debug(f"收到响应完成事件: {event_type}")
+                            audio_jitter.flush()  # 放掉缓冲区里不足 steady 阈值的尾音
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed:
                     pass
@@ -338,6 +342,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     text_done_sent = False
                     session_created = False
                     pending_text_buffer = ""
+                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
                     continue
 
                 if sid is None:
@@ -369,7 +374,6 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     session_created = False
                     pending_text_buffer = ""
                     response_done.clear()
-                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
                         try:
                             await ws.close()
@@ -381,7 +385,11 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await receive_task
                         except asyncio.CancelledError:
                             pass
-                    
+                    # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
+                    # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
+                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
+                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+
                     # 建立新连接
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)
@@ -444,12 +452,13 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                                 # 转换为 numpy 数组
                                                 audio_array = np.frombuffer(pcm_data, dtype=np.int16)
                                                 # 使用流式重采样器 24000Hz -> 48000Hz
-                                                response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                                                audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["tts.response.done", "tts.response.audio.done"]:
                                         # 服务器明确表示音频生成完成，设置完成标志
                                         logger.debug(f"收到响应完成事件: {event_type}")
+                                        audio_jitter.flush()  # 放掉缓冲区里不足 steady 阈值的尾音
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed:
                                 pass
