@@ -886,6 +886,9 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     assert "var currentNode = session.dayConfig && session.dayConfig.nodes" in continuation_block
     assert "waitBeforeChoicePromptReveal(fallbackText)" in continuation_block
     assert "setChoicePrompt(currentNode, localeData)" in continuation_block
+    assert continuation_block.index("waitBeforeChoicePromptReveal(fallbackText)") < continuation_block.index(
+        "setChoicePrompt(currentNode, localeData)"
+    )
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block
