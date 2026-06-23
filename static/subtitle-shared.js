@@ -1052,6 +1052,26 @@
         }
     }
 
+    function isSubtitleDanmakuScrollActive(scroll) {
+        var display;
+        if (!scroll) return false;
+        if (scroll.classList && scroll.classList.contains('subtitle-danmaku-scroll')) {
+            return true;
+        }
+        display = scroll.closest ? scroll.closest('#subtitle-display') : null;
+        return !!(display && display.dataset && display.dataset.subtitleDanmakuActive === 'true');
+    }
+
+    function resetSubtitleDanmakuScroll(scroll) {
+        if (!scroll) return 0;
+        cancelSubtitleAutoScroll(scroll);
+        scroll.scrollTop = 0;
+        if (scroll.dataset) {
+            scroll.dataset.subtitleScrollable = 'false';
+        }
+        return 0;
+    }
+
     function renderSubtitleDanmakuText(refs, text, options) {
         var display = refs && refs.display;
         var scroll = refs && refs.scroll;
@@ -1119,6 +1139,7 @@
         scroll.classList.add('subtitle-danmaku-scroll');
         display.dataset.subtitleDanmakuActive = 'true';
         display.dataset.subtitleDanmakuCount = String(segments.length);
+        resetSubtitleDanmakuScroll(scroll);
         return segments;
     }
 
@@ -1143,6 +1164,10 @@
     function updateSubtitleScrollState(target) {
         var scroll = getSubtitleScrollNode(target);
         if (!scroll || !scroll.dataset) return false;
+        if (isSubtitleDanmakuScrollActive(scroll)) {
+            resetSubtitleDanmakuScroll(scroll);
+            return false;
+        }
         var scrollable = isSubtitleScrollScrollable(scroll);
         scroll.dataset.subtitleScrollable = scrollable ? 'true' : 'false';
         return scrollable;
@@ -1164,6 +1189,9 @@
     function scrollSubtitleToBottom(target) {
         var scroll = getSubtitleScrollNode(target);
         if (!scroll) return 0;
+        if (isSubtitleDanmakuScrollActive(scroll)) {
+            return resetSubtitleDanmakuScroll(scroll);
+        }
         cancelSubtitleAutoScroll(scroll);
         updateSubtitleScrollState(scroll);
         scroll.scrollTop = getSubtitleScrollMax(scroll);
@@ -1173,6 +1201,9 @@
     function requestSubtitleAutoScroll(target, options) {
         var scroll = getSubtitleScrollNode(target);
         if (!scroll) return 0;
+        if (isSubtitleDanmakuScrollActive(scroll)) {
+            return resetSubtitleDanmakuScroll(scroll);
+        }
         if (!updateSubtitleScrollState(scroll)) {
             cancelSubtitleAutoScroll(scroll);
             scroll.scrollTop = 0;
@@ -1213,6 +1244,10 @@
 
         function step(timestamp) {
             if (scroll._nekoSubtitleAutoScroll !== state) return;
+            if (isSubtitleDanmakuScrollActive(scroll)) {
+                resetSubtitleDanmakuScroll(scroll);
+                return;
+            }
             if (!updateSubtitleScrollState(scroll)) {
                 cancelSubtitleAutoScroll(scroll);
                 return;
