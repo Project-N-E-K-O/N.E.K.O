@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,11 +25,42 @@ def _js_function_block(source: str, function_name: str) -> str:
     if brace < 0:
         raise AssertionError(f"missing opening brace for JS function {function_name}")
 
+    end = _balanced_js_block_end(source, brace)
+    return source[start : end + 1]
+
+
+def _balanced_js_block_end(source: str, brace: int) -> int:
     depth = 0
     quote: str | None = None
     escaped = False
-    for index in range(brace, len(source)):
+    line_comment = False
+    block_comment = False
+    regex_literal = False
+    regex_char_class = False
+    previous_significant: str | None = None
+
+    def can_start_regex(previous: str | None) -> bool:
+        return previous is None or previous in "({[=,:;!&|?+-*~^<>"
+
+    index = brace
+    while index < len(source):
         char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
         if quote:
             if escaped:
                 escaped = False
@@ -36,27 +68,84 @@ def _js_function_block(source: str, function_name: str) -> str:
                 escaped = True
             elif char == quote:
                 quote = None
+            index += 1
+            continue
+
+        if regex_literal:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "[":
+                regex_char_class = True
+            elif char == "]":
+                regex_char_class = False
+            elif char == "/" and not regex_char_class:
+                regex_literal = False
+                previous_significant = "/"
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            line_comment = True
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment = True
+            index += 2
+            continue
+        if char == "/" and can_start_regex(previous_significant):
+            regex_literal = True
+            index += 1
             continue
         if char in {"'", '"', "`"}:
             quote = char
+            index += 1
             continue
         if char == "{":
             depth += 1
+            previous_significant = char
         elif char == "}":
             depth -= 1
+            previous_significant = char
             if depth == 0:
-                return source[start : index + 1]
-    raise AssertionError(f"unterminated JS function {function_name}")
+                return index
+        elif not char.isspace():
+            previous_significant = char
+        index += 1
+    raise AssertionError("unterminated JS block")
 
 
 def _catch_block_after(source: str, marker: str) -> str:
     start = source.find(marker)
     if start < 0:
         raise AssertionError(f"missing marker {marker!r}")
-    catch_start = source.find("catch (err) {", start)
-    if catch_start < 0:
+    match = re.search(r"\bcatch\s*\([^)]*\)\s*\{", source[start:])
+    if not match:
         raise AssertionError(f"missing catch block after {marker!r}")
-    return source[catch_start:].split("throw err;", 1)[0]
+    catch_start = start + match.start()
+    brace = source.find("{", catch_start)
+    return source[catch_start : _balanced_js_block_end(source, brace) + 1]
+
+
+def _event_listener_block(source: str, event_name: str) -> str:
+    marker = f"window.addEventListener('{event_name}'"
+    start = source.find(marker)
+    if start < 0:
+        raise AssertionError(f"missing event listener {event_name}")
+    brace = source.find("{", start)
+    if brace < 0:
+        raise AssertionError(f"missing event listener body for {event_name}")
+    return source[start : _balanced_js_block_end(source, brace) + 1]
+
+
+def _mic_button_start_flow(source: str) -> str:
+    marker = "micButton.addEventListener('click', async function () {"
+    start = source.find(marker)
+    if start < 0:
+        raise AssertionError("missing mic button click listener")
+    brace = source.find("{", start)
+    return source[start : _balanced_js_block_end(source, brace) + 1]
 
 
 def _run_floating_mic_toggle_scenario(script_body: str) -> dict:
@@ -179,27 +268,29 @@ runScenario()
     return json.loads(result.stdout)
 
 
-def test_mic_capture_failure_does_not_own_voice_lifecycle_or_composer_restore():
+def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecycle():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     start_mic = _js_function_block(source, "startMicCapture")
     failure = _catch_block_after(start_mic, "S.stream = await navigator.mediaDevices.getUserMedia(constraints);")
 
-    assert "window.syncVoiceChatComposerHidden(false)" not in failure
-    assert "textInputArea.classList.remove('hidden')" not in failure
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure
-    assert "S.voiceChatActive = false;" not in failure
-    assert "S.isRecording = false;" not in failure
-    assert "window.isRecording = false;" not in failure
+    assert "const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);" in failure
+    restore_start = failure.index("if (!hasOuterVoiceStartLifecycle) {")
+    throw_index = failure.index("throw err;")
+    restore_block = failure[restore_start:throw_index]
+    assert "S.isRecording = false;" in restore_block
+    assert "window.isRecording = false;" in restore_block
+    assert "S.voiceChatActive = false;" in restore_block
+    assert "textInputArea.classList.remove('hidden')" in restore_block
+    assert "window.syncVoiceChatComposerHidden(false)" in restore_block
     assert "stopGameVoiceSttGate({ restoreOrdinaryMic: false });" in failure
+    assert failure.index("stopGameVoiceSttGate({ restoreOrdinaryMic: false });") < throw_index
 
 
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
     source = _read(APP_BUTTONS_PATH)
-    start_flow = source.split("micButton.addEventListener('click', async function () {", 1)[1].split(
-        "// ----------------------------------------------------------------\n        // Screen button click",
-        1,
-    )[0]
+    start_flow = _mic_button_start_flow(source)
     failure = start_flow.split("} catch (error) {", 1)[1].split("screenButton.classList.remove('active');", 1)[0]
 
     sync_call = "window.syncVoiceChatComposerHidden(preserveGoodbyeUi);"
@@ -217,10 +308,7 @@ def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore(
 def test_floating_mic_stale_active_state_reenters_main_voice_start_lifecycle():
     source = _read(APP_UI_PATH)
     listeners = _js_function_block(source, "initFloatingButtonListeners")
-    mic_toggle = listeners.split("window.addEventListener('live2d-mic-toggle'", 1)[1].split(
-        "// 屏幕分享按钮（toggle模式）",
-        1,
-    )[0]
+    mic_toggle = _event_listener_block(listeners, "live2d-mic-toggle")
 
     assert "micButton.click();" in mic_toggle
     pending_guard = "if (S.voiceStartPending || window.isMicStarting) {"

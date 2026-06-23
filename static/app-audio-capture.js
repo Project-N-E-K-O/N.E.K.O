@@ -979,10 +979,23 @@
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
-            // 麦克风层只撤销本地录音态；语音会话和 composer 由外层启动生命周期统一收口。
+            const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
+
             if (_mic) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
+            }
+            if (!hasOuterVoiceStartLifecycle) {
+                S.isRecording = false;
+                window.isRecording = false;
+                S.voiceChatActive = false;
+                const textInputArea = document.getElementById('text-input-area');
+                if (textInputArea) {
+                    textInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
