@@ -8298,47 +8298,51 @@ async def _complete_game_end_from_payload(
         # started soccer route.
         supersede_lock = _get_supersede_lock(lanlan_name)
         end_route_lock = _get_route_lock(lanlan_name, game_type)
-        async with supersede_lock:
-            async with end_route_lock:
-                finalized = await _finalize_game_route_state(
-                    state,
-                    reason=exit_reason,
-                    close_game_session=True,
-                    close_debug_log=False,
-                )
-        archive = finalized["archive"]
-        archive_memory = finalized["archive_memory"]
-        if (
-            _is_badminton_game_type(game_type)
-            and state.get("game_started") is True
-            and _badminton_end_payload_completed_round(data)
-        ):
-            score_session_totals = _badminton_score_totals_from_data(state.get("finalScore"))
-            if score_session_totals:
-                _remember_badminton_score_session(
-                    lanlan_name,
-                    session_id,
-                    score_session_mode,
-                    score_session_totals,
-                )
-        if _game_memory_postgame_context_enabled(archive) is False:
-            postgame_options["enabled"] = False
-        if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
-            postgame_options["enabled"] = False
-        postgame_result = await _deliver_game_postgame(
-            game_type,
-            session_id,
-            lanlan_name,
-            archive,
-            postgame_options,
-            postgame_snapshot=finalized.get("postgame_context_snapshot"),
-        )
-        # B5: closing the LLM session is the inner finalize's job (now
-        # that ``close_game_session=True`` reliably propagates via
-        # OR-merge). Calling ``_close_and_remove_session`` again here
-        # would race a finalize-from-heartbeat-sweep at the same key and
-        # double-close the underlying ``OmniOfflineClient``.
-        closed = bool(finalized.get("game_session_closed"))
+        try:
+            async with supersede_lock:
+                async with end_route_lock:
+                    finalized = await _finalize_game_route_state(
+                        state,
+                        reason=exit_reason,
+                        close_game_session=True,
+                        close_debug_log=False,
+                    )
+            archive = finalized["archive"]
+            archive_memory = finalized["archive_memory"]
+            if (
+                _is_badminton_game_type(game_type)
+                and state.get("game_started") is True
+                and _badminton_end_payload_completed_round(data)
+            ):
+                score_session_totals = _badminton_score_totals_from_data(state.get("finalScore"))
+                if score_session_totals:
+                    _remember_badminton_score_session(
+                        lanlan_name,
+                        session_id,
+                        score_session_mode,
+                        score_session_totals,
+                    )
+            if _game_memory_postgame_context_enabled(archive) is False:
+                postgame_options["enabled"] = False
+            if isinstance(archive_memory, dict) and archive_memory.get("status") == "skipped":
+                postgame_options["enabled"] = False
+            postgame_result = await _deliver_game_postgame(
+                game_type,
+                session_id,
+                lanlan_name,
+                archive,
+                postgame_options,
+                postgame_snapshot=finalized.get("postgame_context_snapshot"),
+            )
+            # B5: closing the LLM session is the inner finalize's job (now
+            # that ``close_game_session=True`` reliably propagates via
+            # OR-merge). Calling ``_close_and_remove_session`` again here
+            # would race a finalize-from-heartbeat-sweep at the same key and
+            # double-close the underlying ``OmniOfflineClient``.
+            closed = bool(finalized.get("game_session_closed"))
+        except BaseException:
+            state["_exit_defer_debug_log_close"] = False
+            raise
     else:
         # No active route matched — fall through to the legacy direct close
         # so an out-of-sync ``/game_end`` (e.g. page reloaded after the

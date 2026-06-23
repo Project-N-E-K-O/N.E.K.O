@@ -518,6 +518,39 @@ async def test_game_debug_logs_route_end_records_completed_before_session_ended(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_game_debug_logs_route_end_resets_defer_flag_when_postgame_fails(monkeypatch):
+    async def fake_deliver_postgame(*_args, **_kwargs):
+        raise RuntimeError("postgame failed")
+
+    monkeypatch.setattr(game_router, "_deliver_game_postgame", fake_deliver_postgame)
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("soccer", "soccer-postgame-fails", "Lan")
+        _mark_game_started(state)
+        game_log.enable_game_session_debug_log("soccer", "soccer-postgame-fails", lanlan_name="Lan")
+
+        with pytest.raises(RuntimeError, match="postgame failed"):
+            await game_router._complete_game_end_from_payload(
+                "soccer",
+                {
+                    "session_id": "soccer-postgame-fails",
+                    "lanlan_name": "Lan",
+                    "gameStarted": True,
+                },
+                default_reason="route_end",
+            )
+
+        assert state.get("_exit_defer_debug_log_close") is False
+
+    entry = game_log.find_game_session_debug_log("soccer-postgame-fails", "soccer")
+    assert entry is not None
+    assert entry["status"] == "active"
+    assert [item["event"] for item in entry["entries"]] == ["route_end_requested"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_game_debug_logs_route_end_defers_concurrent_heartbeat_close(monkeypatch):
     release_finalize = asyncio.Event()
 

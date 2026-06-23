@@ -108,11 +108,15 @@ def test_soccer_template_posts_session_debug_errors():
     assert "resetSoccerSessionDebugLogEnableState();" in html
     assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in html
     assert "function _hasSoccerSessionDebugLogSendCredentials()" in html
+    assert "function _enableSoccerSessionDebugLogAfterRouteStart()" in html
     assert "function _startSoccerSessionDebugLogEnablePromise(workPromise, generation)" in html
     assert "_llm.sessionDebugLogEnableGeneration += 1;" in html
     assert "const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;" in html
     assert "if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };" in html
     assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
+    assert "return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()" in html
+    assert "enableReason: 'route_start_send_gate'" in html
+    assert "reason: 'missing_csrf_token'" in html
     assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
     assert "_llm.sessionDebugLogMutationHeaders = null;" in html
     assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
@@ -120,8 +124,7 @@ def test_soccer_template_posts_session_debug_errors():
     assert "enableSoccerSessionDebugLog('auto_route_start')" not in html
     assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", html)
     route_success_block = html.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
-    assert "_hasSoccerSessionDebugLogSendCredentials()" in route_success_block
-    assert "_llm.sessionDebugLogEnabled = true;" in route_success_block
+    assert "_enableSoccerSessionDebugLogAfterRouteStart();" in route_success_block
     assert "enableSoccerSessionDebugLog('keyboard_l')" in html
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html

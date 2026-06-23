@@ -3367,6 +3367,29 @@
       ))
     );
   }
+  function _enableSoccerSessionDebugLogAfterRouteStart() {
+    const generation = _llm.sessionDebugLogEnableGeneration;
+    if (_hasSoccerSessionDebugLogSendCredentials()) {
+      _llm.sessionDebugLogEnabled = true;
+      return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
+    }
+    if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
+      return _llm.sessionDebugLogEnablePromise;
+    }
+    _llm.sessionDebugLogEnableInFlight = true;
+    return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
+      .then((headers) => {
+        if (_llm.sessionDebugLogEnableGeneration !== generation) {
+          return { ok: false, reason: 'stale_enable_result' };
+        }
+        const debugLogMutationHeaders = { ...(headers || {}) };
+        if (!_soccerDebugCsrfTokenFromHeaders(debugLogMutationHeaders)) {
+          return { ok: false, reason: 'missing_csrf_token' };
+        }
+        _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
+        return { ok: true, enableReason: 'route_start_send_gate' };
+      }), generation);
+  }
   function _startSoccerSessionDebugLogEnablePromise(workPromise, generation) {
     const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;
     const timeoutPromise = new Promise((resolve) => {
@@ -4002,9 +4025,7 @@
 	      });
 	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
-	        if (_hasSoccerSessionDebugLogSendCredentials()) {
-	          _llm.sessionDebugLogEnabled = true;
-	        }
+	        _enableSoccerSessionDebugLogAfterRouteStart();
 	        _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
 	        _applyPreGameContext(data.state);
