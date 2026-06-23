@@ -11,6 +11,7 @@
     let isCapturing = false;
     let pendingAutoCapture = false;
     let activeCaptureToken = 0;
+    let activeCaptureCardVisible = false;
     let cachedPreview = null;
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
@@ -872,6 +873,7 @@
         if (isCapturing) {
             if (showCard) {
                 setPreviewVisible(true, trigger);
+                activeCaptureCardVisible = true;
             }
             if (!showCard && silent) {
                 pendingAutoCapture = true;
@@ -893,6 +895,7 @@
 
         isCapturing = true;
         const token = ++activeCaptureToken;
+        activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
         const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
@@ -964,7 +967,7 @@
         } catch (error) {
             if (token !== activeCaptureToken) return;
 
-            if (showCard) {
+            if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
                 setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
                 setPreviewNote(getErrorMessage(error));
@@ -978,6 +981,7 @@
         } finally {
             if (token === activeCaptureToken) {
                 isCapturing = false;
+                activeCaptureCardVisible = false;
                 setLoadingState(false);
                 if (pendingAutoCapture) {
                     pendingAutoCapture = false;
