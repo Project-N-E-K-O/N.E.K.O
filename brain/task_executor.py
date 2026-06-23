@@ -1336,6 +1336,18 @@ class DirectTaskExecutor:
 
                 response = await llm.ainvoke(messages)
                 raw_text = response.content
+                # Telemetry: every LLM response that actually came back is one
+                # Stage-2 assessment — including the empty / unparseable ones that
+                # return early below. This is the *total* denominator, so the
+                # documented retry / extra-round-trip rates aren't overstated by
+                # silently dropping non-retry failures (a parse error never fires
+                # a correction retry but still cost a Stage-2 round-trip).
+                try:
+                    from utils.instrument import counter as _instr_counter
+                    _instr_counter("plugin_assess_stage2")
+                except Exception:
+                    # 埋点失败静默，绝不能影响插件评估主路径。
+                    pass
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
                 try:
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
@@ -1409,23 +1421,6 @@ class DirectTaskExecutor:
                 d_pid = decision.get("plugin_id")
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
-                # Telemetry: count every parsed Stage-2 decision that reaches
-                # validation. Denominator for the correction-retry trigger rate.
-                # Early returns on empty / unparseable responses don't reach here
-                # and can't fire a retry, so they're correctly excluded.
-                #
-                # The ``actionable`` dim splits the base so both rates are derivable:
-                # a retry can only fire when the *initial* decision had
-                # has_task & can_execute, so retries/actionable=True is the
-                # conditional correction rate, while retries/(all) is the broader
-                # "extra round-trip per Stage-2 call" cost rate.
-                try:
-                    from utils.instrument import counter as _instr_counter
-                    _instr_counter("plugin_assess_stage2", actionable=bool(d_has and d_can))
-                except Exception:
-                    # 埋点失败静默，绝不能影响插件评估主路径。
-                    pass
-
                 # Build the executable lookup from the plugins actually shown in this
                 # Stage 2 prompt. In large plugin lists, Stage 1 may filter every
                 # plugin out; a hallucinated id from the full registry must not pass
@@ -1457,6 +1452,17 @@ class DirectTaskExecutor:
                     decision["plugin_id"] = d_pid
 
                 if d_has and d_can:
+                    # Telemetry: the subset of Stage-2 assessments where the LLM
+                    # claimed an executable task — the only state a correction
+                    # retry can fire from. retries / this counter = conditional
+                    # correction rate; retries / plugin_assess_stage2 = the broader
+                    # extra-round-trip cost rate across all Stage-2 calls.
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _instr_counter("plugin_assess_stage2_actionable")
+                    except Exception:
+                        # 埋点失败静默，绝不能影响插件评估主路径。
+                        pass
                     correction_hint = None
                     visible_entries = valid_entries_map.get(d_pid)
                     if not d_pid:

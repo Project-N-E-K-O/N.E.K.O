@@ -140,9 +140,11 @@ async def test_correction_retry_telemetry_records_fail(monkeypatch):
     assert len(fake_llm.calls) == 2
 
     counters = instrument.snapshot()["counters"]
-    # actionable=True because the initial decision had has_task & can_execute
-    # (the only state from which a correction retry can fire).
-    assert counters.get("plugin_assess_stage2|actionable=True") == 1
+    # One Stage-2 call total; it was actionable (has_task & can_execute), the only
+    # state a correction retry can fire from. The retry's own ainvoke is not a new
+    # Stage-2 assessment, so the denominators stay at 1.
+    assert counters.get("plugin_assess_stage2") == 1
+    assert counters.get("plugin_assess_stage2_actionable") == 1
     assert counters.get("plugin_assess_correction_retry|result=fail") == 1
     assert "plugin_assess_correction_retry|result=success" not in counters
 
@@ -181,8 +183,42 @@ async def test_correction_retry_telemetry_records_success(monkeypatch):
     assert len(seq_llm.calls) == 2
 
     counters = instrument.snapshot()["counters"]
-    # actionable=True because the initial decision had has_task & can_execute
-    # (the only state from which a correction retry can fire).
-    assert counters.get("plugin_assess_stage2|actionable=True") == 1
+    assert counters.get("plugin_assess_stage2") == 1
+    assert counters.get("plugin_assess_stage2_actionable") == 1
     assert counters.get("plugin_assess_correction_retry|result=success") == 1
     assert "plugin_assess_correction_retry|result=fail" not in counters
+
+
+@pytest.mark.asyncio
+async def test_stage2_denominator_includes_unparsed_response(monkeypatch):
+    """An unparseable Stage-2 response counts toward the total denominator but is
+    neither actionable nor a retry — so the cost rate isn't overstated."""
+    from brain import task_executor as task_executor_module
+    from brain.task_executor import DirectTaskExecutor
+    from utils import instrument
+
+    monkeypatch.setattr(task_executor_module, "stage1_filter", lambda *args, **kwargs: ([], []))
+    instrument.snapshot()  # clear any data from earlier tests in this process
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._STAGE1_TRIGGER_TOKENS = 1
+    executor._stage1_llm_coarse_screen = _no_coarse_ids
+
+    # No JSON object at all -> early return on the parse-failure path, before any
+    # validation / retry can happen.
+    fake_llm = _FakeLLM("sorry, I cannot help with that")
+    executor._get_llm = lambda **_kwargs: fake_llm
+
+    result = await executor._assess_user_plugin(
+        "LATEST_USER_REQUEST: unrelated request",
+        _make_plugins(),
+        lang="en",
+    )
+
+    assert result.can_execute is False
+    assert len(fake_llm.calls) == 1  # no correction retry fired
+
+    counters = instrument.snapshot()["counters"]
+    assert counters.get("plugin_assess_stage2") == 1
+    assert "plugin_assess_stage2_actionable" not in counters
+    assert not any(k.startswith("plugin_assess_correction_retry") for k in counters)
