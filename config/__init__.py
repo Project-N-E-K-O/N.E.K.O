@@ -865,8 +865,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "kimi-for-coding",
         'EMOTION_MODEL': "kimi-for-coding",
         'VISION_MODEL': "kimi-for-coding",
-        'AGENT_MODEL': "",
-        'AGENT_MODEL_DISABLED': True,
+        'AGENT_MODEL': "kimi-for-coding",
     },
     'claude': {
         'OPENROUTER_URL': "https://api.anthropic.com/v1",

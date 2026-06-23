@@ -1761,7 +1761,11 @@ class TestGptsovitsEnabledSaveMigration:
         assert api_config['provider_type'] == 'anthropic'
 
     @pytest.mark.unit
-    def test_kimi_code_does_not_fallback_to_vision_for_agent(self, config_manager):
+    def test_kimi_code_agent_falls_back_to_vision_model(self, config_manager):
+        # kimi_code 的 agent 槽和其它 provider 一样回退到 VISION_MODEL
+        # （= kimi-for-coding）。曾经用 AGENT_MODEL_DISABLED 把它单独关掉，
+        # 但 claude 同样走 Anthropic CUA 路径却未关，门控是不一致的半成品；
+        # 已 revert，剩余 Anthropic 路径问题在 follow-up issue 跟踪。
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'kimi_code',
@@ -1771,13 +1775,9 @@ class TestGptsovitsEnabledSaveMigration:
 
         config_manager._core_config_cache = None
         api_config = config_manager.get_model_api_config('agent')
-        ready, reasons = config_manager.is_agent_api_ready()
 
-        assert api_config['model'] == ''
-        assert api_config['model'] != 'kimi-for-coding'
+        assert api_config['model'] == 'kimi-for-coding'
         assert api_config['provider_type'] == 'anthropic'
-        assert ready is False
-        assert reasons
 
     @pytest.mark.unit
     def test_provider_type_follow_cycle_does_not_recurse(self, config_manager):

@@ -186,8 +186,7 @@
       "correction_model": "kimi-for-coding",
       "emotion_model": "kimi-for-coding",
       "vision_model": "kimi-for-coding",
-      "agent_model": "",
-      "agent_model_disabled": true
+      "agent_model": "kimi-for-coding"
     },
     "deepseek": {
       "key": "deepseek",

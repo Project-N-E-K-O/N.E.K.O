@@ -146,7 +146,6 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'emotion_model': 'EMOTION_MODEL',
         'vision_model': 'VISION_MODEL',
         'agent_model': 'AGENT_MODEL',
-        'agent_model_disabled': 'AGENT_MODEL_DISABLED',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
         'provider_type': 'PROVIDER_TYPE',

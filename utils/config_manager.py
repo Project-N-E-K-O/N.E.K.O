@@ -4033,16 +4033,8 @@ class ConfigManager:
             )
             config['OPENROUTER_URL'] = token_plan_url or token_plan_profile['OPENROUTER_URL']
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
-        if config.get('AGENT_MODEL_DISABLED'):
-            config['AGENT_MODEL'] = ''
-            config['AGENT_MODEL_URL'] = ''
-        else:
-            config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
-            config['AGENT_MODEL_URL'] = (
-                config.get('AGENT_MODEL_URL')
-                or config.get('VISION_MODEL_URL', '')
-                or config.get('OPENROUTER_URL', '')
-            )
+        config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
+        config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
         config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
         key_field = (
