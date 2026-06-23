@@ -483,6 +483,28 @@
     <script>
     (function() {
         'use strict';
+        var pngtuberHiddenForGameWindow = false;
+        function applyPngtuberGameWindowState(paused) {
+            var manager = window.pngtuberManager;
+            if (!manager) return;
+            if (paused) {
+                var container = document.getElementById('pngtuber-container');
+                var visible = container && container.style.display !== 'none' && !container.classList.contains('hidden');
+                if (visible && typeof manager.hide === 'function') {
+                    try {
+                        manager.hide();
+                        pngtuberHiddenForGameWindow = true;
+                    } catch (_) {}
+                }
+                return;
+            }
+            if (pngtuberHiddenForGameWindow && typeof manager.show === 'function') {
+                try {
+                    manager.show();
+                    pngtuberHiddenForGameWindow = false;
+                } catch (_) {}
+            }
+        }
         function applyGameWindowRenderingState(paused) {
             var managers = [
                 window.live2dManager,
@@ -495,12 +517,13 @@
                     try { manager[method](); } catch (_) {}
                 }
             });
+            applyPngtuberGameWindowState(paused);
         }
         function applyGameWindowState(action) {
             if (!document.body || !document.body.classList) return;
             if (action === 'opened') {
-                document.body.classList.add('neko-game-active');
                 applyGameWindowRenderingState(true);
+                document.body.classList.add('neko-game-active');
             } else if (action === 'closed') {
                 document.body.classList.remove('neko-game-active');
                 if (!window.__nekoPetInteracting__) {
