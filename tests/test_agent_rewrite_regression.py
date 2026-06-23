@@ -1913,6 +1913,131 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
     assert entry is None
 
 
+def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
+    """_apply_cached_short_descriptions 是纯 manifest/缓存读取（零 LLM）：
+    manifest 自带的直接用并 prime 缓存；缓存命中（desc 未变）则应用；缺失或
+    缓存陈旧的留空并作为后台预热候选返回，绝不在此处现生成。"""
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._short_desc_cache = {}
+    executor._short_desc_cache["from_cache"] = ("full B", "cached B")
+    executor._short_desc_cache["stale_cache"] = ("old D", "cached D")
+
+    plugins = [
+        {"id": "has_manifest", "description": "full A", "short_description": "short A"},
+        {"id": "from_cache", "description": "full B"},
+        {"id": "stale_cache", "description": "new D"},
+        {"id": "missing", "description": "full C"},
+        {"id": "no_desc"},
+        "not_a_dict",
+    ]
+
+    missing = executor._apply_cached_short_descriptions(plugins)
+
+    # (a) manifest 自带 → 直接用，并把它写进缓存供后续 refresh 复用
+    assert plugins[0]["short_description"] == "short A"
+    assert executor._short_desc_cache["has_manifest"] == ("full A", "short A")
+    # 缓存命中（desc 未变）→ 应用缓存值
+    assert plugins[1]["short_description"] == "cached B"
+    # 缓存陈旧（desc 变了）→ 不应用，进 missing 候选
+    assert "short_description" not in plugins[2]
+    # 缺失且无缓存 → 不现生成，留空，进 missing 候选
+    assert "short_description" not in plugins[3]
+    # 无 description → 无可摘要内容，不进 missing 也不留空
+    assert "short_description" not in plugins[4]
+
+    assert sorted(p["id"] for p in missing) == ["missing", "stale_cache"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_provider_never_generates_short_description_on_hot_path():
+    """验收核心：analyze 热路径（plugin_list_provider）绝不现生成
+    short_description。缺失的插件交给后台预热，当次调用立即返回、_get_llm 不被
+    同步触发，分析侧安全回退到完整 description。"""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from brain.task_executor import DirectTaskExecutor
+
+    plugins = [{"id": "no_short", "description": "a plugin without a short description"}]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+    executor._short_desc_prewarm_inflight = set()
+    executor._short_desc_prewarm_tasks = set()
+
+    llm_factory = MagicMock(
+        side_effect=AssertionError("_get_llm must not be called on the analyze hot path")
+    )
+    with patch.object(DirectTaskExecutor, "_get_llm", llm_factory), \
+         patch.object(
+             DirectTaskExecutor, "_prewarm_short_descriptions", new_callable=AsyncMock,
+         ) as mock_prewarm:
+        result = await executor.plugin_list_provider(force_refresh=True)
+
+    # 返回的插件仍缺 short_description（未现生成）→ 分析侧回退到完整 description
+    assert not result[0].get("short_description")
+    # 热路径上 _get_llm 没被同步调用
+    llm_factory.assert_not_called()
+    # 缺失插件被调度进后台预热
+    mock_prewarm.assert_called_once()
+    assert "no_short" in executor._short_desc_prewarm_inflight
+    await asyncio.sleep(0)  # 让后台任务跑掉，避免 "coroutine never awaited" 警告
+
+
+def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
+    """LLM 生成的 short_description 落盘，重启后新实例直接复用、零 LLM；
+    description 作为 key——manifest 变了缓存自动失效重新生成。"""
+    from types import SimpleNamespace
+    from brain.task_executor import DirectTaskExecutor
+
+    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
+
+    # 实例一：把一条生成的缓存落盘
+    exec1 = object.__new__(DirectTaskExecutor)
+    exec1._config_manager = cfg
+    exec1._short_desc_cache_filename = "plugin_short_desc_cache.json"
+    exec1._persist_generated_short_descriptions({"genplug": ("full desc", "generated short")})
+    assert (tmp_path / "plugin_short_desc_cache.json").exists()
+
+    # 实例二：从盘上加载（模拟重启）
+    exec2 = object.__new__(DirectTaskExecutor)
+    exec2._config_manager = cfg
+    exec2._short_desc_cache_filename = "plugin_short_desc_cache.json"
+    exec2._short_desc_cache = exec2._load_short_desc_cache()
+    assert exec2._short_desc_cache == {"genplug": ("full desc", "generated short")}
+
+    # desc 未变 → 命中持久化缓存，零 LLM，不进 missing
+    plugins = [{"id": "genplug", "description": "full desc"}]
+    assert exec2._apply_cached_short_descriptions(plugins) == []
+    assert plugins[0]["short_description"] == "generated short"
+
+    # desc 变了 → key 校验失效，重新作为生成候选
+    changed = [{"id": "genplug", "description": "CHANGED desc"}]
+    missing = exec2._apply_cached_short_descriptions(changed)
+    assert "short_description" not in changed[0]
+    assert [p["id"] for p in missing] == ["genplug"]
+
+
+def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
+    """缺文件 / 损坏 JSON → 安全返回空缓存，不抛。"""
+    from types import SimpleNamespace
+    from brain.task_executor import DirectTaskExecutor
+
+    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
+    executor = object.__new__(DirectTaskExecutor)
+    executor._config_manager = cfg
+    executor._short_desc_cache_filename = "plugin_short_desc_cache.json"
+
+    # 文件不存在
+    assert executor._load_short_desc_cache() == {}
+
+    # 损坏的 JSON
+    (tmp_path / "plugin_short_desc_cache.json").write_text("{not json", encoding="utf-8")
+    assert executor._load_short_desc_cache() == {}
+
+
 @pytest.mark.asyncio
 async def test_task_executor_routes_galgame_continue_phrase_through_plugin_assessment():
     from unittest.mock import AsyncMock, patch

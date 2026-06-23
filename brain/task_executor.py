@@ -237,7 +237,15 @@ class DirectTaskExecutor:
         self._cached_llm_config_key: tuple = ()  # tracks (api_key, base_url, model) to detect config changes
         self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
         # plugin_id -> (full_description, generated_short_description)
-        self._short_desc_cache: dict[str, tuple[str, str]] = {}
+        # 只有 LLM 生成的条目会落盘（见 _persist_generated_short_descriptions）；
+        # manifest 自带 short_description 的插件每次加载都能免费重新 prime，无需持久化。
+        self._short_desc_cache_filename = "plugin_short_desc_cache.json"
+        self._short_desc_cache: dict[str, tuple[str, str]] = self._load_short_desc_cache()
+        # plugin ids currently being generated in a background prewarm task —
+        # dedupes the per-analyze force_refresh so we don't pile up duplicate
+        # generation tasks. The tasks set holds strong refs to prevent GC.
+        self._short_desc_prewarm_inflight: set[str] = set()
+        self._short_desc_prewarm_tasks: set = set()
         self._correction_memory_filename = "correction_memory.json"
         self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
         # 白名单 + alias 归一化，防止任意字符串被写进 correction_memory.json
@@ -285,30 +293,87 @@ class DirectTaskExecutor:
         """Allow agent_server to inject a custom async provider for plugin discovery."""
         self._external_plugin_provider = provider
 
-    async def _ensure_short_descriptions(self, plugins: List[Dict[str, Any]]) -> None:
-        """For plugins missing short_description, generate one via LLM (best-effort, cached)."""
-        to_generate: list[dict] = []
+    def _apply_cached_short_descriptions(self, plugins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply manifest-provided or previously-generated short_description
+        onto each plugin dict. Pure manifest/cache read — NEVER calls the LLM,
+        so it is safe on the analyze hot path.
+
+        Returns the plugins that are still missing a short_description (and have
+        a description to summarize) — i.e. the candidates for background prewarm.
+        """
+        missing: list[dict] = []
         for p in plugins:
             if not isinstance(p, dict):
                 continue
             pid = p.get("id", "")
             short = str(p.get("short_description", "") or "").strip()
             desc = str(p.get("description", "") or "").strip()
-            # Apply cached value if available and description hasn't changed
-            cached = self._short_desc_cache.get(pid)
-            if cached and cached[0] == desc and not short:
-                p["short_description"] = cached[1]
-                continue
-            if not short and desc:
-                to_generate.append(p)
-            elif pid and short:
+            if not short:
+                # Apply cached value if available and description hasn't changed.
+                cached = self._short_desc_cache.get(pid)
+                if cached and cached[0] == desc:
+                    p["short_description"] = cached[1]
+                    continue
+                if desc:
+                    missing.append(p)
+            elif pid:
+                # (a) manifest already carries short_description — use it as-is,
+                # zero LLM. Prime the cache so it survives a desc-unchanged refresh.
                 self._short_desc_cache[pid] = (desc, short)
+        return missing
 
-        if not to_generate:
+    def _schedule_short_desc_prewarm(self, plugins: List[Dict[str, Any]]) -> None:
+        """Apply cached/manifest short_descriptions onto ``plugins`` (hot-path
+        safe, zero LLM) and, for any plugin still missing one, schedule a
+        fire-and-forget background task to generate it at plugin-load time.
+
+        NEVER awaited on the analyze path: the current analyze safely falls back
+        to the full description for plugins whose short_description hasn't been
+        generated yet (see ``_stage1_llm_coarse_screen``). The generated value
+        lands in ``_short_desc_cache`` for subsequent analyze runs.
+
+        Deduped by plugin id via ``_short_desc_prewarm_inflight`` so the
+        per-analyze ``force_refresh`` doesn't pile up duplicate generation tasks.
+        """
+        missing = self._apply_cached_short_descriptions(plugins)
+        if not missing:
             return
-
-        logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
+        # Lazy-init for instances built via object.__new__ (test fixtures bypass __init__).
+        inflight = getattr(self, "_short_desc_prewarm_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._short_desc_prewarm_inflight = inflight
+        if getattr(self, "_short_desc_prewarm_tasks", None) is None:
+            self._short_desc_prewarm_tasks = set()
+        pending = [
+            p for p in missing
+            if str(p.get("id", "")).strip() and str(p.get("id", "")) not in inflight
+        ]
+        if not pending:
+            return
+        pids = {str(p.get("id", "")) for p in pending}
+        inflight |= pids
         try:
+            task = asyncio.create_task(self._prewarm_short_descriptions(pending, pids))
+        except RuntimeError:
+            # No running event loop (called from a sync context) — skip prewarm;
+            # analyze still falls back to the full description.
+            inflight -= pids
+            return
+        self._short_desc_prewarm_tasks.add(task)
+        task.add_done_callback(self._short_desc_prewarm_tasks.discard)
+
+    async def _prewarm_short_descriptions(
+        self, to_generate: List[Dict[str, Any]], pids: set[str],
+    ) -> None:
+        """Background LLM generation of short_description for plugins missing one
+        (best-effort, cached). Runs OFF the analyze hot path — scheduled by
+        ``_schedule_short_desc_prewarm`` at plugin-load time. Newly generated
+        entries are persisted to disk so subsequent app restarts reuse them
+        (keyed by description, so a manifest change still invalidates)."""
+        generated: dict[str, tuple[str, str]] = {}
+        try:
+            logger.info("[Agent] Generating short_description for %d plugin(s)", len(to_generate))
             llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_SHORTDESC_MAX_TOKENS)
             for p in to_generate:
                 pid = p.get("id", "unknown")
@@ -330,6 +395,8 @@ class DirectTaskExecutor:
                     if text and count_tokens(text) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                         p["short_description"] = text
                         self._short_desc_cache[pid] = (desc, text)
+                        if isinstance(pid, str) and pid:
+                            generated[pid] = (desc, text)
                         # LLM 生成原文不写 logger
                         logger.debug("[Agent] Generated short_description for %s (len=%d chars)", pid, len(text))
                         print(f"[Agent] short_description {pid}: {text[:80]}")
@@ -338,6 +405,10 @@ class DirectTaskExecutor:
                     logger.debug("[Agent] Failed to generate short_description for %s: %s", pid, e)
         except Exception as e:
             logger.warning("[Agent] short_description generation batch failed: %s", e)
+        finally:
+            self._short_desc_prewarm_inflight -= pids
+            # 把本批生成的（贵的）条目落盘，下次启动直接复用、不再现生成。
+            self._persist_generated_short_descriptions(generated)
 
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
         # return cached list when allowed
@@ -350,7 +421,10 @@ class DirectTaskExecutor:
                 plugins = await self._external_plugin_provider(force_refresh)
                 if isinstance(plugins, list):
                     self.plugin_list = plugins
-                    await self._ensure_short_descriptions(self.plugin_list)
+                    # Apply cached/manifest short_descriptions synchronously
+                    # (zero LLM) and prewarm any missing ones in the background —
+                    # never generate on the analyze hot path.
+                    self._schedule_short_desc_prewarm(self.plugin_list)
                     logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins via external provider")
                     return self.plugin_list
             except Exception as e:
@@ -373,7 +447,9 @@ class DirectTaskExecutor:
                     # only update cache when we obtained a non-empty list
                     if plugin_list:
                         self.plugin_list = plugin_list  # 更新实例变量
-                        await self._ensure_short_descriptions(self.plugin_list)
+                        # 同步应用缓存/manifest 的 short_description（零 LLM），
+                        # 缺失的放后台预热，绝不在 analyze 热路径上现生成。
+                        self._schedule_short_desc_prewarm(self.plugin_list)
             except Exception as e:
                 logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
         logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins: {[p.get('id', 'unknown') for p in self.plugin_list if isinstance(p, dict)]}")
@@ -740,6 +816,86 @@ class DirectTaskExecutor:
             os.chmod(path, 0o600)
         except OSError:
             pass
+
+    def _get_short_desc_cache_path(self) -> Path:
+        self._config_manager.ensure_config_directory()
+        return Path(self._config_manager.config_dir) / self._short_desc_cache_filename
+
+    def _load_short_desc_cache(self) -> dict[str, tuple[str, str]]:
+        """Load the on-disk short_description cache (LLM-generated entries only).
+
+        Returns ``{plugin_id: (description, short_description)}``. ``description``
+        is the validity key: at apply time we re-generate when the plugin's
+        current description no longer matches the stored one. Best-effort —
+        a missing or corrupt file just yields an empty cache.
+        """
+        try:
+            path = self._get_short_desc_cache_path()
+        except Exception as exc:
+            logger.debug("[Agent] short_desc cache path unavailable: %s", exc)
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.warning("[Agent] Failed to load short_desc cache %s: %s", path, exc)
+            return {}
+        entries = data.get("entries") if isinstance(data, dict) else None
+        if not isinstance(entries, dict):
+            return {}
+        cache: dict[str, tuple[str, str]] = {}
+        for pid, item in entries.items():
+            if not isinstance(pid, str) or not isinstance(item, dict):
+                continue
+            desc = item.get("desc")
+            short = item.get("short")
+            if isinstance(desc, str) and isinstance(short, str) and short:
+                cache[pid] = (desc, short)
+        return cache
+
+    def _persist_generated_short_descriptions(self, generated: dict[str, tuple[str, str]]) -> None:
+        """Merge newly LLM-generated entries into the on-disk cache (atomic write).
+
+        Only generated entries are persisted; manifest-provided short_descriptions
+        are re-derived for free on every load and would only bloat the file (a
+        plugin's raw ``description`` is uncapped). Best-effort — a write failure
+        just means the next session regenerates."""
+        if not generated:
+            return
+        try:
+            path = self._get_short_desc_cache_path()
+        except Exception as exc:
+            logger.debug("[Agent] short_desc cache path unavailable, skip persist: %s", exc)
+            return
+        # Re-read so concurrent prewarm batches don't clobber each other's entries.
+        on_disk = self._load_short_desc_cache()
+        on_disk.update(generated)
+        payload = {
+            "version": 1,
+            "entries": {pid: {"desc": d, "short": s} for pid, (d, s) in on_disk.items()},
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path.parent, 0o700)
+            except OSError:
+                pass
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            tmp_path.replace(path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except Exception as exc:
+            logger.warning("[Agent] Failed to persist short_desc cache %s: %s", path, exc)
 
     def _is_allowed_search_term(self, term: str) -> bool:
         if not term or term.isdigit():
