@@ -107,6 +107,11 @@ DRAWING_GUESS_DIRECT_HINT_TEMPLATES = {
 
 
 def get_drawing_guess_direct_hint_template(lang: str | None) -> str:
+    value = str(lang or "").strip().lower().replace("_", "-")
+    if value in {"zh-cn", "zh-hans", "schinese"}:
+        return DRAWING_GUESS_DIRECT_HINT_TEMPLATES["zh-CN"]
+    if value in {"zh-tw", "zh-hant", "zh-hk", "tchinese"}:
+        return DRAWING_GUESS_DIRECT_HINT_TEMPLATES["zh-TW"]
     return _localized_template(DRAWING_GUESS_DIRECT_HINT_TEMPLATES, lang)
 
 SOCCER_SYSTEM_PROMPT = """\

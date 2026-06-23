@@ -1472,7 +1472,6 @@ def _strip_repairable_svg_references(element: ET.Element) -> ET.Element | None:
         attr = _local_xml_name(raw_name)
         value = str(raw_value or "").strip()
         if attr.lower().startswith("on"):
-            cleaned.set(attr, value)
             continue
         if attr in {"href", "src"} or _svg_attr_has_external_reference(value):
             continue

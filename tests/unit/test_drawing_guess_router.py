@@ -308,6 +308,7 @@ def test_model_svg_sanitizer_rejects_unsafe_or_leaking_svg(raw_svg, expected_rea
     "raw_svg",
     (
         '<svg viewBox="0 0 240 180"><circle cx="80" cy="80" r="30" fill="url(https://example.test/a)" stroke="#24303a"/></svg>',
+        '<svg viewBox="0 0 240 180"><circle cx="80" cy="80" r="30" fill="url(https://example.test/a)" onclick="alert(1)" stroke="#24303a"/></svg>',
         '<svg viewBox="0 0 240 180"><image href="https://example.test/a.png" width="20" height="20"/><circle cx="80" cy="80" r="30" fill="#f4cf45"/></svg>',
         '<svg viewBox="0 0 240 180"><defs><linearGradient id="g"><stop offset="0%" stop-color="#fff"/></linearGradient></defs><circle cx="80" cy="80" r="30" fill="url(#g)" stroke="#24303a"/></svg>',
     ),
@@ -320,6 +321,8 @@ def test_model_svg_sanitizer_repairs_external_references(raw_svg):
     assert "url(" not in svg
     assert "href" not in svg.lower()
     assert "https:" not in svg.lower()
+    assert "onclick" not in svg.lower()
+    assert "alert" not in svg.lower()
     assert "<image" not in svg.lower()
     assert "<defs" not in svg.lower()
 
