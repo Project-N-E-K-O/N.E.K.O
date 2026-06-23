@@ -122,4 +122,4 @@ class InboundBodySizeLimitMiddleware:
                 ],
             }
         )
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
