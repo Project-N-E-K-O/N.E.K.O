@@ -135,6 +135,35 @@ test('VisualRuntime resolves timeline chat voice key and emotion through directo
     ]);
 });
 
+test('VisualRuntime keeps explicit event emotion ahead of legacy scene emotion', async () => {
+    const calls = [];
+    const director = {
+        resolveAvatarFloatingSceneEmotion(scene) {
+            calls.push(['emotion:resolve', scene.id]);
+            return scene.emotion || '';
+        },
+        applyGuideEmotion(emotion) {
+            calls.push(['emotion', emotion]);
+        }
+    };
+    const runtime = createTutorialVisualRuntime(director);
+
+    runtime.handleEmotionSet(
+        { command: 'emotion.set', emotion: 'surprised' },
+        {
+            director,
+            legacyScene: {
+                id: 'timeline-override',
+                emotion: 'happy'
+            }
+        }
+    );
+
+    assert.deepEqual(calls, [
+        ['emotion', 'surprised']
+    ]);
+});
+
 test('VisualRuntime resolves day4 model lock timeline commands through scene target resolver', async () => {
     const calls = [];
     const lockTarget = { id: 'vrm-lock-icon' };

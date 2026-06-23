@@ -432,8 +432,13 @@
     }
 
     function getAvatarFloatingGuideActiveRound() {
-        const round = Number(window.__avatarFloatingGuideCurrentRound || 0);
-        return Number.isFinite(round) && round > 0 ? Math.floor(round) : 0;
+        const memoryRound = Number(window.__avatarFloatingGuideCurrentRound || 0);
+        if (Number.isFinite(memoryRound) && memoryRound > 0) {
+            return Math.floor(memoryRound);
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        const persistedRound = Number(state && state.currentRound);
+        return Number.isFinite(persistedRound) && persistedRound > 0 ? Math.floor(persistedRound) : 0;
     }
 
     function recordAvatarFloatingGuideRoundStart(round) {
@@ -482,14 +487,23 @@
             return false;
         }
         const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);
-        const roundStartKey = Math.floor(normalizedRound) === 1
-            ? 'day1StartedAt'
-            : 'day' + Math.floor(normalizedRound) + 'StartedAt';
+        const day = Math.floor(normalizedRound);
+        const roundStartKey = 'day' + day + 'StartedAt';
         const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);
-        if (!voiceUsedAt || !roundStartedAt) {
+        if (!voiceUsedAt) {
             return false;
         }
-        return voiceUsedAt >= roundStartedAt;
+        if (roundStartedAt) {
+            return voiceUsedAt >= roundStartedAt;
+        }
+
+        const voiceUsedRound = Number(state.voiceUsedRound);
+        if (Number.isFinite(voiceUsedRound) && Math.floor(voiceUsedRound) === day) {
+            return true;
+        }
+
+        const nextRoundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + (day + 1) + 'StartedAt']);
+        return !!(day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt);
     }
 
     if (!window.__avatarFloatingGuideUsageListenersInstalled) {

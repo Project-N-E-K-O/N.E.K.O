@@ -40,6 +40,12 @@
 
     function resolveSceneEmotion(director, legacyScene, fallbackEmotion) {
         if (director && typeof director.resolveAvatarFloatingSceneEmotion === 'function') {
+            const legacyEmotion = legacyScene && typeof legacyScene.emotion === 'string'
+                ? legacyScene.emotion
+                : '';
+            if (fallbackEmotion && fallbackEmotion !== legacyEmotion) {
+                return fallbackEmotion;
+            }
             return director.resolveAvatarFloatingSceneEmotion(legacyScene) || fallbackEmotion || '';
         }
         return fallbackEmotion || '';

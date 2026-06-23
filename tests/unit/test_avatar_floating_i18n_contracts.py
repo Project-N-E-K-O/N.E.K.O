@@ -137,7 +137,7 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
         assert audio_file in day2_source
     assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
     assert "hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)" in director_source
-    assert "day1StartedAt" in director_source
+    assert "'day' + day + 'StartedAt'" in director_source
     assert "voiceUsedAt" in director_source
     assert "avatar_floating_day2_intro_voice_used" in director_source
     assert voice_used_key in director_source
@@ -169,8 +169,16 @@ def test_day2_voice_used_intro_ignores_voice_usage_before_day1_start():
     )[0]
 
     assert "const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);" in usage_block
+    assert "const persistedRound = Number(state && state.currentRound);" in director_source
+    assert "return Number.isFinite(persistedRound) && persistedRound > 0 ? Math.floor(persistedRound) : 0;" in director_source
+    assert "const roundStartKey = 'day' + day + 'StartedAt';" in usage_block
     assert "const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);" in usage_block
+    assert "if (roundStartedAt) {" in usage_block
     assert "return voiceUsedAt >= roundStartedAt;" in usage_block
+    assert "const voiceUsedRound = Number(state.voiceUsedRound);" in usage_block
+    assert "Math.floor(voiceUsedRound) === day" in usage_block
+    assert "const nextRoundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + (day + 1) + 'StartedAt']);" in usage_block
+    assert "day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt" in usage_block
     assert "const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);" in scene_text_block
     assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in scene_text_block
     assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in voice_key_block
