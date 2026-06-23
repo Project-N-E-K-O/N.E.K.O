@@ -8210,13 +8210,22 @@ describe('App', () => {
     onAvatarToolStateChange.mockClear();
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+      clientX: 240,
+      clientY: 320,
+      screenX: 640,
+      screenY: 420,
+    });
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: true,
       toolId: 'hammer',
       variant: 'primary',
       imageKind: 'cursor',
+      cursorClientX: 240,
+      cursorClientY: 320,
+      cursorScreenX: 640,
+      cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
