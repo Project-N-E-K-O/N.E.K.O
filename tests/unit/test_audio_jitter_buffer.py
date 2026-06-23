@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared TTS jitter buffer semantics (qwen / step / 其它流式 worker 共用)."""
+"""Shared TTS jitter buffer semantics (qwen / step / other streaming workers)."""
 
 from main_logic.tts_client._infra import (
     AudioJitterBuffer,
@@ -59,6 +59,29 @@ def test_flush_drains_remainder_below_threshold():
     buf.append(b"z")  # 尾音不足 steady
     buf.flush()  # response.done 时强制放出
     assert q.items == [b"aaaa", b"z"]
+
+
+def test_flush_during_head_start_marks_started():
+    # 短句不足 initial：靠终结 flush 首次放行后，stray delta 应走 steady 而非
+    # 重新 head-start（否则会被下一轮 reset 静默丢弃）。
+    q = _FakeQueue()
+    buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=2)
+    buf.append(b"ab")  # 不足 initial，缓冲
+    assert q.items == []
+    buf.flush()  # response.done：放行短句
+    assert q.items == [b"ab"]
+    assert buf.started is True
+    # 晚到的 stray delta 直接走 steady（凑够 2 字节即放行），不再被 hold 400ms
+    buf.append(b"cd")
+    assert q.items == [b"ab", b"cd"]
+
+
+def test_flush_on_empty_buffer_does_not_mark_started():
+    # 空 flush 没放行任何音频，不应改变 head-start 状态。
+    q = _FakeQueue()
+    buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=2)
+    buf.flush()
+    assert buf.started is False
 
 
 def test_reset_discards_unsent_buffer_and_restarts_head_start():

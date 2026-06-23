@@ -374,8 +374,6 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     session_created = False
                     pending_text_buffer = ""
                     response_done.clear()
-                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
-                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
                     if ws:
                         try:
                             await ws.close()
@@ -387,7 +385,11 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await receive_task
                         except asyncio.CancelledError:
                             pass
-                    
+                    # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
+                    # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
+                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
+                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+
                     # 建立新连接
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)

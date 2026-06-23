@@ -85,7 +85,10 @@ class AudioJitterBuffer:
     after the first chunk (model first-frame latency). Holding back an initial
     head-start of ``initial_buffer_bytes`` before releasing the first batch gives
     the player a lead it can ride over that opening gap; steady state then flushes
-    whenever ``steady_buffer_bytes`` has accumulated. Either set to 0 falls back to
+    whenever ``steady_buffer_bytes`` has accumulated. The two knobs are independent:
+    ``initial_buffer_bytes=0`` releases the first chunk immediately (no head-start)
+    yet still coalesces later chunks by ``steady_buffer_bytes``; ``steady_buffer_bytes=0``
+    keeps the head-start but then passes each chunk straight through; both 0 is full
     low-latency pass-through.
 
     Provider-agnostic: a worker appends resampled PCM bytes and drives reset() on a
@@ -110,8 +113,7 @@ class AudioJitterBuffer:
         if not self.started:
             if len(self.buffer) < self._initial_buffer_bytes:
                 return
-            self._flush()
-            self.started = True
+            self._flush()  # 越过 head-start，放行并标记 started
             return
         if len(self.buffer) >= self._steady_buffer_bytes:
             self._flush()
@@ -124,6 +126,9 @@ class AudioJitterBuffer:
             return
         self._response_queue.put(bytes(self.buffer))
         self.buffer.clear()
+        # 放行即视为本轮已开播：短句不足 initial 阈值靠终结 flush 首次放行时，
+        # 后续若有上游晚到的 stray delta 走 steady 而非重新 head-start 再被 reset 丢弃。
+        self.started = True
 
 def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
                              steady_ms_default: float = 200,
