@@ -136,7 +136,9 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
     ):
         assert audio_file in day2_source
     assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
-    assert "hasAvatarFloatingGuideUsage('voiceUsed')" in director_source
+    assert "hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)" in director_source
+    assert "day1StartedAt" in director_source
+    assert "voiceUsedAt" in director_source
     assert "avatar_floating_day2_intro_voice_used" in director_source
     assert voice_used_key in director_source
     assert voice_used_line not in director_source
@@ -145,3 +147,31 @@ def test_day2_voice_used_intro_uses_matching_audio_key():
     assert _get(_locale("es"), voice_used_key) != voice_used_copy["en"]
     assert _get(_locale("pt"), voice_used_key) != voice_used_copy["en"]
     assert "return 'avatar_floating_day2_intro_voice_used';" in director_source
+
+
+def test_day2_voice_used_intro_ignores_voice_usage_before_day1_start():
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    usage_block = director_source.split("function hasAvatarFloatingGuideVoiceUsedAfterRoundStart", 1)[1].split(
+        "if (!window.__avatarFloatingGuideUsageListenersInstalled)",
+        1,
+    )[0]
+    scene_text_block = director_source.split("resolveAvatarFloatingSceneText(scene) {", 1)[1].split(
+        "resolveAvatarFloatingSceneVoiceKey(scene) {",
+        1,
+    )[0]
+    voice_key_block = director_source.split("resolveAvatarFloatingSceneVoiceKey(scene) {", 1)[1].split(
+        "resolveAvatarFloatingSceneEmotion(scene) {",
+        1,
+    )[0]
+    emotion_block = director_source.split("resolveAvatarFloatingSceneEmotion(scene) {", 1)[1].split(
+        "getAvatarFloatingSceneButtons(scene) {",
+        1,
+    )[0]
+
+    assert "const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);" in usage_block
+    assert "const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);" in usage_block
+    assert "return voiceUsedAt >= roundStartedAt;" in usage_block
+    assert "const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);" in scene_text_block
+    assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in scene_text_block
+    assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in voice_key_block
+    assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in emotion_block

@@ -31,6 +31,20 @@
         return scene.audio || {};
     }
 
+    function resolveSceneVoiceKey(director, legacyScene, fallbackVoiceKey) {
+        if (director && typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+            return director.resolveAvatarFloatingSceneVoiceKey(legacyScene) || fallbackVoiceKey || '';
+        }
+        return fallbackVoiceKey || '';
+    }
+
+    function resolveSceneEmotion(director, legacyScene, fallbackEmotion) {
+        if (director && typeof director.resolveAvatarFloatingSceneEmotion === 'function') {
+            return director.resolveAvatarFloatingSceneEmotion(legacyScene) || fallbackEmotion || '';
+        }
+        return fallbackEmotion || '';
+    }
+
     function safeCall(target, methodName, fallbackValue, ...args) {
         if (!target || typeof target[methodName] !== 'function') {
             return fallbackValue;
@@ -128,7 +142,11 @@
             }
             director.appendGuideChatMessage(text, {
                 textKey: eventTextKey || sceneTextKey,
-                voiceKey: event.voiceKey || (getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''),
+                voiceKey: resolveSceneVoiceKey(
+                    director,
+                    legacyScene,
+                    event.voiceKey || getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''
+                ),
                 buttons: Array.isArray(event.buttons) ? event.buttons : []
             });
             return true;
@@ -137,7 +155,7 @@
         handleEmotionSet(event, context) {
             const director = getDirector(context) || this.director;
             const legacyScene = getLegacyScene(context);
-            const emotion = event.emotion || legacyScene.emotion || '';
+            const emotion = resolveSceneEmotion(director, legacyScene, event.emotion || legacyScene.emotion || '');
             if (!emotion || !director || typeof director.applyGuideEmotion !== 'function') {
                 return false;
             }
