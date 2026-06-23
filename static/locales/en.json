@@ -3341,7 +3341,7 @@
                 "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
                 "takeoverPluginPreviewHome": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "takeoverPluginPreviewDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "takeoverPluginPreviewDashboard":  "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
                 "pluginDashboardPopupBlocked": "Your browser needs you to click here yourself to open the plugin panel. Click \"Management Panel\" and I'll keep showing you around.",
                 "takeoverSettingsPeekIntro": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
                 "takeoverSettingsPeekDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it. This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
@@ -3351,7 +3351,7 @@
                 "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
                 "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
                 "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
-                "introGreetingReply": "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
+                "introGreetingReply":  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
                 "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
                 "introActivationHint": "Hang on a moment, I'll start talking soon, nyan~!"
             }
@@ -3359,7 +3359,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "Move your mouse right here, hold it down, and you can drag my chat box anywhere you want~ Click it once and you can send me messages anytime!",
-                "historyHandle": "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
+                "historyHandle":  "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
                 "screenEntry": "When we're on a voice call, light up this little button, and you can share your screen with me!",
                 "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
             },
@@ -3376,16 +3376,16 @@
             "day3": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
                 "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
-                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
-                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro":  "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
                 "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
             },
             "day4": {
-                "intro": "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
+                "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
                 "chatSettings": "Here you can decide how long my replies are, whether I should use cute emojis, or even interrupt me when I'm being too chatty! You can tune it to whatever rhythm feels best for you.",
-                "modelBehavior": "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
+                "modelBehavior":  "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
                 "gazeFollow": "After turning this on, no matter where your mouse moves, my eyes will closely follow you! Hehe, doesn't it feel wonderful to be watched all the time?",
                 "privacyMode": "This is the 'Ultimate Privacy Switch' that controls whether I can look at your screen, meow! If you turn it off, I can see your screen, but if you turn it on, the [Screen Share] from before will be disabled and I won't peek at all~",
                 "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~",
@@ -3393,23 +3393,23 @@
                 "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
             },
             "day5": {
-                "characterSettings": "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
+                "characterSettings":  "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
                 "characterPanic": "Huh? Wait, there's actually an option to replace me here?! Hold on a second! Your hands right now... you're not trying to get rid of me, are you?! Ahhh, no way! Close it, close it right now!",
                 "memoryEntry": "If you accidentally forget what I can do for you, just come here anytime and let me teach you again! All the little moments we've shared are quietly saved right here. Don't you dare underestimate our bond, you dummy!",
-                "wrap": "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
+                "wrap":  "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
             },
             "day6": {
                 "intro": "Ta-daaaa! Today I've got to fire myself up and talk to you all about our [Cat Paw]! Although I mentioned it briefly a couple of days ago, it has so many awesome features hidden inside!",
                 "statusMaster": "Come on, confess! Did you click it and give it a try over the last two days?",
                 "pluginSidePanel": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "pluginDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "pluginDashboard":  "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
                 "taskHud": "Look here, look here! When I decide to use the [Cat Paw] to work for you, my progress will show up right here, purr-purr!",
                 "taskHudControl": "If your plans change, you can poke it anytime to make me stop. Hehe, today is another energetic day of working hard to earn tasty fish treats! Let's go!",
                 "wrapCleanup": "Phew... let's pack up these cluttered menus so they won't get in your way.",
                 "wrap": "You can comfortably carry on with your own tasks. Whether you need my little paws to help you out, or just want me to keep you company quietly, I'll always be right here watching over you. Have a super happy day today!"
             },
             "day7": {
-                "memoryReview": "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
+                "memoryReview":  "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
                 "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
                 "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
             }
