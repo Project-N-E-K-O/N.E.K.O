@@ -40,6 +40,7 @@ hook a future memory consumer pulls from.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -129,11 +130,17 @@ def _action_intent_from(value) -> Optional[float]:
 
 
 def _normalize_for_match(text: Optional[str]) -> str:
-    """Collapse whitespace and cap length, to match a cached reading to the turn
-    it was produced from. Two different user messages rarely normalize to the
-    same string, so an equality test is a sound "same turn" check; any mismatch
-    makes the gate fail open (run the assessment), never a wrong brake."""
-    return " ".join((text or "").split())[:280]
+    """A stable fingerprint of the analyzed text, to match a cached reading to
+    the turn it came from. Whitespace is collapsed and the FULL text is hashed
+    (not a prefix) so two long messages that merely share a prefix never collide
+    into a false "same turn" match — which would let a stale reading brake a
+    different turn. Any real difference → different fingerprint → mismatch → the
+    gate fails open (run the assessment), never a wrong brake. ``""`` for empty
+    input (never matches a real reading)."""
+    norm = " ".join((text or "").split())
+    if not norm:
+        return ""
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
 
 # Per-lanlan registry of live trackers, so an out-of-band caller — the

@@ -436,9 +436,9 @@ class OpenClawAdapter:
     def rule_magic_command(user_text: str) -> Optional[str]:
         """Public zero-LLM magic-command detector: the command a rule match would
         dispatch, or None. Wraps the rule classifier so callers that need a
-        no-LLM magic-word check (e.g. the analyzer pre-gate) don't reach into the
-        private helper or pay the LLM path. Covers exact magic words AND the
-        natural-language phrase list ("取消这个任务" → /stop, "换个话题" → /new, …)."""
+        no-LLM magic-word check (e.g. the analyzer pre-gate) need not reach into
+        the private helper or pay the LLM path. Covers both exact magic words and
+        the natural-language phrase list (cancel-task, change-topic, approve, …)."""
         result = OpenClawAdapter._classify_magic_intent_with_rules(user_text)
         if isinstance(result, dict) and result.get("is_magic_intent"):
             return result.get("command")

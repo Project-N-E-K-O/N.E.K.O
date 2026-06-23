@@ -502,3 +502,22 @@ def test_gate_signal_for_registry(monkeypatch):
     assert gate_signal_for("regtest", "运行一下") == 0.9
     monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
     assert gate_signal_for("regtest", "运行一下") is None
+
+
+def test_gate_signal_long_text_no_prefix_collision(monkeypatch):
+    # A prefix-truncated match key would treat two long messages that share a
+    # long prefix (but differ at the end) as the SAME turn — letting a stale
+    # low-action reading brake a real action request in the latter half. The
+    # full-text fingerprint must reject that → fail open (None).
+    from main_logic.activity.master_emotion import gate_signal_for
+
+    long_prefix = "这是一段很长的对话内容反复出现并且超过二百八十个字符的前缀" * 20  # > 280 chars
+    fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.05}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("longtest")
+    asyncio.run(t.analyze(long_prefix + "前半段只是闲聊", now=100.0))
+    # Same long prefix, different tail = a different turn → must NOT reuse the
+    # prior low-action reading (which would wrongly brake the real request).
+    assert gate_signal_for("longtest", long_prefix + "后半段请帮我打开浏览器并搜索") is None
+    # The exact same text still matches (sanity check).
+    assert gate_signal_for("longtest", long_prefix + "前半段只是闲聊") == 0.05
