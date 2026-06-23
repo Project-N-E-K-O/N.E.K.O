@@ -2011,10 +2011,10 @@
         </div>
         <div id="message-log" class="dg-log" aria-live="polite"></div>
         <form id="chat-form" class="dg-input-row">
-          <button id="voice-route-button" class="dg-voice-button" type="button" disabled aria-pressed="false" data-i18n-title="drawingGuess.voice.connectHint" title="Open voice on the main page to let this round take it over.">
+          <button id="voice-route-button" class="dg-voice-button" type="button" disabled aria-pressed="false" aria-label="Voice chat" data-i18n-aria="drawingGuess.voice.buttonLabel" data-i18n-title="drawingGuess.voice.connectHint" title="Open voice on the main page to let this round take it over.">
             <img id="voice-route-icon" src="/static/icons/mic_icon_off.png" alt="" aria-hidden="true">
           </button>
-          <input id="chat-input" type="text" autocomplete="off" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
+          <input id="chat-input" type="text" autocomplete="off" aria-label="Chat input" data-i18n-aria="drawingGuess.input.ariaLabel" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
           <button class="dg-button" type="submit" disabled data-i18n="drawingGuess.actions.send">发送</button>
         </form>
       </section>
@@ -2383,11 +2383,11 @@
       }
     })();
   </script>
-  <script src="/static/libs/live2dcubismcore.min.js"></script>
-  <script src="/static/libs/live2d.min.js"></script>
-  <script src="/static/libs/pixi.min.js"></script>
-  <script src="/static/libs/index.min.js"></script>
-  <script src="/static/libs/ogg-opus-decoder.min.js"></script>
+  <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
+  <script src="/static/libs/live2d.min.js?v={{ static_asset_version }}"></script>
+  <script src="/static/libs/pixi.min.js?v={{ static_asset_version }}"></script>
+  <script src="/static/libs/index.min.js?v={{ static_asset_version }}"></script>
+  <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
   <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
   <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
   <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>

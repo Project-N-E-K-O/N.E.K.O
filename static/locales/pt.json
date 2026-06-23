@@ -4452,118 +4452,118 @@
 		"lines": {
 			"default": {
 				"shot_missed": [
-					"Pr?xima troca, com calma.",
-					"Reajusta e golpeia limpo."
+					"Next rally, stay steady.",
+					"Reset and swing clean."
 				],
 				"game_over": [
-					"Esta rodada termina aqui.",
-					"Vamos mais uma?"
+					"This round ends here.",
+					"Want another one?"
 				],
 				"long_aim": [
-					"Bate antes de cair.",
-					"Pensar demais te trava."
+					"Swing before it drops.",
+					"Think too long and you freeze."
 				],
 				"close_to_record": [
-					"O recorde est? perto.",
-					"Mais um golpe firme chega l?."
+					"The record is close.",
+					"One steadier shot gets there."
 				],
 				"new_record": [
-					"Certo, novo recorde.",
-					"Esse golpe foi limpo."
+					"Fine, new record.",
+					"That one was clean."
 				],
 				"streak_5": [
-					"Cinco trocas ligadas.",
-					"Seu ritmo est? aquecendo."
+					"Five rallies linked.",
+					"Your rhythm is warming up."
 				],
 				"streak_10": [
-					"Dez seguidas, nada mal.",
-					"Ainda n?o se ache."
+					"Ten straight, not bad.",
+					"Do not get proud yet."
 				],
 				"streak_15": [
-					"Quinze e ainda vai.",
-					"Agora estou olhando s?rio."
+					"Fifteen and still going.",
+					"Now I am watching closely."
 				],
 				"streak_20": [
-					"Vinte ? tempo demais.",
-					"Essa troca ainda continua?"
+					"Twenty is too long.",
+					"Is this rally still going?"
 				],
 				"line_in": [
-					"Na linha, preciso.",
-					"A coloca??o foi boa."
+					"On the line, accurate.",
+					"That placement was good."
 				],
 				"net_touch": [
-					"Passou raspando na rede.",
-					"?ngulo arriscado, mas vale."
+					"It slipped over the net.",
+					"Risky angle, but fine."
 				],
 				"zone_in": [
-					"Bem na zona.",
-					"Voc? escolheu bem o ponto."
+					"Right in the zone.",
+					"You picked that spot well."
 				],
 				"out": [
-					"Um pouco longa.",
-					"Esse swing passou demais."
+					"Just a little long.",
+					"That swing carried too far."
 				],
 				"net": [
-					"A rede pegou.",
-					"Levanta a face da raquete."
+					"The net caught it.",
+					"Lift the racket face."
 				]
 			},
 			"shooter": {
 				"shot_missed": [
-					"Reajusta o controle.",
-					"Firme. Eu acompanho."
+					"Reset your control.",
+					"Stay steady. I can follow."
 				],
 				"game_over": [
-					"Esse controle ainda falta.",
-					"N?o me fa?a correr ? toa."
+					"Your control still needs work.",
+					"Do not make me run for nothing."
 				],
 				"long_aim": [
-					"R?pido, minha m?o est? dura.",
-					"Ainda escolhendo o ?ngulo?"
+					"Hurry up, my hand is stiff.",
+					"Still choosing the angle?"
 				],
 				"close_to_record": [
-					"O recorde est? perto.",
-					"N?o treme neste golpe."
+					"The record is close.",
+					"Do not shake on this shot."
 				],
 				"new_record": [
-					"Certo, novo recorde.",
-					"A coopera??o foi decente."
+					"Fine, new record.",
+					"That cooperation was decent."
 				],
 				"streak_5": [
-					"Cinco seguidas. N?o flutua.",
-					"Esse ritmo est? est?vel."
+					"Five in a row. Do not float.",
+					"This rhythm is stable."
 				],
 				"streak_10": [
-					"Dez seguidas? N?o se gabe.",
-					"Sua m?o est? bem firme."
+					"Ten straight? Do not brag.",
+					"Your hand is pretty steady."
 				],
 				"streak_15": [
-					"Quinze? N?o se empolga.",
-					"Voc? segurou bem essa."
+					"Fifteen? Do not get smug.",
+					"You really held this one."
 				],
 				"streak_20": [
-					"Vinte? Ainda continua?",
-					"Esta rodada ficou selvagem."
+					"Twenty? Still going?",
+					"This round is getting wild."
 				],
 				"line_in": [
-					"Certo, foi preciso.",
-					"A face da raquete foi controlada."
+					"Fine, that was accurate.",
+					"Racket face was controlled."
 				],
 				"net_touch": [
-					"Voc? raspou por cima.",
-					"O ?ngulo arriscado funcionou."
+					"You brushed it over.",
+					"The risky angle worked."
 				],
 				"zone_in": [
-					"N?o sorri. Teve sorte.",
-					"Voc? escolheu bem a queda."
+					"Do not grin. Lucky spot.",
+					"You picked that landing well."
 				],
 				"out": [
-					"Um pouco menos de for?a.",
-					"Voc? apressou essa."
+					"A little less force.",
+					"You rushed that one."
 				],
 				"net": [
-					"Para onde est? me levando?",
-					"Levanta a face da raquete."
+					"Where are you steering me?",
+					"Lift the racket face."
 				]
 			},
 			"duel": {
@@ -4900,7 +4900,8 @@
 			"connectHint": "Ative a voz na página principal para esta rodada assumir.",
 			"connectedNotice": "A voz da página principal está conectada a esta rodada.",
 			"connectHintNotice": "Ative primeiro a voz na página principal; esta rodada assumirá quando ela estiver ativa.",
-			"routeNotReady": "Aguarde a rota do jogo ficar pronta antes de usar voz."
+			"routeNotReady": "Aguarde a rota do jogo ficar pronta antes de usar voz.",
+			"buttonLabel": "Chat de voz"
 		},
 		"exitConfirm": {
 			"title": "Sair desta página?",
@@ -4973,7 +4974,8 @@
 			"guessPlaceholder": "Digite seu palpite ou peça uma dica",
 			"drawingPlaceholder": "Você pode conversar enquanto desenha",
 			"hintPlaceholder": "Continue conversando; dê uma dica quando quiser outra tentativa",
-			"summaryPlaceholder": "Converse sobre esta rodada ou comece outra"
+			"summaryPlaceholder": "Converse sobre esta rodada ou comece outra",
+			"ariaLabel": "Entrada do chat"
 		},
 		"timer": {
 			"seconds": "{{seconds}}s"
@@ -5043,7 +5045,7 @@
 			"summary": "Pontos: {{score}} | Cestas: {{made}} | Sequência atual: {{streak}} | Melhor sequência: {{best}} | Maior distância: {{record}} | Distância: {{distance}}",
 			"attemptsSummary": "Resumo dos arremessos: {{summary}}",
 			"personalBest": "Recorde pessoal: {{score}} pts",
-			"globalRank": "Ranking global: #{{rank}}{{total}}",
+			"globalRank": "Ranking global: #{{rank}} / {{total}}",
 			"outcome": {
 				"youWin": "Você venceu",
 				"nekoWin": "Neko venceu",

@@ -2952,6 +2952,8 @@ async def handle_external_drawing_guess_transcript(
     *,
     route_state: dict[str, Any] | None = None,
     request_id: str | None = None,
+    source: str = "external_voice_route",
+    kind: str = "user-voice",
 ) -> dict[str, Any]:
     state = route_state if isinstance(route_state, dict) else {}
     last_state = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
@@ -2959,7 +2961,8 @@ async def handle_external_drawing_guess_transcript(
         "lanlan_name": lanlan_name,
         "session_id": session_id,
         "text": text,
-        "source": "external_voice_route",
+        "source": source or "external_voice_route",
+        "input_kind": kind or "user-voice",
         "request_id": request_id or "",
         "i18n_language": state.get("i18n_language") or last_state.get("i18n_language") or "",
         "memory_consent": state.get("memory_consent") or last_state.get("memory_consent") or "none",

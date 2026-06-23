@@ -4900,7 +4900,8 @@
 			"connectHint": "先在主页面开启语音，这一局会自动接管。",
 			"connectedNotice": "主页面语音已接入这一局。",
 			"connectHintNotice": "请先在主页面开启语音；开启后这一局会自动接管。",
-			"routeNotReady": "先等游戏路由准备好，再使用语音。"
+			"routeNotReady": "先等游戏路由准备好，再使用语音。",
+			"buttonLabel": "语音聊天"
 		},
 		"exitConfirm": {
 			"title": "要离开吗？",
@@ -4973,7 +4974,8 @@
 			"guessPlaceholder": "输入你的猜测，或者要一个提示",
 			"drawingPlaceholder": "画画时也可以聊天",
 			"hintPlaceholder": "先继续聊天；想让她再猜时再给提示",
-			"summaryPlaceholder": "可以聊聊这一局，或者开始下一轮"
+			"summaryPlaceholder": "可以聊聊这一局，或者开始下一轮",
+			"ariaLabel": "聊天输入框"
 		},
 		"timer": {
 			"seconds": "{{seconds}} 秒"
@@ -5043,7 +5045,7 @@
 			"summary": "总分：{{score}} | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 最远：{{record}} | 本球距离：{{distance}}",
 			"attemptsSummary": "投篮摘要：{{summary}}",
 			"personalBest": "个人最佳：{{score}}分",
-			"globalRank": "全球排名：#{{rank}}{{total}}",
+			"globalRank": "全球排名：#{{rank}} / {{total}}",
 			"outcome": {
 				"youWin": "你赢了",
 				"nekoWin": "Neko赢了",

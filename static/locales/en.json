@@ -4900,7 +4900,8 @@
 			"connectHint": "Open voice on the main page to let this round take it over.",
 			"connectedNotice": "Main-page voice is connected to this round.",
 			"connectHintNotice": "Open voice on the main page first; this round will take it over when it becomes active.",
-			"routeNotReady": "Wait until the game route is ready before using voice."
+			"routeNotReady": "Wait until the game route is ready before using voice.",
+			"buttonLabel": "Voice chat"
 		},
 		"exitConfirm": {
 			"title": "Leave this page?",
@@ -4973,7 +4974,8 @@
 			"guessPlaceholder": "Type your guess or ask for a hint",
 			"drawingPlaceholder": "You can chat while drawing",
 			"hintPlaceholder": "Keep chatting; give a hint when you want her to guess again",
-			"summaryPlaceholder": "Chat about this round, or start another one"
+			"summaryPlaceholder": "Chat about this round, or start another one",
+			"ariaLabel": "Chat input"
 		},
 		"timer": {
 			"seconds": "{{seconds}}s"
@@ -5043,7 +5045,7 @@
 			"summary": "Score: {{score}} | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Farthest: {{record}} | Shot distance: {{distance}}",
 			"attemptsSummary": "Shot summary: {{summary}}",
 			"personalBest": "Personal best: {{score}} pts",
-			"globalRank": "Global rank: #{{rank}}{{total}}",
+			"globalRank": "Global rank: #{{rank}} / {{total}}",
 			"outcome": {
 				"youWin": "You win",
 				"nekoWin": "Neko wins",

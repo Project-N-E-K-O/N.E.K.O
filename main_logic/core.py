@@ -9915,20 +9915,19 @@ class LLMSessionManager:
             # 打断时前端按 turn sid 匹配不到 → barge-in 取消不掉 filler。
             if isinstance(effective_speech_id, str) and effective_speech_id.endswith(_RECALL_FILLER_SID_SUFFIX):
                 effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
+            delivered = False
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": effective_speech_id
                 })
                 await self.websocket.send_bytes(tts_audio)
-                logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
-                self._speech_output_total += 1
-                self._last_speech_output_time = time.time()
-                self._last_speech_output_bytes = len(tts_audio)
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
-                return True
+                delivered = True
             if await self._publish_speech_taps(tts_audio, effective_speech_id):
-                logger.debug(f"🔊 send_speech tap OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
+                delivered = True
+            if delivered:
+                logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
                 self._speech_output_total += 1
                 self._last_speech_output_time = time.time()
                 self._last_speech_output_bytes = len(tts_audio)

@@ -438,7 +438,6 @@ def _active_game_speech_subscriber_key(lanlan_name: str) -> tuple[str, str, str]
 
 
 async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: WebSocket) -> None:
-    has_same_lanlan_subscribers = False
     async with _game_speech_subscribers_lock:
         subscribers = _game_speech_subscribers.get(key)
         if subscribers is not None:
@@ -450,11 +449,11 @@ async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: Web
             sub_key[0] == target_lanlan and bool(subscribers_for_key)
             for sub_key, subscribers_for_key in _game_speech_subscribers.items()
         )
-    if not has_same_lanlan_subscribers:
-        mgr = get_session_manager().get(key[0])
-        remove_tap = getattr(mgr, "remove_speech_tap", None) if mgr else None
-        if callable(remove_tap):
-            remove_tap(_GAME_SPEECH_TAP_KEY)
+        if not has_same_lanlan_subscribers:
+            mgr = get_session_manager().get(key[0])
+            remove_tap = getattr(mgr, "remove_speech_tap", None) if mgr else None
+            if callable(remove_tap):
+                remove_tap(_GAME_SPEECH_TAP_KEY)
 
 
 async def _broadcast_game_speech(lanlan_name: str, audio: bytes, speech_id: str | None) -> bool:
@@ -2139,6 +2138,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
             info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
+            info.setdefault("character_profile_prompt", "")
             return info
         raise
     characters = config_manager.load_characters()
@@ -8065,6 +8065,8 @@ async def _route_external_transcript_to_game(
                 text,
                 route_state=state,
                 request_id=request_id,
+                source=source,
+                kind=kind,
             )
         except Exception as exc:
             logger.warning("drawing_guess external transcript handling failed: %s", exc)

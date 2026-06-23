@@ -1461,7 +1461,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] in sr.MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert payload['game_type'] == 'soccer'
 
 
 @pytest.mark.asyncio
@@ -1497,6 +1497,7 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     """Successful invite delivery pushes mini_game_invite_options to the client."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('drawing_guess',))
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
     mgr.websocket.send_json = AsyncMock()
@@ -1515,7 +1516,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in sr.MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert payload['game_type'] == 'drawing_guess'
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']

@@ -1669,8 +1669,12 @@ async def test_external_voice_canvas_context_only_used_in_visible_canvas_phases(
             "last_state": {"phase": "word_picking", "i18n_language": "en"},
             "last_canvas_image_data_url": "data:image/png;base64,abc",
         },
+        source="external_text_route",
+        kind="user-text",
     )
     assert "image_data_url" not in captured[-1]
+    assert captured[-1]["source"] == "external_text_route"
+    assert captured[-1]["input_kind"] == "user-text"
 
     await dgr.handle_external_drawing_guess_transcript(
         "YUI",

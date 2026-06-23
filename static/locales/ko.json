@@ -4452,118 +4452,118 @@
 		"lines": {
 			"default": {
 				"shot_missed": [
-					"?? ??? ???.",
-					"?? ?? ???? ?."
+					"Next rally, stay steady.",
+					"Reset and swing clean."
 				],
 				"game_over": [
-					"?? ???? ????.",
-					"? ? ? ???"
+					"This round ends here.",
+					"Want another one?"
 				],
 				"long_aim": [
-					"???? ?? ?.",
-					"?? ???? ??."
+					"Swing before it drops.",
+					"Think too long and you freeze."
 				],
 				"close_to_record": [
-					"??? ???.",
-					"? ?? ? ?????."
+					"The record is close.",
+					"One steadier shot gets there."
 				],
 				"new_record": [
-					"??, ? ??.",
-					"?? ? ????."
+					"Fine, new record.",
+					"That one was clean."
 				],
 				"streak_5": [
-					"?? ? ????.",
-					"??? ????."
+					"Five rallies linked.",
+					"Your rhythm is warming up."
 				],
 				"streak_10": [
-					"? ? ??, ??? ??.",
-					"?? ???? ?."
+					"Ten straight, not bad.",
+					"Do not get proud yet."
 				],
 				"streak_15": [
-					"??? ?? ????.",
-					"?? ??? ??."
+					"Fifteen and still going.",
+					"Now I am watching closely."
 				],
 				"streak_20": [
-					"?? ?? ?? ??.",
-					"? ?? ??? ??"
+					"Twenty is too long.",
+					"Is this rally still going?"
 				],
 				"line_in": [
-					"?? ?, ???.",
-					"???? ???."
+					"On the line, accurate.",
+					"That placement was good."
 				],
 				"net_touch": [
-					"??? ????.",
-					"??? ???? ??."
+					"It slipped over the net.",
+					"Risky angle, but fine."
 				],
 				"zone_in": [
-					"?? ? ????.",
-					"??? ? ???."
+					"Right in the zone.",
+					"You picked that spot well."
 				],
 				"out": [
-					"?? ???.",
-					"?? ??? ?? ???."
+					"Just a little long.",
+					"That swing carried too far."
 				],
 				"net": [
-					"??? ???.",
-					"?? ?? ??."
+					"The net caught it.",
+					"Lift the racket face."
 				]
 			},
 			"shooter": {
 				"shot_missed": [
-					"??? ?? ??.",
-					"???. ?? ?? ? ??."
+					"Reset your control.",
+					"Stay steady. I can follow."
 				],
 				"game_over": [
-					"??? ? ???? ?.",
-					"?? ?? ?? ?."
+					"Your control still needs work.",
+					"Do not make me run for nothing."
 				],
 				"long_aim": [
-					"??, ?? ??.",
-					"?? ?? ??? ????"
+					"Hurry up, my hand is stiff.",
+					"Still choosing the angle?"
 				],
 				"close_to_record": [
-					"??? ???.",
-					"?? ??? ?? ?."
+					"The record is close.",
+					"Do not shake on this shot."
 				],
 				"new_record": [
-					"??, ? ??.",
-					"??? ???? ???."
+					"Fine, new record.",
+					"That cooperation was decent."
 				],
 				"streak_5": [
-					"?? ? ??. ??? ?.",
-					"? ??? ?????."
+					"Five in a row. Do not float.",
+					"This rhythm is stable."
 				],
 				"streak_10": [
-					"? ?? ???? ?.",
-					"?? ? ?????."
+					"Ten straight? Do not brag.",
+					"Your hand is pretty steady."
 				],
 				"streak_15": [
-					"???? ???? ?.",
-					"?? ? ? ???."
+					"Fifteen? Do not get smug.",
+					"You really held this one."
 				],
 				"streak_20": [
-					"?? ?? ??? ??",
-					"?? ??? ? ?????."
+					"Twenty? Still going?",
+					"This round is getting wild."
 				],
 				"line_in": [
-					"??, ????.",
-					"?? ?? ? ???."
+					"Fine, that was accurate.",
+					"Racket face was controlled."
 				],
 				"net_touch": [
-					"??? ???.",
-					"??? ??? ???."
+					"You brushed it over.",
+					"The risky angle worked."
 				],
 				"zone_in": [
-					"?? ?. ?? ???.",
-					"???? ? ???."
+					"Do not grin. Lucky spot.",
+					"You picked that landing well."
 				],
 				"out": [
-					"?? ??? ?.",
-					"??? ????."
+					"A little less force.",
+					"You rushed that one."
 				],
 				"net": [
-					"??? ???? ???",
-					"?? ?? ??."
+					"Where are you steering me?",
+					"Lift the racket face."
 				]
 			},
 			"duel": {
@@ -4900,7 +4900,8 @@
 			"connectHint": "메인 화면에서 먼저 음성을 켜면 이 라운드가 이어받아요.",
 			"connectedNotice": "메인 화면 음성이 이 라운드에 연결되었어요.",
 			"connectHintNotice": "메인 화면에서 먼저 음성을 켜 주세요. 켜지면 이 라운드가 자동으로 이어받아요.",
-			"routeNotReady": "음성을 사용하기 전에 게임 라우트가 준비될 때까지 기다려 주세요."
+			"routeNotReady": "음성을 사용하기 전에 게임 라우트가 준비될 때까지 기다려 주세요.",
+			"buttonLabel": "Voice chat"
 		},
 		"exitConfirm": {
 			"title": "페이지를 나갈까요?",
@@ -4973,7 +4974,8 @@
 			"guessPlaceholder": "추측을 입력하거나 힌트를 요청하세요",
 			"drawingPlaceholder": "그리면서 채팅할 수 있어요",
 			"hintPlaceholder": "먼저 계속 대화하고, 다시 맞히게 하고 싶을 때 힌트 주기",
-			"summaryPlaceholder": "이번 라운드 이야기를 하거나 다음 라운드를 시작하세요"
+			"summaryPlaceholder": "이번 라운드 이야기를 하거나 다음 라운드를 시작하세요",
+			"ariaLabel": "Chat input"
 		},
 		"timer": {
 			"seconds": "{{seconds}}초"
@@ -5043,7 +5045,7 @@
 			"summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
 			"attemptsSummary": "슛 요약: {{summary}}",
 			"personalBest": "개인 최고: {{score}}점",
-			"globalRank": "글로벌 순위: #{{rank}}{{total}}",
+			"globalRank": "글로벌 순위: #{{rank}} / {{total}}",
 			"outcome": {
 				"youWin": "내 승리",
 				"nekoWin": "Neko 승리",
