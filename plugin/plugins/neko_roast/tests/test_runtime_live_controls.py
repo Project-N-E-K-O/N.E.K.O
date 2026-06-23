@@ -210,6 +210,33 @@ async def test_dashboard_state_exposes_runtime_health_rows(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
+async def test_dashboard_state_exposes_latest_response_latency(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="42",
+        nickname="latency",
+        danmaku_text="hi",
+        source="live_danmaku",
+        seen_at="2026-06-20T10:00:00+00:00",
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("neko_dispatcher", "ok", "queued_to_neko(target=default)")],
+            created_at="2026-06-20T10:00:03+00:00",
+        )
+    )
+
+    state = await runtime.dashboard_state()
+
+    assert state["speech_explanation"]["last_result_latency_ms"] == 3000
+    rows = {row["id"]: row for row in state["health_rows"]}
+    assert rows["pipeline"]["last_latency_ms"] == 3000
+    assert rows["dispatcher"]["last_latency_ms"] == 3000
+
+
+@pytest.mark.asyncio
 async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True

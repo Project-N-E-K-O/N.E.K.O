@@ -724,6 +724,7 @@ class RoastRuntime:
         latest_status = str(latest.get("status") or "") if isinstance(latest, dict) else ""
         latest_reason = str(latest.get("reason") or "") if isinstance(latest, dict) else ""
         latest_age = self._iso_age_sec(latest.get("created_at")) if isinstance(latest, dict) else None
+        latest_latency = latest.get("response_latency_ms") if isinstance(latest, dict) else None
         latest_event = latest.get("event") if isinstance(latest, dict) else {}
         latest_source = str(latest_event.get("source") or "") if isinstance(latest_event, dict) else ""
 
@@ -775,6 +776,7 @@ class RoastRuntime:
             "last_result_reason": latest_reason,
             "last_result_source": latest_source,
             "last_result_age_sec": latest_age,
+            "last_result_latency_ms": latest_latency,
         }
 
     @staticmethod
@@ -845,6 +847,7 @@ class RoastRuntime:
         latest_status = str(latest.get("status") or "") if isinstance(latest, dict) else ""
         latest_reason = str(latest.get("reason") or "") if isinstance(latest, dict) else ""
         latest_age = self._iso_age_sec(latest.get("created_at")) if isinstance(latest, dict) else None
+        latest_latency = latest.get("response_latency_ms") if isinstance(latest, dict) else None
         steps = latest.get("steps") if isinstance(latest, dict) else []
         dispatcher_step = None
         if isinstance(steps, list):
@@ -890,6 +893,7 @@ class RoastRuntime:
                 "age_sec": latest_age,
                 "last_outcome": latest_status,
                 "last_skip_reason": latest_reason if latest_status in {"dry_run", "skipped", "failed"} else "",
+                "last_latency_ms": latest_latency,
             },
             {
                 "id": "safety_guard",
@@ -909,6 +913,7 @@ class RoastRuntime:
                     if not output_channel_ready
                     else latest_reason if dispatcher_outcome in {"dry_run", "skipped", "failed"} else ""
                 ),
+                "last_latency_ms": latest_latency if dispatcher_step else None,
                 "output_channel_ready": output_channel_ready,
                 "output_channel_detail": output_channel_detail,
             },
