@@ -1049,6 +1049,8 @@
   var YUI_RACKET_BODY_OFFSET_X = 58;
   var YUI_RACKET_HIT_REACH_X = 46;
   var YUI_RACKET_HIT_REACH_Y = 62;
+  var YUI_RACKET_RESCUE_GATE_REACH_X = 38;
+  var YUI_RACKET_RESCUE_GATE_REACH_Y = 54;
   var YUI_RACKET_SAVE_REACH_X = 84;
   var YUI_RACKET_SAVE_REACH_Y = 86;
   var YUI_SMASH_MIN_SHUTTLE_Z = 64;
@@ -4349,11 +4351,14 @@
   function isYuiRacketHitInRange(incomingBall) {
     return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
   }
+  function getYuiRacketRescueGateState(incomingBall) {
+    return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
+  }
   function getYuiRacketSaveRangeState(incomingBall) {
     return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
   }
   function isYuiSmashSaveReachable(incomingBall) {
-    return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
+    return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
   }
   function getYuiSmashHeightQuality(incomingBall) {
     if (!incomingBall) return 0;

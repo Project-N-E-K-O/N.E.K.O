@@ -677,10 +677,32 @@ def test_badminton_yui_saves_player_smash_just_outside_racket_hit_range(mock_pag
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.__badmintonObservedYuiSave = null;
+          window.__badmintonStopYuiSaveObserver = false;
+          const observe = () => {
+            const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+            const saving = !!document.querySelector('.neko-avatar-container[data-court-avatar="opponent"].saving');
+            if (state && state.pendingSwing && state.pendingSwing.shooter === 'neko' &&
+              state.pendingSwing.save === true) {
+              window.__badmintonObservedYuiSave = {
+                shooter: state.pendingSwing.shooter,
+                save: state.pendingSwing.save,
+                isSmash: state.pendingSwing.isSmash,
+                saving
+              };
+              return;
+            }
+            if (!window.__badmintonStopYuiSaveObserver) requestAnimationFrame(observe);
+          };
+          requestAnimationFrame(observe);
+        }"""
+    )
     setup = page.evaluate(
         """() => {
           const contact = window.BadmintonDemo._debugGetYuiRacketContactPoint();
-          const dx = contact.reachX + 22;
+          const dx = contact.reachX + 32;
           const dy = 10;
           const courtY = contact.x + dx;
           const screenY = contact.y + dy;
@@ -710,28 +732,18 @@ def test_badminton_yui_saves_player_smash_just_outside_racket_hit_range(mock_pag
     assert setup["normalNormalized"] > 1
     assert setup["saveNormalized"] <= 1
 
-    page.evaluate("window.__badmintonObservedYuiSave = null")
-    page.wait_for_function(
-        """() => {
-          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
-          const saving = !!document.querySelector('.neko-avatar-container[data-court-avatar="opponent"].saving');
-          if (state && state.pendingSwing && state.pendingSwing.shooter === 'neko' &&
-            state.pendingSwing.save === true && saving) {
-            window.__badmintonObservedYuiSave = {
-              shooter: state.pendingSwing.shooter,
-              save: state.pendingSwing.save,
-              isSmash: state.pendingSwing.isSmash
-            };
-            return true;
-          }
-          return false;
-        }""",
-        timeout=3000,
-    )
+    try:
+        page.wait_for_function(
+            "window.__badmintonObservedYuiSave !== null",
+            timeout=3000,
+        )
+    finally:
+        page.evaluate("window.__badmintonStopYuiSaveObserver = true")
     saved = page.evaluate("window.__badmintonObservedYuiSave")
     assert saved["shooter"] == "neko"
     assert saved["save"] is True
     assert saved["isSmash"] is False
+    assert saved["saving"] is True
 
 
 @pytest.mark.e2e
@@ -1577,7 +1589,19 @@ def test_badminton_project_voice_unobserved_does_not_start_local_speech(
         }"""
     )
 
-    page.wait_for_timeout(1400)
+    page.wait_for_function(
+        """() => {
+          const s = window.BadmintonDemo.getState();
+          return !!(
+            s &&
+            s.voice &&
+            s.voice.lastResult &&
+            s.voice.lastResult.speech_id === 'e2e-unobserved-project-voice' &&
+            s.voice.lastFallbackReason === ''
+          );
+        }""",
+        timeout=3000,
+    )
     assert speak_payloads
     state = page.evaluate("window.BadmintonDemo.getState()")
     assert speak_payloads[-1]["line"] == "unobserved project voice"

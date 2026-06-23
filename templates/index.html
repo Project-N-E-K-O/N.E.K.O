@@ -503,7 +503,9 @@
                 applyGameWindowRenderingState(true);
             } else if (action === 'closed') {
                 document.body.classList.remove('neko-game-active');
-                applyGameWindowRenderingState(false);
+                if (!window.__nekoPetInteracting__) {
+                    applyGameWindowRenderingState(false);
+                }
             }
         }
         window.addEventListener('neko-game-window-state-change', function(ev) {

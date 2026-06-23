@@ -69,6 +69,7 @@ def test_index_game_window_state_pauses_hidden_avatar_rendering():
     assert "document.body.classList.add('neko-game-active');" in block
     assert "applyGameWindowRenderingState(true);" in block
     assert "document.body.classList.remove('neko-game-active');" in block
+    assert "if (!window.__nekoPetInteracting__) {" in block
     assert "applyGameWindowRenderingState(false);" in block
 
 

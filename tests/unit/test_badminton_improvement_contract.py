@@ -2816,6 +2816,8 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);" in html
     assert "var YUI_RACKET_HIT_REACH_X = 46;" in html
     assert "var YUI_RACKET_HIT_REACH_Y = 62;" in html
+    assert "var YUI_RACKET_RESCUE_GATE_REACH_X = 38;" in html
+    assert "var YUI_RACKET_RESCUE_GATE_REACH_Y = 54;" in html
     assert "function getYuiVisibleRacketContactPoint() {" in html
     assert "source: 'live2d-racket-head'" in html
     assert "function getYuiRacketContactPoint() {" in html
@@ -2831,12 +2833,14 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);" in html
     assert "function isYuiRacketHitInRange(incomingBall) {" in html
     assert "return getYuiRacketHitRangeState(incomingBall).normalized <= 1;" in html
+    assert "function getYuiRacketRescueGateState(incomingBall) {" in html
+    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);" in html
     assert "var YUI_RACKET_SAVE_REACH_X = 84;" in html
     assert "var YUI_RACKET_SAVE_REACH_Y = 86;" in html
     assert "function getYuiRacketSaveRangeState(incomingBall) {" in html
     assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);" in html
     assert "function isYuiSmashSaveReachable(incomingBall) {" in html
-    assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
+    assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
     assert "var YUI_SMASH_MIN_SHUTTLE_Z = 64;" in html
     assert "var YUI_SMASH_FULL_SHUTTLE_Z = 138;" in html
     assert "function getYuiSmashHeightQuality(incomingBall) {" in html
