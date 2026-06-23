@@ -46,7 +46,7 @@ import math
 import re
 import time
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import config
@@ -259,6 +259,15 @@ class MasterEmotionTracker:
         reading = self._parse(raw, now=now, source=cleaned)
         if reading is None:
             return None
+        # Truncation guard: the model only saw ``cleaned[:MAX_INPUT_CHARS]``. If
+        # the turn was longer, an action verb in the unseen tail makes the
+        # action_intent read an unreliable basis for the agent gate — null it so
+        # the gate fails open (run the assessment). Emotion / complexity, which
+        # are judgeable from the opening, stay valid. The source_norm fingerprint
+        # remains the FULL text so the freshness match is unaffected.
+        _max_chars = max(1, int(getattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 500)))
+        if reading.action_intent is not None and len(cleaned) > _max_chars:
+            reading = replace(reading, action_intent=None)
         # Stale-result guard: if a newer analysis (or a reset) was kicked off
         # while this one awaited — possible under a slow tier — the newer turn
         # wins; never let this older turn's reading overwrite it.

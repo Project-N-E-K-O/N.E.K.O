@@ -504,6 +504,27 @@ def test_gate_signal_for_registry(monkeypatch):
     assert gate_signal_for("regtest", "运行一下") is None
 
 
+def test_truncated_input_nulls_action_intent(monkeypatch):
+    # When the analyzed text is longer than MASTER_EMOTION_MAX_INPUT_CHARS, the
+    # model only saw the opening; an action verb in the unseen tail would make
+    # action_intent unreliable → it is nulled (the agent gate then fails open).
+    # Emotion axes (judgeable from the opening) stay valid.
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 20)
+    fake, _ = _fake_tier('{"valence": -0.3, "arousal": 0.4, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("trunc")
+    r = asyncio.run(t.analyze("x" * 100, now=100.0))  # 100 > 20 → truncated
+    assert r is not None
+    assert r.action_intent is None                  # nulled due to truncation
+    assert r.valence == -0.3 and r.arousal == 0.4   # emotion preserved
+    # Short input (<= max) keeps action_intent.
+    fake2, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake2)
+    t2 = MasterEmotionTracker("trunc2")
+    r2 = asyncio.run(t2.analyze("short", now=100.0))
+    assert r2.action_intent == 0.9
+
+
 def test_gate_signal_long_text_no_prefix_collision(monkeypatch):
     # A prefix-truncated match key would treat two long messages that share a
     # long prefix (but differ at the end) as the SAME turn — letting a stale
@@ -511,6 +532,9 @@ def test_gate_signal_long_text_no_prefix_collision(monkeypatch):
     # full-text fingerprint must reject that → fail open (None).
     from main_logic.activity.master_emotion import gate_signal_for
 
+    # Raise the input cap so the truncation guard does NOT fire here — this test
+    # isolates the fingerprint behavior (full text vs the old 280-char prefix).
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 100000)
     long_prefix = "这是一段很长的对话内容反复出现并且超过二百八十个字符的前缀" * 20  # > 280 chars
     fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.05}')
     _patch_tier(monkeypatch, fake)
