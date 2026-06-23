@@ -752,15 +752,16 @@ def test_yui_guide_fixed_compact_chat_uses_400_width_and_left_middle_lower_posit
 
     fixed_block = css_block(
         styles,
-        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
-        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
     )
     choice_anchor_block = css_block(
         styles,
-        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
         '/* Agent HUD 空状态折叠按钮样式 */',
     )
 
+    assert "body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window)" not in styles
     assert "left: clamp(24px, 6vw, 72px) !important;" in fixed_block
     assert "top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;" in fixed_block
     assert "width: min(400px, calc(100vw - 32px)) !important;" in fixed_block
