@@ -4262,6 +4262,50 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_heartbeat_refreshes_enabled_debug_log_idle_ttl(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
+    entry = game_log.find_game_session_debug_log("match_1", "soccer")
+    assert entry is not None
+    stale_updated_at = game_log.time.time() - (game_log.GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS / 2)
+    entry["updated_at"] = stale_updated_at
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert state["last_heartbeat_at"] <= entry["updated_at"]
+    assert entry["updated_at"] > stale_updated_at
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_heartbeat_does_not_create_debug_log_when_disabled(monkeypatch):
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    result = await game_router.game_route_heartbeat(
+        "soccer",
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "session_id": "match_1",
+        }),
+    )
+
+    assert result["ok"] is True
+    assert result["active"] is True
+    assert game_log.find_game_session_debug_log("match_1", "soccer") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_heartbeat_records_hidden_visibility(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")

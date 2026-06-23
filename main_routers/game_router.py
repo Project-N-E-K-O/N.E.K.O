@@ -113,6 +113,7 @@ from utils.game_log import (
     mark_game_session_debug_log_active as _mark_game_session_debug_log_active,
     mark_game_session_debug_log_ended as _mark_game_session_debug_log_ended,
     public_game_session_debug_log,
+    touch_game_session_debug_log as _touch_game_session_debug_log,
 )
 from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 from utils.logger_config import get_module_logger
@@ -7221,6 +7222,7 @@ async def game_route_heartbeat(game_type: str, request: Request):
     now = time.time()
     state["last_heartbeat_at"] = now
     state["last_activity"] = now
+    _touch_game_session_debug_log(game_type, str(state.get("session_id") or session_id or "default"), lanlan_name=lanlan_name)
     _update_route_visibility_from_payload(state, data)
     _update_route_start_state_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)

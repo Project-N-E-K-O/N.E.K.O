@@ -186,6 +186,23 @@ def enable_game_session_debug_log(game_type: Any, session_id: Any, *, lanlan_nam
     )
 
 
+def touch_game_session_debug_log(game_type: Any, session_id: Any, *, lanlan_name: str = "") -> bool:
+    cleanup_game_session_debug_logs()
+    entry = _get_or_create_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        activate=False,
+        create=False,
+    )
+    if entry is None or entry.get("status") != "active":
+        return False
+    now = time.time()
+    entry["updated_at"] = now
+    entry["updated_time"] = _game_debug_log_time(now)
+    return True
+
+
 def cleanup_game_session_debug_logs(now: float | None = None) -> None:
     current_time = time.time() if now is None else float(now)
     retained_keys: set[str] = set()
