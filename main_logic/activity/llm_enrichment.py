@@ -79,6 +79,7 @@ _SCORED_STATES: tuple[str, ...] = (
     'gaming',
     'focused_work',
     'casual_browsing',
+    'focused_video',
     'chatting',
     'voice_engaged',
     'idle',
