@@ -2135,6 +2135,9 @@
         "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
+        "socialOpenFailed": "社交窗口打开失败：{{error}}",
+        "socialUnavailable": "社交服务不可用",
+        "socialDisabled": "社交服务已禁用",
         "welcomeBack": "{{name}}回来了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",
@@ -2242,6 +2245,7 @@
         "thoughtBubblePop": "戳破想法气泡",
         "voiceControl": "语音控制",
         "screenShare": "屏幕分享",
+        "social": "猫娘社区",
         "agentTools": "猫爪",
         "settings": "设置",
         "leave": "请她离开",

@@ -2135,6 +2135,9 @@
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
+        "socialOpenFailed": "Failed to open social window: {{error}}",
+        "socialUnavailable": "Social service unavailable",
+        "socialDisabled": "Social service is disabled",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",
@@ -2242,6 +2245,7 @@
         "thoughtBubblePop": "Pop thought bubble",
         "voiceControl": "Voice Control",
         "screenShare": "Screen Share",
+        "social": "Neko Community",
         "agentTools": "NekoClaw",
         "settings": "Settings",
         "leave": "Leave",

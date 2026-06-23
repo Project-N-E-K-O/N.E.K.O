@@ -4204,22 +4204,81 @@
         const screenshotButton = S.dom.screenshotButton;
 
         // 麦克风按钮（toggle模式） — Live2D / VRM 浮动按钮共用
+        function isScreenSharingActive() {
+            return !!(screenButton && screenButton.classList.contains('active'));
+        }
+
+        async function startScreenSharingFromVoiceButton() {
+            if (isScreenSharingActive()) {
+                return;
+            }
+            if (typeof window.startScreenSharing !== 'function') {
+                console.error('startScreenSharing function not found');
+                return;
+            }
+            await window.startScreenSharing();
+        }
+
+        async function stopScreenSharingFromVoiceButton() {
+            if (!isScreenSharingActive()) {
+                return;
+            }
+            if (typeof window.stopScreenSharing !== 'function') {
+                console.error('stopScreenSharing function not found');
+                return;
+            }
+            await window.stopScreenSharing();
+        }
+
+        // 「语音时自动共享屏幕」开关：默认关（隐私安全）——只想开麦的用户不会被静默录屏
+        // （Electron 下若存过采集源，startScreenSharing 会无提示直接续采）。想要旧的
+        // 「语音=顺带共享屏幕」统一体验的人可显式打开；localStorage 持久化，可被设置项同步覆盖。
+        function voiceAutoScreenEnabled() {
+            try { return localStorage.getItem('neko_voice_auto_screen') === '1'; }
+            catch (_) { return false; }
+        }
+        try {
+            window.nekoVoiceAutoScreen = {
+                get: voiceAutoScreenEnabled,
+                set: function (on) {
+                    try { localStorage.setItem('neko_voice_auto_screen', on ? '1' : '0'); } catch (_) {}
+                },
+            };
+        } catch (_) {}
+
+        function waitForVoiceRecordingReady(timeoutMs) {
+            const startedAt = Date.now();
+            return new Promise((resolve) => {
+                const check = () => {
+                    if (S.isRecording || Date.now() - startedAt >= timeoutMs) {
+                        resolve(!!S.isRecording);
+                        return;
+                    }
+                    setTimeout(check, 50);
+                };
+                check();
+            });
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
             if (e.detail.active) {
-                if (S.isRecording) {
-                    return;
-                }
-                if (!micButton.classList.contains('active')) {
+                if (!S.isRecording && !micButton.classList.contains('active')) {
                     micButton.click();
-                    return;
-                }
-                if (typeof window.startMicCapture === 'function') {
+                    await waitForVoiceRecordingReady(5000);
+                } else if (!S.isRecording && typeof window.startMicCapture === 'function') {
                     await window.startMicCapture();
+                }
+                // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
+                if (S.isRecording && voiceAutoScreenEnabled()) {
+                    await startScreenSharingFromVoiceButton();
                 }
             } else {
                 if (!S.isRecording) {
+                    // 默认关时不替用户停掉他自己用屏幕按钮开的共享（麦/屏互不联动）。
+                    if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                     return;
                 }
+                if (voiceAutoScreenEnabled()) await stopScreenSharingFromVoiceButton();
                 if (typeof window.stopMicCapture === 'function') {
                     await window.stopMicCapture();
                 }
@@ -4246,6 +4305,66 @@
         // Agent工具按钮
         window.addEventListener('live2d-agent-click', () => {
             console.log('Agent工具按钮被点击，显示弹出框');
+        });
+
+        // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
+        // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份，
+        // 然后在 Electron 内交给系统浏览器打开，避免被 setWindowOpenHandler 拦成桌面 BrowserWindow。
+        window.addEventListener('live2d-social-click', async () => {
+            try {
+                const cfgRes = await fetch('/api/system/social/config');
+                if (!cfgRes.ok) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.socialUnavailable') : '社交服务不可用 (config fetch failed)',
+                            3000
+                        );
+                    }
+                    return;
+                }
+                const cfg = await cfgRes.json();
+                if (cfg && cfg.enabled === false) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.socialDisabled') : '社交服务已禁用',
+                            3000
+                        );
+                    }
+                    return;
+                }
+                let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
+                if (!url) {
+                    console.warn('[social] no social_base_url from /api/system/social/config');
+                    return;
+                }
+                // 顺手把 client_id 拼进 URL（社区页本地 JS 据此关联游客身份）
+                try {
+                    const cidRes = await fetch('/api/system/client-id');
+                    if (cidRes.ok) {
+                        const cidJson = await cidRes.json();
+                        if (cidJson && cidJson.client_id) {
+                            const sep = url.includes('?') ? '&' : '?';
+                            url = `${url}${sep}cid=${encodeURIComponent(cidJson.client_id)}`;
+                        }
+                    }
+                } catch (cidErr) {
+                    console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
+                }
+                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                    await window.electronShell.openExternal(url);
+                    return;
+                }
+                const opened = window.open(url, '_blank', 'noopener,noreferrer');
+                try { opened && opened.focus && opened.focus(); } catch (_) { /* ignore */ }
+            } catch (err) {
+                console.error('[social] open failed:', err);
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        window.t ? window.t('app.socialOpenFailed', { error: err.message }) : `社交窗口打开失败：${err.message}`,
+                        4000
+                    );
+                }
+            }
         });
 
         // 睡觉按钮（请她离开）

@@ -346,6 +346,31 @@
         );
     }
 
+    /**
+     * 把当前头像 dataUrl 和猫娘名推送到 card-forge 后端（非关键，静默失败）。
+     * 用于"奇遇铸造机" (card-forge) 前端读取当前猫娘名作为 runtime_character_hint。
+     * 上游未运行 card-forge 时本接口仍存在，POST 只是空写无副作用。
+     *
+     * 只把有值的字段塞进 body：服务端的 POST handler 用 in-payload 语义区分
+     * "省略字段（不动）" vs "显式空串（清空）"，所以不要无脑发空串，避免把
+     * 上一次同步过来的猫娘名覆盖掉。当 dataUrl 暂不可用但 name 仍有效时，
+     * 仍然走一次 name-only 同步。
+     */
+    function syncAvatarToCardForge(dataUrl) {
+        var _nekoName = (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
+            ? lanlan_config.lanlan_name
+            : '';
+        if (!dataUrl && !_nekoName) return;
+        var body = {};
+        if (dataUrl) body.dataUrl = dataUrl;
+        if (_nekoName) body.name = _nekoName;
+        fetch('/card-forge/active-character', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }).catch(function () { /* card-forge 未运行时静默失败 */ });
+    }
+
     function applyPreviewResult(result, cacheKey) {
         cachedPreview = {
             cacheKey,
@@ -354,6 +379,7 @@
             capturedAt: Date.now()
         };
         saveToStorage(cachedPreview);
+        syncAvatarToCardForge(cachedPreview.dataUrl);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -1122,6 +1148,7 @@
             // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
             cachedPreview.cacheKey = getCurrentModelCacheKey();
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1134,6 +1161,7 @@
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
             };
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1285,6 +1313,7 @@
                 capturedAt: Date.now()
             };
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。

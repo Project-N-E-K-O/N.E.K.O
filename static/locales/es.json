@@ -2135,6 +2135,9 @@
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {
+        "socialOpenFailed": "No se pudo abrir la ventana social: {{error}}",
+        "socialUnavailable": "Servicio social no disponible",
+        "socialDisabled": "El servicio social está deshabilitado",
         "welcomeBack": "¡{{name}} ha vuelto!",
         "title": "Proyecto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",
@@ -2242,6 +2245,7 @@
         "thoughtBubblePop": "Explotar burbuja de pensamiento",
         "voiceControl": "Control de voz",
         "screenShare": "Compartir pantalla",
+        "social": "Comunidad Neko",
         "agentTools": "Neko Garra",
         "settings": "Ajustes",
         "leave": "Dejar",

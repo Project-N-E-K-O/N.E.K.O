@@ -2135,6 +2135,9 @@
         "cardMakerPopupBlocked": "カード作成ページを自動的に開けませんでした。ブラウザのポップアップを許可して再試行するか、カードエリアをクリックして手動で開いてください。"
     },
     "app": {
+        "socialOpenFailed": "ソーシャルウィンドウを開けませんでした：{{error}}",
+        "socialUnavailable": "ソーシャルサービスを利用できません",
+        "socialDisabled": "ソーシャルサービスは無効です",
         "welcomeBack": "{{name}}が戻りました！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}は休憩中...",
@@ -2242,6 +2245,7 @@
         "thoughtBubblePop": "ふきだしを弾く",
         "voiceControl": "音声制御",
         "screenShare": "画面共有",
+        "social": "猫娘コミュニティ",
         "agentTools": "ネコクロー",
         "settings": "設定",
         "leave": "退出",

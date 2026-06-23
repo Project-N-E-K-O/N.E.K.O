@@ -439,6 +439,35 @@ def dispatch_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
             logger.debug("[EventBus] user_utterance sink raised: %s", exc)
 
 
+# Async WS-broadcaster seam. ``app.main_server._broadcast_to_all_connected`` is an
+# app-layer (L6) coroutine that fans a payload out to every connected WebSocket.
+# Low layers (main_logic dropper / main_routers card_drop) must NOT import ``app``
+# — that is a layer inversion (and closes a plugin→main_logic→app→brain→plugin
+# import cycle). Instead ``app`` registers its broadcaster here at startup and low
+# layers call ``broadcast_ws_event``, staying layer-clean. No-op until wired (e.g.
+# a memory_server entrypoint that doesn't ship the main WS server).
+_ws_broadcaster: Optional[Callable[[Dict[str, Any]], Awaitable[int]]] = None
+
+
+def register_ws_broadcaster(
+    fn: Callable[[Dict[str, Any]], Awaitable[int]],
+) -> None:
+    """Wire the app-layer WS broadcaster. Last registration wins (single sink)."""
+    global _ws_broadcaster
+    _ws_broadcaster = fn
+
+
+async def broadcast_ws_event(payload: Dict[str, Any]) -> int:
+    """Fan ``payload`` to all connected WebSockets via the registered broadcaster.
+
+    Returns the number of sessions reached, or 0 if no broadcaster is wired.
+    """
+    fn = _ws_broadcaster
+    if fn is None:
+        return 0
+    return await fn(payload)
+
+
 # First-hit-wins text-message hook with optional return value.
 # main_routers' mini-game-invite keyword matcher is the canonical consumer.
 _text_user_message_hooks: list[

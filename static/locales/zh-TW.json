@@ -2135,6 +2135,9 @@
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {
+        "socialOpenFailed": "社交視窗開啟失敗：{{error}}",
+        "socialUnavailable": "社交服務無法使用",
+        "socialDisabled": "社交服務已停用",
         "welcomeBack": "{{name}}回來了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",
@@ -2242,6 +2245,7 @@
         "thoughtBubblePop": "戳破想法氣泡",
         "voiceControl": "語音控製",
         "screenShare": "屏幕分享",
+        "social": "貓娘社群",
         "agentTools": "猫爪",
         "settings": "設置",
         "leave": "請她離開",

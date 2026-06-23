@@ -626,6 +626,12 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
     return sum(1 for r in results if r is True)
 
 
+# 把 WS 广播器注册进 main_logic 事件总线，让低层（quota dropper / card_drop_router）
+# 无需 import app 即可推 WS 事件（避免 main_logic/main_routers → app 的层级倒挂 + 循环）。
+from main_logic.agent_event_bus import register_ws_broadcaster as _register_ws_broadcaster  # noqa: E402
+_register_ws_broadcaster(_broadcast_to_all_connected)
+
+
 async def _handle_agent_event(event: dict):
     """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
@@ -1722,6 +1728,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.card_drop_router import router as card_drop_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1734,6 +1741,49 @@ async def health():
     from utils.port_utils import build_health_response
     from config import INSTANCE_ID
     return build_health_response("main", instance_id=INSTANCE_ID)
+
+
+# ── Card-Forge 跨进程当前猫娘同步端点 ────────────────────────────
+# 奇遇铸造机 (card-forge) 前端会轮询本端点，拿到当前猫娘名作为
+# /forge/facts 的 runtime_character_hint；不要求 card-forge 后端
+# 知道 NEKO 内部状态，只通过此端点把"当前 NEKO 在前台展示的猫娘"广播给它。
+_card_forge_active_character: dict = {}  # {dataUrl, name}
+
+
+@app.post('/card-forge/active-character')
+async def set_card_forge_active_character(payload: dict):
+    """Store the active character name and optional avatar data for card-forge.
+
+    In-payload semantics distinguish omitted fields from explicit empty values:
+    - POST {"dataUrl": "x"} updates only dataUrl and keeps the stored name.
+    - POST {"name": ""} explicitly clears the stored name.
+    - POST {"dataUrl": "", "name": ""} explicitly clears both fields.
+    Callers should include only meaningful fields to avoid accidental erasure.
+    """
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    if 'dataUrl' in payload:
+        _card_forge_active_character['dataUrl'] = str(payload.get('dataUrl') or '')
+    if 'name' in payload:
+        _card_forge_active_character['name'] = str(payload.get('name') or '')
+    return {"ok": True}
+
+
+@app.get('/card-forge/active-character')
+async def get_card_forge_active_character(include_avatar: bool = False):
+    """Return the active character name polled by the card-forge frontend.
+
+    Avatar dataUrl is omitted by default because card-forge polls this endpoint
+    every few seconds and currently needs only ``name``. Future avatar consumers
+    can opt in with ``?include_avatar=true``.
+    """
+    from fastapi.responses import JSONResponse
+    payload: dict[str, str] = {
+        'name': _card_forge_active_character.get('name', ''),
+    }
+    if include_avatar:
+        payload['dataUrl'] = _card_forge_active_character.get('dataUrl', '')
+    return JSONResponse(payload)
 
 
 @app.post('/api/beacon/shutdown')
@@ -1855,6 +1905,7 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
+app.include_router(card_drop_router)  # 对话掉落卡片：本地 → 云端 N.E.K.O.Servers 代理
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
@@ -2310,6 +2361,24 @@ async def on_startup():
             _start_debug_health_watchdog()
         except Exception as _e:
             logger.debug(f"[debug_health] start watchdog failed: {_e}")
+
+        # N.E.K.O.Servers 社交平台 facts_sync worker。默认禁用
+        # （NEKO_FACTS_SYNC_ENABLED=0）；启用后 5 分钟 sweep 一次，把高 importance
+        # facts 推到云端铸造池。完整契约见 N.E.K.O.Servers/.claude/contracts/facts-sync-schema.md。
+        try:
+            from main_logic.facts_sync import start_facts_sync_worker  # noqa: WPS433  (lazy import 避免循环)
+            asyncio.create_task(start_facts_sync_worker())
+        except Exception as _e:
+            logger.debug(f"[facts_sync] start worker failed: {_e}")
+
+        # N.E.K.O.Servers 卡片本地缓存 puller。默认禁用
+        # （NEKO_CARD_CACHE_ENABLED=0）；启用后 5 分钟拉 Servers /api/cards/mine
+        # 自己的卡片到 memory/<lanlan>/cards/<id>.json。
+        try:
+            from main_logic.card_cache import start_card_cache_puller  # noqa: WPS433
+            asyncio.create_task(start_card_cache_puller())
+        except Exception as _e:
+            logger.debug(f"[card_cache] start puller failed: {_e}")
 
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
