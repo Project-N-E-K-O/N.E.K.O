@@ -1410,13 +1410,18 @@ class DirectTaskExecutor:
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
                 # Telemetry: count every parsed Stage-2 decision that reaches
-                # validation. This is the denominator for the correction-retry
-                # trigger rate (retries / parsed Stage-2 decisions). Early returns
-                # on empty / unparseable responses don't reach here and can't fire
-                # a retry, so they're correctly excluded from the base.
+                # validation. Denominator for the correction-retry trigger rate.
+                # Early returns on empty / unparseable responses don't reach here
+                # and can't fire a retry, so they're correctly excluded.
+                #
+                # The ``actionable`` dim splits the base so both rates are derivable:
+                # a retry can only fire when the *initial* decision had
+                # has_task & can_execute, so retries/actionable=True is the
+                # conditional correction rate, while retries/(all) is the broader
+                # "extra round-trip per Stage-2 call" cost rate.
                 try:
                     from utils.instrument import counter as _instr_counter
-                    _instr_counter("plugin_assess_stage2")
+                    _instr_counter("plugin_assess_stage2", actionable=bool(d_has and d_can))
                 except Exception:
                     # 埋点失败静默，绝不能影响插件评估主路径。
                     pass
@@ -1560,6 +1565,7 @@ class DirectTaskExecutor:
                             result="success" if _retry_ok else "fail",
                         )
                     except Exception:
+                        # 埋点失败静默，绝不能影响插件评估主路径。
                         pass
 
                 return UserPluginDecision(

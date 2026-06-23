@@ -140,7 +140,9 @@ async def test_correction_retry_telemetry_records_fail(monkeypatch):
     assert len(fake_llm.calls) == 2
 
     counters = instrument.snapshot()["counters"]
-    assert counters.get("plugin_assess_stage2") == 1
+    # actionable=True because the initial decision had has_task & can_execute
+    # (the only state from which a correction retry can fire).
+    assert counters.get("plugin_assess_stage2|actionable=True") == 1
     assert counters.get("plugin_assess_correction_retry|result=fail") == 1
     assert "plugin_assess_correction_retry|result=success" not in counters
 
@@ -161,9 +163,9 @@ async def test_correction_retry_telemetry_records_success(monkeypatch):
     # First response has a bogus entry_id (triggers correction); retry fixes it.
     seq_llm = _SeqLLM([
         '{"has_task": true, "can_execute": true, "task_description": "run alpha", '
-        '"plugin_id": "alpha", "entry_id": "bogus", "plugin_args": {}, "reason": "bad entry"}',
+        + '"plugin_id": "alpha", "entry_id": "bogus", "plugin_args": {}, "reason": "bad entry"}',
         '{"has_task": true, "can_execute": true, "task_description": "run alpha", '
-        '"plugin_id": "alpha", "entry_id": "run", "plugin_args": {}, "reason": "fixed"}',
+        + '"plugin_id": "alpha", "entry_id": "run", "plugin_args": {}, "reason": "fixed"}',
     ])
     executor._get_llm = lambda **_kwargs: seq_llm
 
@@ -179,6 +181,8 @@ async def test_correction_retry_telemetry_records_success(monkeypatch):
     assert len(seq_llm.calls) == 2
 
     counters = instrument.snapshot()["counters"]
-    assert counters.get("plugin_assess_stage2") == 1
+    # actionable=True because the initial decision had has_task & can_execute
+    # (the only state from which a correction retry can fire).
+    assert counters.get("plugin_assess_stage2|actionable=True") == 1
     assert counters.get("plugin_assess_correction_retry|result=success") == 1
     assert "plugin_assess_correction_retry|result=fail" not in counters
