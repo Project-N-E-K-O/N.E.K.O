@@ -117,7 +117,7 @@ def test_soccer_template_posts_session_debug_errors():
     assert "_llm.sessionDebugLogMutationHeaders = null;" in html
     assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
     assert "await enableSoccerSessionDebugLog('auto_route_start')" not in html
-    assert "enableSoccerSessionDebugLog('auto_route_start').catch(() => {});" in html
+    assert "enableSoccerSessionDebugLog('auto_route_start')" not in html
     assert not re.search(r"if\s*\(\s*data\.ok\s*\)\s*{\s*_llm\.sessionDebugLogEnabled\s*=\s*true;", html)
     route_success_block = html.split("if (data.ok)", 1)[1].split("_llm.routeLanlanName", 1)[0]
     assert "_hasSoccerSessionDebugLogSendCredentials()" in route_success_block

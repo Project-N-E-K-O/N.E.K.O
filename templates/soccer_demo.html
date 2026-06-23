@@ -3995,7 +3995,6 @@
 	    try {
 	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
 	      resetSoccerSessionDebugLogEnableState();
-	      enableSoccerSessionDebugLog('auto_route_start').catch(() => {});
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
 	        headers: { 'Content-Type': 'application/json' },
