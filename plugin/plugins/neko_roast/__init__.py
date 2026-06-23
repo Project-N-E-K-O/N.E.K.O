@@ -284,6 +284,7 @@ class NekoRoastPlugin(NekoPluginBase):
         self._runtime().clear_queue()
         return Ok({"status": "cleared"})
 
+    @ui.action(id="trigger_idle_hosting", label=tr("entries.trigger_idle_hosting.name", default="Trigger idle hosting"), group="safety", order=50, refresh_context=True)
     @plugin_entry(
         id="trigger_idle_hosting",
         name=tr("entries.trigger_idle_hosting.name", default="Trigger idle hosting"),

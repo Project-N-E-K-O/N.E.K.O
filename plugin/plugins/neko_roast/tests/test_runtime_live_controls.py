@@ -39,6 +39,7 @@ class Plugin:
         self.logger = None
         self._data_path = tmp_path
         self.pushed_messages: list[dict] = []
+        self.output_channel_ready = True
 
     def data_path(self) -> Path:
         return self._data_path
@@ -221,6 +222,29 @@ async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runt
     assert state["live_status"]["summary"] == "ready_to_stream"
     assert state["live_status"]["reason"] == "ready"
     assert state["live_status"]["can_output"] is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_state_blocks_output_when_output_channel_unavailable(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.plugin.output_channel_ready = False
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_status"]["summary"] == "cannot_stream"
+    assert state["live_status"]["reason"] == "output_channel_unavailable"
+    assert state["live_status"]["can_output"] is False
+    assert state["speech_explanation"]["summary"] == "cannot_stream"
+    assert state["speech_explanation"]["reason"] == "output_channel_unavailable"
+
+    dispatcher_row = next(row for row in state["health_rows"] if row["id"] == "dispatcher")
+    assert dispatcher_row["status"] == "blocked"
+    assert dispatcher_row["last_skip_reason"] == "output_channel_unavailable"
+    assert dispatcher_row["output_channel_ready"] is False
 
 
 @pytest.mark.asyncio

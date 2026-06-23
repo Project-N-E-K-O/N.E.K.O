@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import socket
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 from ..core.contracts import InteractionRequest
 
@@ -111,6 +113,70 @@ def resolve_plugin_target_lanlan(plugin: Any, raw: dict[str, Any] | None = None)
 class NekoDispatcher:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
+
+    @staticmethod
+    def _tcp_endpoint_available(endpoint: str, timeout: float = 0.05) -> bool:
+        parsed = urlparse(str(endpoint or ""))
+        if parsed.scheme != "tcp" or not parsed.hostname or not parsed.port:
+            return True
+        try:
+            with socket.create_connection((parsed.hostname, int(parsed.port)), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def output_channel_status(self) -> dict[str, Any]:
+        checker = getattr(self.plugin, "output_channel_status", None)
+        if callable(checker):
+            try:
+                data = checker()
+            except Exception as exc:
+                return {"ready": False, "reason": "output_channel_unavailable", "detail": str(exc)}
+            if isinstance(data, dict):
+                ready = bool(data.get("ready", data.get("ok", False)))
+                return {
+                    "ready": ready,
+                    "reason": str(data.get("reason") or ("" if ready else "output_channel_unavailable")),
+                    "detail": str(data.get("detail") or ""),
+                }
+
+        explicit_ready = getattr(self.plugin, "output_channel_ready", None)
+        if explicit_ready is not None:
+            ready = bool(explicit_ready)
+            return {"ready": ready, "reason": "" if ready else "output_channel_unavailable", "detail": ""}
+
+        if not callable(getattr(self.plugin, "push_message", None)):
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": "plugin.push_message is unavailable",
+            }
+
+        if getattr(self.plugin, "ctx", None) is None:
+            return {"ready": True, "reason": "", "detail": ""}
+
+        try:
+            from plugin.settings import (
+                MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
+                MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
+                MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+            )
+        except Exception:
+            return {"ready": True, "reason": "", "detail": ""}
+
+        endpoints = {
+            "ingest": str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT),
+            "pub": str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT),
+            "rpc": str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT),
+        }
+        unavailable = [name for name, endpoint in endpoints.items() if not self._tcp_endpoint_available(endpoint)]
+        if unavailable:
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": ",".join(unavailable),
+            }
+        return {"ready": True, "reason": "", "detail": ""}
 
     async def _push_context_text(self, text: str, *, description: str, result_name: str) -> str:
         target_lanlan = resolve_plugin_target_lanlan(self.plugin)

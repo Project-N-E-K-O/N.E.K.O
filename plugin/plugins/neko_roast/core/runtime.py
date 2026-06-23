@@ -578,6 +578,10 @@ class RoastRuntime:
         connected = bool(connection.get("connected"))
         safety_status = self.safety_guard.status()
         cooldown_remaining = round(float(self.safety_guard.output_cooldown_remaining()), 1)
+        output_channel = self.dispatcher.output_channel_status()
+        output_channel_ready = bool(output_channel.get("ready"))
+        output_channel_reason = str(output_channel.get("reason") or "")
+        output_channel_detail = str(output_channel.get("detail") or "")
 
         summary = "ready_to_stream"
         reason = "ready"
@@ -607,6 +611,10 @@ class RoastRuntime:
             summary = "test_only"
             reason = "dry_run"
             can_output = False
+        elif not output_channel_ready:
+            summary = "cannot_stream"
+            reason = output_channel_reason or "output_channel_unavailable"
+            can_output = False
         elif cooldown_remaining > 0:
             summary = "temporarily_not_speaking"
             reason = "cooldown"
@@ -621,6 +629,9 @@ class RoastRuntime:
             "dry_run": bool(self.config.dry_run),
             "safety_status": safety_status,
             "cooldown_remaining": cooldown_remaining,
+            "output_channel_ready": output_channel_ready,
+            "output_channel_reason": output_channel_reason,
+            "output_channel_detail": output_channel_detail,
         }
 
     def live_state_summary(
@@ -844,6 +855,10 @@ class RoastRuntime:
         dispatcher_outcome = latest_status if dispatcher_step else ""
         safety_state = self.safety_guard.status()
         config_status = "failed" if self._config_last_error else ("healthy" if self._config_last_persist_at else "idle")
+        output_channel = self.dispatcher.output_channel_status()
+        output_channel_ready = bool(output_channel.get("ready"))
+        output_channel_reason = str(output_channel.get("reason") or "")
+        output_channel_detail = str(output_channel.get("detail") or "")
         return [
             {
                 "id": "live_ingest",
@@ -886,10 +901,16 @@ class RoastRuntime:
             {
                 "id": "dispatcher",
                 "stage": "dispatcher",
-                "status": self._status_from_outcome(dispatcher_outcome),
+                "status": "blocked" if not output_channel_ready else self._status_from_outcome(dispatcher_outcome),
                 "age_sec": latest_age if dispatcher_step else None,
                 "last_outcome": dispatcher_outcome,
-                "last_skip_reason": latest_reason if dispatcher_outcome in {"dry_run", "skipped", "failed"} else "",
+                "last_skip_reason": (
+                    output_channel_reason or "output_channel_unavailable"
+                    if not output_channel_ready
+                    else latest_reason if dispatcher_outcome in {"dry_run", "skipped", "failed"} else ""
+                ),
+                "output_channel_ready": output_channel_ready,
+                "output_channel_detail": output_channel_detail,
             },
             {
                 "id": "config_store",

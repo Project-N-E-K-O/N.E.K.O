@@ -4,6 +4,9 @@ import json
 import tomllib
 from pathlib import Path
 
+from plugin.plugins.neko_roast import NekoRoastPlugin
+from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR
+
 
 def test_neko_roast_manifest_smoke():
     root = Path(__file__).resolve().parents[1]
@@ -34,6 +37,15 @@ def test_panel_renders_live_status_summary():
     assert "panel.idleHostingStatus." in source
 
 
+def test_trigger_idle_hosting_is_exposed_as_hosted_ui_action():
+    meta = getattr(NekoRoastPlugin.trigger_idle_hosting, UI_ACTION_META_ATTR, None)
+
+    assert meta is not None
+    assert meta["id"] == "trigger_idle_hosting"
+    assert meta["group"] == "safety"
+    assert meta["refresh_context"] is True
+
+
 def test_all_locales_define_live_status_summary_labels():
     root = Path(__file__).resolve().parents[1]
     required_keys = {
@@ -51,6 +63,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusReason.cooldown",
         "panel.liveStatusReason.safety_tripped",
         "panel.liveStatusReason.safety_degraded",
+        "panel.liveStatusReason.output_channel_unavailable",
         "panel.liveModeRole.co_stream",
         "panel.liveModeRole.solo_stream",
         "panel.fields.activityLevel",
@@ -99,6 +112,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.reason.cooldown",
         "panel.speechExplanation.reason.safety_tripped",
         "panel.speechExplanation.reason.safety_degraded",
+        "panel.speechExplanation.reason.output_channel_unavailable",
         "panel.speechExplanation.reason.idle_hosting_candidate",
         "panel.speechExplanation.reason.quiet_activity_gap",
         "panel.speechExplanation.reason.no_recent_activity",
