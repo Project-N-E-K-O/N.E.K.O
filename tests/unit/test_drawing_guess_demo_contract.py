@@ -260,6 +260,9 @@ def test_drawing_guess_demo_static_route_contract():
     assert "!state.debugRotateRounds && state.debugRoundMode === 'user'" in script
     assert "els.debugTrigger.addEventListener('contextmenu'" in script
     assert "els.debugRotateRounds.addEventListener('change'" in script
+    assert 'value="saved"' not in html
+    assert 'drawingGuess.tutorial.memorySaved' not in html
+    assert "function normalizeMemoryConsent" in script
     assert "memory_consent: state.memoryConsent" in script
     assert "gameStarted: state.phase !== 'tutorial'" in script
     assert "var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;" in script
@@ -429,10 +432,10 @@ def test_drawing_guess_demo_static_route_contract():
 
 
 @pytest.mark.unit
-def test_drawing_guess_locale_cache_version_bumped_for_voice_takeover_only():
+def test_drawing_guess_locale_cache_version_bumped_for_memory_two_options():
     script = _i18n_script()
 
-    assert "2026-06-23-drawing-guess-voice-takeover-only-i18n" in script
+    assert "2026-06-23-drawing-guess-memory-two-options-i18n" in script
 
 
 @pytest.mark.unit
@@ -448,6 +451,7 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.tools.basicColors",
         "drawingGuess.tools.historyColors",
         "drawingGuess.tutorial.memoryNone",
+        "drawingGuess.tutorial.memorySummary",
         "drawingGuess.actions.done",
         "drawingGuess.actions.downloadPng",
         "drawingGuess.exitConfirm.title",
@@ -523,3 +527,5 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         assert "???" not in drawing_guess["exitConfirm"]["message"]
         assert "???" not in drawing_guess["exitConfirm"]["reopen"]
         assert "???" not in drawing_guess["summary"]["finalTitle"]
+        assert "memorySaved" not in drawing_guess["tutorial"]
+        assert "savedShort" not in drawing_guess["memory"]

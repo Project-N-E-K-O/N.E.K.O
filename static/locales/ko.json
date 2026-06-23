@@ -4811,8 +4811,7 @@
             "intro": "이번 판은 서로 한 번씩 그리고 한 번씩 맞힙니다. 그리면서 대화할 수 있고, 5분이 지나면 현재 캔버스가 자동으로 그녀에게 넘어갑니다.",
             "memoryTitle": "기억 옵션",
             "memoryNone": "기록하지 않고 이번에만 플레이합니다.",
-            "memorySummary": "짧은 게임 요약 한 줄을 기록합니다.",
-            "memorySaved": "내가 직접 저장할 때만 재미있는 그림이나 농담을 기억에 넣습니다."
+            "memorySummary": "짧은 게임 요약 한 줄을 기록합니다."
         },
         "actions": {
             "start": "시작",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "기록 안 함",
-            "summaryShort": "요약",
-            "savedShort": "저장 시만"
+            "summaryShort": "요약"
         },
         "phases": {
             "tutorial": "튜토리얼",

@@ -4811,8 +4811,7 @@
             "intro": "En esta ronda cada persona dibuja una vez y adivina una vez. Puedes chatear mientras dibujas; tras 5 minutos, el lienzo actual se le entrega automáticamente.",
             "memoryTitle": "Opciones de memoria",
             "memoryNone": "No registrar; solo jugar esta vez.",
-            "memorySummary": "Registrar un breve resumen del juego.",
-            "memorySaved": "Solo cuando guarde manualmente, permitir que dibujos o bromas entren en memoria."
+            "memorySummary": "Registrar un breve resumen del juego."
         },
         "actions": {
             "start": "Empezar",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "Sin memoria",
-            "summaryShort": "Resumen",
-            "savedShort": "Solo guardado"
+            "summaryShort": "Resumen"
         },
         "phases": {
             "tutorial": "Tutorial",

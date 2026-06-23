@@ -4811,8 +4811,7 @@
             "intro": "This round has one drawing and one guess for each of us. You can chat while drawing; after 5 minutes, the current canvas is handed to her automatically.",
             "memoryTitle": "Memory options",
             "memoryNone": "Do not record this; only play this time.",
-            "memorySummary": "Record one short game summary.",
-            "memorySaved": "Only when I save manually, allow funny drawings or bits to enter memory."
+            "memorySummary": "Record one short game summary."
         },
         "actions": {
             "start": "Start",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "No memory",
-            "summaryShort": "Summary",
-            "savedShort": "Saved only"
+            "summaryShort": "Summary"
         },
         "phases": {
             "tutorial": "Tutorial",

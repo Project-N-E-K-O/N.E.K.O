@@ -2551,9 +2551,13 @@
     });
   }
 
+  function normalizeMemoryConsent(value) {
+    return String(value || '') === 'summary' ? 'summary' : 'none';
+  }
+
   function readMemoryConsent() {
     var selected = document.querySelector('input[name="memory-consent"]:checked');
-    state.memoryConsent = selected ? selected.value : 'none';
+    state.memoryConsent = normalizeMemoryConsent(selected ? selected.value : 'none');
     updateControls();
   }
 

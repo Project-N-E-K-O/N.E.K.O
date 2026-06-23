@@ -4811,8 +4811,7 @@
             "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 5 分鐘會自動交給她猜。",
             "memoryTitle": "記憶選項",
             "memoryNone": "不記錄，僅本次玩。",
-            "memorySummary": "可以記錄一句遊戲概要。",
-            "memorySaved": "僅在我主動儲存時，把有趣畫作或梗寫入記憶。"
+            "memorySummary": "可以記錄一句遊戲概要。"
         },
         "actions": {
             "start": "開始",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "不記錄",
-            "summaryShort": "概要",
-            "savedShort": "僅儲存時"
+            "summaryShort": "概要"
         },
         "phases": {
             "tutorial": "教程",

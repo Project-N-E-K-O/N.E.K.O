@@ -4811,8 +4811,7 @@
             "intro": "Nesta rodada cada um desenha uma vez e adivinha uma vez. Você pode conversar enquanto desenha; depois de 5 minutos, a tela atual vai automaticamente para ela.",
             "memoryTitle": "Opções de memória",
             "memoryNone": "Não registrar; jogar só desta vez.",
-            "memorySummary": "Registrar um breve resumo do jogo.",
-            "memorySaved": "Somente quando eu salvar manualmente, permitir que desenhos ou piadas entrem na memória."
+            "memorySummary": "Registrar um breve resumo do jogo."
         },
         "actions": {
             "start": "Começar",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "Sem memória",
-            "summaryShort": "Resumo",
-            "savedShort": "Só ao salvar"
+            "summaryShort": "Resumo"
         },
         "phases": {
             "tutorial": "Tutorial",

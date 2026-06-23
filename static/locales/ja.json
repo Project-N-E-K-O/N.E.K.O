@@ -4811,8 +4811,7 @@
             "intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
             "memoryTitle": "記憶オプション",
             "memoryNone": "記録せず、今回だけ遊ぶ。",
-            "memorySummary": "短いゲーム概要を一つ記録する。",
-            "memorySaved": "自分で保存した時だけ、面白い絵やネタを記憶に入れる。"
+            "memorySummary": "短いゲーム概要を一つ記録する。"
         },
         "actions": {
             "start": "開始",
@@ -4841,8 +4840,7 @@
         },
         "memory": {
             "noneShort": "記録なし",
-            "summaryShort": "概要",
-            "savedShort": "保存時のみ"
+            "summaryShort": "概要"
         },
         "phases": {
             "tutorial": "チュートリアル",
