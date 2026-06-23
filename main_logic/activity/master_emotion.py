@@ -83,9 +83,10 @@ class MasterEmotionReading:
     complexity: float = 0.0
     action_intent: Optional[float] = None
     source_excerpt: str = ""
-    # Whitespace-normalized prefix of the analyzed text, used to match this
-    # reading to the turn it came from — the agent pre-gate must not consume a
-    # stale reading from an earlier turn. See ``_normalize_for_match``.
+    # Stable fingerprint (sha1 of the whitespace-normalized FULL text) of the
+    # analyzed turn, used to match this reading to the turn it came from — the
+    # agent pre-gate must not consume a stale reading from an earlier turn.
+    # See ``_normalize_for_match``.
     source_norm: str = ""
 
 
