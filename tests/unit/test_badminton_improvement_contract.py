@@ -214,7 +214,10 @@ def test_badminton_i18n_placeholder_token_avoids_jinja_braces():
 def test_badminton_hidden_tab_keeps_route_alive():
     html = _badminton_html()
 
-    assert "window.addEventListener('beforeunload', function () { endRoute(true); });" in html
+    beforeunload_start = html.index("window.addEventListener('beforeunload', function () {")
+    beforeunload_section = html[beforeunload_start:html.index("window.addEventListener('localechange'", beforeunload_start)]
+    assert "closeSpeechPlaybackStateBridge();" in beforeunload_section
+    assert "endRoute(true);" in beforeunload_section
     assert "var pageVisible = !document.hidden;" in html
     assert "visible: pageVisible" in html
     assert "pageVisible: pageVisible" in html
@@ -545,6 +548,9 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.toast.nekoShoot",
         "badminton.toast.nekoSmash",
         "badminton.toast.nekoSave",
+        "badminton.toast.yuiCheatInk",
+        "badminton.toast.yuiCheatBanana",
+        "badminton.toast.yuiCheatBananaSlip",
         "badminton.toast.nekoThinking",
         "badminton.toast.nekoTurn",
         "badminton.toast.copyNeko",
@@ -1701,6 +1707,8 @@ def test_badminton_debug_voice_mode_allows_tts_when_debugging():
     assert "function readVoiceOccupancy() {" in html
     assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" in html
     assert "initSpeechPlaybackStateBridge();" in html
+    assert "function closeSpeechPlaybackStateBridge() {" in html
+    assert "speechPlaybackChannel.close();" in html
     assert "function speakLineLocally(line) {" in html
     assert "new SpeechSynthesisUtterance(text)" in html
     assert "if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();" in mirror_section

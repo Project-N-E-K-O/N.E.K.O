@@ -2464,6 +2464,13 @@
     });
     readSpeechPlaybackState();
   }
+  function closeSpeechPlaybackStateBridge() {
+    if (!speechPlaybackChannel) return;
+    try {
+      speechPlaybackChannel.close();
+    } catch (_) {}
+    speechPlaybackChannel = null;
+  }
   function readVoiceOccupancy() {
     var playback = readSpeechPlaybackState();
     if (playback.active) return playback;
@@ -9413,7 +9420,10 @@
     });
   }
   window.addEventListener('resize', scheduleBadmintonResize);
-  window.addEventListener('beforeunload', function () { endRoute(true); });
+  window.addEventListener('beforeunload', function () {
+    closeSpeechPlaybackStateBridge();
+    endRoute(true);
+  });
   window.addEventListener('localechange', function () {
     invalidateBadmintonCourtCache();
     applyStaticI18n();
