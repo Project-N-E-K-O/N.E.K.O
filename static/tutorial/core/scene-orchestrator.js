@@ -100,14 +100,26 @@
             let narrationPromise = Promise.resolve();
             const legacyScene = scene || {};
             const audio = timelineScene && timelineScene.audio ? timelineScene.audio : {};
+            const resolveText = () => {
+                if (typeof director.resolveAvatarFloatingSceneText === 'function') {
+                    return director.resolveAvatarFloatingSceneText(legacyScene) || audio.text || legacyScene.text || '';
+                }
+                return audio.text || legacyScene.text || '';
+            };
+            const resolveVoiceKey = (fallbackVoiceKey) => {
+                if (typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+                    return director.resolveAvatarFloatingSceneVoiceKey(legacyScene)
+                        || fallbackVoiceKey
+                        || audio.voiceKey
+                        || legacyScene.voiceKey
+                        || '';
+                }
+                return fallbackVoiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+            };
             return {
                 play: (voiceKey, audioOptions) => {
-                    const text = audio.text || (
-                        typeof director.resolveAvatarFloatingSceneText === 'function'
-                            ? director.resolveAvatarFloatingSceneText(legacyScene)
-                            : ''
-                    );
-                    const resolvedVoiceKey = voiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+                    const text = resolveText();
+                    const resolvedVoiceKey = resolveVoiceKey(voiceKey);
                     if (typeof director.speakGuideLine === 'function' && (text || resolvedVoiceKey)) {
                         narrationPromise = Promise.resolve(director.speakGuideLine(text, {
                             voiceKey: resolvedVoiceKey,
@@ -125,7 +137,7 @@
                 waitForEnd: () => narrationPromise,
                 getDurationMs: (voiceKey) => {
                     if (typeof director.getGuideVoiceDurationMs === 'function') {
-                        return director.getGuideVoiceDurationMs(voiceKey || audio.voiceKey || '', '');
+                        return director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '');
                     }
                     if (Number.isFinite(audio.durationMs)) {
                         return audio.durationMs;
@@ -135,10 +147,10 @@
                 resolveCueMs: (voiceKey, cueName) => {
                     if (typeof director.resolveGuideVoiceCueTargetMs === 'function') {
                         return director.resolveGuideVoiceCueTargetMs(
-                            voiceKey || audio.voiceKey || '',
+                            resolveVoiceKey(voiceKey || audio.voiceKey),
                             cueName,
                             0,
-                            audio.text || legacyScene.text || ''
+                            resolveText()
                         );
                     }
                     return 0;

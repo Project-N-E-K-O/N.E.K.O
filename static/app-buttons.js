@@ -3133,26 +3133,40 @@
             // 注意：即使没有预选源也要走原子化路径。原子化在主进程里把"含 Live2D 的 Pet 窗口"
             // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
             // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
-            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自动取主屏。
+            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自行选择合适屏幕。
             if (window.electronDesktopCapturer
                 && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+                var atomicFailed = false;
                 try {
                     var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
+                        atomicFailed = true;
                         console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
                         if (typeof window.maybeClearSourceOnNotFound === 'function') {
                             window.maybeClearSourceOnNotFound(atomic, 'recaptureWithoutNeko atomic Source not found');
                         }
+                    } else {
+                        atomicFailed = true;
+                        console.warn('[隐藏NEKO] 主进程原子化路径未返回可用截图');
                     }
                 } catch (e) {
-                    console.warn('[隐藏NEKO] 主进程原子化路径抛错，回退到渲染器路径:', e);
+                    atomicFailed = true;
+                    console.warn('[隐藏NEKO] 主进程原子化路径抛错:', e);
                 }
-                // 主进程路径失败则继续走下面 renderer 端的兜底（visibility:hidden + MediaStream）
+                if (atomicFailed) {
+                    // Electron 下只有主进程原子化路径会真正 hide 含 WebGL/Live2D 的 Pet 窗口。
+                    // 后续 renderer / pyautogui 兜底只能隐藏 DOM 或重新触发系统屏幕共享，
+                    // 结果会变成"对话框消失但模型仍在"。这里直接停止重拍，避免生成错误截图。
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
+                    }
+                    return null;
+                }
             }
 
-            // Fallback：web 浏览器模式或主进程路径失败 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
+            // Fallback：web 浏览器模式或没有主进程原子化能力的旧环境 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
             // Electron 下额外让主进程 hide 卫星窗口；Pet 自己的 DOM 用 visibility:hidden 处理。
             // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();

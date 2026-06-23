@@ -78,6 +78,92 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
     ]);
 });
 
+test('VisualRuntime resolves timeline chat voice key and emotion through director hooks', async () => {
+    const calls = [];
+    const legacyScene = {
+        id: 'day2_intro_context',
+        text: '昨天默认台词',
+        voiceKey: 'avatar_floating_day2_intro',
+        emotion: 'happy'
+    };
+    const director = {
+        resolveAvatarFloatingSceneText(scene) {
+            calls.push(['text', scene.id]);
+            return '嘿嘿分支台词';
+        },
+        resolveAvatarFloatingSceneVoiceKey(scene) {
+            calls.push(['voice', scene.id]);
+            return 'avatar_floating_day2_intro_voice_used';
+        },
+        resolveAvatarFloatingSceneEmotion(scene) {
+            calls.push(['emotion:resolve', scene.id]);
+            return 'sad';
+        },
+        appendGuideChatMessage(text, options) {
+            calls.push(['chat', text, options.voiceKey]);
+        },
+        applyGuideEmotion(emotion) {
+            calls.push(['emotion', emotion]);
+        }
+    };
+    const runtime = createTutorialVisualRuntime(director);
+
+    runtime.handleChatMessage(
+        { command: 'chat.message', text: '昨天默认台词', voiceKey: 'avatar_floating_day2_intro' },
+        {
+            director,
+            legacyScene,
+            scene: {
+                audio: {
+                    text: '昨天默认台词',
+                    voiceKey: 'avatar_floating_day2_intro'
+                }
+            }
+        }
+    );
+    runtime.handleEmotionSet(
+        { command: 'emotion.set', emotion: 'happy' },
+        { director, legacyScene }
+    );
+
+    assert.deepEqual(calls, [
+        ['text', 'day2_intro_context'],
+        ['voice', 'day2_intro_context'],
+        ['chat', '嘿嘿分支台词', 'avatar_floating_day2_intro_voice_used'],
+        ['emotion:resolve', 'day2_intro_context'],
+        ['emotion', 'sad']
+    ]);
+});
+
+test('VisualRuntime keeps explicit event emotion ahead of legacy scene emotion', async () => {
+    const calls = [];
+    const director = {
+        resolveAvatarFloatingSceneEmotion(scene) {
+            calls.push(['emotion:resolve', scene.id]);
+            return scene.emotion || '';
+        },
+        applyGuideEmotion(emotion) {
+            calls.push(['emotion', emotion]);
+        }
+    };
+    const runtime = createTutorialVisualRuntime(director);
+
+    runtime.handleEmotionSet(
+        { command: 'emotion.set', emotion: 'surprised' },
+        {
+            director,
+            legacyScene: {
+                id: 'timeline-override',
+                emotion: 'happy'
+            }
+        }
+    );
+
+    assert.deepEqual(calls, [
+        ['emotion', 'surprised']
+    ]);
+});
+
 test('VisualRuntime resolves day4 model lock timeline commands through scene target resolver', async () => {
     const calls = [];
     const lockTarget = { id: 'vrm-lock-icon' };

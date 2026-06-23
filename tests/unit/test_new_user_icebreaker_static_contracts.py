@@ -18,6 +18,7 @@ UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "unive
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
+ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d-core.js"
 SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
 
@@ -234,8 +235,10 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     index_html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert "new_user_icebreaker" in runtime
-    assert "var GAME_TYPE = 'new_user_icebreaker'" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/speak'" in runtime
+    assert "var ICEBREAKER_API_BASE = '/api/icebreaker'" in runtime
+    assert "ICEBREAKER_API_BASE + '/speak'" in runtime
+    assert "/api/game/new_user_icebreaker" not in runtime
+    assert "encodeURIComponent(GAME_TYPE)" not in runtime
     assert "mirror_text: false" in runtime
     assert "interrupt_audio: true" in runtime
     assert "voiceKey" in runtime
@@ -278,20 +281,22 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     websocket_router = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
     game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
 
     assert "appendLlmContext(role, messageText" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + '/context'" in runtime
+    assert "ICEBREAKER_API_BASE + '/context'" in runtime
     assert "request_id: String(extra.requestId || '')" in runtime
-    assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in game_router
-    assert "_icebreaker_context_seen_request_ids" not in game_router
-    assert "append_context(" in game_router
-    assert "source=\"game.icebreaker\"" in game_router
-    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in game_router
-    assert "invalid_text_length" in game_router
+    assert "request_id = str(data.get(\"request_id\") or event.get(\"request_id\") or \"\").strip()" in icebreaker_router
+    assert "_icebreaker_context_seen_request_ids" not in icebreaker_router
+    assert "append_context(" in icebreaker_router
+    assert "source=\"icebreaker\"" in icebreaker_router
+    assert "MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000" in icebreaker_router
+    assert "invalid_text_length" in icebreaker_router
     assert "append_icebreaker_context_async" not in game_router
-    assert '@router.post("/{game_type}/context")' in game_router
+    assert '@router.post("/{game_type}/context")' not in game_router
+    assert '@router.post("/context")' in icebreaker_router
     assert "startIcebreakerRoute(nextSession).then(function (started) {" in runtime
-    assert "'/api/game/' + encodeURIComponent(GAME_TYPE) + path" in runtime
+    assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
     assert "postgameProactive: { enabled: false }" in runtime
@@ -299,16 +304,21 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert 'action == "icebreaker_context_append"' not in websocket_router
 
 
-def test_icebreaker_route_start_does_not_emit_game_window_or_timeout_heartbeat():
+def test_icebreaker_route_is_separate_from_game_route_active_state():
     game_router = GAME_ROUTER_PATH.read_text(encoding="utf-8")
+    icebreaker_router = ICEBREAKER_ROUTER_PATH.read_text(encoding="utf-8")
     window_open_guard = game_router.split("mgr_for_ws = get_session_manager().get(lanlan_name)", 1)[1].split(
         "else:",
         1,
     )[0]
 
-    assert 'if game_type == "new_user_icebreaker":' in game_router
-    assert 'state["heartbeat_enabled"] = False' in game_router
-    assert 'game_type != "new_user_icebreaker"' in window_open_guard
+    assert '"reason": "not_a_game_route"' in game_router
+    assert '"/api/icebreaker/route/start"' in game_router
+    assert '"/api/icebreaker/speak"' in game_router
+    assert '"/api/icebreaker/route/end"' in game_router
+    assert "activate_icebreaker_route" in icebreaker_router
+    assert "_get_active_game_route_state" not in icebreaker_router
+    assert "game_window_state_change" not in icebreaker_router
     assert 'state.get("game_route_active")' in window_open_guard
     assert 'action="opened"' in game_router
 
@@ -407,7 +417,8 @@ def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal
         1,
     )[0]
     assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
-    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
+    assert "openSubtitleTranslationForIcebreakerAssistantMessage()" in sync_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId" in sync_block
     assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
 
 
@@ -420,12 +431,16 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         "function startIcebreakerRoute(session)",
         1,
     )[0]
+    assert "var opened = false;" in open_block
     assert "window.subtitleBridge" in open_block
-    assert "bridge.setSubtitleEnabled(true)" in open_block
+    assert "bridge.setSubtitleEnabled(true, {" in open_block
+    assert "opened = true;" in open_block
+    assert "persist: false" in open_block
     assert "window.reactChatWindowHost" in open_block
     assert "host.setTranslateEnabled(true" in open_block
     assert "console.warn('[NewUserIcebreaker] subtitle bridge open failed:'" in open_block
     assert "console.warn('[NewUserIcebreaker] subtitle host translation open failed:'" in open_block
+    assert "return opened;" in open_block
 
     start_block = runtime.split("return startIcebreakerRoute(nextSession).then(function (started)", 1)[1].split(
         "activeSession = nextSession;",
@@ -439,8 +454,9 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
     )[0]
     assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
     assert "if (shouldOpenIcebreakerSubtitlePanelOnce()) {" in sync_block
-    assert "openSubtitleTranslationForIcebreakerAssistantMessage();" in sync_block
-    assert sync_block.index("openSubtitleTranslationForIcebreakerAssistantMessage();") < sync_block.index(
+    assert "if (openSubtitleTranslationForIcebreakerAssistantMessage()) {" in sync_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId" in sync_block
+    assert sync_block.index("openSubtitleTranslationForIcebreakerAssistantMessage()") < sync_block.index(
         "finalizeIcebreakerAssistantSubtitle(text);"
     )
     open_once_block = runtime.split("function shouldOpenIcebreakerSubtitlePanelOnce()", 1)[1].split(
@@ -448,7 +464,7 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         1,
     )[0]
     assert "icebreakerSubtitlePanelOpenedSessionId === sessionId" in open_once_block
-    assert "icebreakerSubtitlePanelOpenedSessionId = sessionId;" in open_once_block
+    assert "icebreakerSubtitlePanelOpenedSessionId = sessionId;" not in open_once_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
@@ -466,7 +482,12 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
         "function handleTranslateToggle()",
         1,
     )[0]
+    assert "var shouldPersist = requestOptions.persist !== false;" in set_translate_block
+    assert "bridge.setSubtitleEnabled(next, {" in set_translate_block
+    assert "persist: shouldPersist" in set_translate_block
+    assert "source: syncSource" in set_translate_block
     assert "var synced = false;" in set_translate_block
+    assert "if (!synced && shouldPersist) {" in set_translate_block
     assert "console.warn('[ReactChatWindow] subtitle shared update failed:'" in set_translate_block
     assert "console.warn('[ReactChatWindow] localStorage subtitleEnabled persist failed:'" in set_translate_block
     assert "console.warn('[ReactChatWindow] appSettings.saveSettings failed:'" in set_translate_block
@@ -476,6 +497,18 @@ def test_icebreaker_assistant_message_auto_opens_subtitle_translation_panel():
     assert set_translate_block.index("window.appSettings.saveSettings();") < set_translate_block.index(
         "state.viewProps = Object.assign"
     )
+
+
+def test_icebreaker_project_tts_uses_local_mutation_headers():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
+        1,
+    )[0]
+
+    assert "getLocalMutationHeaders().then(function (headers)" in speak_block
+    assert "headers: headers" in speak_block
+    assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():

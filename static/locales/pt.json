@@ -4416,6 +4416,10 @@
              "difficulty": "Dificuldade {{difficulty}}",
             "nekoShoot": "Neko rebate",
             "nekoSmash": "Smash da Yui!",
+             "nekoSave": "Yui salvou!",
+             "yuiCheatInk": "Yui lançou tinta",
+             "yuiCheatBanana": "Yui lançou uma casca de banana",
+             "yuiCheatBananaSlip": "Você pisou na casca de banana",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Vez da Neko",
              "copyNeko": "Copie a Neko",
@@ -4452,191 +4456,225 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "Ainda há chance.",
-                     "Ainda há chance."
+                     "Pr?xima troca, com calma.",
+                     "Reajusta e golpeia limpo."
                  ],
                  "game_over": [
-                     "Mais uma?",
-                     "Mais uma?"
+                     "Esta rodada termina aqui.",
+                     "Vamos mais uma?"
                  ],
                  "long_aim": [
-                     "Rebata logo.",
-                     "Rebata logo."
+                     "Bate antes de cair.",
+                     "Pensar demais te trava."
                  ],
                  "close_to_record": [
-                     "Quase no recorde.",
-                     "Quase no recorde."
+                     "O recorde est? perto.",
+                     "Mais um golpe firme chega l?."
                  ],
                  "new_record": [
-                     "Novo recorde!",
-                     "Novo recorde!"
+                     "Certo, novo recorde.",
+                     "Esse golpe foi limpo."
                  ],
                  "streak_5": [
-                     "Cinco seguidas!",
-                     "Cinco seguidas!"
+                     "Cinco trocas ligadas.",
+                     "Seu ritmo est? aquecendo."
                  ],
                  "streak_10": [
-                     "Dez seguidas?",
-                     "Dez seguidas?"
+                     "Dez seguidas, nada mal.",
+                     "Ainda n?o se ache."
                  ],
                  "streak_15": [
-                     "Quinze seguidas é demais.",
-                     "Quinze seguidas é demais."
+                     "Quinze e ainda vai.",
+                     "Agora estou olhando s?rio."
                  ],
                  "streak_20": [
-                     "Vinte seguidas? Incrível.",
-                     "Vinte seguidas? Incrível."
+                     "Vinte ? tempo demais.",
+                     "Essa troca ainda continua?"
                  ],
                  "line_in": [
-                    "Na linha!",
-                    "Na linha!"
+                     "Na linha, preciso.",
+                     "A coloca??o foi boa."
                  ],
                  "net_touch": [
-                    "Tocou na rede e vale.",
-                    "Tocou na rede e vale."
+                     "Passou raspando na rede.",
+                     "?ngulo arriscado, mas vale."
                  ],
                  "zone_in": [
-                    "Caiu na zona.",
-                    "Caiu na zona."
+                     "Bem na zona.",
+                     "Voc? escolheu bem o ponto."
                  ],
                  "out": [
-                     "Quase.",
-                     "Quase."
+                     "Um pouco longa.",
+                     "Esse swing passou demais."
                  ],
                  "net": [
-                     "Ficou na rede.",
-                     "Ficou na rede."
+                     "A rede pegou.",
+                     "Levanta a face da raquete."
                  ]
              },
              "shooter": {
                  "shot_missed": [
-                     "Ainda há chance.",
-                     "Ainda há chance."
+                     "Reajusta o controle.",
+                     "Firme. Eu acompanho."
                  ],
                  "game_over": [
-                     "Mais uma?",
-                     "Mais uma?"
+                     "Esse controle ainda falta.",
+                     "N?o me fa?a correr ? toa."
                  ],
                  "long_aim": [
-                     "Rebata logo.",
-                     "Rebata logo."
+                     "R?pido, minha m?o est? dura.",
+                     "Ainda escolhendo o ?ngulo?"
                  ],
                  "close_to_record": [
-                     "Quase no recorde.",
-                     "Quase no recorde."
+                     "O recorde est? perto.",
+                     "N?o treme neste golpe."
                  ],
                  "new_record": [
-                     "Novo recorde!",
-                     "Novo recorde!"
+                     "Certo, novo recorde.",
+                     "A coopera??o foi decente."
                  ],
                  "streak_5": [
-                     "Cinco seguidas!",
-                     "Cinco seguidas!"
+                     "Cinco seguidas. N?o flutua.",
+                     "Esse ritmo est? est?vel."
                  ],
                  "streak_10": [
-                     "Dez seguidas?",
-                     "Dez seguidas?"
+                     "Dez seguidas? N?o se gabe.",
+                     "Sua m?o est? bem firme."
                  ],
                  "streak_15": [
-                     "Quinze seguidas é demais.",
-                     "Quinze seguidas é demais."
+                     "Quinze? N?o se empolga.",
+                     "Voc? segurou bem essa."
                  ],
                  "streak_20": [
-                     "Vinte seguidas? Incrível.",
-                     "Vinte seguidas? Incrível."
+                     "Vinte? Ainda continua?",
+                     "Esta rodada ficou selvagem."
                  ],
                  "line_in": [
-                    "Na linha!",
-                    "Na linha!"
+                     "Certo, foi preciso.",
+                     "A face da raquete foi controlada."
                  ],
                  "net_touch": [
-                    "Tocou na rede e vale.",
-                    "Tocou na rede e vale."
+                     "Voc? raspou por cima.",
+                     "O ?ngulo arriscado funcionou."
                  ],
                  "zone_in": [
-                    "Caiu na zona.",
-                    "Caiu na zona."
+                     "N?o sorri. Teve sorte.",
+                     "Voc? escolheu bem a queda."
                  ],
                  "out": [
-                     "Quase.",
-                     "Quase."
+                     "Um pouco menos de for?a.",
+                     "Voc? apressou essa."
                  ],
                  "net": [
-                     "Ficou na rede.",
-                     "Ficou na rede."
+                     "Para onde est? me levando?",
+                     "Levanta a face da raquete."
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "Ainda há chance.",
-                     "Ainda há chance."
+                     "Ainda há chance.",
+                     "Você atrasou meio tempo.",
+                     "Não se apavore. Ainda estou esperando a próxima."
                  ],
                  "game_over": [
-                     "Mais uma?",
-                     "Mais uma?"
+                     "Esta rodada termina aqui.",
+                     "Na pr?xima, n?o fuja.",
+                     "Este set para aqui.",
+                     "O placar j? diz bastante."
                  ],
                  "long_aim": [
                      "Rebata logo.",
-                     "Rebata logo."
+                     "Rebata logo.",
+                     "Está esperando o vento?",
+                     "Bate logo ou eu vou beber água."
                  ],
                  "close_to_record": [
                      "Quase no recorde.",
-                     "Quase no recorde."
+                     "Quase no recorde.",
+                     "O recorde está na ponta da raquete.",
+                     "Mais uma firme e ele muda."
                  ],
                  "new_record": [
                      "Novo recorde!",
-                     "Novo recorde!"
+                     "Novo recorde!",
+                     "Tá bom, essa foi bonita.",
+                     "O recorde é seu. O próximo ponto é meu."
                  ],
                  "streak_5": [
                      "Cinco seguidas!",
-                     "Cinco seguidas!"
+                     "Cinco seguidas!",
+                     "Cinco seguidas. Nada mal.",
+                     "Finalmente entrou no ritmo."
                  ],
                  "streak_10": [
                      "Dez seguidas?",
-                     "Dez seguidas?"
+                     "Dez seguidas?",
+                     "Dez seguidas? Agora vou observar de verdade.",
+                     "Este rali ficou interessante."
                  ],
                  "streak_15": [
                      "Quinze seguidas é demais.",
-                     "Quinze seguidas é demais."
+                     "Quinze seguidas é demais.",
+                     "Quinze e ainda vivo. Que teimosia.",
+                     "Você não vai ficar tão estável para sempre."
                  ],
                  "streak_20": [
                      "Vinte seguidas? Incrível.",
-                     "Vinte seguidas? Incrível."
+                     "Vinte seguidas? Incrível.",
+                     "Vinte seguidas. A quadra vai lembrar.",
+                     "Este rali já ficou absurdo."
                  ],
                  "clutch": "...Este precisa entrar.",
                  "excuse": [
                      "Ai, meu braço está cansado.",
-                     "Hoje meu toque não está bom. Na próxima eu jogo sério."
+                     "Hoje meu toque não está bom. Na próxima eu jogo sério.",
+                     "Essa não conta. Eu estava vendo o vento.",
+                     "As cordas estão frouxas. Não foi culpa minha."
                  ],
                  "difficultyLv2": [
                      "O aquecimento acabou. Vou acelerar.",
-                     "A brincadeira acabou."
+                     "A brincadeira acabou.",
+                     "Agora vou receber de verdade. Não pisque.",
+                     "A próxima vem mais rápida. Aguenta firme."
                  ],
                  "difficultyMax": [
                      "Agora vou jogar sério.",
                      "A partir de agora, céu e terra são meus.",
                      "Agora você é quem desafia.",
-                     "Se o futuro é seu, prove."
+                     "Se o futuro é seu, prove.",
+                     "A partir desta, não vou aliviar.",
+                     "A quadra é minha. O placar segue a habilidade."
                  ],
                  "line_in": [
                     "Na linha!",
-                    "Na linha!"
+                    "Na linha!",
+                    "Até a linha está do seu lado.",
+                    "Essa pegou a linha certinho."
                  ],
                  "net_touch": [
                     "Tocou na rede e vale.",
-                    "Tocou na rede e vale."
+                    "Tocou na rede e vale.",
+                    "Bateu na rede e passou. Espertinho.",
+                    "Passou perto demais."
                  ],
                  "zone_in": [
                     "Caiu na zona.",
-                    "Caiu na zona."
+                    "Caiu na zona.",
+                    "Esse ponto de queda foi irritantemente preciso.",
+                    "Faltou um passo para eu chegar."
                  ],
                  "out": [
                      "Quase.",
-                     "Quase."
+                     "Quase.",
+                     "Isso voou mais longe que minha paciência.",
+                     "Fora. Não finja que não viu."
                  ],
                  "net": [
                      "Ficou na rede.",
-                     "Ficou na rede."
+                     "Ficou na rede.",
+                     "A rede bloqueou por mim.",
+                     "Esse golpe saiu apressado demais."
                  ]
              },
              "fallback": [
@@ -4656,8 +4694,39 @@
              "mindGame": [
                  "Sua mão está tremendo.",
                  "Pense bem, sem pressa.",
-                 "Esta distância não é curta."
+                 "Esta distância não é curta.",
+                 "Você parece querer a lateral.",
+                 "Já li a face da sua raquete.",
+                 "Olhar demais deixa a mão travada."
              ],
+             "yuiCheat": {
+                 "banana": [
+                     "Cuidado com os pés, lá vem casca de banana.",
+                     "Não pise nela. Eu joguei para aí.",
+                     "Olhe bem esse passo.",
+                     "Se pular por cima, admito que foi bom."
+                 ],
+                 "octopus": [
+                     "Lá vem tinta. Ainda consegue ver?",
+                     "Vou pegar sua visão emprestada por um segundo.",
+                     "Não pisque. Já é tarde.",
+                     "Mesmo sem ver direito, tem que devolver."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "Esse passo escorregou demais. Este ponto é meu.",
+                     "Assistência da casca de banana concluída. Hehe.",
+                     "Uma escorregada e o placar vem para o meu lado.",
+                     "Cuidado com o chão. Yui ganha mais um ponto."
+                 ],
+                 "octopus": [
+                     "A tinta cobriu na medida certa. Este ponto é meu.",
+                     "Mesmo sem ver, ainda tem que devolver.",
+                     "Enquanto sua visão estava bloqueada, eu já marquei.",
+                     "Essa tática da tinta funcionou bem, não foi?"
+                 ]
+             },
              "easterEgg": {
                 "lateNight": "Rebatendo até esta hora?",
                 "xmas": "Os sinos já estão pendurados e você ainda quer rebater?",

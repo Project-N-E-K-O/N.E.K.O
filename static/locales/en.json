@@ -4416,6 +4416,10 @@
              "difficulty": "Difficulty {{difficulty}}",
              "nekoShoot": "Neko's shot",
              "nekoSmash": "Yui smash!",
+             "nekoSave": "Yui saves it!",
+             "yuiCheatInk": "Yui tossed ink",
+             "yuiCheatBanana": "Yui tossed a banana peel",
+             "yuiCheatBananaSlip": "You stepped on the banana peel",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
@@ -4452,191 +4456,225 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "Still a chance.",
-                     "Steady up."
+                     "Next rally, stay steady.",
+                     "Reset and swing clean."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "This round ends here.",
+                     "Want another one?"
                  ],
                  "long_aim": [
-                     "Take the shot.",
-                     "Still aiming?"
+                     "Swing before it drops.",
+                     "Think too long and you freeze."
                  ],
                  "close_to_record": [
-                     "Almost a record.",
-                     "Just a little more."
+                     "The record is close.",
+                     "One steadier shot gets there."
                  ],
                  "new_record": [
-                     "New record!",
-                     "That was far."
+                     "Fine, new record.",
+                     "That one was clean."
                  ],
                  "streak_5": [
-                     "Five in a row!",
-                     "You are heating up."
+                     "Five rallies linked.",
+                     "Your rhythm is warming up."
                  ],
                  "streak_10": [
-                     "Ten straight?",
-                     "That is wild."
+                     "Ten straight, not bad.",
+                     "Do not get proud yet."
                  ],
                  "streak_15": [
-                     "Fifteen is absurd.",
-                     "You are locked in."
+                     "Fifteen and still going.",
+                     "Now I am watching closely."
                  ],
                  "streak_20": [
-                     "Twenty straight?",
-                     "This round is unreal."
+                     "Twenty is too long.",
+                     "Is this rally still going?"
                  ],
                  "line_in": [
-                     "Caught the line!",
-                     "Clean landing."
+                     "On the line, accurate.",
+                     "That placement was good."
                  ],
                  "net_touch": [
-                     "Net touch counts.",
-                     "Nice angle."
+                     "It slipped over the net.",
+                     "Risky angle, but fine."
                  ],
                  "zone_in": [
-                     "Right in the zone!",
-                     "That landed clean."
+                     "Right in the zone.",
+                     "You picked that spot well."
                  ],
                  "out": [
-                     "Just out.",
-                     "That one sailed long."
+                     "Just a little long.",
+                     "That swing carried too far."
                  ],
                  "net": [
-                     "Caught the net.",
-                     "Open the racket face."
+                     "The net caught it.",
+                     "Lift the racket face."
                  ]
              },
              "shooter": {
                  "shot_missed": [
-                     "Still a chance.",
-                     "Steady up."
+                     "Reset your control.",
+                     "Stay steady. I can follow."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "Your control still needs work.",
+                     "Do not make me run for nothing."
                  ],
                  "long_aim": [
-                     "Take the shot.",
-                     "Still aiming?"
+                     "Hurry up, my hand is stiff.",
+                     "Still choosing the angle?"
                  ],
                  "close_to_record": [
-                     "Almost a record.",
-                     "Just a little more."
+                     "The record is close.",
+                     "Do not shake on this shot."
                  ],
                  "new_record": [
-                     "New record!",
-                     "That was far."
+                     "Fine, new record.",
+                     "That cooperation was decent."
                  ],
                  "streak_5": [
-                     "Five in a row!",
-                     "You are heating up."
+                     "Five in a row. Do not float.",
+                     "This rhythm is stable."
                  ],
                  "streak_10": [
-                     "Ten straight?",
-                     "That is wild."
+                     "Ten straight? Do not brag.",
+                     "Your hand is pretty steady."
                  ],
                  "streak_15": [
-                     "Fifteen is absurd.",
-                     "You are locked in."
+                     "Fifteen? Do not get smug.",
+                     "You really held this one."
                  ],
                  "streak_20": [
-                     "Twenty straight?",
-                     "This round is unreal."
+                     "Twenty? Still going?",
+                     "This round is getting wild."
                  ],
                  "line_in": [
-                     "Caught the line!",
-                     "Clean landing."
+                     "Fine, that was accurate.",
+                     "Racket face was controlled."
                  ],
                  "net_touch": [
-                     "Net touch counts.",
-                     "Nice angle."
+                     "You brushed it over.",
+                     "The risky angle worked."
                  ],
                  "zone_in": [
-                     "Right in the zone!",
-                     "That landed clean."
+                     "Do not grin. Lucky spot.",
+                     "You picked that landing well."
                  ],
                  "out": [
-                     "Just out.",
-                     "That one sailed long."
+                     "A little less force.",
+                     "You rushed that one."
                  ],
                  "net": [
-                     "Caught the net.",
-                     "Open the racket face."
+                     "Where are you steering me?",
+                     "Lift the racket face."
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "Still a chance.",
-                     "Steady up."
+                     "Steady up.",
+                     "You were half a beat late.",
+                     "Do not panic. I am still waiting."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "This round ends here.",
+                     "Do not run next round.",
+                     "This set stops here.",
+                     "The scoreboard says enough."
                  ],
                  "long_aim": [
                      "Take the shot.",
-                     "Still aiming?"
+                     "Still aiming?",
+                     "Waiting for the wind?",
+                     "Swing soon or I am getting water."
                  ],
                  "close_to_record": [
                      "Almost a record.",
-                     "Just a little more."
+                     "Just a little more.",
+                     "The record is right on your strings.",
+                     "One steady shot and it changes."
                  ],
                  "new_record": [
                      "New record!",
-                     "That was far."
+                     "That was far.",
+                     "Fine, that one was beautiful.",
+                     "New record is yours. Next point is mine."
                  ],
                  "streak_5": [
                      "Five in a row!",
-                     "You are heating up."
+                     "You are heating up.",
+                     "Five connected. Not bad.",
+                     "Your rhythm finally settled."
                  ],
                  "streak_10": [
                      "Ten straight?",
-                     "That is wild."
+                     "That is wild.",
+                     "Ten straight? Now I am watching closely.",
+                     "This rally is getting interesting."
                  ],
                  "streak_15": [
                      "Fifteen is absurd.",
-                     "You are locked in."
+                     "You are locked in.",
+                     "Fifteen and still alive. Stubborn.",
+                     "You cannot stay this steady forever."
                  ],
                  "streak_20": [
                      "Twenty straight?",
-                     "This round is unreal."
+                     "This round is unreal.",
+                     "Twenty straight. The court will remember that.",
+                     "This rally has gone completely wild."
                  ],
                  "clutch": "...This has to go in.",
                  "excuse": [
                      "Ow, my arm is a little tired.",
-                     "My touch is off today. Next shot, I get serious."
+                     "My touch is off today. Next shot, I get serious.",
+                     "That one does not count. I was checking the wind.",
+                     "My strings are loose. It was not my fault."
                  ],
                  "difficultyLv2": [
                      "Warm-up is over. I am speeding up.",
-                     "Playtime is over."
+                     "Playtime is over.",
+                     "I am starting to receive for real. Do not blink.",
+                     "Next one is faster. Hold steady."
                  ],
                  "difficultyMax": [
                      "Now I am getting serious.",
                      "From now on, I rule above and below.",
                      "Now you are the challenger.",
-                     "If the future is yours, prove it!"
+                     "If the future is yours, prove it!",
+                     "From this shot on, I am not holding back.",
+                     "The court is mine. The score follows skill."
                  ],
                  "line_in": [
                      "Caught the line!",
-                     "Clean landing."
+                     "Clean landing.",
+                     "Even the sideline is on your side.",
+                     "That clipped the line cleanly."
                  ],
                  "net_touch": [
                      "Net touch counts.",
-                     "Nice angle."
+                     "Nice angle.",
+                     "A net dribble counts. Sneaky.",
+                     "That skimmed a little too close."
                  ],
                  "zone_in": [
                      "Right in the zone!",
-                     "That landed clean."
+                     "That landed clean.",
+                     "That landing was annoyingly sharp.",
+                     "I was a step away from that."
                  ],
                  "out": [
                      "Just out.",
-                     "That one sailed long."
+                     "That one sailed long.",
+                     "That flew farther than my patience.",
+                     "Out. Do not pretend you missed it."
                  ],
                  "net": [
                      "Caught the net.",
-                     "Open the racket face."
+                     "Open the racket face.",
+                     "The net blocked you for me.",
+                     "Too rushed on that swing."
                  ]
              },
              "fallback": [
@@ -4656,8 +4694,39 @@
              "mindGame": [
                  "Your hand is shaking.",
                  "Think first, no rush.",
-                 "This is not a short shot."
+                 "This is not a short shot.",
+                 "You look like you want the sideline.",
+                 "I already read your racket face.",
+                 "Stare too long and your hand locks up."
              ],
+             "yuiCheat": {
+                 "banana": [
+                     "Watch your step, banana peel incoming.",
+                     "Do not step on it. I tossed it over.",
+                     "Better look closely at this step.",
+                     "Jump over it if you can."
+                 ],
+                 "octopus": [
+                     "Ink incoming. Can you still see?",
+                     "Let me borrow your vision for a second.",
+                     "Do not blink. It is already too late.",
+                     "Catch it even if you cannot see."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "That step was slippery. This point is mine.",
+                     "Banana peel assist successful. Hehe.",
+                     "One slip and the score comes to my side.",
+                     "Mind the floor. Yui gets one more point."
+                 ],
+                 "octopus": [
+                     "The ink covered things perfectly. This point is mine.",
+                     "You still have to return it when you cannot see.",
+                     "While your view was blocked, I already scored.",
+                     "That ink tactic worked pretty well."
+                 ]
+             },
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",
                  "xmas": "The bells are up and you still want to rally?",

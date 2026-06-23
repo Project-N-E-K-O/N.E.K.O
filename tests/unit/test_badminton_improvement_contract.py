@@ -214,7 +214,10 @@ def test_badminton_i18n_placeholder_token_avoids_jinja_braces():
 def test_badminton_hidden_tab_keeps_route_alive():
     html = _badminton_html()
 
-    assert "window.addEventListener('beforeunload', function () { endRoute(true); });" in html
+    beforeunload_start = html.index("window.addEventListener('beforeunload', function () {")
+    beforeunload_section = html[beforeunload_start:html.index("window.addEventListener('localechange'", beforeunload_start)]
+    assert "closeSpeechPlaybackStateBridge();" in beforeunload_section
+    assert "endRoute(true);" in beforeunload_section
     assert "var pageVisible = !document.hidden;" in html
     assert "visible: pageVisible" in html
     assert "pageVisible: pageVisible" in html
@@ -399,7 +402,17 @@ def test_badminton_yui_smash_result_uses_contextual_emotes():
 @pytest.mark.unit
 def test_badminton_audio_config_contract():
     source = (ROOT / "static" / "game" / "games" / "badminton" / "badminton-audio-config.js")
+    result_short = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-result-win-short.mp3"
+    banana_slip_goofy = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-banana-slip-goofy.mp3"
+    octopus_ink_poof = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-octopus-ink-poof.mp3"
+    original_result = ROOT / "static" / "game" / "games" / "soccer" / "audio" / "Battle_1_E.mp3"
     assert source.exists()
+    assert result_short.exists()
+    assert banana_slip_goofy.exists()
+    assert octopus_ink_poof.exists()
+    assert 1000 < banana_slip_goofy.stat().st_size < 16000
+    assert 1000 < octopus_ink_poof.stat().st_size < 12000
+    assert result_short.stat().st_size < original_result.stat().st_size // 10
     text = source.read_text(encoding="utf-8")
     assert "gameSystem.badminton.audioConfig" in text
     assert "audioMix" in text
@@ -414,6 +427,13 @@ def test_badminton_audio_config_contract():
     assert "whoosh: [{ src: racketSwing" in text
     assert "var racketShuttleHits = [" in text
     assert "var racketShuttleSingle =" in text
+    assert "var resultWinShort =" in text
+    assert "var bananaSlipGoofy =" in text
+    assert "var octopusInkPoof =" in text
+    assert "bananaSlip: [{ src: bananaSlipGoofy" in text
+    assert "octopusInk: [{ src: octopusInkPoof" in text
+    assert "result: { gameOver: [{ src: resultWinShort" in text
+    assert "result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3'" not in text
     assert "shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map" in text
 
 
@@ -527,6 +547,10 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.toast.difficulty",
         "badminton.toast.nekoShoot",
         "badminton.toast.nekoSmash",
+        "badminton.toast.nekoSave",
+        "badminton.toast.yuiCheatInk",
+        "badminton.toast.yuiCheatBanana",
+        "badminton.toast.yuiCheatBananaSlip",
         "badminton.toast.nekoThinking",
         "badminton.toast.nekoTurn",
         "badminton.toast.copyNeko",
@@ -565,6 +589,10 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.lines.duel.difficultyLv2",
         "badminton.lines.duel.difficultyMax",
         "badminton.lines.mindGame",
+        "badminton.lines.yuiCheat.banana",
+        "badminton.lines.yuiCheat.octopus",
+        "badminton.lines.yuiCheatScore.banana",
+        "badminton.lines.yuiCheatScore.octopus",
         "badminton.lines.easterEgg.lateNight",
         "badminton.lines.easterEgg.xmas",
         "badminton.lines.easterEgg.newYear",
@@ -613,9 +641,66 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         ), (
             f"{locale_path.name} badminton.hud.duelTitle should mention the 11-point win rule"
         )
-        assert len(_get_nested(payload, "badminton.lines.duel.excuse")) == 2
-        assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) == 2
-        assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) == 4
+        for line_key in line_keys:
+            assert len(_get_nested(payload, f"badminton.lines.duel.{line_key}")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.excuse")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyLv2")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.duel.difficultyMax")) >= 6
+        difficulty_max_lines = _get_nested(payload, "badminton.lines.duel.difficultyMax")
+        expected_max_lines = {
+            "en.json": [
+                "From now on, I rule above and below.",
+                "Now you are the challenger.",
+                "If the future is yours, prove it!",
+            ],
+            "es.json": [
+                "Desde ahora, mando en cielo y tierra.",
+                "Ahora tú eres quien desafía.",
+                "Si el futuro es tuyo, demuéstralo.",
+            ],
+            "ja.json": [
+                "今から天地で私が一番。",
+                "今度はあなたが挑戦者だよ。",
+                "未来があなたのものなら、証明してみせて！",
+            ],
+            "ko.json": [
+                "지금부터 하늘 아래 땅 위에선 내가 최고야.",
+                "이제 네가 도전자야.",
+                "미래가 네 것이라면, 증명해 봐!",
+            ],
+            "pt.json": [
+                "A partir de agora, céu e terra são meus.",
+                "Agora você é quem desafia.",
+                "Se o futuro é seu, prove.",
+            ],
+            "ru.json": [
+                "С этого момента я властвую над небом и землей.",
+                "Теперь вызов бросаешь ты.",
+                "Если будущее твое, докажи это!",
+            ],
+            "zh-CN.json": [
+                "从现在起天上地下唯我独尊",
+                "现在你才是挑战者",
+                "如果未来是你的，证明给我看！",
+            ],
+            "zh-TW.json": [
+                "從現在起天上地下唯我獨尊",
+                "現在你才是挑戰者",
+                "如果未來是你的，證明給我看！",
+            ],
+        }
+        locale_expected_max_lines = expected_max_lines.get(locale_path.name)
+        assert locale_expected_max_lines is not None, (
+            f"{locale_path.name} missing difficultyMax line contract; "
+            f"expected locales: {sorted(expected_max_lines)}"
+        )
+        for required_line in locale_expected_max_lines:
+            assert required_line in difficulty_max_lines
+        assert len(_get_nested(payload, "badminton.lines.mindGame")) >= 6
+        assert len(_get_nested(payload, "badminton.lines.yuiCheat.banana")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.yuiCheat.octopus")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.yuiCheatScore.banana")) >= 4
+        assert len(_get_nested(payload, "badminton.lines.yuiCheatScore.octopus")) >= 4
 
 
 @pytest.mark.unit
@@ -742,6 +827,307 @@ def test_badminton_court_distances_use_badminton_line_calibration():
         'data-debug-distance="600"',
     ):
         assert stale_debug_distance not in html
+
+
+@pytest.mark.unit
+def test_badminton_aiming_overlay_does_not_double_draw_ink():
+    html = _badminton_html()
+
+    assert html.count("function drawYuiInkOverlay(now) {") == 1
+    draw_start = html.index("function drawAiming(now) {")
+    draw_end = html.index("function drawPlayerReturnHitCue(now)", draw_start)
+    draw_section = html[draw_start:draw_end]
+    assert draw_section.count("drawYuiInkOverlay(t);") == 1
+    assert "drawPlayerReturnHitCue(t);" in draw_section
+    assert "drawPlayerChargeMeter(clamp(game.power, 0, 100), t);" in draw_section
+
+
+@pytest.mark.unit
+def test_badminton_court_render_uses_static_canvas_cache():
+    html = _badminton_html()
+
+    for expected in (
+        "var badmintonCourtCache = { key: '', canvas: null };",
+        "function getBadmintonCourtCacheKey() {",
+        "scenicReady: !!getLoadedScenicBackground(theme.scenic)",
+        "function renderCourtToContext(renderCtx) {",
+        "var previousCourtCtx = ctx;",
+        "function invalidateBadmintonCourtCache() {",
+        "badmintonCourtCache.key = '';",
+    ):
+        assert expected in html
+
+    draw_start = html.index("function drawCourt() {")
+    draw_end = html.index("function renderCourtToContext(", draw_start)
+    draw_section = html[draw_start:draw_end]
+    assert "var cacheKey = getBadmintonCourtCacheKey();" in draw_section
+    assert "badmintonCourtCache.key === cacheKey" in draw_section
+    assert "ctx.drawImage(badmintonCourtCache.canvas, 0, 0, BASE_W, BASE_H);" in draw_section
+    assert "courtCanvas.width = BASE_W;" in draw_section
+    assert "courtCanvas.height = BASE_H;" in draw_section
+
+
+@pytest.mark.unit
+def test_badminton_scenic_background_decode_invalidates_court_cache():
+    html = _badminton_html()
+
+    preload_start = html.index("function preloadScenicBackgrounds() {")
+    preload_end = html.index("function getLoadedScenicBackground(key) {", preload_start)
+    preload_section = html[preload_start:preload_end]
+    assert "function markScenicBackgroundReady(image) {" in html
+    assert "image.__ready = true;" in html
+    assert "invalidateBadmintonCourtCache();" in html
+    assert "if (typeof image.decode === 'function') {" in preload_section
+    assert "image.decode().then(function () { markScenicBackgroundReady(image); }).catch(function () {});" in preload_section
+    assert "image.onload = function () { markScenicBackgroundReady(image); };" in preload_section
+
+
+@pytest.mark.unit
+def test_badminton_aiming_overlay_skips_idle_frames():
+    html = _badminton_html()
+
+    assert "var aimingOverlayWasActive = false;" in html
+    assert "function isAimingOverlayActive(now) {" in html
+    assert "return !!(isIncomingPlayerReturnCandidate()" in html
+    assert "getYuiInkState(t).active" in html
+
+    draw_start = html.index("function drawAiming(now) {")
+    draw_end = html.index("function drawPlayerChargeMeter(", draw_start)
+    draw_section = html[draw_start:draw_end]
+    assert "var overlayActive = isAimingOverlayActive(t);" in draw_section
+    assert "if (!overlayActive && !aimingOverlayWasActive) return;" in draw_section
+    assert "aimingOverlayWasActive = overlayActive;" in draw_section
+    assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
+    assert draw_section.index("if (!overlayActive && !aimingOverlayWasActive) return;") < draw_section.index("aimingCtx.clearRect(0, 0, BASE_W, BASE_H);")
+
+
+@pytest.mark.unit
+def test_badminton_leaderboard_uses_document_fragment_batch_render():
+    html = _badminton_html()
+
+    render_start = html.index("function renderLeaderboard(entries, meta, mode) {")
+    render_end = html.index("function showLeaderboard(mode) {", render_start)
+    render_section = html[render_start:render_end]
+    assert "var fragment = document.createDocumentFragment();" in render_section
+    assert "fragment.appendChild(emptyRow);" in render_section
+    assert "fragment.appendChild(tr);" in render_section
+    assert "leaderboardBody.appendChild(fragment);" in render_section
+    assert "leaderboardBody.appendChild(emptyRow);" not in render_section
+    assert "leaderboardBody.appendChild(tr);" not in render_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_frame_time_is_reused_in_overlay_hot_path():
+    html = _badminton_html()
+
+    assert "var badmintonFrameNow = 0;" in html
+    assert "function getBadmintonFrameNow() {" in html
+    assert "badmintonFrameNow = ts || performance.now();" in html
+    assert "update(dt, badmintonFrameNow);" in html
+    assert "drawAiming(badmintonFrameNow);" in html
+
+    overlay_start = html.index("function isAimingOverlayActive(")
+    overlay_end = html.index("function drawAiming(", overlay_start)
+    overlay_section = html[overlay_start:overlay_end]
+    assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in overlay_section
+    assert "getYuiInkState(t).active" in overlay_section
+    assert "performance.now()" not in overlay_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_hud_text_updates_are_deduped():
+    html = _badminton_html()
+
+    assert "function setTextIfChanged(element, text) {" in html
+    assert "if (element && element.textContent !== value) element.textContent = value;" in html
+    assert "function setTitleIfChanged(element, title) {" in html
+
+    hud_start = html.index("function updateHud() {")
+    hud_end = html.index("function updateTutorial(", hud_start)
+    hud_section = html[hud_start:hud_end]
+    assert "setTextIfChanged(hud.score," in hud_section
+    assert "setTextIfChanged(hud.streak," in hud_section
+    assert "setTextIfChanged(hud.attempts," in hud_section
+    assert "setTitleIfChanged(hud.attempts," in hud_section
+    assert "setTextIfChanged(hud.record," in hud_section
+    assert ".textContent =" not in hud_section
+
+    debug_start = html.index("function updateDebugReadout() {")
+    debug_end = html.index("function setDebugVisible(", debug_start)
+    debug_section = html[debug_start:debug_end]
+    assert "setTextIfChanged(debugPowerValue, String(Math.round(game.power || 0)));" in debug_section
+    assert "setTextIfChanged(debugReadout, readoutText);" in debug_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_resize_is_coalesced_with_animation_frame():
+    html = _badminton_html()
+
+    assert "var badmintonResizeFrame = 0;" in html
+    assert "function scheduleBadmintonResize() {" in html
+    assert "if (badmintonResizeFrame) return;" in html
+    assert "badmintonResizeFrame = requestAnimationFrame(function () {" in html
+    assert "badmintonResizeFrame = 0;" in html
+    assert "resize();" in html
+    assert "window.addEventListener('resize', scheduleBadmintonResize);" in html
+    assert "window.addEventListener('resize', resize);" not in html
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_loading_and_theme_text_updates_are_deduped():
+    html = _badminton_html()
+
+    loading_start = html.index("function setBadmintonLoadingProgress(value) {")
+    loading_end = html.index("function startBadmintonFakeProgress()", loading_start)
+    loading_section = html[loading_start:loading_end]
+    assert "var progressText = badmintonLoadingProgress + '%';" in loading_section
+    assert "if (badmintonLoadingBar && badmintonLoadingBar.style.width !== progressText) badmintonLoadingBar.style.width = progressText;" in loading_section
+    assert "setTextIfChanged(badmintonLoadingPercent, progressText);" in loading_section
+    assert "badmintonLoadingPercent.textContent =" not in loading_section
+
+    theme_start = html.index("function updateThemeButton() {")
+    theme_end = html.index("function checkSeasonalEasterEggs()", theme_start)
+    theme_section = html[theme_start:theme_end]
+    assert "setTextIfChanged(themeButton, _i18n('theme.current'" in theme_section
+    assert "themeButton.textContent =" not in theme_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_volume_and_debug_input_text_updates_are_deduped():
+    html = _badminton_html()
+
+    bgm_start = html.index("if (bgmVolumeInput) {")
+    bgm_end = html.index("if (themeButton)", bgm_start)
+    volume_section = html[bgm_start:bgm_end]
+    assert "setTextIfChanged(bgmVolumeValue, bgmVolumeInput.value + '%');" in volume_section
+    assert "setTextIfChanged(sfxVolumeValue, sfxVolumeInput.value + '%');" in volume_section
+    assert "bgmVolumeValue.textContent =" not in volume_section
+    assert "sfxVolumeValue.textContent =" not in volume_section
+
+    debug_input_start = html.index("if (debugPowerInput) {", html.index("if (debugPanel) {"))
+    debug_input_end = html.index("if (debugGuideInput)", debug_input_start)
+    debug_input_section = html[debug_input_start:debug_input_end]
+    assert "setTextIfChanged(debugPowerValue, String(Math.round(game.power)));" in debug_input_section
+    assert "debugPowerValue.textContent =" not in debug_input_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_pointer_move_reuses_control_checks():
+    html = _badminton_html()
+
+    pointer_start = html.index("function handleBadmintonPointerMove(ev) {")
+    pointer_end = html.index("function handleBadmintonPointerDown(ev) {", pointer_start)
+    pointer_section = html[pointer_start:pointer_end]
+    assert "var canMoveCourt = canPlayerMoveCourt();" in pointer_section
+    assert "var canControlShot = canPlayerControlShot();" in pointer_section
+    assert "if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in pointer_section
+    assert "if (!canControlShot) return;" in pointer_section
+    assert pointer_section.count("canPlayerMoveCourt()") == 1
+    assert pointer_section.count("canPlayerControlShot()") == 1
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_render_hot_path_reuses_frame_time():
+    html = _badminton_html()
+
+    render_start = html.index("function render(now) {")
+    render_end = html.index("function markFirstFrameRendered()", render_start)
+    render_section = html[render_start:render_end]
+    assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in render_section
+    assert "drawFireBorder(t);" in render_section
+    assert "drawYuiCheatItems(t);" in render_section
+    assert "drawStreakEffect(t);" in render_section
+    assert "render(badmintonFrameNow);" in html
+
+    for name in ("drawStreakEffect", "drawFireBorder", "drawYuiCheatItems"):
+        start = html.index(f"function {name}(now) {{")
+        end = html.index("function ", start + 1)
+        section = html[start:end]
+        assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in section
+        assert "performance.now()" not in section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_input_and_tutorial_updates_are_deduped():
+    html = _badminton_html()
+
+    assert "function setInputValueIfChanged(element, value) {" in html
+    assert "if (element && element.value !== stringValue) element.value = stringValue;" in html
+
+    audio_sync_start = html.index("function _syncGameAudioVolumeControls() {")
+    audio_sync_end = html.index("function getAudioCtx()", audio_sync_start)
+    audio_sync_section = html[audio_sync_start:audio_sync_end]
+    assert "setInputValueIfChanged(bgmVolumeInput, Math.round(bgmVolume * 100));" in audio_sync_section
+    assert "setInputValueIfChanged(sfxVolumeInput, Math.round(sfxVolume * 100));" in audio_sync_section
+    assert ".value = String(Math.round(" not in audio_sync_section
+
+    debug_start = html.index("function updateDebugReadout() {")
+    debug_end = html.index("function setDebugVisible(", debug_start)
+    debug_section = html[debug_start:debug_end]
+    assert "setInputValueIfChanged(debugPowerInput, Math.round(game.power || 0));" in debug_section
+    assert "debugPowerInput.value =" not in debug_section
+
+    tutorial_start = html.index("function updateTutorial(text) {")
+    tutorial_end = html.index("function getTutorialText()", tutorial_start)
+    tutorial_section = html[tutorial_start:tutorial_end]
+    assert "setTextIfChanged(tutorialOverlay, text);" in tutorial_section
+    assert "tutorialOverlay.textContent =" not in tutorial_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_net_contact_effects_reuse_frame_time():
+    html = _badminton_html()
+
+    render_start = html.index("function render(now) {")
+    render_end = html.index("function markFirstFrameRendered()", render_start)
+    render_section = html[render_start:render_end]
+    assert "drawNetFront(t);" in render_section
+
+    front_start = html.index("function drawNetFront(now) {")
+    front_end = html.index("function drawNetContactEffects(", front_start)
+    front_section = html[front_start:front_end]
+    assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in front_section
+    assert "drawNetContactEffects(t);" in front_section
+
+    effects_start = html.index("function drawNetContactEffects(now) {")
+    effects_end = html.index("function drawNetCord()", effects_start)
+    effects_section = html[effects_start:effects_end]
+    assert "var t = Number.isFinite(now) ? now : getBadmintonFrameNow();" in effects_section
+    assert "t - effect.startAt < effect.duration" in effects_section
+    assert "var age = clamp((t - effect.startAt) / effect.duration, 0, 1);" in effects_section
+    assert "performance.now()" not in effects_section
+
+
+@pytest.mark.unit
+def test_badminton_low_risk_checked_and_aria_updates_are_deduped():
+    html = _badminton_html()
+
+    assert "function setCheckedIfChanged(element, checked) {" in html
+    assert "if (element && element.checked !== value) element.checked = value;" in html
+    assert "function setAriaHiddenIfChanged(element, hidden) {" in html
+    assert "if (element && element.getAttribute('aria-hidden') !== value) element.setAttribute('aria-hidden', value);" in html
+
+    memory_start = html.index("function _initBadmintonGameMemoryToggle() {")
+    memory_end = html.index("function _shouldSkipBadmintonStartTutorial()", memory_start)
+    memory_section = html[memory_start:memory_end]
+    assert "setCheckedIfChanged(gameMemoryToggle, false);" in memory_section
+    assert "gameMemoryToggle.checked = false;" not in memory_section
+
+    debug_start = html.index("function updateDebugReadout() {")
+    debug_end = html.index("function setDebugVisible(", debug_start)
+    debug_section = html[debug_start:debug_end]
+    assert "setCheckedIfChanged(debugGuideInput, !!assists.guide);" in debug_section
+    assert "setCheckedIfChanged(debugSweetInput, !!assists.sweet);" in debug_section
+    assert "setCheckedIfChanged(debugMarkersInput, !!distanceMarkersEnabled);" in debug_section
+    assert ".checked =" not in debug_section
+
+    visible_start = html.index("function setDebugVisible(visible) {")
+    visible_end = html.index("function handleDebugButton(", visible_start)
+    visible_section = html[visible_start:visible_end]
+    assert "setDatasetValueIfChanged(debugPanel, 'debugVisible', visible ? 'true' : 'false');" in visible_section
+    assert "setAriaHiddenIfChanged(debugPanel, !visible);" in visible_section
+    assert "debugPanel.dataset.debugVisible =" not in visible_section
+    assert "debugPanel.setAttribute('aria-hidden'" not in visible_section
 
 
 @pytest.mark.unit
@@ -1183,7 +1569,7 @@ def test_badminton_memory_toggle_does_not_auto_enable_from_history():
     init_start = html.index("function _initBadmintonGameMemoryToggle() {")
     init_section = html[init_start:html.index("function getAudioCtx()", init_start)]
 
-    assert "gameMemoryToggle.checked = false;" in init_section
+    assert "setCheckedIfChanged(gameMemoryToggle, false);" in init_section
     assert "_hasHistoricalBadmintonRecord" not in html
     assert "bd_record_distance" not in init_section
     assert "bd_leaderboard" not in init_section
@@ -1249,6 +1635,10 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     reset_section = html[reset_start:html.index("function updateHud()", reset_start)]
     result_bgm_start = html.index("function playResultBgmOnce() {")
     result_bgm_section = html[result_bgm_start:html.index("function showResult()", result_bgm_start)]
+    sync_bgm_start = html.index("function syncBgm(reason) {")
+    sync_bgm_section = html[sync_bgm_start:html.index("function resetSyncKey()", sync_bgm_start)]
+    reset_sync_start = html.index("function resetSyncKey() {")
+    reset_sync_section = html[reset_sync_start:html.index("(function scheduleAudioPreload()", reset_sync_start)]
 
     assert "resultBgmPlayed: false," in html
     assert "function playResultBgmOnce() {" in html
@@ -1258,6 +1648,12 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     assert "playResultBgmOnce();" in show_result
     assert "badmintonGameAudio.sync('game-over');" not in show_result.replace("playResultBgmOnce();", "")
     assert "game.resultBgmPlayed = false;" in reset_section
+    assert "badmintonGameAudio.resetSyncKey();" in reset_section
+    assert "var _bdResultBgmTriggered = false;" in html
+    assert "if (resolved.key === 'gameOver') {" in sync_bgm_section
+    assert "if (_bdResultBgmTriggered) return;" in sync_bgm_section
+    assert "_bdResultBgmTriggered = true;" in sync_bgm_section
+    assert "_bdResultBgmTriggered = false;" in reset_sync_section
 
 
 @pytest.mark.unit
@@ -1279,6 +1675,72 @@ def test_badminton_user_reply_voice_deadline_survives_inflight_guard():
     assert "if (isUserReply) {" in speak_section
     assert "voiceArbiter.inFlight.expiresAt + VOICE_ARBITER_DEFAULTS.tailWaitMs" in speak_section
     assert "entry.expiresAt = Math.max(" in speak_section
+
+
+@pytest.mark.unit
+def test_badminton_voice_deferral_without_deadline_uses_fallback_delay():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    request_start = html.index("function _requestVoicePlayback(entry) {")
+    request_section = html[request_start:html.index("function _flushVoiceArbiter()", request_start)]
+
+    assert "var deadlineMs = entry.expiresAt ? Math.max(0, entry.expiresAt - Date.now()) : 0;" in request_section
+    assert "var playbackDeferDelayMs = entry.expiresAt ? Math.max(120, deadlineMs - 250) : 900;" in request_section
+    assert "deadlineMs - 250 || 900" not in request_section
+    assert "_scheduleVoiceArbiterFlush(Math.min(Math.max(entry.tailWaitMs, 120), playback.remainingMs, playbackDeferDelayMs));" in request_section
+
+
+@pytest.mark.unit
+def test_badminton_debug_voice_mode_allows_tts_when_debugging():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    mirror_start = html.index("function _mirrorAndSpeak(entry) {")
+    mirror_section = html[mirror_start:html.index("function _requestVoicePlayback(entry) {", mirror_start)]
+
+    assert "var debugVoiceMode = modeParams ? modeParams.get('debug_voice') === '1' : false;" in html
+    assert "var debugVoiceMuted = modeParams ? modeParams.get('debug_mute_voice') === '1' : false;" in html
+    assert "var SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';" in html
+    assert "var SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';" in html
+    assert "function normalizeSpeechPlaybackState(raw) {" in html
+    assert "localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY)" in html
+    assert "new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME)" in html
+    assert "window.addEventListener('storage', function (event) {" in html
+    assert "window.addEventListener('neko-speech-playback-state', function (event) {" in html
+    assert "function readVoiceOccupancy() {" in html
+    assert "function waitForProjectVoicePlayback(speechId, timeoutMs, requestStartedAt) {" in html
+    assert "initSpeechPlaybackStateBridge();" in html
+    assert "function closeSpeechPlaybackStateBridge() {" in html
+    assert "speechPlaybackChannel.close();" in html
+    assert "function speakLineLocally(line) {" in html
+    assert "new SpeechSynthesisUtterance(text)" in html
+    assert "if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();" in mirror_section
+    assert "hasProjectVoicePlaybackBridge" not in mirror_section
+    assert "missing_project_voice_playback_bridge" not in mirror_section
+    assert "lastVoiceRequest = speakPayload;" in mirror_section
+    assert "waitForProjectVoicePlayback(res.speech_id, 1100, speakStartedAt)" in mirror_section
+    assert "lastVoiceFallbackReason = 'project_voice_not_queued';" in mirror_section
+    assert "lastVoiceFallbackReason = 'project_voice_unobserved';" in mirror_section
+    assert "reason: 'project_speak_failed'" in mirror_section
+    assert "return post('/speak', speakPayload, 3500).then(function (res) {" in mirror_section
+
+
+@pytest.mark.unit
+def test_badminton_voice_selection_reads_only_high_value_yui_lines():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    selector_start = html.index("function shouldReadBadmintonVoice(event, control) {")
+    selector_section = html[selector_start:html.index("function speakLine(line, control, event) {", selector_start)]
+    speak_start = html.index("function speakLine(line, control, event) {")
+    speak_section = html[speak_start:html.index("function getActiveAvatarContainer()", speak_start)]
+
+    assert "if (event && (event.force_voice || event.force_voice_in_debug || event.voice_always)) return true;" in selector_section
+    assert "kind === 'yui_cheat_item' || kind === 'yui_cheat_score'" in selector_section
+    assert "kind === 'difficulty_ramp'" in selector_section
+    assert "kind === 'game_over' && (event.duel_outcome === 'neko_win' || event.point_winner === 'neko')" not in selector_section
+    assert "event.point_winner === 'neko' && label === 'neko_duel_shot'" in selector_section
+    assert "kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'" in selector_section
+    assert "if (!shouldReadBadmintonVoice(event, control)) {" in speak_section
+    assert "lastVoiceMutedReason = 'voice_event_not_selected';" in speak_section
+    assert "showBubble(line, control || {});" in speak_section
+    assert "muted: true" in speak_section
+    assert "lastMutedReason: lastVoiceMutedReason" in html
 
 
 @pytest.mark.unit
@@ -1368,6 +1830,40 @@ def test_badminton_vrm_waits_for_three_before_resolving_modules():
 
 
 @pytest.mark.unit
+def test_badminton_net_visual_extends_along_y_axis_for_depth():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var NET_VISUAL_DEPTH_X = 8;" in html
+    assert "var NET_VISUAL_DEPTH_Y = 34;" in html
+    assert "var NET_VISUAL_DEPTH_OPACITY = 0.36;" in html
+    assert "function getNetVisualDepthPoint(point, depthT) {" in html
+    assert "var side = point.x < BADMINTON.netX ? -1 : 1;" in html
+    assert "x: point.x + side * NET_VISUAL_DEPTH_X * t" in html
+    assert "y: point.y + NET_VISUAL_DEPTH_Y * t" in html
+    assert "function lerpNetPoint(a, b, t) {" in html
+    assert "function drawNetDepthVolume() {" in html
+    depth_start = html.index("function drawNetDepthVolume() {")
+    depth_section = html[depth_start:html.index("function drawNetFront(now)", depth_start)]
+    assert "var bottomLeft = netNodes[0][NET_ROWS - 1];" in depth_section
+    assert "var rearLeft = getNetVisualDepthPoint(bottomLeft, 1);" in depth_section
+    assert "var depthFill = ctx.createLinearGradient(bottomLeft.x, bottomLeft.y, rearLeft.x, rearLeft.y);" in depth_section
+    assert "ctx.lineTo(rearRight.x, rearRight.y);" in depth_section
+    assert "for (var band = 1; band <= 4; band++) {" in depth_section
+    assert "var leftBand = lerpNetPoint(bottomLeft, rearLeft, t);" in depth_section
+    assert "for (var col = 1; col < 5; col++) {" in depth_section
+    assert "var front = lerpNetPoint(bottomLeft, bottomRight, spanT);" in depth_section
+    assert "ctx.moveTo(rearLeft.x, rearLeft.y);" in depth_section
+    assert "ctx.lineTo(rearRight.x, rearRight.y);" in depth_section
+    assert "rearTopLeft" not in depth_section
+    assert "rearTopRight" not in depth_section
+    assert "baseShade" not in depth_section
+    assert "ctx.ellipse(" not in depth_section
+    assert "NET_VISUAL_DEPTH_Y * 0.52" not in depth_section
+    assert "drawNetDepthVolume();" in html
+    assert "drawNetBack();\n    drawNetDepthVolume();\n    drawYuiCheatItems(t);" in html
+
+
+@pytest.mark.unit
 def test_badminton_scene_uses_compact_avatars_and_net():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
@@ -1378,7 +1874,8 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var PLAYER_AVATAR_H = 396;" in html
     assert "var PLAYER_FIGURE_SCALE = 1.02;" in html
     assert "var BALL_R = 18;" in html
-    assert "var SHUTTLE_VISUAL_R = 12;" in html
+    assert "var SHUTTLE_VISUAL_R = 10;" in html
+    assert "var SHUTTLE_FLIGHT_VISUAL_R = 6;" in html
     assert "var SENSEI_VRM_PATH = '/static/vrm/sensei.vrm';" in html
     assert "window.badmintonPlayerVrmManager = window.badmintonPlayerVrmManager || null;" in html
     assert "var visibleH = h * 1.28;" in html
@@ -1408,7 +1905,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "netTop: 250," in html
     assert "netBottom: 400," in html
     assert "var NET_VISUAL_LINE_WIDTH = 4;" in html
-    assert "var NET_VISUAL_Z_HEIGHT = 116;" in html
+    assert "var NET_VISUAL_Z_HEIGHT = 98;" in html
     assert "var NET_VISUAL_BOTTOM_CLEARANCE = 18;" in html
     assert "var NET_COLLISION_HALF_WIDTH = 24;" in html
     assert "var NET_SPRING_K = 0.18;" in html
@@ -1547,7 +2044,9 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var sidePostGrad = ctx.createLinearGradient(leftTop.x, netTop.y, rightTop.x, netBottom.y);" in html
     assert "ctx.strokeStyle = sidePostGrad;" in html
     assert "ctx.lineTo(leftBottom.x, leftBottom.y + 6);" in html
-    assert "ctx.ellipse(leftBottom.x, leftBottom.y + 7, 5, 2.4, 0, 0, Math.PI * 2);" in html
+    assert "ctx.moveTo(leftBottom.x - 5, leftBottom.y + 4);" in html
+    assert "ctx.lineTo(rightBottom.x + 5, rightBottom.y + 4);" in html
+    assert "ctx.ellipse(leftBottom.x, leftBottom.y + 7, 5, 2.4, 0, 0, Math.PI * 2);" not in html
     assert "postFoot" not in html
     assert "ctx.rect(leftBottom.x - 4" not in html
     assert "ctx.moveTo(topLeft.x, topLeft.y + 5);" in html
@@ -1606,14 +2105,20 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var impact = clamp(incomingSpeed / 330, 0.68, 1.55);" in html
     assert "node.vx += recoilX;" in html
     assert "node.vy += rippleY;" in html
+    assert "function doesNetTouchCarryToTargetSide(ball, crossing) {" in html
+    assert "var highOnTape = z >= netTopZ - shuttleRadius * 0.72;" in html
+    assert "var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;" in html
     assert "function applyMidcourtNetContact(ball, crossing) {" in html
     assert "ball.x = crossing.screenX;" in html
     assert "ball.y = crossing.screenY;" in html
     assert "ball.netTouched = true;" in html
+    assert "ball.netCarryToTargetSide = carriesToTargetSide;" in html
+    assert "ball.crossedNet = carriesToTargetSide;" in html
     assert "ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;" in html
     assert "applyNetContactImpulse(ball, crossing);" in html
-    assert "ball.vx = direction * clamp(Math.abs(ball.vx || 0) * 0.14, 24, 88);" in html
-    assert "ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + 132, 132);" in html
+    assert "var reboundDirection = carriesToTargetSide ? direction : -direction;" in html
+    assert "ball.vx = reboundDirection * clamp(Math.abs(ball.vx || 0) * horizontalScale, minHorizontalSpeed, maxHorizontalSpeed);" in html
+    assert "ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + (carriesToTargetSide ? 132 : 150), carriesToTargetSide ? 132 : 150);" in html
     assert "applyMidcourtNetContact(ball, netCrossing);" in html
     assert "var targetLeft = direction > 0 ? BADMINTON.netX + ballRadius * 0.5 : BADMINTON.courtLeft;" in html
     assert "var targetRight = direction > 0 ? BADMINTON.courtRight : BADMINTON.netX - ballRadius * 0.5;" in html
@@ -1643,8 +2148,8 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "var trailGrad = ctx.createLinearGradient(start.x, start.y, ball.x, ball.y);" in html
     assert "rgba(182,231,255,0)" in html
     assert "ctx.strokeStyle = 'rgba(255,143,61,.34)';" not in html
-    assert "drawShuttlecock(ball.x, ball.y, SHUTTLE_VISUAL_R, ball.spinAngle || 0);" in html
-    assert "if (ball.y < -SHUTTLE_VISUAL_R * 2) {" in html
+    assert "drawShuttlecock(ball.x, ball.y, SHUTTLE_FLIGHT_VISUAL_R, ball.spinAngle || 0);" in html
+    assert "if (ball.y < -SHUTTLE_FLIGHT_VISUAL_R * 2) {" in html
     assert "var markerX = clamp(ball.x, BADMINTON.courtLeft + 12, BADMINTON.courtRight - 12);" in html
     assert "function drawPlayerServeShuttleHint() {" in html
     assert "if (playerSenseiReady && playerSenseiContainer && playerSenseiContainer.dataset.heldShuttle3d === 'ready') return;" in html
@@ -1937,6 +2442,7 @@ def test_badminton_racket_swing_applies_physics_to_shuttle():
     assert "var SWING_IMPACT_DELAY_MS = 120;" in html
     assert "var SHUTTLE_MASS_KG = 0.005;" in html
     assert "var SHUTTLE_DRAG_PER_SECOND = 0.42;" in html
+    assert "var SHUTTLE_FLIGHT_HEIGHT_SCALE = 0.94;" in html
     assert "heldShuttleVisible: true," in html
     assert "pendingSwing: null," in html
     assert "shuttleSeq: 0," in html
@@ -2004,6 +2510,7 @@ def test_badminton_racket_swing_applies_physics_to_shuttle():
     assert "var verticalDeflection = impulse.incomingSpeed ? clamp((impulse.incomingVy || 0) * -0.10, -55, 55) : 0;" in html
     assert "var aiReturnLift = 0;" in html
     assert "var baseVy = -v * Math.sin(radians) * impulse.lift + verticalDeflection + aiReturnLift;" in html
+    assert "shuttle.vz = -shuttle.vy * SHUTTLE_FLIGHT_HEIGHT_SCALE;" in html
     assert "var smashDownVelocity = impulse.isSmash ? (shotShooter === 'neko' ? 180 + impulse.smashQuality * 145 + impulse.force * 54 : 250 + impulse.smashQuality * 210 + impulse.force * 90) : 0;" in html
     assert "shuttle.vy = impulse.isSmash ? smashDownVelocity : baseVy;" in html
     assert "function buildShuttleSpinRate(launchAngle, power, direction, impulse) {" in html
@@ -2065,6 +2572,69 @@ def test_badminton_racket_swing_applies_physics_to_shuttle():
 
 
 @pytest.mark.unit
+def test_badminton_shuttle_and_banana_rendering_use_sprite_cache():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    for expected in (
+        "var badmintonSpriteCache = {};",
+        "function getBadmintonSpriteCacheKey(kind, radius) {",
+        "function renderBadmintonShuttleSprite(spriteCtx, radius) {",
+        "drawBadmintonShuttlecockVector(spriteCtx, radius);",
+        "function getBadmintonShuttleSprite(radius) {",
+        "function renderBadmintonBananaSprite(spriteCtx, radius) {",
+        "drawBananaPeelVector(spriteCtx, radius);",
+        "function getBadmintonBananaSprite(radius) {",
+    ):
+        assert expected in html
+
+    shuttle_start = html.index("function drawBadmintonShuttlecockOnContext(renderCtx, x, y, radius, rotation) {")
+    shuttle_section = html[shuttle_start:html.index("function drawShuttlecock(x, y, radius, rotation) {", shuttle_start)]
+    assert "var sprite = getBadmintonShuttleSprite(r);" in shuttle_section
+    assert "renderCtx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);" in shuttle_section
+    assert "drawBadmintonShuttlecockVector(renderCtx, r);" in shuttle_section
+
+    banana_start = html.index("function drawBananaPeelOnContext(renderCtx, x, y, radius, rotation) {")
+    banana_section = html[banana_start:html.index("function drawBackspinBall(ball) {", banana_start)]
+    assert "var sprite = getBadmintonBananaSprite(r);" in banana_section
+    assert "renderCtx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);" in banana_section
+    assert "drawBananaPeelVector(renderCtx, r);" in banana_section
+
+
+@pytest.mark.unit
+def test_badminton_shuttle_trail_uses_ring_buffer_without_changing_public_state():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    for expected in (
+        "var SHUTTLE_TRAIL_LIMIT = 20;",
+        "function initShuttleTrail(shuttle, x, y) {",
+        "shuttle.trailHead = 0;",
+        "shuttle.trailLength = 0;",
+        "function pushShuttleTrailPoint(shuttle, x, y) {",
+        "var slot = trail[shuttle.trailHead];",
+        "shuttle.trailHead = (shuttle.trailHead + 1) % SHUTTLE_TRAIL_LIMIT;",
+        "function getShuttleTrailPoints(shuttle) {",
+        "return points;",
+        "initShuttleTrail(shuttle, origin.x, origin.y);",
+        "pushShuttleTrailPoint(ball, ball.x, ball.y);",
+        "pushShuttleTrailPoint(b, b.x, b.y);",
+    ):
+        assert expected in html
+
+    assert "ball.trail.push({ x: ball.x, y: ball.y });" not in html
+    assert "b.trail.push({ x: b.x, y: b.y });" not in html
+    assert "ball.trail.length > 20" not in html
+    assert "b.trail.length > 20" not in html
+
+    draw_start = html.index("function drawBackspinBall(ball) {")
+    draw_section = html[draw_start:html.index("function drawNet()", draw_start)]
+    assert "var trail = getShuttleTrailPoints(ball);" in draw_section
+
+    state_start = html.index("getState: function () {")
+    state_section = html[state_start:html.index("resetGame: resetGame", state_start)]
+    assert "trail: getShuttleTrailPoints(game.ball)," in state_section
+
+
+@pytest.mark.unit
 def test_badminton_duel_scores_on_valid_landings_inside_lines():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
@@ -2086,6 +2656,95 @@ def test_badminton_duel_scores_on_valid_landings_inside_lines():
 
 
 @pytest.mark.unit
+def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
+    assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
+    assert "var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
+    assert "centralInk.addColorStop(0, 'rgba(0,0,0,.96)');" in html
+    assert "function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {" in html
+    assert "var centerSplashes = [" in html
+    assert "for (var drip = 0; drip < 8; drip++) {" in html
+    assert "for (var speck = 0; speck < 22; speck++) {" in html
+    assert "aimingCtx.bezierCurveTo(" in html
+    assert "function drawInkBlob(" not in html
+    assert "var edgeVeil =" not in html
+    assert "badmintonGameAudio.playSfx('yuiCheat.octopusInk', { volumeMultiplier: 0.92 });" in html
+
+
+@pytest.mark.unit
+def test_badminton_yui_cheat_items_warn_player_with_bubble_lines():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    ink_start = html.index("function activateYuiInk() {")
+    ink_section = html[ink_start:html.index("function spawnYuiCheat(kind, options) {", ink_start)]
+    spawn_start = html.index("function spawnYuiCheat(kind, options) {")
+    spawn_section = html[spawn_start:html.index("function maybeTriggerYuiCheat(reason) {", spawn_start)]
+
+    assert "function showYuiCheatLine(kind) {" in html
+    assert "function showYuiCheatScoreLine(kind) {" in html
+    assert "function markYuiCheatHit(kind) {" in html
+    assert "function getYuiCheatScoreTauntKind(pointWinner) {" in html
+    assert "var YUI_CHEAT_RANDOM_CHANCE = 0.72;" in html
+    assert "var YUI_CHEAT_CLOSE_SCORE_CHANCE = 0.86;" in html
+    assert "var YUI_CHEAT_COOLDOWN_MS = 5200;" in html
+    assert "_i18nArray('lines.yuiCheat.banana'" in html
+    assert "_i18nArray('lines.yuiCheat.octopus'" in html
+    assert "_i18nArray('lines.yuiCheatScore.banana'" in html
+    assert "_i18nArray('lines.yuiCheatScore.octopus'" in html
+    assert '#neko-bubble[data-variant="yui-cheat"] { background: #cfeaff;' in html
+    assert '#neko-bubble[data-variant="yui-cheat-score"] { background: #fff0b8;' in html
+    assert "bubble.dataset.variant = (control && control.bubbleVariant) || '';" in html
+    assert "var bubblePriorityUntil = 0;" in html
+    assert "function shouldKeepCurrentBubble(control) {" in html
+    assert "if (shouldKeepCurrentBubble(control || {})) return false;" in html
+    assert "if (shouldKeepCurrentBubble(emoteControl)) return false;" in html
+    assert "bubblePriorityUntil = Date.now() + holdMs;" in html
+    assert "var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 3200, bubbleDurationMs: 4200 };" in html
+    assert "showBubble(line, control);" in html
+    assert "speakLine(line, control, {" in html
+    assert "kind: 'yui_cheat_item'," in html
+    assert "label: 'yui_cheat_' + kind," in html
+    assert "item_kind: kind," in html
+    assert "force_voice_in_debug: true," in html
+    assert "voice_deadline_ms: 3600" in html
+    assert "voice_deadline_ms: 5200" in html
+    assert "if (kind === 'yui_cheat_item') return 1;" in html
+    assert "if (kind === 'yui_cheat_score') return 1;" in html
+    assert "showYuiCheatLine('octopus');" in ink_section
+    assert "showYuiCheatLine('banana');" in spawn_section
+    assert "markYuiCheatHit('banana');" in html
+    finish_start = html.index("function finishDuelShot(scored, shotType, ball) {")
+    finish_section = html[finish_start:html.index("function finishShot(scored, shotType, ball) {", finish_start)]
+    assert "var cheatScoreTauntKind = getYuiCheatScoreTauntKind(pointWinner);" in finish_section
+    assert "if (cheatScoreTauntKind) showYuiCheatScoreLine(cheatScoreTauntKind);" in finish_section
+
+
+@pytest.mark.unit
+def test_badminton_banana_slip_flips_player_avatar_360_degrees():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    banana_start = html.index("function buildYuiCheatBanana(options) {")
+    banana_section = html[banana_start:html.index("function activateYuiInk() {", banana_start)]
+
+    assert "function randomYuiBananaCourtX() {" in html
+    assert "var x = Number.isFinite(opts.x) ? opts.x : randomYuiBananaCourtX();" in banana_section
+    assert "var y = Number.isFinite(opts.y) ? opts.y : getPlayerFootY();" in banana_section
+    assert "getPlayerX()" not in banana_section
+    assert "game.playerCourt.targetX + defaultOffset" not in banana_section
+    assert "var YUI_CHEAT_BANANA_SLIP_ROTATION_RAD = Math.PI * 2;" in html
+    assert "var YUI_CHEAT_BANANA_SPEED_MULTIPLIER = 0.22;" in html
+    assert "var YUI_CHEAT_BANANA_SLOW_MS = 1800;" in html
+    assert "var easedProgress = 1 - Math.pow(1 - progress, 3);" in html
+    assert "effect.spinAngle = YUI_CHEAT_BANANA_SLIP_ROTATION_RAD * easedProgress;" in html
+    assert "speed_multiplier: getPlayerMovementSpeedMultiplier(now)," in html
+    assert "return t < (effect.slowUntil || 0) ? YUI_CHEAT_BANANA_SPEED_MULTIPLIER : 1;" in html
+    assert "badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });" in html
+    assert "rotateY(var(--sensei-slip-rotation)) rotate(-3deg) scale(.97)" in html
+    assert "ctx.scale(Math.cos(slipRotation), 1);" in html
+    assert "Math.sin(progress * Math.PI * 5)" not in html
+
+
+@pytest.mark.unit
 def test_badminton_yui_returns_incoming_shuttle_before_landing():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
@@ -2097,26 +2756,58 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var shuttleZ = getShuttleCourtZ(ball, false);" in html
     assert "var yuiContactTopZ = screenYToCourtZ(contact.y - 26);" in html
     assert "var yuiContactBottomZ = screenYToCourtZ(FLOOR_Y - 110);" in html
-    assert "var yuiReachLeft = contact.x;" in html
-    assert "var yuiReachRight = contact.x + 23;" in html
+    assert "var YUI_RACKET_HIT_REACH_X = 38;" in html
+    assert "var YUI_RACKET_HIT_REACH_Y = 54;" in html
+    assert "function getYuiVisibleRacketContactPoint() {" in html
+    assert "source: 'live2d-racket-head'" in html
+    assert "function getYuiRacketContactPoint() {" in html
+    assert "x: getYuiX() + YUI_RACKET_BODY_OFFSET_X," in html
+    assert "return getYuiVisibleRacketContactPoint() || getYuiShotOrigin();" in html
+    assert "function getYuiRacketHitRangeState(incomingBall) {" in html
+    assert "var racket = getYuiRacketContactPoint();" in html
+    assert "var normalized = Math.pow(dx / YUI_RACKET_HIT_REACH_X, 2) + Math.pow(dy / YUI_RACKET_HIT_REACH_Y, 2);" in html
+    assert "function isYuiRacketHitInRange(incomingBall) {" in html
+    assert "return getYuiRacketHitRangeState(incomingBall).normalized <= 1;" in html
+    assert "var YUI_RACKET_SAVE_REACH_X = 84;" in html
+    assert "var YUI_RACKET_SAVE_REACH_Y = 86;" in html
+    assert "function getYuiRacketSaveRangeState(incomingBall) {" in html
+    assert "var normalized = Math.pow(dx / YUI_RACKET_SAVE_REACH_X, 2) + Math.pow(dy / YUI_RACKET_SAVE_REACH_Y, 2);" in html
+    assert "function isYuiSmashSaveReachable(incomingBall) {" in html
+    assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
+    assert "var YUI_SMASH_MIN_SHUTTLE_Z = 64;" in html
+    assert "var YUI_SMASH_FULL_SHUTTLE_Z = 138;" in html
+    assert "function getYuiSmashHeightQuality(incomingBall) {" in html
+    assert "var shuttleZ = getShuttleCourtZ(incomingBall, false);" in html
+    assert "return clamp((shuttleZ - YUI_SMASH_MIN_SHUTTLE_Z) / Math.max(1, YUI_SMASH_FULL_SHUTTLE_Z - YUI_SMASH_MIN_SHUTTLE_Z), 0, 1);" in html
+    assert "function getBadmintonRacketHeadCenter(anchorX, anchorY, scale, rotation, mirror) {" in html
+    assert "var racketHead = getBadmintonRacketHeadCenter(anchorX, anchorY, racketScale, rotation, racketMirror);" in html
+    assert "headX: racketHead.x," in html
+    assert "headY: racketHead.y," in html
+    assert "var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;" in html
+    assert "var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;" in html
     assert "var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft" in html
     assert "&& Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;" in html
     assert "var inYuiReach = crossesYuiReach" in html
     assert "&& shuttleZ <= yuiContactTopZ" in html
     assert "&& shuttleZ >= yuiContactBottomZ" in html
+    assert "var yuiSave = isYuiSmashSaveReachable(ball);" in html
+    assert "if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;" in html
     assert "game.duel.activeShooter = 'neko';" in html
     assert "game.duel.rallyHits += 1;" in html
     assert "var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);" in html
     assert "shot.angle = clamp(shot.angle - Math.min(2.5, game.duel.rallyHits * 0.16), 38, 52);" in html
     assert "shot.power = clamp(shot.power + returnPressureBoost, 48, 66);" in html
     assert "var yuiSmashQuality = getYuiSmashQuality(ball, shot);" in html
-    assert "var yuiSmash = shouldYuiSmashReturn(ball, shot, yuiSmashQuality);" in html
+    assert "var yuiSmash = !yuiSave && shouldYuiSmashReturn(ball, shot, yuiSmashQuality);" in html
+    assert "if (yuiSave) {" in html
+    assert "shot.angle = clamp(shot.angle + 6, 46, 58);" in html
+    assert "shot.power = clamp(shot.power - 3, 45, 60);" in html
     assert "shot.angle = clamp(shot.angle - (10 + yuiSmashQuality * 5), 24, 46);" in html
     assert "shot.power = clamp(shot.power + 7 + yuiSmashQuality * 9, 56, 78);" in html
-    assert "showAssistHint(_i18n(yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn', yuiSmash ? 'Yui 扣杀！' : 'Yui 回球'));" in html
-    assert "queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality });" in html
+    assert "showAssistHint(_i18n(yuiSave ? 'toast.nekoSave' : (yuiSmash ? 'toast.nekoSmash' : 'toast.nekoReturn')" in html
+    assert "queueRacketSwing(shot.angle, shot.power, 'neko', { incomingBall: ball, smash: yuiSmash, smashQuality: yuiSmashQuality, save: yuiSave });" in html
 
-    update_start = html.index("function update(dt) {")
+    update_start = html.index("function update(dt, now) {")
     update_section = html[update_start:html.index("function drawDistanceMarkers()", update_start)]
     assert "stepBallPhysics(b, subDt);" in update_section
     assert "if (b.resolved && canonicalShotType(b.pendingShotType) === 'net') {" in update_section
@@ -2129,6 +2820,19 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "returnedFromShuttleId" not in landing_section
     assert "if (isShuttleInsideNetZ(ball, netCrossing)) {" in landing_section
     assert "if (ball.netContactHoldUntil && performance.now() < ball.netContactHoldUntil) return;" in landing_section
+    assert "var landingCourtY = getShuttleCourtY(ball, false);" in landing_section
+    assert "var inTargetX = landingCourtY >= targetLeft && landingCourtY <= targetRight;" in landing_section
+    assert "var landedOnTargetSide = direction > 0 ? landingCourtY >= targetLeft : landingCourtY <= targetRight;" in landing_section
+    assert "var inTargetX = ball.x >= targetLeft && ball.x <= targetRight;" not in landing_section
+    assert "var landedOnTargetSide = direction > 0 ? ball.x >= targetLeft : ball.x <= targetRight;" not in landing_section
+    assert "if (ball.hitNet) {" in landing_section
+    assert "var netScored = landedOnTargetSide && inTargetX && inTargetY;" in landing_section
+    assert "var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');" in landing_section
+    assert "queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);" in landing_section
+    assert "var scored = ball.crossedNet && inTargetX && inTargetY;" in landing_section
+    assert "var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';" in landing_section
+    assert "shotType = ball.hitNet ? 'net_touch' : (nearBaseline ? 'line_in' : (nearNet ? 'net_touch' : 'zone_in'));" in landing_section
+    assert "var scored = !ball.hitNet && ball.crossedNet && inTargetX && inTargetY;" not in landing_section
     net_contact_section = landing_section[
         landing_section.index("if (isShuttleInsideNetZ(ball, netCrossing)) {"):
         landing_section.index("var ballRadius = ball.radius || BALL_R;")
@@ -2144,6 +2848,8 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
 
     assert "var PLAYER_MOVE_SPEED = 1040;" in html
     assert "var YUI_MOVE_SPEED = 360;" in html
+    assert "var YUI_RETURN_CHASE_SPEED = 720;" in html
+    assert "var YUI_RETURN_CHASE_Y_SPEED = 540;" in html
     assert "var PLAYER_COURT_X_MAX = BADMINTON.netX - 58;" in html
     assert "transition: opacity .24s ease;" in html
     assert "transition: transform .3s ease, opacity .24s ease;" not in html
@@ -2151,7 +2857,11 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "yuiCourt: { x: YUI_START_X, y: YUI_START_Y, targetX: YUI_START_X, targetY: YUI_START_Y }," in html
     assert "function updatePlayerCourtTarget(clientX, clientY) {" in html
     assert "var normX = clamp(clientX / Math.max(1, window.innerWidth), 0, 1);" in html
-    assert "game.playerCourt.targetX = clamp(normX * BASE_W, PLAYER_COURT_X_MIN, PLAYER_COURT_X_MAX);" in html
+    assert "function getPlayerCourtMoveBounds() {" in html
+    assert "minX: serviceLines.leftDoublesLongServiceX + 14," in html
+    assert "maxX: serviceLines.leftShortServiceX - 14" in html
+    assert "var moveBounds = getPlayerCourtMoveBounds();" in html
+    assert "game.playerCourt.targetX = clamp(normX * BASE_W, moveBounds.minX, moveBounds.maxX);" in html
     assert "var lastPlayerPointer = null;" in html
     assert "function rememberPlayerPointer(ev) {" in html
     assert "function syncPlayerCourtTargetFromPointer() {" in html
@@ -2161,19 +2871,32 @@ def test_badminton_duel_avatars_move_to_receive_shuttles():
     assert "var normY = clamp(clientY / Math.max(1, window.innerHeight), 0, 1);" not in html
     assert "function updateYuiCourtTarget() {" in html
     assert "if (ball && !ball.resolved && ball.shooter === 'player' && ball.direction === 1) {" in html
-    assert "targetX = clamp(ball.x + 42, YUI_COURT_X_MIN, YUI_COURT_X_MAX);" in html
+    assert "var YUI_COURT_X_MIN = BADMINTON.netX + 56;" in html
+    assert "var YUI_RACKET_BODY_OFFSET_X = 58;" in html
+    assert "var visibleRacket = getYuiVisibleRacketContactPoint();" in html
+    assert "targetX = clamp(game.yuiCourt.x + ((ball.x || 0) - visibleRacket.x), YUI_COURT_X_MIN, YUI_COURT_X_MAX);" in html
+    assert "targetY = clamp(game.yuiCourt.y + ((ball.y || 0) - visibleRacket.y), YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);" in html
+    assert "targetX = clamp(ball.x - YUI_RACKET_BODY_OFFSET_X, YUI_COURT_X_MIN, YUI_COURT_X_MAX);" in html
     assert "targetY = clamp(ball.y + 76, YUI_COURT_Y_MIN, YUI_COURT_Y_MAX);" in html
+    assert "function isYuiChasingIncomingShuttle() {" in html
+    assert "return !!(ball && !ball.resolved && ball.shooter === 'player' && ball.direction === 1 && ball.crossedNet);" in html
     assert "function updateCourtMovement(dt) {" in html
     assert "syncPlayerCourtTargetFromPointer();" in html
-    assert "game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, PLAYER_MOVE_SPEED, dt);" in html
+    assert "var playerMoveSpeed = PLAYER_MOVE_SPEED * getPlayerMovementSpeedMultiplier();" in html
+    assert "var yuiChaseSpeedX = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_SPEED : YUI_MOVE_SPEED;" in html
+    assert "var yuiChaseSpeedY = isYuiChasingIncomingShuttle() ? YUI_RETURN_CHASE_Y_SPEED : YUI_MOVE_SPEED * 0.5;" in html
+    assert "game.playerCourt.x = moveToward(game.playerCourt.x, game.playerCourt.targetX, playerMoveSpeed, dt);" in html
     assert "game.playerCourt.targetY = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = PLAYER_START_Y;" in html
     assert "game.playerCourt.y = moveToward(game.playerCourt.y, game.playerCourt.targetY, PLAYER_MOVE_SPEED * 0.55, dt);" not in html
-    assert "game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, YUI_MOVE_SPEED, dt);" in html
+    assert "game.yuiCourt.x = moveToward(game.yuiCourt.x, game.yuiCourt.targetX, yuiChaseSpeedX, dt);" in html
+    assert "game.yuiCourt.y = moveToward(game.yuiCourt.y, game.yuiCourt.targetY, yuiChaseSpeedY, dt);" in html
     assert "function canPlayerMoveCourt() {" in html
     assert "if (isBadmintonLoadingActive()) return false;" in html
+    assert "return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot()" in html
     assert "var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;" in html
-    assert "if (canPlayerMoveCourt()) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in html
+    assert "var canMoveCourt = canPlayerMoveCourt();" in html
+    assert "if (canMoveCourt) updatePlayerCourtTarget(ev.clientX, ev.clientY);" in html
     assert "if (isDuelMode()) updateCourtMovement(dt);" in html
     assert "playerCourt: Object.assign({}, game.playerCourt)," in html
     assert "var playerRacketContact = getRacketContactPoint('player');" in html
@@ -2233,7 +2956,7 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "queueRacketSwing(playerReturnAngle, returnPower, 'player', { incomingBall: game.ball });" in html
     assert "queueRacketSwing(game.aimAngle, shotPower, 'player', { forceScore: shouldGuaranteeFirstTutorialShot, incomingBall: receivingReturn ? game.ball : null });" in html
 
-    update_start = html.index("function update(dt) {")
+    update_start = html.index("function update(dt, now) {")
     update_section = html[update_start:html.index("function drawDistanceMarkers()", update_start)]
     assert "if (awaitingPlayerReturn && stepAwaitingPlayerReturn(dt)) return;" in update_section
     assert "function stepAwaitingPlayerReturn(dt) {" in html
@@ -2250,12 +2973,12 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "b.x < -50 || b.x > 950 || b.y > 550" in update_section
     assert update_section.index("checkShuttleLanding(b);") < update_section.index("if (maybePlayerReceiveIncomingShuttle(b)) break;")
 
-    draw_start = html.index("function drawAiming() {")
+    draw_start = html.index("function drawAiming(now) {")
     draw_section = html[draw_start:html.index("function drawBall()", draw_start)]
     assert "aimingCtx.clearRect(0, 0, BASE_W, BASE_H);" in draw_section
     assert "function drawReturnChargeTrace(" not in draw_section
     assert "function drawPlayerChargeMeter(" in draw_section
-    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100));" in draw_section
+    assert "if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), t);" in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
     assert "if (!canReturnNow) return;" not in draw_section
     assert "var cueAlpha = canReturnNow ? 1 : 0.46;" in draw_section
@@ -2313,11 +3036,19 @@ def test_badminton_space_jump_enables_air_smash():
     assert "function getPlayerSmashQuality(incomingBall) {" in html
     assert "function getPlayerSmashSweetSpot() {" in html
     assert "function isPlayerSmashReady(incomingBall) {" in html
+    smash_ready_section = html[
+        html.index("function isPlayerSmashReady(incomingBall) {"):
+        html.index("function getYuiRacketHitRangeState(incomingBall) {")
+    ]
+    assert "if (isPlayerServeSetup()) return false;" in smash_ready_section
     assert "function getYuiSmashQuality(incomingBall, shot) {" in html
+    assert "function getYuiSmashHeightQuality(incomingBall) {" in html
     assert "function shouldYuiSmashReturn(incomingBall, shot, quality) {" in html
     assert "if (!incomingBall || !shot || quality < 0.52) return false;" in html
-    assert "var yuiSmashClearance = contact.y - (incomingBall.y || contact.y);" in html
-    assert "if (yuiSmashClearance < 58) return false;" in html
+    assert "var heightQuality = getYuiSmashHeightQuality(incomingBall);" in html
+    assert "if (getYuiSmashHeightQuality(incomingBall) <= 0) return false;" in html
+    assert "var yuiSmashClearance = contact.y - (incomingBall.y || contact.y);" not in html
+    assert "if (yuiSmashClearance < 58) return false;" not in html
     assert "return clamp(game.playerCourt.y - getPlayerJumpOffset(), PLAYER_COURT_Y_MIN - PLAYER_JUMP_MAX_OFFSET, PLAYER_COURT_Y_MAX);" in html
     assert "game.playerJump.offset += game.playerJump.velocity * dt;" in html
     assert "game.playerJump.velocity -= PLAYER_JUMP_GRAVITY * dt;" in html
@@ -2341,15 +3072,19 @@ def test_badminton_space_jump_enables_air_smash():
     ]
     assert "var smash = !!(options && options.smash);" in queue_section
     assert "if (shotShooter === 'player') smash = smash || isPlayerSmashReady(incomingBall);" in queue_section
+    assert "var save = !!(options && options.save) && shotShooter === 'neko' && !smash;" in queue_section
     assert "var smashQuality = options && typeof options.smashQuality === 'number' ? options.smashQuality : 0;" in queue_section
     assert "impulse: buildSwingImpulse(angle, power, shotShooter, incomingBall, { smash: smash, smashQuality: smashQuality })," in queue_section
+    assert "save: save," in queue_section
     assert "if (shotShooter === 'player') setPlayerAction('shooting', 460);" in queue_section
-    assert "else setYuiAction(smash ? 'smashing' : 'shooting', smash ? 520 : 420);" in queue_section
+    assert "else setYuiAction(save ? 'saving' : (smash ? 'smashing' : 'shooting'), save ? 560 : (smash ? 520 : 420));" in queue_section
     assert "if (smash && shotShooter === 'player') {" in queue_section
     assert "showAssistHint(_i18n('toast.smash', '跳杀！'));" in queue_section
     assert ".neko-avatar-container[data-court-avatar=\"opponent\"].smashing { animation: yui-smashing .52s cubic-bezier(.2,.82,.18,1); }" in html
+    assert ".neko-avatar-container[data-court-avatar=\"opponent\"].saving { animation: yui-saving .56s cubic-bezier(.18,.86,.2,1); }" in html
     assert "@keyframes yui-smashing {" in html
-    assert "container.classList.remove('charging', 'shooting', 'smashing', 'react-celebrate', 'react-disappointed');" in html
+    assert "@keyframes yui-saving {" in html
+    assert "container.classList.remove('charging', 'shooting', 'smashing', 'saving', 'react-celebrate', 'react-disappointed');" in html
 
     launch_section = html[
         html.index("function launchShot(angle, power, shooter, swingImpulse) {"):

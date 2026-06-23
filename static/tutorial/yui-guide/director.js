@@ -419,20 +419,91 @@
         } catch (_) {}
     }
 
+    function normalizeAvatarFloatingGuideUsageTimestamp(value) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) {
+            return number;
+        }
+        if (typeof value === 'string' && value.trim()) {
+            const parsed = Date.parse(value);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        }
+        return 0;
+    }
+
+    function getAvatarFloatingGuideActiveRound() {
+        const memoryRound = Number(window.__avatarFloatingGuideCurrentRound || 0);
+        if (Number.isFinite(memoryRound) && memoryRound > 0) {
+            return Math.floor(memoryRound);
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        const persistedRound = Number(state && state.currentRound);
+        return Number.isFinite(persistedRound) && persistedRound > 0 ? Math.floor(persistedRound) : 0;
+    }
+
+    function recordAvatarFloatingGuideRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return;
+        }
+        const day = Math.floor(normalizedRound);
+        const startedAt = Date.now();
+        window.__avatarFloatingGuideCurrentRound = day;
+        const patch = {
+            currentRound: day,
+            currentRoundStartedAt: startedAt
+        };
+        patch['day' + day + 'StartedAt'] = startedAt;
+        writeAvatarFloatingGuideUsageState(patch);
+    }
+
     function markAvatarFloatingGuideUsage(key) {
         const normalizedKey = typeof key === 'string' ? key.trim() : '';
         if (!normalizedKey) {
             return;
         }
+        const activeRound = getAvatarFloatingGuideActiveRound();
         const patch = {};
         patch[normalizedKey] = true;
         patch[normalizedKey + 'At'] = Date.now();
+        if (activeRound) {
+            patch[normalizedKey + 'Round'] = activeRound;
+        }
         writeAvatarFloatingGuideUsageState(patch);
     }
 
     function hasAvatarFloatingGuideUsage(key) {
         const state = readAvatarFloatingGuideUsageState();
         return !!(state && state[key]);
+    }
+
+    function hasAvatarFloatingGuideVoiceUsedAfterRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return false;
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        if (!state || !state.voiceUsed) {
+            return false;
+        }
+        const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);
+        const day = Math.floor(normalizedRound);
+        const roundStartKey = 'day' + day + 'StartedAt';
+        const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);
+        if (!voiceUsedAt) {
+            return false;
+        }
+        if (roundStartedAt) {
+            return voiceUsedAt >= roundStartedAt;
+        }
+
+        const voiceUsedRound = Number(state.voiceUsedRound);
+        if (Number.isFinite(voiceUsedRound) && Math.floor(voiceUsedRound) === day) {
+            return true;
+        }
+
+        const nextRoundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + (day + 1) + 'StartedAt']);
+        return !!(day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt);
     }
 
     if (!window.__avatarFloatingGuideUsageListenersInstalled) {
@@ -3419,7 +3490,8 @@
 
         resolveAvatarFloatingSceneText(scene) {
             if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideUsage('voiceUsed')
+                const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);
+                return voiceUsedAfterDay1Start
                     ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
                     : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day2.intro', scene.text || '');
             }
@@ -3427,7 +3499,7 @@
         }
 
         resolveAvatarFloatingSceneVoiceKey(scene) {
-            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideUsage('voiceUsed')) {
+            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)) {
                 return 'avatar_floating_day2_intro_voice_used';
             }
             return scene && typeof scene.voiceKey === 'string' ? scene.voiceKey : '';
@@ -3435,7 +3507,7 @@
 
         resolveAvatarFloatingSceneEmotion(scene) {
             if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideUsage('voiceUsed') ? 'happy' : 'sad';
+                return hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1) ? 'happy' : 'sad';
             }
             return scene && typeof scene.emotion === 'string' ? scene.emotion : '';
         }
@@ -7892,6 +7964,7 @@
         }
 
         async playAvatarFloatingRound(round, options) {
+            recordAvatarFloatingGuideRoundStart(round);
             return this.sceneOrchestrator.playRound(round, options);
         }
 

@@ -1221,6 +1221,7 @@ BADMINTON_QUICK_LINES_PROMPT = """\
 - 每个 key 对应 2-4 句短台词。
 - 每句 18 字以内。
 - 台词要像本人在场边陪玩家打羽毛球，不要像系统播报。
+- 语气要自然、短促，带一点 Yui 的不服输、撒娇或小声调侃；少用“喵”，不要喊口号或中二宣言。
 - 不要包含控制 JSON、mood、expression、intensity。
 
 必须包含这些 key：
@@ -1357,6 +1358,7 @@ _BADMINTON_QUICK_LINES_PROMPT_DUEL = """\
 - 每句 18 字以内。
 - 台词要像你本人在对战里回应玩家，不要像系统播报。
 - 如果当前模式是 duel，要自然提到轮流挥拍、回合、比分和对拉节奏。
+- 语气要像正在球场上小声较劲：有点不服输、有点调侃，但不要像战报、口号或中二宣言。
 - 不要包含控制 JSON、mood、expression、intensity。
 
 必须包含这些 key：
@@ -1374,6 +1376,7 @@ _BADMINTON_QUICK_LINES_PROMPT_SHOOTER = """\
 - 每个 key 对应 2-4 句短台词。
 - 每句 18 字以内。
 - 台词要像你本人在评价玩家挥拍操控，不要像系统播报。
+- 语气要自然、短促，像 Yui 一边被玩家操控挥拍一边吐槽；少用“喵”，不要喊口号或中二宣言。
 - 不要包含控制 JSON、mood、expression、intensity。
 
 必须包含这些 key：
