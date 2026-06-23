@@ -18,6 +18,21 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _response_latency_ms(seen_at: str, created_at: str) -> int | None:
+    if not seen_at or not created_at:
+        return None
+    try:
+        seen = datetime.fromisoformat(str(seen_at).replace("Z", "+00:00"))
+        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return max(0, int(round((created - seen).total_seconds() * 1000)))
+
+
 _LIVE_ROOM_URL_RE = re.compile(r"live\.bilibili\.com/(?:h5/|blanc/)?(\d+)", re.IGNORECASE)
 
 
@@ -274,6 +289,7 @@ class InteractionResult:
     created_at: str = field(default_factory=utc_now_iso)
 
     def to_public_dict(self) -> dict[str, Any]:
+        response_latency_ms = _response_latency_ms(self.event.seen_at, self.created_at)
         return {
             "accepted": self.accepted,
             "status": self.status,
@@ -285,9 +301,11 @@ class InteractionResult:
             "reason": self.reason,
             "steps": [step.to_dict() for step in self.steps],
             "created_at": self.created_at,
+            "response_latency_ms": response_latency_ms,
         }
 
     def to_sandbox_dict(self) -> dict[str, Any]:
+        response_latency_ms = _response_latency_ms(self.event.seen_at, self.created_at)
         return {
             "accepted": self.accepted,
             "status": self.status,
@@ -297,6 +315,7 @@ class InteractionResult:
             "reason": self.reason,
             "steps": [step.to_dict() for step in self.steps],
             "created_at": self.created_at,
+            "response_latency_ms": response_latency_ms,
         }
 
 

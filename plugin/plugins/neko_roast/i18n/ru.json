@@ -123,6 +123,7 @@
   "panel.columns.nickname": "Ник",
   "panel.columns.status": "Статус",
   "panel.columns.reason": "Причина",
+  "panel.columns.responseLatency": "Задержка ответа",
   "panel.columns.roastCount": "Оценок",
   "panel.columns.lastSeen": "Последний раз",
   "panel.columns.time": "Время",

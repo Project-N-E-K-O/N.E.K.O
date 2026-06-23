@@ -35,6 +35,8 @@ def test_panel_renders_live_status_summary():
     assert "panel.speechExplanation." in source
     assert "idle_hosting_status" in source
     assert "panel.idleHostingStatus." in source
+    assert "response_latency_ms" in source
+    assert "panel.columns.responseLatency" in source
 
 
 def test_trigger_idle_hosting_is_exposed_as_hosted_ui_action():
@@ -55,6 +57,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusSummary.temporarily_not_speaking",
         "panel.liveStatusSummary.cannot_stream",
         "panel.liveStatusSummary.cooldown",
+        "panel.columns.responseLatency",
         "panel.liveStatusReason.ready",
         "panel.liveStatusReason.dry_run",
         "panel.liveStatusReason.manual_paused",

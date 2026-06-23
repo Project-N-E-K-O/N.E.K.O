@@ -5,7 +5,16 @@ import pytest
 
 from plugin.plugins.neko_roast.adapters.bili_auth_service import BiliAuthService
 from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
-from plugin.plugins.neko_roast.core.contracts import InteractionRequest, RoastConfig, SafetyDecision, ViewerEvent, ViewerIdentity, ViewerProfile, utc_now_iso
+from plugin.plugins.neko_roast.core.contracts import (
+    InteractionRequest,
+    InteractionResult,
+    RoastConfig,
+    SafetyDecision,
+    ViewerEvent,
+    ViewerIdentity,
+    ViewerProfile,
+    utc_now_iso,
+)
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
 from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
 from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
@@ -41,6 +50,24 @@ def test_viewer_identity_public_dict_does_not_expose_email():
     public = ViewerIdentity(uid="1", nickname="tester", email="private@example.test").to_public_dict()
 
     assert "email" not in public
+
+
+def test_interaction_result_public_dict_exposes_response_latency_ms():
+    event = ViewerEvent(
+        uid="1",
+        nickname="tester",
+        source="live_danmaku",
+        seen_at="2026-06-20T10:00:00+00:00",
+    )
+    result = InteractionResult(
+        accepted=True,
+        status="pushed",
+        event=event,
+        created_at="2026-06-20T10:00:02.500000+00:00",
+    )
+
+    assert result.to_public_dict()["response_latency_ms"] == 2500
+    assert result.to_sandbox_dict()["response_latency_ms"] == 2500
 
 
 def test_permission_gate_requires_developer_tools_for_sandbox():

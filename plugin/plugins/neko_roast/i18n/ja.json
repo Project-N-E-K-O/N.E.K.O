@@ -123,6 +123,7 @@
   "panel.columns.nickname": "ニックネーム",
   "panel.columns.status": "状態",
   "panel.columns.reason": "理由",
+  "panel.columns.responseLatency": "Response latency",
   "panel.columns.roastCount": "回数",
   "panel.columns.lastSeen": "最終表示",
   "panel.columns.time": "時刻",

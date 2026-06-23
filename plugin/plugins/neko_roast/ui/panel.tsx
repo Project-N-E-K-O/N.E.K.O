@@ -114,6 +114,13 @@ function speechExplanationTone(summary: string): "success" | "warning" | "danger
   return "default"
 }
 
+function formatLatencyMs(value: any): string {
+  const ms = Number(value)
+  if (!Number.isFinite(ms) || ms < 0) return "-"
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 1000)}s`
+}
+
 function ToggleSwitch(props: { checked: boolean; label?: any; disabled?: boolean; tone?: string; onChange: (value: boolean) => void }) {
   const checked = !!props.checked
   const disabled = !!props.disabled
@@ -944,6 +951,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
               { key: "uid", label: "UID", render: (row: any) => row.identity?.uid || row.event?.uid || "-" },
               { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.identity?.nickname || row.event?.nickname || "-" },
               { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+              { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
               { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
             ]}
           />

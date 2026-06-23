@@ -123,6 +123,7 @@
   "panel.columns.nickname": "닉네임",
   "panel.columns.status": "상태",
   "panel.columns.reason": "이유",
+  "panel.columns.responseLatency": "응답 지연",
   "panel.columns.roastCount": "횟수",
   "panel.columns.lastSeen": "최근 등장",
   "panel.columns.time": "시간",

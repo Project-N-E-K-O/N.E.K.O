@@ -123,6 +123,7 @@
   "panel.columns.nickname": "Apelido",
   "panel.columns.status": "Status",
   "panel.columns.reason": "Motivo",
+  "panel.columns.responseLatency": "Latência da resposta",
   "panel.columns.roastCount": "Roasts",
   "panel.columns.lastSeen": "Visto por último",
   "panel.columns.time": "Hora",

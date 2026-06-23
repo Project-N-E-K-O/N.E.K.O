@@ -123,6 +123,7 @@
   "panel.columns.nickname": "Apodo",
   "panel.columns.status": "Estado",
   "panel.columns.reason": "Motivo",
+  "panel.columns.responseLatency": "Latencia de respuesta",
   "panel.columns.roastCount": "Roasts",
   "panel.columns.lastSeen": "Última vez",
   "panel.columns.time": "Hora",

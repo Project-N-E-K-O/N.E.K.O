@@ -123,6 +123,7 @@
   "panel.columns.nickname": "昵称",
   "panel.columns.status": "状态",
   "panel.columns.reason": "原因",
+  "panel.columns.responseLatency": "响应延迟",
   "panel.columns.roastCount": "锐评次数",
   "panel.columns.lastSeen": "最近出现",
   "panel.columns.time": "时间",
