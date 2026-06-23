@@ -54,6 +54,24 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
+def test_index_game_window_state_pauses_hidden_avatar_rendering():
+    source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+    block = source.split("function applyGameWindowRenderingState(paused) {", 1)[1].split(
+        "window.addEventListener('neko-game-window-state-change'",
+        1,
+    )[0]
+
+    assert "window.live2dManager" in block
+    assert "window.vrmManager" in block
+    assert "window.mmdManager" in block
+    assert "var method = paused ? 'pauseRendering' : 'resumeRendering';" in block
+    assert "manager[method]();" in block
+    assert "document.body.classList.add('neko-game-active');" in block
+    assert "applyGameWindowRenderingState(true);" in block
+    assert "document.body.classList.remove('neko-game-active');" in block
+    assert "applyGameWindowRenderingState(false);" in block
+
+
 def css_z_index(block: str) -> int:
     match = re.search(r"\bz-index:\s*(\d+)\s*;", block)
     if not match:

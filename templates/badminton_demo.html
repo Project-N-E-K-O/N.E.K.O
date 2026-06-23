@@ -36,6 +36,20 @@
     display: block; position: fixed; inset: 0; z-index: 15;
     pointer-events: none;
   }
+  #player-charge-meter {
+    position: fixed; left: 0; top: 0; z-index: 16;
+    width: 74px; height: 8px; pointer-events: none;
+    opacity: 0; transform: translate3d(-9999px, -9999px, 0);
+    contain: layout paint style; will-change: transform, opacity;
+    border: 1px solid rgba(255,255,255,.32);
+    border-radius: 999px; overflow: hidden;
+    background: rgba(5,13,19,.54);
+  }
+  #player-charge-meter[data-active="1"] { opacity: 1; }
+  #player-charge-fill {
+    width: 100%; height: 100%; transform: scaleX(0); transform-origin: 0 50%;
+    background: #ffca3a; will-change: transform;
+  }
   #badminton-loading {
     position: fixed; inset: 0; z-index: 70;
     display: flex; align-items: center; justify-content: center;
@@ -541,6 +555,7 @@
 </div>
 <canvas id="game" width="900" height="500"></canvas>
 <canvas id="aiming-canvas" width="900" height="500"></canvas>
+<div id="player-charge-meter" aria-hidden="true"><div id="player-charge-fill"></div></div>
 <div id="hud" aria-live="polite">
   <span id="score-label">得分 0</span>
   <span id="streak-label">连中 0</span>
@@ -770,6 +785,8 @@
   var ctx = canvas.getContext('2d');
   var aimingCanvas = document.getElementById('aiming-canvas');
   var aimingCtx = aimingCanvas.getContext('2d');
+  var playerChargeMeter = document.getElementById('player-charge-meter');
+  var playerChargeFill = document.getElementById('player-charge-fill');
   var badmintonLoading = document.getElementById('badminton-loading');
   var badmintonLoadingBar = document.getElementById('badminton-loading-bar');
   var badmintonLoadingPercent = document.getElementById('badminton-loading-percent');
@@ -1050,12 +1067,14 @@
   var YUI_CHEAT_INK_DURATION_MS = 3600;
   var YUI_CHEAT_INK_VISUAL_SCALE = 0.82;
   var YUI_CHEAT_SCORE_TAUNT_GRACE_MS = 6500;
+  var YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS = 64;
   var netNodes = [];
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
   var debugMode = modeParams ? modeParams.get('debug') === '1' : false;
   var debugVoiceMode = modeParams ? modeParams.get('debug_voice') === '1' : false;
   var debugVoiceMuted = modeParams ? modeParams.get('debug_mute_voice') === '1' : false;
+  var perfMode = debugMode || (modeParams ? modeParams.get('perf') === '1' : false);
   var currentMode = 'duel';
   var netContactEffects = [];
   var DUEL_DIFFICULTY = [
@@ -1091,6 +1110,21 @@
   var psychologicalTalkAt = 0;
   var screenFlashUntil = 0;
   var aimingOverlayWasActive = false;
+  var playerAvatarStyleCache = {};
+  var playerChargeMeterStyleCache = {};
+  var playerChargeFillStyleCache = {};
+  var yuiLive2dDrawableHandCache = null;
+  var yuiInkOverlayCache = { canvas: null, ctx: null, key: '', ready: false };
+  var badmintonPerfState = {
+    frame: 0,
+    updateMs: 0,
+    renderMs: 0,
+    aimingMs: 0,
+    racketMs: 0,
+    frameMs: 0,
+    worstFrameMs: 0,
+    lastSlowFrameAt: 0
+  };
   var fireExtinguishedUntil = 0;
   var isPositionTransitioning = false;
   var shotAnimationTimer = 0;
@@ -1344,6 +1378,39 @@
   function setDatasetValueIfChanged(element, key, value) {
     var stringValue = String(value == null ? '' : value);
     if (element && element.dataset && element.dataset[key] !== stringValue) element.dataset[key] = stringValue;
+  }
+  function setStyleIfChanged(element, cache, key, value) {
+    if (!element || !cache) return;
+    var stringValue = String(value == null ? '' : value);
+    if (cache[key] === stringValue) return;
+    cache[key] = stringValue;
+    element.style[key] = stringValue;
+  }
+  function setStylePropertyIfChanged(element, cache, key, value) {
+    if (!element || !cache) return;
+    var stringValue = String(value == null ? '' : value);
+    if (cache[key] === stringValue) return;
+    cache[key] = stringValue;
+    element.style.setProperty(key, stringValue);
+  }
+  function recordBadmintonPerfSample(key, startedAt, now) {
+    if (!perfMode || !Number.isFinite(startedAt)) return;
+    var endedAt = Number.isFinite(now) ? now : performance.now();
+    var elapsed = Math.max(0, endedAt - startedAt);
+    badmintonPerfState[key] = elapsed;
+    if (key === 'frameMs') {
+      badmintonPerfState.frame += 1;
+      if (elapsed > badmintonPerfState.worstFrameMs) badmintonPerfState.worstFrameMs = elapsed;
+      if (elapsed > 33) badmintonPerfState.lastSlowFrameAt = endedAt;
+    }
+  }
+  function getBadmintonPerfSnapshot() {
+    var racketDebug = window.__badmintonYuiRacketDebug || null;
+    return Object.assign({}, badmintonPerfState, {
+      live2dRacketSource: racketDebug ? racketDebug.source : '',
+      live2dRacketAnchorAgeMs: yuiLive2dDrawableHandCache ? Math.max(0, Math.round(getBadmintonFrameNow() - (yuiLive2dDrawableHandCache.sampledAt || 0))) : 0,
+      inkOverlayCached: !!(yuiInkOverlayCache && yuiInkOverlayCache.ready)
+    });
   }
   function pxToMeters(px) {
     return ((Number(px) || 0) / PX_PER_METER).toFixed(1) + 'm';
@@ -3012,7 +3079,7 @@
     if (currentMode !== 'duel') return;
     var container = getActiveAvatarContainer();
     if (!container) return;
-    container.dataset.courtAvatar = 'opponent';
+    setDatasetValueIfChanged(container, 'courtAvatar', 'opponent');
     var baseX = getYuiX();
     var baseY = getYuiY() + 71;
     var sx = baseX / BASE_W * window.innerWidth;
@@ -3029,7 +3096,7 @@
   }
   function updateDuelShooterAvatars() {
     if (currentMode !== 'duel') return;
-    if (playerSenseiContainer && !playerSenseiContainer.hidden) playerSenseiContainer.style.opacity = '0.96';
+    if (playerSenseiContainer && !playerSenseiContainer.hidden) setStyleIfChanged(playerSenseiContainer, playerAvatarStyleCache, 'opacity', '0.96');
     updateYuiPosition(game.distance);
   }
   function clearYuiActionClasses(container) {
@@ -4043,6 +4110,8 @@
     aimingCanvas.height = canvas.height;
     ctx.setTransform(canvas.width / BASE_W, 0, 0, canvas.height / BASE_H, 0, 0);
     aimingCtx.setTransform(aimingCanvas.width / BASE_W, 0, 0, aimingCanvas.height / BASE_H, 0, 0);
+    yuiInkOverlayCache.ready = false;
+    yuiInkOverlayCache.key = '';
     updateYuiPosition(game.distance);
     updatePlayerAvatarPosition();
     updateDuelShooterAvatars();
@@ -4641,11 +4710,11 @@
     var sx = getPlayerX() / BASE_W * window.innerWidth;
     var sy = (getPlayerY() + 63) / BASE_H * window.innerHeight;
     var slipDeg = ((game.playerCheatEffect && game.playerCheatEffect.spinAngle) || 0) * 180 / Math.PI;
-    playerSenseiContainer.style.width = PLAYER_AVATAR_W + 'px';
-    playerSenseiContainer.style.height = PLAYER_AVATAR_H + 'px';
-    playerSenseiContainer.style.setProperty('--sensei-x', Math.round(sx - PLAYER_AVATAR_W / 2) + 'px');
-    playerSenseiContainer.style.setProperty('--sensei-y', Math.round(sy - PLAYER_AVATAR_H) + 'px');
-    playerSenseiContainer.style.setProperty('--sensei-slip-rotation', slipDeg.toFixed(2) + 'deg');
+    setStyleIfChanged(playerSenseiContainer, playerAvatarStyleCache, 'width', PLAYER_AVATAR_W + 'px');
+    setStyleIfChanged(playerSenseiContainer, playerAvatarStyleCache, 'height', PLAYER_AVATAR_H + 'px');
+    setStylePropertyIfChanged(playerSenseiContainer, playerAvatarStyleCache, '--sensei-x', Math.round(sx - PLAYER_AVATAR_W / 2) + 'px');
+    setStylePropertyIfChanged(playerSenseiContainer, playerAvatarStyleCache, '--sensei-y', Math.round(sy - PLAYER_AVATAR_H) + 'px');
+    setStylePropertyIfChanged(playerSenseiContainer, playerAvatarStyleCache, '--sensei-slip-rotation', slipDeg.toFixed(2) + 'deg');
   }
   async function initPlayerAvatar() {
     if (!playerSenseiContainer || !playerSenseiCanvas) {
@@ -7747,20 +7816,16 @@
     var trail = getShuttleTrailPoints(ball);
     if (trail.length > 1) {
       ctx.save();
-      var start = trail[0];
-      var trailGrad = ctx.createLinearGradient(start.x, start.y, ball.x, ball.y);
-      trailGrad.addColorStop(0, 'rgba(182,231,255,0)');
-      trailGrad.addColorStop(0.48, ball.isSmash ? 'rgba(255,190,92,.46)' : (ball.wasPerfect ? 'rgba(255,239,159,.36)' : 'rgba(204,241,255,.28)'));
-      trailGrad.addColorStop(1, ball.isSmash ? 'rgba(255,242,190,.78)' : (ball.wasPerfect ? 'rgba(255,250,210,.68)' : 'rgba(242,252,255,.54)'));
-      ctx.strokeStyle = trailGrad;
-      ctx.lineWidth = ball.isSmash ? 4.2 : (ball.wasPerfect ? 3.4 : 2.4);
+      var firstTrailIndex = ball.isSmash ? Math.max(0, trail.length - 5) : 0;
+      var start = trail[firstTrailIndex];
+      ctx.globalAlpha = ball.isSmash ? 0.50 : (ball.wasPerfect ? 0.62 : 0.48);
+      ctx.strokeStyle = ball.isSmash ? 'rgba(255,210,118,.72)' : (ball.wasPerfect ? 'rgba(255,244,178,.62)' : 'rgba(204,241,255,.48)');
+      ctx.lineWidth = ball.isSmash ? 2.8 : (ball.wasPerfect ? 3.0 : 2.2);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.shadowColor = ball.isSmash ? 'rgba(255,174,80,.34)' : (ball.wasPerfect ? 'rgba(255,225,122,.28)' : 'rgba(150,220,255,.22)');
-      ctx.shadowBlur = ball.isSmash ? 9 : (ball.wasPerfect ? 7 : 5);
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
-      for (var i = 1; i < trail.length; i++) ctx.lineTo(trail[i].x, trail[i].y);
+      for (var i = firstTrailIndex + 1; i < trail.length; i++) ctx.lineTo(trail[i].x, trail[i].y);
       ctx.lineTo(ball.x, ball.y);
       ctx.stroke();
       ctx.restore();
@@ -8092,6 +8157,29 @@
     };
   }
 
+  function getCachedYuiLive2dDrawableHand(domRect, modelFrame, layoutW, layoutH, shooting, charging, now) {
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var cached = yuiLive2dDrawableHandCache;
+    if (cached
+        && cached.shooting === !!shooting
+        && cached.charging === !!charging
+        && cached.layoutW === layoutW
+        && cached.layoutH === layoutH
+        && t - (cached.sampledAt || 0) < YUI_LIVE2D_RACKET_ANCHOR_SAMPLE_MS) {
+      return cached.drawable || null;
+    }
+    var drawableHand = getYuiLive2dHandAnchorFromDrawables(domRect, modelFrame, layoutW, layoutH, shooting, charging);
+    yuiLive2dDrawableHandCache = {
+      sampledAt: t,
+      shooting: !!shooting,
+      charging: !!charging,
+      layoutW: layoutW,
+      layoutH: layoutH,
+      drawable: drawableHand || null
+    };
+    return drawableHand;
+  }
+
   function setYuiLive2dParameter(id, value) {
     var model = window.live2dManager && window.live2dManager.currentModel;
     var coreModel = model && (model.coreModel || (model.internalModel && model.internalModel.coreModel));
@@ -8119,8 +8207,11 @@
     if (nekoL2dContainer.hidden || currentMode !== 'duel') {
       yuiLive2dRacketCtx.clearRect(0, 0, yuiLive2dRacketCanvas.width || 1, yuiLive2dRacketCanvas.height || 1);
       applyYuiLive2dRacketPose(false, false);
+      window.__badmintonYuiRacketDebug = null;
+      yuiLive2dDrawableHandCache = null;
       return;
     }
+    var now = getBadmintonFrameNow();
     var rect = nekoL2dContainer.getBoundingClientRect();
     if (rect.width < 20 || rect.height < 20) return;
     var dpr = window.devicePixelRatio || 1;
@@ -8142,7 +8233,7 @@
     var swing = shooting ? 0.62 : (charging ? -0.28 : 0);
     var racketScale = Math.max(0.98, Math.min(1.08, modelFrame.height / 320));
     var fallbackHand = getYuiLive2dFallbackHandPoint(modelFrame, shooting, charging);
-    var drawableHand = getYuiLive2dHandAnchorFromDrawables(rect, modelFrame, layoutW, layoutH, shooting, charging);
+    var drawableHand = getCachedYuiLive2dDrawableHand(rect, modelFrame, layoutW, layoutH, shooting, charging, now);
     var handX = drawableHand ? drawableHand.x : fallbackHand.x;
     var handY = drawableHand ? drawableHand.y : fallbackHand.y;
     if (drawableHand) {
@@ -8344,82 +8435,76 @@
   function isAimingOverlayActive(now) {
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     return !!(isIncomingPlayerReturnCandidate()
-      || (game.charging && canPlayerChargeShot())
       || (game.yuiCheat && getYuiInkState(t).active));
   }
   function drawAiming(now) {
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     var overlayActive = isAimingOverlayActive(t);
+    drawPlayerChargeMeter(game.charging && canPlayerChargeShot() ? clamp(game.power, 0, 100) : 0, t);
     if (!overlayActive && !aimingOverlayWasActive) return;
     aimingOverlayWasActive = overlayActive;
     aimingCtx.clearRect(0, 0, BASE_W, BASE_H);
     if (!overlayActive) return;
     drawPlayerReturnHitCue(t);
-    if (game.charging && canPlayerChargeShot()) drawPlayerChargeMeter(clamp(game.power, 0, 100), t);
     drawYuiInkOverlay(t);
   }
   function drawPlayerChargeMeter(percent, now) {
     var chargePercent = clamp(percent, 0, 100);
-    if (chargePercent <= 0) return;
-    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
-    var pulse = 0.5 + 0.5 * Math.sin(t / 118);
+    if (!playerChargeMeter || !playerChargeFill) return;
+    if (chargePercent <= 0) {
+      setDatasetValueIfChanged(playerChargeMeter, 'active', '0');
+      return;
+    }
     var meterW = 74;
     var meterH = 8;
-    var meterX = getPlayerX() - meterW / 2;
-    var meterY = getPlayerY() - 146;
-    var fillW = meterW * chargePercent / 100;
-    aimingCtx.save();
-    aimingCtx.globalCompositeOperation = 'lighter';
-    aimingCtx.shadowColor = 'rgba(114,216,255,.42)';
-    aimingCtx.shadowBlur = 8 + pulse * 4;
-    aimingCtx.fillStyle = 'rgba(5,13,19,.52)';
-    aimingCtx.strokeStyle = 'rgba(255,255,255,.32)';
-    aimingCtx.lineWidth = 1;
-    aimingCtx.beginPath();
-    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX, meterY, meterW, meterH, 4);
-    else aimingCtx.rect(meterX, meterY, meterW, meterH);
-    aimingCtx.fill();
-    aimingCtx.stroke();
-    aimingCtx.fillStyle = 'rgba(255,202,58,.92)';
-    aimingCtx.beginPath();
-    if (typeof aimingCtx.roundRect === 'function') aimingCtx.roundRect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3, 3);
-    else aimingCtx.rect(meterX + 1.5, meterY + 1.5, Math.max(0, fillW - 3), meterH - 3);
-    aimingCtx.fill();
-    aimingCtx.restore();
+    var screenScaleX = window.innerWidth / BASE_W;
+    var screenScaleY = window.innerHeight / BASE_H;
+    var meterX = (getPlayerX() - meterW / 2) * screenScaleX;
+    var meterY = (getPlayerY() - 146) * screenScaleY;
+    setDatasetValueIfChanged(playerChargeMeter, 'active', '1');
+    setStyleIfChanged(playerChargeMeter, playerChargeMeterStyleCache, 'width', Math.max(1, Math.round(meterW * screenScaleX)) + 'px');
+    setStyleIfChanged(playerChargeMeter, playerChargeMeterStyleCache, 'height', Math.max(1, Math.round(meterH * screenScaleY)) + 'px');
+    setStyleIfChanged(playerChargeMeter, playerChargeMeterStyleCache, 'transform', 'translate3d(' + Math.round(meterX) + 'px,' + Math.round(meterY) + 'px,0)');
+    setStyleIfChanged(playerChargeFill, playerChargeFillStyleCache, 'transform', 'scaleX(' + (chargePercent / 100).toFixed(3) + ')');
   }
-  function drawYuiInkOverlay(now) {
-    if (!aimingCtx || !game.yuiCheat) return;
-    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
-    var ink = getYuiInkState(t);
-    if (!ink.active || ink.alpha <= 0) return;
-    var pulse = 0.5 + Math.sin(t / 180) * 0.5;
+  function ensureYuiInkOverlayCache() {
     var inkScale = YUI_CHEAT_INK_VISUAL_SCALE;
-    aimingCtx.save();
-    aimingCtx.globalAlpha = Math.min(0.34, ink.alpha * 0.38);
-    aimingCtx.fillStyle = 'rgba(1,5,10,.46)';
-    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+    var key = BASE_W + 'x' + BASE_H + ':' + inkScale;
+    if (yuiInkOverlayCache.ready && yuiInkOverlayCache.key === key && yuiInkOverlayCache.canvas) return yuiInkOverlayCache.canvas;
+    if (!yuiInkOverlayCache.canvas) {
+      yuiInkOverlayCache.canvas = document.createElement('canvas');
+      yuiInkOverlayCache.ctx = yuiInkOverlayCache.canvas.getContext('2d');
+    }
+    var inkCanvas = yuiInkOverlayCache.canvas;
+    var inkCtx = yuiInkOverlayCache.ctx;
+    if (!inkCtx) return null;
+    inkCanvas.width = BASE_W;
+    inkCanvas.height = BASE_H;
+    inkCtx.setTransform(1, 0, 0, 1, 0, 0);
+    inkCtx.clearRect(0, 0, BASE_W, BASE_H);
 
-    var centralInk = aimingCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 24 * inkScale, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.34 * inkScale);
+    var pulse = 0.5;
+    var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 24 * inkScale, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.34 * inkScale);
     centralInk.addColorStop(0, 'rgba(0,0,0,.96)');
     centralInk.addColorStop(0.44, 'rgba(1,4,9,.92)');
     centralInk.addColorStop(0.72, 'rgba(4,12,19,.62)');
     centralInk.addColorStop(1, 'rgba(0,0,0,0)');
-    aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
-    aimingCtx.fillStyle = centralInk;
-    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+    inkCtx.globalAlpha = 1;
+    inkCtx.fillStyle = centralInk;
+    inkCtx.fillRect(0, 0, BASE_W, BASE_H);
 
     function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {
-      aimingCtx.save();
-      aimingCtx.translate(cx, cy);
-      aimingCtx.rotate(rot);
-      aimingCtx.globalAlpha = Math.min(0.94, ink.alpha * alpha);
-      aimingCtx.fillStyle = 'rgba(0,2,6,.9)';
-      aimingCtx.shadowColor = 'rgba(0,0,0,.42)';
-      aimingCtx.shadowBlur = 22;
-      aimingCtx.beginPath();
-      aimingCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-      aimingCtx.fill();
-      aimingCtx.restore();
+      inkCtx.save();
+      inkCtx.translate(cx, cy);
+      inkCtx.rotate(rot);
+      inkCtx.globalAlpha = Math.min(0.94, alpha);
+      inkCtx.fillStyle = 'rgba(0,2,6,.9)';
+      inkCtx.shadowColor = 'rgba(0,0,0,.42)';
+      inkCtx.shadowBlur = 22;
+      inkCtx.beginPath();
+      inkCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      inkCtx.fill();
+      inkCtx.restore();
     }
 
     var centerSplashes = [
@@ -8434,49 +8519,68 @@
       drawCenterInkBlob(splash[0], splash[1], (splash[2] + pulse * 8) * inkScale, (splash[3] + pulse * 6) * inkScale, splash[4], splash[5]);
     }
 
-    aimingCtx.shadowBlur = 0;
-    aimingCtx.lineCap = 'round';
+    inkCtx.shadowBlur = 0;
+    inkCtx.lineCap = 'round';
     for (var drip = 0; drip < 8; drip++) {
       var centerDripX = BASE_W * (0.36 + ((drip * 17) % 28) / 100);
       var centerDripTop = BASE_H * (0.38 + (drip % 3) * 0.05);
       var centerDripLen = (40 + (drip % 5) * 16 + pulse * 8) * inkScale;
-      aimingCtx.globalAlpha = Math.min(0.76, ink.alpha * (0.58 + (drip % 3) * 0.06));
-      aimingCtx.strokeStyle = 'rgba(0,2,5,.86)';
-      aimingCtx.lineWidth = (5 + (drip % 3) * 3) * inkScale;
-      aimingCtx.beginPath();
-      aimingCtx.moveTo(centerDripX, centerDripTop);
-      aimingCtx.bezierCurveTo(centerDripX - 8, centerDripTop + centerDripLen * 0.34, centerDripX + 10, centerDripTop + centerDripLen * 0.68, centerDripX + Math.sin(t / 360 + drip) * 4, centerDripTop + centerDripLen);
-      aimingCtx.stroke();
-      aimingCtx.fillStyle = 'rgba(0,2,5,.82)';
-      aimingCtx.beginPath();
-      aimingCtx.ellipse(centerDripX, centerDripTop + centerDripLen + 4, aimingCtx.lineWidth * 0.72, aimingCtx.lineWidth * 1.05, 0, 0, Math.PI * 2);
-      aimingCtx.fill();
+      inkCtx.globalAlpha = Math.min(0.76, 0.58 + (drip % 3) * 0.06);
+      inkCtx.strokeStyle = 'rgba(0,2,5,.86)';
+      inkCtx.lineWidth = (5 + (drip % 3) * 3) * inkScale;
+      inkCtx.beginPath();
+      inkCtx.moveTo(centerDripX, centerDripTop);
+      inkCtx.bezierCurveTo(centerDripX - 8, centerDripTop + centerDripLen * 0.34, centerDripX + 10, centerDripTop + centerDripLen * 0.68, centerDripX + Math.sin(drip) * 4, centerDripTop + centerDripLen);
+      inkCtx.stroke();
+      inkCtx.fillStyle = 'rgba(0,2,5,.82)';
+      inkCtx.beginPath();
+      inkCtx.ellipse(centerDripX, centerDripTop + centerDripLen + 4, inkCtx.lineWidth * 0.72, inkCtx.lineWidth * 1.05, 0, 0, Math.PI * 2);
+      inkCtx.fill();
     }
     for (var speck = 0; speck < 22; speck++) {
       var spread = 0.16 + (speck % 5) * 0.025;
-      var orbitAngle = speck * 2.28 + t / 900;
+      var orbitAngle = speck * 2.28;
       var speckX = BASE_W * 0.5 + Math.cos(orbitAngle) * BASE_W * spread;
       var speckY = BASE_H * 0.48 + Math.sin(orbitAngle * 0.9) * BASE_H * (spread * 0.72);
-      var speckAngle = speck * 1.17 + t / 900;
-      aimingCtx.globalAlpha = Math.min(0.56, ink.alpha * 0.54);
-      aimingCtx.fillStyle = 'rgba(0,3,8,.72)';
-      aimingCtx.beginPath();
-      aimingCtx.ellipse(speckX, speckY, (8 + (speck % 4) * 4) * inkScale, (5 + (speck % 3) * 3) * inkScale, speckAngle * 0.18, 0, Math.PI * 2);
-      aimingCtx.fill();
+      var speckAngle = speck * 1.17;
+      inkCtx.globalAlpha = 0.54;
+      inkCtx.fillStyle = 'rgba(0,3,8,.72)';
+      inkCtx.beginPath();
+      inkCtx.ellipse(speckX, speckY, (8 + (speck % 4) * 4) * inkScale, (5 + (speck % 3) * 3) * inkScale, speckAngle * 0.18, 0, Math.PI * 2);
+      inkCtx.fill();
     }
 
-    if (ink.alpha > 0.58) {
-      aimingCtx.globalAlpha = Math.min(0.16, ink.alpha * 0.18);
-      aimingCtx.strokeStyle = 'rgba(114,216,226,.42)';
-      aimingCtx.lineWidth = 1.2;
-      for (var arc = 0; arc < 2; arc++) {
-        var arcY = BASE_H * (0.42 + arc * 0.12) + Math.sin(t / 460 + arc) * 4;
-        aimingCtx.beginPath();
-        aimingCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04) * inkScale, BASE_H * 0.10 * inkScale, -0.08 + arc * 0.16, 0, Math.PI * 2);
-        aimingCtx.stroke();
-      }
+    inkCtx.globalAlpha = 0.16;
+    inkCtx.strokeStyle = 'rgba(114,216,226,.42)';
+    inkCtx.lineWidth = 1.2;
+    for (var arc = 0; arc < 2; arc++) {
+      var arcY = BASE_H * (0.42 + arc * 0.12);
+      inkCtx.beginPath();
+      inkCtx.ellipse(BASE_W * 0.5, arcY, BASE_W * (0.22 + arc * 0.04) * inkScale, BASE_H * 0.10 * inkScale, -0.08 + arc * 0.16, 0, Math.PI * 2);
+      inkCtx.stroke();
     }
+    yuiInkOverlayCache.ready = true;
+    yuiInkOverlayCache.key = key;
+    return inkCanvas;
+  }
 
+  function drawYuiInkOverlay(now) {
+    if (!aimingCtx || !game.yuiCheat) return;
+    var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
+    var ink = getYuiInkState(t);
+    if (!ink.active || ink.alpha <= 0) return;
+    var inkCanvas = ensureYuiInkOverlayCache();
+    if (!inkCanvas) return;
+    var pulse = 0.5 + Math.sin(t / 180) * 0.5;
+    var scale = 1 + pulse * 0.012;
+    var drawW = BASE_W * scale;
+    var drawH = BASE_H * scale;
+    aimingCtx.save();
+    aimingCtx.globalAlpha = Math.min(0.34, ink.alpha * 0.38);
+    aimingCtx.fillStyle = 'rgba(1,5,10,.46)';
+    aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
+    aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
+    aimingCtx.drawImage(inkCanvas, (BASE_W - drawW) / 2, (BASE_H - drawH) / 2, drawW, drawH);
     aimingCtx.restore();
   }
   function drawPlayerReturnHitCue(now) {
@@ -8506,11 +8610,8 @@
     var cueAlpha = canReturnNow ? 1 : 0.46;
 
     aimingCtx.save();
-    aimingCtx.globalCompositeOperation = 'lighter';
-    aimingCtx.shadowColor = 'rgba(255,221,122,.26)';
-    aimingCtx.shadowBlur = 5 + pulse * 3;
     aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,236,168,.075)' : 'rgba(114,216,255,.055)';
-    aimingCtx.lineWidth = 7 + pulse * 1.5;
+    aimingCtx.lineWidth = 5.8 + pulse * 0.8;
     aimingCtx.lineCap = 'round';
     aimingCtx.globalAlpha = cueAlpha;
     aimingCtx.beginPath();
@@ -8518,13 +8619,8 @@
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
 
-    var cueGradient = aimingCtx.createLinearGradient(startX, startY, endX, endY);
-    cueGradient.addColorStop(0, 'rgba(255,255,255,0)');
-    cueGradient.addColorStop(0.42, canReturnNow ? 'rgba(255,246,190,.16)' : 'rgba(114,216,255,.13)');
-    cueGradient.addColorStop(1, canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)');
-    aimingCtx.shadowBlur = 3 + pulse * 2;
-    aimingCtx.strokeStyle = cueGradient;
-    aimingCtx.lineWidth = 1.8 + pulse * 0.55;
+    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)';
+    aimingCtx.lineWidth = 1.5 + pulse * 0.35;
     aimingCtx.beginPath();
     aimingCtx.moveTo(startX, startY);
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
@@ -8539,8 +8635,7 @@
     var sideX = -tangentY;
     var sideY = tangentX;
     var head = 6 + shimmer * 1.5;
-    aimingCtx.fillStyle = 'rgba(255,218,102,.24)';
-    aimingCtx.shadowBlur = 3;
+    aimingCtx.fillStyle = canReturnNow ? 'rgba(255,218,102,.24)' : 'rgba(114,216,255,.20)';
     aimingCtx.beginPath();
     aimingCtx.moveTo(endX + tangentX * 4, endY + tangentY * 4);
     aimingCtx.lineTo(endX - tangentX * head + sideX * head * 0.32, endY - tangentY * head + sideY * head * 0.32);
@@ -8549,17 +8644,12 @@
     aimingCtx.fill();
 
     var glowRadius = radius + 3 + pulse * 2;
-    var glow = aimingCtx.createRadialGradient(ball.x, ball.y, Math.max(2, radius * 0.4), ball.x, ball.y, glowRadius + 7);
-    glow.addColorStop(0, 'rgba(255,255,255,.055)');
-    glow.addColorStop(0.45, 'rgba(255,232,150,.085)');
-    glow.addColorStop(1, 'rgba(255,216,94,0)');
-    aimingCtx.fillStyle = glow;
+    aimingCtx.fillStyle = canReturnNow ? 'rgba(255,232,150,.055)' : 'rgba(114,216,255,.050)';
     aimingCtx.beginPath();
     aimingCtx.arc(ball.x, ball.y, glowRadius + 7, 0, Math.PI * 2);
     aimingCtx.fill();
     aimingCtx.strokeStyle = 'rgba(255,242,183,.18)';
     aimingCtx.lineWidth = 0.9;
-    aimingCtx.shadowBlur = 2;
     aimingCtx.beginPath();
     aimingCtx.arc(ball.x, ball.y, glowRadius, 0, Math.PI * 2);
     aimingCtx.stroke();
@@ -8673,10 +8763,27 @@
     badmintonFrameNow = ts || performance.now();
     var dt = game.lastTs ? Math.min(0.033, (ts - game.lastTs) / 1000) : 0.016;
     game.lastTs = ts;
-    update(dt, badmintonFrameNow);
-    render(badmintonFrameNow);
-    drawAiming(badmintonFrameNow);
-    renderYuiLive2dRacket();
+    if (perfMode) {
+      var frameStarted = performance.now();
+      var segmentStarted = performance.now();
+      update(dt, badmintonFrameNow);
+      recordBadmintonPerfSample('updateMs', segmentStarted);
+      segmentStarted = performance.now();
+      render(badmintonFrameNow);
+      recordBadmintonPerfSample('renderMs', segmentStarted);
+      segmentStarted = performance.now();
+      drawAiming(badmintonFrameNow);
+      recordBadmintonPerfSample('aimingMs', segmentStarted);
+      segmentStarted = performance.now();
+      renderYuiLive2dRacket();
+      recordBadmintonPerfSample('racketMs', segmentStarted);
+      recordBadmintonPerfSample('frameMs', frameStarted);
+    } else {
+      update(dt, badmintonFrameNow);
+      render(badmintonFrameNow);
+      drawAiming(badmintonFrameNow);
+      renderYuiLive2dRacket();
+    }
     markFirstFrameRendered();
     requestAnimationFrame(loop);
   }
@@ -9067,6 +9174,7 @@
     window._bdEventListeners = badmintonEventListeners;
     var apiObject = {
       getMode: function () { return currentMode; },
+      getPerf: getBadmintonPerfSnapshot,
       getState: function () {
         var playerRacketContact = getRacketContactPoint('player');
         return {
