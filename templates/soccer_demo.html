@@ -3214,6 +3214,7 @@
     sessionDebugLogEnabled: false,
     sessionDebugLogEnableInFlight: false,
     sessionDebugLogEnablePromise: null,
+    sessionDebugLogMutationHeaders: null,
     routeVoiceSttActive: false,
     routeVoiceSttListening: false,
     routeVoiceSttStopping: false,
@@ -3317,9 +3318,14 @@
         .catch(() => _postSoccerDebugLogPayload(logPayload));
       return;
     }
+    if (_llm.sessionDebugLogMutationHeaders) {
+      _postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders);
+      return;
+    }
     _postSoccerDebugLogPayload(logPayload);
   }
   function _enableSoccerDebugLogWithHeaders(reason, mutationHeaders = {}) {
+    const debugLogMutationHeaders = { ...mutationHeaders };
     const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
     const payload = {
       session_id: _llm.sessionId,
@@ -3334,12 +3340,19 @@
       headers: { 'Content-Type': 'application/json', ...mutationHeaders },
       body,
       keepalive: true,
-    }).then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })));
+    }).then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })))
+      .then((result) => {
+        if (result && result.ok) {
+          _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
+        }
+        return result;
+      });
   }
   function resetSoccerSessionDebugLogEnableState() {
     _llm.sessionDebugLogEnabled = false;
     _llm.sessionDebugLogEnableInFlight = false;
     _llm.sessionDebugLogEnablePromise = null;
+    _llm.sessionDebugLogMutationHeaders = null;
   }
   function enableSoccerSessionDebugLog(reason = 'keyboard') {
     if (_llm.sessionDebugLogEnabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });

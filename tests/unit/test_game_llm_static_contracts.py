@@ -100,10 +100,14 @@ def test_soccer_template_posts_session_debug_errors():
     assert "console.error = function soccerDebugConsoleError" in html
     assert "sessionDebugLogEnabled: false" in html
     assert "sessionDebugLogEnablePromise: null" in html
+    assert "sessionDebugLogMutationHeaders: null" in html
     assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
     assert "function resetSoccerSessionDebugLogEnableState()" in html
     assert "resetSoccerSessionDebugLogEnableState();" in html
     assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
+    assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
+    assert "_llm.sessionDebugLogMutationHeaders = null;" in html
+    assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
     assert "if (data.ok) {\n\t        _llm.sessionDebugLogEnabled = true;" in html
     assert "enableSoccerSessionDebugLog('keyboard_l')" in html
     assert "await enableSoccerSessionDebugLog('auto_route_start')" in html
