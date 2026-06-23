@@ -252,6 +252,7 @@ def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():
         1,
     )[0]
     assert "this.restoreYuiGuideChatInputState(" in teardown_prefix
+    assert "this.clearYuiGuideCompactChatFixedLayout(" in teardown_prefix
 
     restore_block = source.split("    restoreYuiGuideChatInputState(reason = 'tutorial-ended') {", 1)[1].split(
         "    _teardownTutorialUI() {",
@@ -264,3 +265,33 @@ def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():
     assert "disabled: false" in restore_block
     assert "reactChatWindowHost" in restore_block
     assert "setHomeTutorialInteractionLocked(false" in restore_block
+
+
+def test_avatar_floating_guide_lifecycle_toggles_compact_chat_fixed_layout_class():
+    source = _read_manager()
+
+    start_round_block = source.split("    async startAvatarFloatingGuideRound(day, options = {}) {", 1)[1].split(
+        "            const director = this.ensureYuiGuideDirector();",
+        1,
+    )[0]
+    restore_block = source.split("    restoreYuiGuideChatInputState(reason = 'tutorial-ended') {", 1)[1].split(
+        "    _teardownTutorialUI() {",
+        1,
+    )[0]
+    lifecycle_block = source.split("    clearAllTutorialLifecycles(reason = 'destroy') {", 1)[1].split(
+        "    normalizeTutorialEndRawReason(reason) {",
+        1,
+    )[0]
+    clear_method_block = source.split("    clearYuiGuideCompactChatFixedLayout(reason = 'tutorial-ended') {", 1)[1].split(
+        "    restoreYuiGuideChatInputState(reason = 'tutorial-ended') {",
+        1,
+    )[0]
+
+    assert "document.body.classList.add('yui-guide-compact-chat-fixed')" in start_round_block
+    assert "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')" in start_round_block
+    assert "this.clearYuiGuideCompactChatFixedLayout(restoreReason)" in restore_block
+    assert "this.clearYuiGuideCompactChatFixedLayout(rawReason)" in lifecycle_block
+    assert "document.body.classList.remove('yui-guide-compact-chat-fixed')" in clear_method_block
+    assert "this.syncYuiGuideCompactChatFixedLayout(false, reason)" in clear_method_block
+    assert "action: 'yui_guide_set_compact_chat_fixed_layout'" in source
+    assert "window.nekoTutorialOverlay.relayToChat(message)" in source

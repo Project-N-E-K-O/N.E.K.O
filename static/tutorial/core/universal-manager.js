@@ -1037,6 +1037,7 @@ class UniversalTutorialManager {
         const rawReason = this.normalizeTutorialEndRawReason(reason);
         const director = this.yuiGuideDirector;
         this.syncPcSystemCursorHidden(false, rawReason);
+        this.clearYuiGuideCompactChatFixedLayout(rawReason);
 
         try {
             this.notifyYuiGuideTutorialEnd(rawReason);
@@ -1111,6 +1112,46 @@ class UniversalTutorialManager {
             && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
         ) {
             window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
+        }
+    }
+
+    syncYuiGuideCompactChatFixedLayout(fixed, reason = 'tutorial') {
+        const normalizedReason = typeof reason === 'string' && reason.trim()
+            ? reason.trim()
+            : 'tutorial';
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+        } catch (_) {}
+
+        const message = {
+            action: 'yui_guide_set_compact_chat_fixed_layout',
+            fixed: fixed === true,
+            reason: normalizedReason,
+            tutorialRunId: tutorialRunId,
+            timestamp: Date.now()
+        };
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage(message);
+            } catch (error) {
+                console.warn('[Tutorial] 同步胶囊聊天框固定布局失败:', error);
+            }
+        }
+
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+        ) {
+            try {
+                window.nekoTutorialOverlay.relayToChat(message);
+            } catch (error) {
+                console.warn('[Tutorial] 原生转发胶囊聊天框固定布局失败:', error);
+            }
         }
     }
 
@@ -2811,6 +2852,10 @@ class UniversalTutorialManager {
         this.isTutorialRunning = true;
         window.isInTutorial = true;
         this.lockBodyScroll();
+        if (document.body) {
+            document.body.classList.add('yui-guide-compact-chat-fixed');
+        }
+        this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
         this._tutorialModelPrefix = 'live2d';
         this.emitTutorialStarted('home', source);
 
@@ -3269,6 +3314,13 @@ class UniversalTutorialManager {
         return startupGreetingReleasePromise;
     }
 
+    clearYuiGuideCompactChatFixedLayout(reason = 'tutorial-ended') {
+        if (document.body) {
+            document.body.classList.remove('yui-guide-compact-chat-fixed');
+        }
+        this.syncYuiGuideCompactChatFixedLayout(false, reason);
+    }
+
     restoreYuiGuideChatInputState(reason = 'tutorial-ended') {
         const restoreReason = typeof reason === 'string' && reason.trim()
             ? reason.trim()
@@ -3277,6 +3329,7 @@ class UniversalTutorialManager {
         if (document.body) {
             document.body.classList.remove('yui-guide-chat-buttons-disabled');
         }
+        this.clearYuiGuideCompactChatFixedLayout(restoreReason);
 
         const readonlyTargets = document.querySelectorAll(
             '#react-chat-window-shell textarea, '
@@ -3346,6 +3399,11 @@ class UniversalTutorialManager {
      */
     _teardownTutorialUI() {
         this.revealTutorialLive2dPrepared();
+        this.clearYuiGuideCompactChatFixedLayout(
+            this.lifecycleStateStore.getEndRawReason()
+            || this.lifecycleStateStore.getEndReason()
+            || 'tutorial-ended'
+        );
         try {
             this.hideSkipButton();
         } catch (error) {
