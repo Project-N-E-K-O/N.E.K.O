@@ -683,7 +683,12 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
                 "如果未來是你的，證明給我看！",
             ],
         }
-        for required_line in expected_max_lines[locale_path.name]:
+        locale_expected_max_lines = expected_max_lines.get(locale_path.name)
+        assert locale_expected_max_lines is not None, (
+            f"{locale_path.name} missing difficultyMax line contract; "
+            f"expected locales: {sorted(expected_max_lines)}"
+        )
+        for required_line in locale_expected_max_lines:
             assert required_line in difficulty_max_lines
         assert len(_get_nested(payload, "badminton.lines.mindGame")) >= 6
         assert len(_get_nested(payload, "badminton.lines.yuiCheat.banana")) >= 4
