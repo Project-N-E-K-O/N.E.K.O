@@ -1269,8 +1269,8 @@ def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
 
 
 def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
-    """揭示延迟必须只藏按钮、不扣 state.choicePrompt——否则间隙内的自由文本会绕过
-    icebreaker free-text 路由落到普通聊天。"""
+    # 揭示延迟必须只藏按钮、不扣 state.choicePrompt——否则间隙内的自由文本会绕过
+    # icebreaker free-text 路由落到普通聊天。
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     # 渲染层走 getRevealedChoicePrompt（揭示未到点返回 null 藏按钮）；输入路由仍直接
@@ -1295,6 +1295,14 @@ def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
         1,
     )[0]
     assert "if (state.choicePrompt === prompt)" in schedule_block
+
+    # galgame 选项拉取必须在 icebreaker prompt 激活（含揭示延迟内已就位但未露出）时让位，
+    # 否则 turn-end 会把 galgame A/B/C 挤进尚未露出 icebreaker 选项的同一槽位（Codex P2）。
+    galgame_fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
+        "function ",
+        1,
+    )[0]
+    assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;" in galgame_fetch_block
 
 
 def test_new_user_icebreaker_choice_listener_posts_context():

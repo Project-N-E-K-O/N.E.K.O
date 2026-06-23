@@ -3545,6 +3545,12 @@
     function fetchGalgameOptionsForLatestTurn() {
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
+        // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
+        // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
+        // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
+        // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
+        // 此时并不覆盖它，故须单独按 choicePrompt 拦。
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
