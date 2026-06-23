@@ -1409,6 +1409,18 @@ class DirectTaskExecutor:
                 d_pid = decision.get("plugin_id")
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
+                # Telemetry: count every parsed Stage-2 decision that reaches
+                # validation. This is the denominator for the correction-retry
+                # trigger rate (retries / parsed Stage-2 decisions). Early returns
+                # on empty / unparseable responses don't reach here and can't fire
+                # a retry, so they're correctly excluded from the base.
+                try:
+                    from utils.instrument import counter as _instr_counter
+                    _instr_counter("plugin_assess_stage2")
+                except Exception:
+                    # 埋点失败静默，绝不能影响插件评估主路径。
+                    pass
+
                 # Build the executable lookup from the plugins actually shown in this
                 # Stage 2 prompt. In large plugin lists, Stage 1 may filter every
                 # plugin out; a hallucinated id from the full registry must not pass
@@ -1530,6 +1542,25 @@ class DirectTaskExecutor:
                         final_can = False
                         decision["can_execute"] = False
                         decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
+
+                # Telemetry: if a correction retry fired, record whether the
+                # re-asked decision ended up actionable. At this point
+                # decision["can_execute"] reflects final validation (forced False
+                # when plugin_id/entry_id is still invalid), so has_task &
+                # can_execute both true means a valid plugin_id/entry_id survived.
+                # Combined with the plugin_assess_stage2 denominator this gives the
+                # retry trigger rate (sum of this counter / stage2) and the
+                # post-retry success rate, without logging any LLM text.
+                if up_retry_done:
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _retry_ok = bool(decision.get("has_task") and decision.get("can_execute"))
+                        _instr_counter(
+                            "plugin_assess_correction_retry",
+                            result="success" if _retry_ok else "fail",
+                        )
+                    except Exception:
+                        pass
 
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
