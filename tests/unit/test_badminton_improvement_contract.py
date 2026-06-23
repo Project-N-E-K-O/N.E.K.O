@@ -1504,6 +1504,32 @@ def test_badminton_generated_quick_lines_override_static_i18n_lines():
 
 
 @pytest.mark.unit
+def test_badminton_request_language_ignores_template_default_until_i18n_resolves():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    start = html.index("function getRequestLanguage()")
+    request_language = html[start:html.index("function api(path)", start)]
+
+    assert "var hasResolvedI18nLanguage = false;" in request_language
+    assert "var documentLangIsTemplateDefault = /^zh(?:-CN)?$/i.test(documentLang) && !hasResolvedI18nLanguage;" in request_language
+    assert "if (documentLang && !documentLangIsTemplateDefault) candidates.push(documentLang);" in request_language
+    assert "candidates.push(navigator.language || '')" in request_language
+
+
+@pytest.mark.unit
+def test_badminton_localechange_refreshes_generated_quick_lines():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    start = html.index("window.addEventListener('localechange', function () {")
+    localechange = html[start:html.index("});", start) + len("});")]
+
+    assert "generatedQuickLines = {};" in localechange
+    assert "if (routeActive) loadGeneratedQuickLines();" in localechange
+    assert "var quickLinesRequestLanguage = getRequestLanguage();" in html
+    assert "if (quickLinesRequestLanguage !== getRequestLanguage()) return;" in html
+
+
+@pytest.mark.unit
 def test_badminton_route_end_payload_contains_archive_score():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
