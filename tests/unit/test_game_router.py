@@ -464,6 +464,24 @@ def test_game_debug_logs_do_not_append_after_session_ended():
 
 
 @pytest.mark.unit
+def test_game_debug_logs_mark_ended_is_idempotent():
+    game_log.enable_game_session_debug_log("soccer", "soccer-ended-idempotent", lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="first")
+    entry = game_log.find_game_session_debug_log("soccer-ended-idempotent", "soccer")
+    assert entry is not None
+    first_ended_at = entry["ended_at"]
+    first_ended_time = entry["ended_time"]
+    first_events = [item["event"] for item in entry["entries"]]
+
+    game_log.mark_game_session_debug_log_ended("soccer", "soccer-ended-idempotent", lanlan_name="Lan", reason="second")
+
+    assert entry["status"] == "ended"
+    assert entry["ended_at"] == first_ended_at
+    assert entry["ended_time"] == first_ended_time
+    assert [item["event"] for item in entry["entries"]] == first_events == ["session_ended"]
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_debug_logs_route_end_records_completed_before_session_ended(monkeypatch):
     async def fake_deliver_postgame(*_args, **_kwargs):

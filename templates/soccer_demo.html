@@ -3214,6 +3214,7 @@
     sessionDebugLogEnabled: false,
     sessionDebugLogEnableInFlight: false,
     sessionDebugLogEnablePromise: null,
+    sessionDebugLogEnableGeneration: 0,
     sessionDebugLogMutationHeaders: null,
     routeVoiceSttActive: false,
     routeVoiceSttListening: false,
@@ -3349,6 +3350,7 @@
       });
   }
   function resetSoccerSessionDebugLogEnableState() {
+    _llm.sessionDebugLogEnableGeneration += 1;
     _llm.sessionDebugLogEnabled = false;
     _llm.sessionDebugLogEnableInFlight = false;
     _llm.sessionDebugLogEnablePromise = null;
@@ -3365,25 +3367,33 @@
       ))
     );
   }
-  function _startSoccerSessionDebugLogEnablePromise(workPromise) {
+  function _startSoccerSessionDebugLogEnablePromise(workPromise, generation) {
+    const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;
     const timeoutPromise = new Promise((resolve) => {
       setTimeout(() => resolve({ ok: false, reason: 'enable_timeout' }), SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS);
     });
     const guardedWork = Promise.resolve(workPromise)
       .then((result) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
         const enabledResult = onSoccerSessionDebugLogEnabled(result);
         return enabledResult;
       })
-      .catch(onSoccerSessionDebugLogEnableFailed);
+      .catch((error) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_error' };
+        return onSoccerSessionDebugLogEnableFailed(error);
+      });
     _llm.sessionDebugLogEnablePromise = Promise.race([guardedWork, timeoutPromise])
       .then((result) => {
+        if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
         if (result && result.reason === 'enable_timeout') {
           _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用超时，稍后可重试');
         }
         return result;
       })
       .finally(() => {
-        _llm.sessionDebugLogEnableInFlight = false;
+        if (isCurrentGeneration()) {
+          _llm.sessionDebugLogEnableInFlight = false;
+        }
       });
     return _llm.sessionDebugLogEnablePromise;
   }
@@ -3409,6 +3419,7 @@
       return _llm.sessionDebugLogEnablePromise;
     }
     _llm.sessionDebugLogEnableInFlight = true;
+    const generation = _llm.sessionDebugLogEnableGeneration;
     const security = window.nekoLocalMutationSecurity;
     const withEnableReason = (result) => ({ ...(result || {}), enableReason: reason });
     try {
@@ -3416,7 +3427,8 @@
         const token = security.peekCachedToken();
         if (token) {
           return _startSoccerSessionDebugLogEnablePromise(
-            _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token }).then(withEnableReason)
+            _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token }).then(withEnableReason),
+            generation
           );
         }
       }
@@ -3424,11 +3436,11 @@
     if (security && typeof security.getMutationHeaders === 'function') {
       return _startSoccerSessionDebugLogEnablePromise(Promise.resolve(security.getMutationHeaders())
         .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-        .then(withEnableReason));
+        .then(withEnableReason), generation);
     }
     return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
       .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-      .then(withEnableReason));
+      .then(withEnableReason), generation);
   }
   function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
     try {

@@ -327,6 +327,8 @@ def mark_game_session_debug_log_ended(game_type: Any, session_id: Any, *, lanlan
     entry = _get_or_create_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name, create=False)
     if entry is None:
         return
+    if entry.get("status") == "ended":
+        return
     if entry.get("status") == "active":
         append_game_session_debug_log(
             game_type,

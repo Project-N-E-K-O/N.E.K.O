@@ -100,13 +100,17 @@ def test_soccer_template_posts_session_debug_errors():
     assert "console.error = function soccerDebugConsoleError" in html
     assert "sessionDebugLogEnabled: false" in html
     assert "sessionDebugLogEnablePromise: null" in html
+    assert "sessionDebugLogEnableGeneration: 0" in html
     assert "sessionDebugLogMutationHeaders: null" in html
     assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
     assert "function resetSoccerSessionDebugLogEnableState()" in html
     assert "resetSoccerSessionDebugLogEnableState();" in html
     assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in html
     assert "function _hasSoccerSessionDebugLogSendCredentials()" in html
-    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise)" in html
+    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise, generation)" in html
+    assert "_llm.sessionDebugLogEnableGeneration += 1;" in html
+    assert "const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;" in html
+    assert "if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };" in html
     assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
     assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
     assert "_llm.sessionDebugLogMutationHeaders = null;" in html
