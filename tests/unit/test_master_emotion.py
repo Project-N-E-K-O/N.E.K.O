@@ -266,6 +266,38 @@ def test_parse_complexity_field():
     assert r3.complexity == 1.0
 
 
+def test_parse_action_intent_field():
+    # action_intent rides this same cheap call as a signal for the agent gate.
+    r = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": 0.8}', now=1.0, source="x",
+    )
+    assert r is not None and r.action_intent == 0.8
+    # CRITICAL — unlike complexity, a MISSING action_intent is None, NOT 0.0.
+    # The consuming agent gate must fail open (run the expensive assessment) when
+    # it has no usable signal, never read a phantom 0.0 as "confidently no
+    # action" and brake a real tool request. Absence must not reject the reading.
+    r2 = MasterEmotionTracker._parse('{"valence": 0, "arousal": 0}', now=1.0, source="x")
+    assert r2 is not None and r2.action_intent is None
+    # null / non-numeric → None (fail-open), reading still valid.
+    r3 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": null}', now=1.0, source="x",
+    )
+    assert r3 is not None and r3.action_intent is None
+    r4 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": "lots"}', now=1.0, source="x",
+    )
+    assert r4 is not None and r4.action_intent is None
+    # out-of-range clamps into [0, 1] when present.
+    r5 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": 9}', now=1.0, source="x",
+    )
+    assert r5.action_intent == 1.0
+    r6 = MasterEmotionTracker._parse(
+        '{"valence": 0, "arousal": 0, "action_intent": -3}', now=1.0, source="x",
+    )
+    assert r6.action_intent == 0.0
+
+
 def test_parse_rejects_garbage():
     assert MasterEmotionTracker._parse("not json at all", now=1.0, source="x") is None
     assert MasterEmotionTracker._parse("[1, 2, 3]", now=1.0, source="x") is None  # not a dict
@@ -423,3 +455,93 @@ def test_to_profile_sample(monkeypatch):
     # honors the switch (reads via self.latest), same as latest
     monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
     assert t.to_profile_sample() is None
+
+
+def test_gate_signal_for_registry(monkeypatch):
+    # The cross-server analyze_request publisher reads the combined pre-gate
+    # signal by lanlan_name + current user text (no core handle). Verify the
+    # registry bridge, the freshness (turn) match, and the complexity fold.
+    from main_logic.activity.master_emotion import gate_signal_for
+
+    # Unknown lanlan → None (fail-open: the agent gate runs the assessment).
+    assert gate_signal_for("nobody-here", "anything") is None
+
+    fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.7}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("regtest")  # registers itself on init
+    # No reading yet → None.
+    assert gate_signal_for("regtest", "帮我打开浏览器") is None
+    asyncio.run(t.analyze("帮我打开浏览器", now=100.0))
+    # Matching turn text → action_intent (complexity 0 → max is action_intent).
+    assert gate_signal_for("regtest", "帮我打开浏览器") == 0.7
+    # Freshness: a DIFFERENT user text → None (stale / other turn → fail open),
+    # so an earlier turn's signal can never gate the current one.
+    assert gate_signal_for("regtest", "完全不一样的另一句话") is None
+    # Match is whitespace-insensitive.
+    assert gate_signal_for("regtest", "  帮我打开浏览器  ") == 0.7
+
+    # Complexity fold: a hard reasoning turn (low action, high complexity) keeps
+    # the gate OPEN — max(0.1, 0.8) = 0.8 — so openfang-style reasoning requests
+    # are not braked.
+    fake2, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.1, "complexity": 0.8}')
+    _patch_tier(monkeypatch, fake2)
+    asyncio.run(t.analyze("这道题怎么一步步推导出来", now=200.0))
+    assert gate_signal_for("regtest", "这道题怎么一步步推导出来") == 0.8
+
+    # A turn whose model output carried NO action_intent → None (fail-open),
+    # even though a valid emotion reading exists this turn.
+    fake3, _ = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
+    _patch_tier(monkeypatch, fake3)
+    asyncio.run(t.analyze("我好难过", now=300.0))
+    assert t.latest is not None and gate_signal_for("regtest", "我好难过") is None
+
+    # Honors the master switch (reads through .latest).
+    fake4, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake4)
+    asyncio.run(t.analyze("运行一下", now=400.0))
+    assert gate_signal_for("regtest", "运行一下") == 0.9
+    monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
+    assert gate_signal_for("regtest", "运行一下") is None
+
+
+def test_truncated_input_nulls_action_intent(monkeypatch):
+    # When the analyzed text is longer than MASTER_EMOTION_MAX_INPUT_CHARS, the
+    # model only saw the opening; an action verb in the unseen tail would make
+    # action_intent unreliable → it is nulled (the agent gate then fails open).
+    # Emotion axes (judgeable from the opening) stay valid.
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 20)
+    fake, _ = _fake_tier('{"valence": -0.3, "arousal": 0.4, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("trunc")
+    r = asyncio.run(t.analyze("x" * 100, now=100.0))  # 100 > 20 → truncated
+    assert r is not None
+    assert r.action_intent is None                  # nulled due to truncation
+    assert r.valence == -0.3 and r.arousal == 0.4   # emotion preserved
+    # Short input (<= max) keeps action_intent.
+    fake2, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake2)
+    t2 = MasterEmotionTracker("trunc2")
+    r2 = asyncio.run(t2.analyze("short", now=100.0))
+    assert r2.action_intent == 0.9
+
+
+def test_gate_signal_long_text_no_prefix_collision(monkeypatch):
+    # A prefix-truncated match key would treat two long messages that share a
+    # long prefix (but differ at the end) as the SAME turn — letting a stale
+    # low-action reading brake a real action request in the latter half. The
+    # full-text fingerprint must reject that → fail open (None).
+    from main_logic.activity.master_emotion import gate_signal_for
+
+    # Raise the input cap so the truncation guard does NOT fire here — this test
+    # isolates the fingerprint behavior (full text vs the old 280-char prefix).
+    monkeypatch.setattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 100000)
+    long_prefix = "这是一段很长的对话内容反复出现并且超过二百八十个字符的前缀" * 20  # > 280 chars
+    fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.05}')
+    _patch_tier(monkeypatch, fake)
+    t = MasterEmotionTracker("longtest")
+    asyncio.run(t.analyze(long_prefix + "前半段只是闲聊", now=100.0))
+    # Same long prefix, different tail = a different turn → must NOT reuse the
+    # prior low-action reading (which would wrongly brake the real request).
+    assert gate_signal_for("longtest", long_prefix + "后半段请帮我打开浏览器并搜索") is None
+    # The exact same text still matches (sanity check).
+    assert gate_signal_for("longtest", long_prefix + "前半段只是闲聊") == 0.05

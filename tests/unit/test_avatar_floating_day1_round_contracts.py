@@ -490,6 +490,24 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
     )[1]
 
 
+def test_external_chat_ready_replays_compact_fixed_layout_when_tutorial_is_active():
+    takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    ready_block = takeover_source.split("onExternalChatReady() {", 1)[1].split(
+        "destroy()",
+        1,
+    )[0]
+    fixed_method_block = takeover_source.split("setExternalizedChatCompactFixedLayout(fixed, reason) {", 1)[1].split(
+        "clearExternalizedChatGuideMessages()",
+        1,
+    )[0]
+
+    assert "this.document.body.classList.contains('yui-guide-compact-chat-fixed')" in ready_block
+    assert "this.setExternalizedChatCompactFixedLayout(true, 'external-chat-ready')" in ready_block
+    assert "yui_guide_set_compact_chat_fixed_layout" in fixed_method_block
+    assert "fixed: fixed === true" in fixed_method_block
+    assert "reason: typeof reason === 'string' ? reason : ''" in fixed_method_block
+
+
 def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
     interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
     overlay_source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")

@@ -47,6 +47,11 @@ def is_icebreaker_route_active(lanlan_name: str) -> bool:
     return _get_active_icebreaker_route_state(lanlan_name) is not None
 
 
+def get_active_icebreaker_route_session_id(lanlan_name: str) -> str:
+    state = _get_active_icebreaker_route_state(lanlan_name)
+    return str(state.get("session_id") or "") if state else ""
+
+
 def activate_icebreaker_route(lanlan_name: str, session_id: str) -> dict:
     now = time.time()
     state = {

@@ -193,6 +193,54 @@
         });
     }
 
+    function endIcebreakerRouteOnPageExit(reason) {
+        var session = activeSession;
+        if (!session || session.routeEnded || !session.sessionId) return;
+        session.routeEnded = true;
+        var body = {
+            lanlan_name: resolveLanlanName(),
+            session_id: String(session.sessionId || ''),
+            i18n_language: currentLocale(),
+            reason: reason || 'icebreaker_page_exit',
+            postgameProactive: { enabled: false }
+        };
+        try {
+            var security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.peekCachedToken === 'function') {
+                var token = security.peekCachedToken();
+                if (token) {
+                    body._csrf_token = token;
+                }
+            }
+        } catch (_) {}
+        var rawBody = JSON.stringify(body);
+        try {
+            if (navigator.sendBeacon && typeof Blob === 'function') {
+                if (navigator.sendBeacon(
+                    ICEBREAKER_API_BASE + '/route/end',
+                    new Blob([rawBody], { type: 'application/json' })
+                )) {
+                    return;
+                }
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle beacon failed:', error);
+        }
+        try {
+            fetch(ICEBREAKER_API_BASE + '/route/end', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                keepalive: true,
+                body: rawBody
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] route lifecycle keepalive failed:', error);
+            });
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] route lifecycle keepalive threw:', error);
+        }
+    }
+
     function loadScripts() {
         if (!scriptPromise) {
             scriptPromise = fetchJson(SCRIPT_URL);
@@ -1030,6 +1078,15 @@
     window.addEventListener('neko:avatar-floating-guide-skip', handleGuideEndEvent);
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
     window.addEventListener('neko:tutorial-skipped', handleGuideEndEvent);
+    window.addEventListener('pagehide', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_pagehide');
+    });
+    window.addEventListener('beforeunload', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_beforeunload');
+    });
+    window.addEventListener('unload', function () {
+        endIcebreakerRouteOnPageExit('icebreaker_unload');
+    });
     window.addEventListener('neko:icebreaker-choice-selected', function (event) {
         handleChoice(event && event.detail);
     });

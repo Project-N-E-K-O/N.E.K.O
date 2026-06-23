@@ -45,6 +45,7 @@ let subtitleEnabled = initialSubtitleSettings
     : ((typeof window.appState !== 'undefined' && typeof window.appState.subtitleEnabled !== 'undefined')
         ? window.appState.subtitleEnabled
         : localStorage.getItem('subtitleEnabled') === 'true');
+let subtitleSuppressedByGoodbye = false;
 
 function isSubtitleTranslationOwner() {
     return !(window.__NEKO_MULTI_WINDOW__ &&
@@ -494,6 +495,20 @@ function syncSubtitleRenderState(source) {
     }, { source: source || 'subtitle-core' });
 }
 
+function hideSubtitleDisplayOnly(source) {
+    const display = document.getElementById('subtitle-display');
+    if (!display) return;
+    clearSubtitleDanmakuLayer();
+    display.classList.remove('show');
+    display.classList.add('hidden');
+    display.style.opacity = '0';
+    syncSubtitleRenderState(source || 'subtitle-display-hidden');
+}
+
+function isSubtitleTemporarilySuppressed() {
+    return subtitleSuppressedByGoodbye;
+}
+
 /**
  * 设置用户语言并同步到 appState
  */
@@ -657,6 +672,10 @@ function getStructuredPlaceholder() {
 function ensureSubtitleVisibleIfEnabled() {
     const display = document.getElementById('subtitle-display');
     if (!display) return;
+    if (isSubtitleTemporarilySuppressed()) {
+        hideSubtitleDisplayOnly('subtitle-goodbye-suppressed-visible-request');
+        return;
+    }
     if (subtitleEnabled) {
         display.classList.remove('hidden');
         display.classList.add('show');
@@ -720,6 +739,11 @@ function writeSubtitleText(text) {
     if (!subtitleText) return;
     subtitleText.textContent = text || '';
     subtitleText.style.fontSize = '';
+    if (isSubtitleTemporarilySuppressed()) {
+        clearSubtitleDanmakuLayer();
+        syncSubtitleRenderState('subtitle-text-write-goodbye-suppressed');
+        return;
+    }
     var danmakuRendering = renderSubtitleDanmakuLayer(subtitleText.textContent);
     if (!danmakuRendering) {
         requestSubtitleContentAutoScroll();
@@ -897,8 +921,8 @@ function markIncrementalSentenceHandled(requestSnapId) {
 function updateIncrementalDisplay() {
     if (!subtitleEnabled) return;
     var fullText = incrementalTranslatedSentences.join(' ');
-    ensureSubtitleVisibleIfEnabled();
     writeSubtitleText(fullText);
+    ensureSubtitleVisibleIfEnabled();
 }
 
 function showSubtitleWithoutOriginalAndRestartCurrentTurn() {
@@ -931,6 +955,40 @@ function showSubtitleWithoutOriginalAndRestartCurrentTurn() {
         return;
     }
     updateSubtitleStreamingText(currentTurnOriginalText);
+}
+
+function suppressSubtitleForGoodbye() {
+    if (!isSubtitleTranslationOwner()) {
+        return;
+    }
+    subtitleSuppressedByGoodbye = true;
+    hideSubtitleDisplayOnly('subtitle-goodbye-suppress');
+}
+
+function restoreSubtitleAfterGoodbye() {
+    if (!subtitleSuppressedByGoodbye) {
+        return;
+    }
+    subtitleSuppressedByGoodbye = false;
+    if (subtitleEnabled) {
+        showSubtitleWithoutOriginalAndRestartCurrentTurn();
+    } else {
+        syncSubtitleRenderState('subtitle-goodbye-restore-disabled');
+    }
+}
+
+function bindGoodbyeSubtitleVisibility() {
+    window.addEventListener('live2d-goodbye-click', suppressSubtitleForGoodbye);
+    var returnEvents = [
+        'live2d-return-click',
+        'vrm-return-click',
+        'mmd-return-click',
+        'pngtuber-return-click'
+    ];
+    returnEvents.forEach(function(eventName) {
+        window.addEventListener(eventName, restoreSubtitleAfterGoodbye);
+    });
+    window.addEventListener('neko:goodbye-state-cleared', restoreSubtitleAfterGoodbye);
 }
 
 /**
@@ -983,8 +1041,8 @@ function markSubtitleStructured() {
     const placeholder = getStructuredPlaceholder();
     currentTurnOriginalText = placeholder;
     if (!subtitleEnabled) return;
-    ensureSubtitleVisibleIfEnabled();
     writeSubtitleText(placeholder);
+    ensureSubtitleVisibleIfEnabled();
 }
 
 /**
@@ -1002,8 +1060,8 @@ function finalizeSubtitleAsStructured() {
     const placeholder = getStructuredPlaceholder();
     currentTurnOriginalText = placeholder;
     if (!subtitleEnabled) return;
-    ensureSubtitleVisibleIfEnabled();
     writeSubtitleText(placeholder);
+    ensureSubtitleVisibleIfEnabled();
 }
 
 /**
@@ -1229,6 +1287,7 @@ async function initSubtitleAfterStorageBarrier() {
     }
     syncSubtitleRenderState('subtitle-dom-ready');
     window.addEventListener('neko-assistant-turn-start', onAssistantTurnStart);
+    bindGoodbyeSubtitleVisibility();
 
     // 通用引导管理器：index.html / chat.html 都加载 subtitle.js，
     // 但自身模板没有 init 调用，历史上靠这里兜底（其他子页面模板各自 init）。

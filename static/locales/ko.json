@@ -1792,6 +1792,8 @@
         "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다.",
         "tutorialHomeDayLabel": "{{day}}일차",
         "tutorialHomeDayColumn": "홈 7일 튜토리얼",
+        "tutorialHomeAllReset": "전체 재설정",
+        "tutorialHomeAllResetSuccess": "홈 7일 튜토리얼이 재설정되었습니다. Neko를 다시 로드하면 1일차부터 시작합니다.",
         "refreshed": "메모리가 업데이트되었습니다. 다음 대화에서 새 메모리가 사용됩니다",
         "refreshingContext": "컨텍스트 새로고침 중...",
         "storageLocation": "저장 위치",
@@ -4259,6 +4261,7 @@
     },
      "badminton": {
          "title": "샷 챌린지 - Badminton",
+         "exit": "나가기",
          "loading": {
              "title": "배드민턴 코트 입장 중",
              "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."

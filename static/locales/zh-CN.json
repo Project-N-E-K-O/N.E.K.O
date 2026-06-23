@@ -1792,6 +1792,8 @@
         "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。",
         "tutorialHomeDayLabel": "第 {{day}} 天",
         "tutorialHomeDayColumn": "主页七日新手教程",
+        "tutorialHomeAllReset": "全部重置",
+        "tutorialHomeAllResetSuccess": "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。",
         "refreshed": "记忆已更新，下次对话将使用新记忆",
         "refreshingContext": "正在刷新上下文...",
         "storageLocation": "存储位置",
@@ -4259,6 +4261,7 @@
     },
      "badminton": {
          "title": "羽毛球挑战 - Badminton",
+         "exit": "退出",
          "loading": {
              "title": "正在进入羽毛球场",
              "subtitle": "加载场地、角色和音效..."
