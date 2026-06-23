@@ -2478,12 +2478,14 @@ class LLMSessionManager:
         await self._push_focus_charge()
 
     async def resync_focus_for_new_window(self) -> None:
-        """Re-emit BOTH focus signals to a freshly-connected window (greeting_check):
-        the charge glow AND the binary focus_state. ``force=True`` bypasses the
-        idempotent cache so a window opened mid-FOCUS gets the current indicator
-        even though no enter/exit transition fires for it."""
+        """Re-emit ALL focus signals to a freshly-connected window (greeting_check):
+        the charge glow, the binary focus_state, AND the transient thinking pulse.
+        ``force=True`` bypasses the idempotent cache so a window opened mid-FOCUS
+        (or mid-thinking) gets the current indicator even though no enter/exit /
+        thinking transition fires for it."""
         await self._push_focus_charge()
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS, force=True)
+        await self._push_focus_thinking(getattr(self, "_focus_thinking_active", False), force=True)
 
     async def _push_focus_indicator(self, active: bool, *, force: bool = False) -> None:
         """Mirror the cognition indicator (focus_state) to the frontend (drives
@@ -2560,19 +2562,21 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_charge ws push failed: %s", self.lanlan_name, e)
 
-    async def _push_focus_thinking(self, active: bool) -> None:
+    async def _push_focus_thinking(self, active: bool, *, force: bool = False) -> None:
         """Pulse a transient "model is thinking" signal to the frontend so the
         chat history can show a thinking-dots bubble while a Focus turn runs
         thinking-on but hasn't emitted any visible content yet. Pushed True right
         before such a turn streams, cleared (False) the moment the first visible
         chunk lands (send_lanlan_response) or the turn ends. Idempotent on the
-        cached state so per-chunk callers can clear blindly without spamming.
-        Ephemeral: ws + sync-queue only, never persisted. Best-effort — a ws
-        failure must never disturb the caller.
+        cached state so per-chunk callers can clear blindly without spamming —
+        except ``force=True`` (a new-window re-sync) re-pushes even when
+        unchanged, mirroring _push_focus_indicator so a window opened mid-thinking
+        lands on the current bubble. Ephemeral: ws + sync-queue only, never
+        persisted. Best-effort — a ws failure must never disturb the caller.
 
         getattr default guards bypass-__init__ constructions (bare test mgrs,
         cross-server / unpickled managers) — they simply have no bubble to sync."""
-        if active == getattr(self, "_focus_thinking_active", False):
+        if not force and active == getattr(self, "_focus_thinking_active", False):
             return
         self._focus_thinking_active = active
         msg = {"type": "focus_thinking", "active": active}

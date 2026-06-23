@@ -140,3 +140,17 @@ def test_thinking_message_shape_only_type_and_active():
     msg = _pushed_thinking(stub)[0]
     assert set(msg.keys()) == {"type", "active"}
     assert msg["active"] is True
+
+
+def test_thinking_force_re_pushes_for_new_window():
+    # resync_focus_for_new_window replays the thinking pulse with force=True so a
+    # window opened mid-thinking lands on the current bubble — the idempotent
+    # guard must NOT swallow the re-push even though the cached state is unchanged.
+    stub = _stub()
+    push = _bind(stub, "_push_focus_thinking")
+    asyncio.run(push(True))            # mid-thinking
+    asyncio.run(push(True, force=True))  # new window connects → forced replay
+    assert _pushed_thinking(stub) == [
+        {"type": "focus_thinking", "active": True},
+        {"type": "focus_thinking", "active": True},
+    ]
