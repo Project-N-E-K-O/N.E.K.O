@@ -62,13 +62,19 @@ emotion_pattern = re.compile('<(.*?)>')
 async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
-        # Non-blocking read of the cheap action-intent hint the master-emotion
-        # call produced at input-time. Lazy import keeps cross_server's module
-        # graph clean. Cache miss / disabled / stale / no-signal → None → the
-        # agent gate fails open (runs the assessment). turn_end must never block
-        # on the emotion call, so this only ever reads an already-cached value.
-        from main_logic.activity.master_emotion import latest_action_intent_for
-        action_intent = latest_action_intent_for(lanlan_name)
+        # Non-blocking read of the cheap pre-gate signal the master-emotion call
+        # produced at input-time. Lazy import keeps cross_server's module graph
+        # clean. Cache miss / disabled / stale (different turn) / no-signal →
+        # None → the agent gate fails open (runs the assessment). turn_end must
+        # never block on the emotion call, so this only reads an already-cached
+        # value, matched to THIS turn's latest user message.
+        from main_logic.activity.master_emotion import gate_signal_for
+        _latest_user_text = next(
+            (str(m.get("content") or m.get("text") or "")
+             for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
+            "",
+        )
+        action_intent = gate_signal_for(lanlan_name, _latest_user_text)
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,

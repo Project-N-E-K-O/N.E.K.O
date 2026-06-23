@@ -39,6 +39,8 @@ from config import (
     AGENT_PLUGIN_COARSE_MAX_TOKENS,
     AGENT_UNIFIED_ASSESS_MAX_TOKENS,
     AGENT_PLUGIN_FULL_MAX_TOKENS,
+    AGENT_ACTION_GATE_ENABLED,
+    AGENT_ACTION_GATE_THRESHOLD,
     TASK_DETAIL_MAX_TOKENS,
 )
 from utils.llm_client import (
@@ -1619,7 +1621,11 @@ class DirectTaskExecutor:
             try:
                 from brain.plugin_filter import _match_keywords
                 for p in plugins:
-                    if not isinstance(p, dict):
+                    # Skip passive plugins: they never participate in dispatch
+                    # (mirrors _assess_user_plugin), so a passive plugin's keyword
+                    # must not count as an action signal — it would only cause a
+                    # spurious fail-open and a wasted assessment.
+                    if not isinstance(p, dict) or p.get("passive"):
                         continue
                     kws = p.get("keywords", [])
                     if isinstance(kws, list) and kws and _match_keywords(text, kws):
@@ -1666,25 +1672,25 @@ class DirectTaskExecutor:
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
 
         # ── 廉价前置闸 ───────────────────────────────────────
-        # action_intent 来自 input-time 的 master-emotion 那次小模型调用（搭
-        # analyze_request payload 过来）。若这一轮被自信地读成「非操作意图」，且零
-        # LLM 的确定性 shortcut（magic word 规则 + 插件关键词）也全静默，就跳过下面
-        # 1~2 次大模型评估。闸是非对称的：action_intent 为 None（无可用信号）或任一
-        # 确定性命中都不刹车 —— 最坏多花一次评估，绝不漏真任务。
-        if action_intent is not None:
-            import config as _cfg
-            if bool(getattr(_cfg, "AGENT_ACTION_GATE_ENABLED", True)):
-                _threshold = float(getattr(_cfg, "AGENT_ACTION_GATE_THRESHOLD", 0.2))
-                if action_intent < _threshold and not self._deterministic_action_signal(
-                    latest_user_request,
-                    openclaw_enabled=openclaw_enabled,
-                    user_plugin_enabled=user_plugin_enabled,
-                ):
-                    logger.info(
-                        "[AgentGate] skip assessment: action_intent=%.2f < %.2f, no deterministic signal",
-                        action_intent, _threshold,
-                    )
-                    return None
+        # action_intent 是 master-emotion 在 input-time 那次小模型调用产出的
+        # 「agent 相关度」信号，已在 main 侧做过两件事：(1) 按本轮 user 文本做
+        # freshness 匹配（陈旧/异轮读数 → None，绝不用上一轮信号刹本轮）；(2) 折进
+        # complexity 取 max，所以高 complexity 的硬推理轮（如 openfang 多步推理）
+        # 即便 action 低也不会被刹。这里只要：自信地低 + 零 LLM 确定性 shortcut
+        # （magic word 规则 + 插件关键词）也全静默，就跳过下面 1~2 次大模型评估。
+        # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
+        # 评估，绝不漏真任务。
+        if action_intent is not None and AGENT_ACTION_GATE_ENABLED:
+            if action_intent < AGENT_ACTION_GATE_THRESHOLD and not self._deterministic_action_signal(
+                latest_user_request,
+                openclaw_enabled=openclaw_enabled,
+                user_plugin_enabled=user_plugin_enabled,
+            ):
+                logger.info(
+                    "[AgentGate] skip assessment: action_intent=%.2f < %.2f, no deterministic signal",
+                    action_intent, AGENT_ACTION_GATE_THRESHOLD,
+                )
+                return None
 
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False

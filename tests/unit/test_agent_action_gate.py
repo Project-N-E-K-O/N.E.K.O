@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import asyncio
 
-import config
+import brain.task_executor as te
 from brain.task_executor import DirectTaskExecutor
+
+# The gate reads AGENT_ACTION_GATE_* as module-level names imported into
+# brain.task_executor (the repo's `from config import (...)` convention), so the
+# knobs are patched on that module here, not on the `config` module.
 
 
 def _exec():
@@ -72,8 +76,8 @@ def test_det_signal_none_when_no_shortcuts():
 
 # ── the gate control flow inside _analyze_and_execute_inner ──
 def test_gate_brakes_on_confident_chat(monkeypatch):
-    monkeypatch.setattr(config, "AGENT_ACTION_GATE_ENABLED", True)
-    monkeypatch.setattr(config, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
+    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
+    monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
     ex = _exec()
     msgs = [{"role": "user", "text": "今天天气真好心情不错"}]
     # computer_use only, action_intent below the line, no deterministic signal →
@@ -85,8 +89,8 @@ def test_gate_brakes_on_confident_chat(monkeypatch):
 
 
 def test_gate_consults_deterministic_only_when_braking(monkeypatch):
-    monkeypatch.setattr(config, "AGENT_ACTION_GATE_ENABLED", True)
-    monkeypatch.setattr(config, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
+    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
+    monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
     ex = _exec()
     calls = []
     monkeypatch.setattr(ex, "_deterministic_action_signal", lambda *a, **k: calls.append(1) or False)
@@ -107,6 +111,6 @@ def test_gate_consults_deterministic_only_when_braking(monkeypatch):
     assert len(calls) == 0
 
     # gate disabled by config → not consulted even on a low action_intent.
-    monkeypatch.setattr(config, "AGENT_ACTION_GATE_ENABLED", False)
+    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", False)
     asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, action_intent=0.05))
     assert len(calls) == 0

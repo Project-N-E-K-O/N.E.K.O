@@ -82,6 +82,10 @@ class MasterEmotionReading:
     complexity: float = 0.0
     action_intent: Optional[float] = None
     source_excerpt: str = ""
+    # Whitespace-normalized prefix of the analyzed text, used to match this
+    # reading to the turn it came from — the agent pre-gate must not consume a
+    # stale reading from an earlier turn. See ``_normalize_for_match``.
+    source_norm: str = ""
 
 
 def _clamp(value, lo: float, hi: float, default: float) -> float:
@@ -124,6 +128,14 @@ def _action_intent_from(value) -> Optional[float]:
     return max(0.0, min(1.0, v))
 
 
+def _normalize_for_match(text: Optional[str]) -> str:
+    """Collapse whitespace and cap length, to match a cached reading to the turn
+    it was produced from. Two different user messages rarely normalize to the
+    same string, so an equality test is a sound "same turn" check; any mismatch
+    makes the gate fail open (run the assessment), never a wrong brake."""
+    return " ".join((text or "").split())[:280]
+
+
 # Per-lanlan registry of live trackers, so an out-of-band caller — the
 # cross-server analyze_request publisher at turn_end — can read the latest
 # ``action_intent`` without holding the session / core handle. A
@@ -135,14 +147,22 @@ _TRACKERS_BY_LANLAN: "weakref.WeakValueDictionary[str, MasterEmotionTracker]" = 
 )
 
 
-def latest_action_intent_for(lanlan_name: str) -> Optional[float]:
-    """Latest ``action_intent`` for ``lanlan_name``, or ``None`` if unavailable.
+def gate_signal_for(lanlan_name: str, user_text: str) -> Optional[float]:
+    """Combined agent-relevance signal for the cheap analyzer pre-gate, or
+    ``None`` when there is no usable, current signal (→ the agent fails open and
+    runs its assessment). Purely an optimization hint, never a hard brake.
 
-    Reads the live tracker's ``.latest`` (which already honors the
-    MASTER_EMOTION_ENABLED switch and the reading TTL), so a missing / disabled /
-    stale reading — or a turn whose model output carried no usable action signal
-    — all collapse to ``None``. The agent gate consuming this MUST fail open (run
-    the assessment) on ``None``; it is purely an optimization hint, never a brake.
+    Returns ``None`` unless the live tracker holds a reading that:
+    (a) passes the MASTER_EMOTION_ENABLED switch + reading TTL (via ``.latest``);
+    (b) was produced from THIS turn's ``user_text`` — a freshness match, so a
+        stale reading from an earlier (chattier) turn can never gate the current
+        one (master-emotion is throttled + fire-and-forget, so ``.latest`` may
+        lag the current turn);
+    (c) carried a usable ``action_intent``.
+
+    When all hold, returns ``max(action_intent, complexity)`` so a hard reasoning
+    turn (high complexity — e.g. an openfang multi-step request) keeps the gate
+    open even at low action_intent.
     """
     tracker = _TRACKERS_BY_LANLAN.get(lanlan_name)
     if tracker is None:
@@ -150,7 +170,12 @@ def latest_action_intent_for(lanlan_name: str) -> Optional[float]:
     reading = tracker.latest
     if reading is None:
         return None
-    return reading.action_intent
+    norm = _normalize_for_match(user_text)
+    if not norm or norm != reading.source_norm:
+        return None  # stale / different turn → fail open
+    if reading.action_intent is None:
+        return None  # no usable action signal → fail open
+    return max(reading.action_intent, reading.complexity)
 
 
 class MasterEmotionTracker:
@@ -328,4 +353,5 @@ class MasterEmotionTracker:
             # 0.0 as "confidently no action" and braking a real request.
             action_intent=_action_intent_from(data.get("action_intent")),
             source_excerpt=source[:80],
+            source_norm=_normalize_for_match(source),
         )

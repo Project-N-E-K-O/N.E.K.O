@@ -457,33 +457,48 @@ def test_to_profile_sample(monkeypatch):
     assert t.to_profile_sample() is None
 
 
-def test_latest_action_intent_for_registry(monkeypatch):
-    # The cross-server analyze_request publisher reads the latest action_intent
-    # by lanlan_name (no core handle). Verify the registry bridge end to end.
-    from main_logic.activity.master_emotion import latest_action_intent_for
+def test_gate_signal_for_registry(monkeypatch):
+    # The cross-server analyze_request publisher reads the combined pre-gate
+    # signal by lanlan_name + current user text (no core handle). Verify the
+    # registry bridge, the freshness (turn) match, and the complexity fold.
+    from main_logic.activity.master_emotion import gate_signal_for
 
     # Unknown lanlan → None (fail-open: the agent gate runs the assessment).
-    assert latest_action_intent_for("nobody-here") is None
+    assert gate_signal_for("nobody-here", "anything") is None
 
     fake, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.7}')
     _patch_tier(monkeypatch, fake)
     t = MasterEmotionTracker("regtest")  # registers itself on init
     # No reading yet → None.
-    assert latest_action_intent_for("regtest") is None
+    assert gate_signal_for("regtest", "帮我打开浏览器") is None
     asyncio.run(t.analyze("帮我打开浏览器", now=100.0))
-    assert latest_action_intent_for("regtest") == 0.7
+    # Matching turn text → action_intent (complexity 0 → max is action_intent).
+    assert gate_signal_for("regtest", "帮我打开浏览器") == 0.7
+    # Freshness: a DIFFERENT user text → None (stale / other turn → fail open),
+    # so an earlier turn's signal can never gate the current one.
+    assert gate_signal_for("regtest", "完全不一样的另一句话") is None
+    # Match is whitespace-insensitive.
+    assert gate_signal_for("regtest", "  帮我打开浏览器  ") == 0.7
+
+    # Complexity fold: a hard reasoning turn (low action, high complexity) keeps
+    # the gate OPEN — max(0.1, 0.8) = 0.8 — so openfang-style reasoning requests
+    # are not braked.
+    fake2, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.1, "complexity": 0.8}')
+    _patch_tier(monkeypatch, fake2)
+    asyncio.run(t.analyze("这道题怎么一步步推导出来", now=200.0))
+    assert gate_signal_for("regtest", "这道题怎么一步步推导出来") == 0.8
 
     # A turn whose model output carried NO action_intent → None (fail-open),
     # even though a valid emotion reading exists this turn.
-    fake2, _ = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
-    _patch_tier(monkeypatch, fake2)
-    asyncio.run(t.analyze("我好难过", now=200.0))
-    assert t.latest is not None and latest_action_intent_for("regtest") is None
+    fake3, _ = _fake_tier('{"valence": -0.5, "arousal": 0.5}')
+    _patch_tier(monkeypatch, fake3)
+    asyncio.run(t.analyze("我好难过", now=300.0))
+    assert t.latest is not None and gate_signal_for("regtest", "我好难过") is None
 
     # Honors the master switch (reads through .latest).
-    fake3, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
-    _patch_tier(monkeypatch, fake3)
-    asyncio.run(t.analyze("运行一下", now=300.0))
-    assert latest_action_intent_for("regtest") == 0.9
+    fake4, _ = _fake_tier('{"valence": 0, "arousal": 0, "action_intent": 0.9}')
+    _patch_tier(monkeypatch, fake4)
+    asyncio.run(t.analyze("运行一下", now=400.0))
+    assert gate_signal_for("regtest", "运行一下") == 0.9
     monkeypatch.setattr(config, "MASTER_EMOTION_ENABLED", False)
-    assert latest_action_intent_for("regtest") is None
+    assert gate_signal_for("regtest", "运行一下") is None
