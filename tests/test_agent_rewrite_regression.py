@@ -1914,9 +1914,11 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
 
 
 def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
-    """_apply_cached_short_descriptions 是纯 manifest/缓存读取（零 LLM）：
-    manifest 自带的直接用并 prime 缓存；缓存命中（desc 未变）则应用；缺失或
-    缓存陈旧的留空并作为后台预热候选返回，绝不在此处现生成。"""
+    """_apply_cached_short_descriptions is a pure manifest/cache read (zero LLM):
+    a manifest-provided short_description is used as-is and primes the cache; a
+    cache hit (description unchanged) is applied; missing or stale entries are
+    left empty and returned as background-prewarm candidates — never generated
+    here."""
     from brain.task_executor import DirectTaskExecutor
 
     key = DirectTaskExecutor._desc_key
@@ -1954,9 +1956,10 @@ def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
 
 @pytest.mark.asyncio
 async def test_plugin_list_provider_never_generates_short_description_on_hot_path():
-    """验收核心：analyze 热路径（plugin_list_provider）绝不现生成
-    short_description。缺失的插件交给后台预热，当次调用立即返回、_get_llm 不被
-    同步触发，分析侧安全回退到完整 description。"""
+    """Core acceptance: the analyze hot path (plugin_list_provider) must never
+    generate a short_description inline. Plugins missing one are handed to the
+    background prewarm; the call returns immediately, _get_llm is not invoked
+    synchronously, and analyze safely falls back to the full description."""
     from unittest.mock import AsyncMock, MagicMock, patch
     from brain.task_executor import DirectTaskExecutor
 
@@ -1988,8 +1991,10 @@ async def test_plugin_list_provider_never_generates_short_description_on_hot_pat
 
 
 def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
-    """LLM 生成的 short_description 落盘，重启后新实例直接复用、零 LLM；
-    description 的 hash 作为 key——manifest 变了缓存自动失效重新生成。"""
+    """LLM-generated short_descriptions are persisted to disk; a fresh instance
+    (simulating a restart) reuses them with zero LLM. The key is a hash of the
+    full description, so a manifest change invalidates the entry and triggers
+    regeneration."""
     from types import SimpleNamespace
     from brain.task_executor import DirectTaskExecutor
 
@@ -2023,9 +2028,10 @@ def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
 
 
 def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
-    """回归（Codex P2）：缓存键基于完整 description 的 hash，截断只用于喂 LLM。
-    超长 description（远超 PLUGIN_INPUT_DESC_MAX_TOKENS）也应命中缓存，而不是因
-    截断后的键与完整 description 不符而反复重新生成。"""
+    """Regression (Codex P2): the cache key is a hash of the FULL description;
+    truncation is prompt-only. A very long description (far above
+    PLUGIN_INPUT_DESC_MAX_TOKENS) must still hit the cache, rather than missing
+    forever because a truncated key never matches the full description."""
     from config import PLUGIN_INPUT_DESC_MAX_TOKENS
     from brain.task_executor import DirectTaskExecutor
 
@@ -2041,7 +2047,7 @@ def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
 
 
 def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
-    """缺文件 / 损坏 JSON → 安全返回空缓存，不抛。"""
+    """A missing file or corrupt JSON yields an empty cache safely (no raise)."""
     from types import SimpleNamespace
     from brain.task_executor import DirectTaskExecutor
 
