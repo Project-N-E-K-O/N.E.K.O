@@ -885,7 +885,7 @@
                 const refresh = () => {
                     const picked = srcInputs.find((i) => i.checked);
                     link.ta.placeholder = picked
-                        ? link.template.replace('{label}', picked._label || picked.value)
+                        ? link.template.replaceAll('{label}', picked._label || picked.value)
                         : link.fallback;
                 };
                 srcInputs.forEach((i) => i.addEventListener('change', refresh));
