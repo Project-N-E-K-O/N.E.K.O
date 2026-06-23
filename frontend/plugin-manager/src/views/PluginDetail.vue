@@ -44,10 +44,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="pluginSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" :height="pluginSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -75,15 +75,15 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="pluginSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" :height="pluginSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
         <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
+          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" :height="pluginSurfaceFrameHeight" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
@@ -199,6 +199,7 @@ const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
+const pluginSurfaceFrameHeight = 'max(560px, calc(100vh - 320px))'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 const studySurfaceRelayMessageTypes = new Set([
   'neko-study-review-completed',
