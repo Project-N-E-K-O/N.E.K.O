@@ -467,6 +467,13 @@
             this.postExternalChatCommand('yui_guide_arc_chat_cursor', message);
         }
 
+        setExternalizedChatCompactFixedLayout(fixed, reason) {
+            this.postExternalChatCommand('yui_guide_set_compact_chat_fixed_layout', {
+                fixed: fixed === true,
+                reason: typeof reason === 'string' ? reason : ''
+            });
+        }
+
         clearExternalizedChatGuideMessages() {
             this.postExternalChatCommand('yui_guide_clear_chat_messages');
         }
@@ -487,6 +494,12 @@
             }
 
             this.setExternalizedChatButtonsDisabled(true);
+            if (
+                this.document.body
+                && this.document.body.classList.contains('yui-guide-compact-chat-fixed')
+            ) {
+                this.setExternalizedChatCompactFixedLayout(true, 'external-chat-ready');
+            }
             if (this.externalizedChatSpotlightKind) {
                 this.setExternalizedChatSpotlight(this.externalizedChatSpotlightKind);
             }

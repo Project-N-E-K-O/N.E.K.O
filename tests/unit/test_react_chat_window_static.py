@@ -747,6 +747,30 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
     assert "overflow: visible;" in mobile_compact_overflow_block
 
 
+def test_yui_guide_fixed_compact_chat_uses_400_width_and_left_middle_lower_position():
+    styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    fixed_block = css_block(
+        styles,
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+    )
+    choice_anchor_block = css_block(
+        styles,
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+        '/* Agent HUD 空状态折叠按钮样式 */',
+    )
+
+    assert "body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window)" not in styles
+    assert "left: clamp(24px, 6vw, 72px) !important;" in fixed_block
+    assert "top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;" in fixed_block
+    assert "width: min(400px, calc(100vw - 32px)) !important;" in fixed_block
+    assert "bottom: auto !important;" in fixed_block
+    assert "left: calc(clamp(24px, 6vw, 72px) + 200px);" in choice_anchor_block
+    assert "top: calc(min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + var(--compact-surface-height, 58px) + 16px);" in choice_anchor_block
+    assert "bottom: calc(100vh - min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + 16px);" in choice_anchor_block
+
+
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
@@ -1111,7 +1135,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
-def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
+def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
@@ -1122,9 +1146,10 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "message && message.bypassDedup === true" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_drag_chat_cursor'" not in bypass_block
+    assert "action === 'yui_guide_arc_chat_cursor'" not in bypass_block
     assert "action === 'yui_guide_set_compact_history_open'" in bypass_block
+    assert "action === 'yui_guide_set_compact_chat_fixed_layout'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
@@ -1133,7 +1158,7 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "case 'yui_guide_set_chat_cursor':" in script
     assert "case 'yui_guide_drag_chat_cursor':" in script
     assert "case 'yui_guide_arc_chat_cursor':" in script
-    assert "relayYuiGuideChatCommand(event.data);" in script
+    assert "relayYuiGuideChatCommand(Object.assign({}, event.data," in script
     assert "neko:tutorial-overlay-relay" in script
     assert "__nekoTutorialOverlayRelay" in script
 
@@ -1148,6 +1173,36 @@ def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     assert "case 'yui_guide_set_compact_history_open'" in interpage
     assert "function applyYuiGuideCompactHistoryOpen(open, reason)" in interpage
     assert "host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');" in interpage
+
+
+def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    relayed_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
+        "function ensureYuiGuideStandaloneInteractionShield",
+        1,
+    )[0]
+    broadcast_block = interpage.split("nekoBroadcastChannel.onmessage = async function (event)", 1)[1].split(
+        "console.log('[BroadcastChannel] 初始化失败",
+        1,
+    )[0]
+    scoped_block = interpage.split("function isYuiGuideLifecycleScopedAction(action)", 1)[1].split(
+        "function resetYuiGuidePcOverlayRunForRetry()",
+        1,
+    )[0]
+    cleanup_block = interpage.split("function clearYuiGuidePcOverlayBridgeState(reason", 1)[1].split(
+        "function cleanupAppInterpageTransientResources()",
+        1,
+    )[0]
+
+    assert "function applyYuiGuideCompactChatFixedLayout(fixed)" in interpage
+    assert "document.body.classList.toggle('yui-guide-compact-chat-fixed', fixed === true);" in interpage
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in relayed_block
+    assert "applyYuiGuideCompactChatFixedLayout(message.fixed === true);" in relayed_block
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
+    assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
+    assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
 
 
 def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
@@ -1197,7 +1252,7 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     assert "completed: contextSynced" in choice_block
     assert "contextSyncPending: !contextSynced" in choice_block
     assert "activeSession = null;" in choice_block
-    assert "fetch('/api/game/new_user_icebreaker/context'" in script
+    assert "fetch('/api/icebreaker/context'" in script
     assert "return !!(body && body.ok === true);" in script
 
 

@@ -62,14 +62,17 @@ class MasterEmotionReading:
     """One instantaneous read of the user's emotional state.
 
     ``valence`` ∈ [-1, 1] (negative → positive), ``arousal`` ∈ [0, 1]
-    (calm → activated), ``confidence`` ∈ [0, 1]. ``source_excerpt`` keeps a
-    short prefix of the analyzed text for diagnostics only.
+    (calm → activated), ``confidence`` ∈ [0, 1]. ``complexity`` ∈ [0, 1] is an
+    orthogonal cognitive read — how much the speaker is posing a COMPLEX,
+    OBJECTIVE question (math / logic / reasoning), a Focus bonus axis independent
+    of emotion. ``source_excerpt`` keeps a short prefix for diagnostics only.
     """
 
     valence: float
     arousal: float
     confidence: float
     updated_at: float
+    complexity: float = 0.0
     source_excerpt: str = ""
 
 
@@ -176,8 +179,9 @@ class MasterEmotionTracker:
             return None
         self._latest = reading
         logger.info(
-            "[%s] master emotion: valence=%.2f arousal=%.2f conf=%.2f",
+            "[%s] master emotion: valence=%.2f arousal=%.2f conf=%.2f complexity=%.2f",
             self.lanlan_name, reading.valence, reading.arousal, reading.confidence,
+            reading.complexity,
         )
         return reading
 
@@ -261,5 +265,9 @@ class MasterEmotionTracker:
             arousal=max(0.0, min(1.0, arousal)),
             confidence=_clamp(data.get("confidence"), 0.0, 1.0, 0.5),
             updated_at=now,
+            # complexity is an optional extra axis — unlike valence/arousal a
+            # missing value safely defaults to 0 (no cognitive bonus), so it
+            # never blocks a valid emotional reading.
+            complexity=_clamp(data.get("complexity"), 0.0, 1.0, 0.0),
             source_excerpt=source[:80],
         )

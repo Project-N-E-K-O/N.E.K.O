@@ -59,6 +59,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen-plus": EXTRA_BODY_OPENAI,
     "qwen3.7-plus-2026-05-26": EXTRA_BODY_OPENAI,
     "qwen3.7-plus": EXTRA_BODY_OPENAI,
+    "qwen3.7-max": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -66,12 +67,15 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-4.6v": EXTRA_BODY_CLAUDE,
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
+    "glm-5.2": EXTRA_BODY_CLAUDE,
     # Kimi系列
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
+    "kimi-k2.6": EXTRA_BODY_CLAUDE,
     # MiniMax系列
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
+    "MiniMax-M3": EXTRA_BODY_CLAUDE,
     "MiniMax-Text-01": EXTRA_BODY_MINIMAX,
     # Silicon
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,

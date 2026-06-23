@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import { useFocusGlow } from './useFocusGlow';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -518,6 +519,27 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
     return screenX;
   }
   return event.clientX;
+}
+
+type AvatarToolPointerPosition = {
+  x: number;
+  y: number;
+  screenX?: number;
+  screenY?: number;
+};
+
+function getAvatarToolPointerPosition(event: Pick<PointerEvent | ReactMouseEvent<HTMLElement>, 'clientX' | 'clientY' | 'screenX' | 'screenY'>): AvatarToolPointerPosition {
+  const next: AvatarToolPointerPosition = {
+    x: Number(event.clientX) || 0,
+    y: Number(event.clientY) || 0,
+  };
+  const screenX = Number(event.screenX);
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+    next.screenX = screenX;
+    next.screenY = screenY;
+  }
+  return next;
 }
 
 function isDesktopCompactSurfaceLayoutActive(): boolean {
@@ -1636,7 +1658,7 @@ function CompactChatApp({
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolWheelHoverPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const compactInputToolWheelHoveredIndexRef = useRef<number | null>(null);
-  // 工具轮盘原点（toggle / fan 中心）的「按住拖动文本框」手势追踪。与轮盘旋转
+  // compact surface 控件的「按住拖动对话框」手势追踪。与轮盘旋转
   // (compactInputToolWheelPointerRef) 互斥：原点按下时不建立旋转 pointer，旋转路径自然 no-op。
   const compactToolOriginDragRef = useRef<{
     pointerId: number;
@@ -1645,8 +1667,15 @@ function CompactChatApp({
     startScreenX: number;
     startScreenY: number;
     moved: boolean;
+    hostDragEnded?: boolean;
+    primeEnded?: boolean;
+    lastForwardedClientX?: number;
+    lastForwardedClientY?: number;
+    lastForwardedScreenX?: number;
+    lastForwardedScreenY?: number;
     captureTarget: Element | null;
   } | null>(null);
+  const compactToolOriginDocumentCleanupRef = useRef<(() => void) | null>(null);
   // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
   // 因为轮盘关闭 effect 会重置后者，无法跨「关闭轮盘 + 随后 click」存活。
   const compactToolOriginSuppressClickRef = useRef(false);
@@ -1669,7 +1698,7 @@ function CompactChatApp({
   const floatingFistDropIdRef = useRef(0);
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
-  const latestPointerPositionRef = useRef({ x: 0, y: 0 });
+  const latestPointerPositionRef = useRef<AvatarToolPointerPosition>({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
@@ -1895,10 +1924,7 @@ function CompactChatApp({
     item: ToolIconItem,
     event: ReactMouseEvent<HTMLButtonElement>,
   ) => {
-    latestPointerPositionRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-    };
+    latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
     latestPointerTargetRef.current = event.currentTarget;
     setIsCursorInsideHostWindow(true);
     setIsCursorOverCompactCursorZone(true);
@@ -2791,6 +2817,9 @@ function CompactChatApp({
       window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
@@ -4537,25 +4566,198 @@ function CompactChatApp({
     closeCompactInputToolFanFromUserClick();
   }, [closeCompactInputToolFanFromUserClick]);
 
-  // ── 工具轮盘原点「按住拖动文本框」手势 ────────────────────────────────────
-  // 在 toggle（轮盘关闭时）或 fan 中心（轮盘展开时，命中原点）按下后移动超阈值 → 把 surface
+  // ── compact surface 控件「按住拖动对话框」手势 ────────────────────────────
+  // 在 toggle / fan 中心 / 毛球 / 胶囊 / textarea 按下后移动超阈值 → 把 surface
   // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
-  // 点按（无移动）语义保持原样：toggle 由自身 onClick 展开/关闭；fan 原点由 onPointerDownCapture
-  // 的 markCompactToolFanOriginClickSuppressed 收起（这条收起+抑制路径不动，保证既有命中测试不回归）。
+  // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
+  // textarea 正常聚焦输入。
   // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
   // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
+  const clearCompactToolOriginDocumentListeners = useCallback(() => {
+    const cleanup = compactToolOriginDocumentCleanupRef.current;
+    compactToolOriginDocumentCleanupRef.current = null;
+    cleanup?.();
+  }, []);
+
+  const dispatchCompactToolOriginDragMove = useCallback((event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || !state.moved || state.hostDragEnded) return false;
+    if (state.lastForwardedClientX === event.clientX && state.lastForwardedClientY === event.clientY) {
+      return false;
+    }
+    state.lastForwardedClientX = event.clientX;
+    state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-move', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      },
+    }));
+    return true;
+  }, []);
+
+  const dispatchCompactToolOriginDragEnd = useCallback((
+    event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>,
+    reason?: string,
+  ) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || !state.moved || state.hostDragEnded) return false;
+    state.hostDragEnded = true;
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-end', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+        reason: reason || 'pointerend',
+      },
+    }));
+    return true;
+  }, []);
+
+  const updateCompactToolOriginDragFromPointer = useCallback((event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    if (state.moved) {
+      dispatchCompactToolOriginDragMove(event);
+      return;
+    }
+    const dx = event.clientX - state.startClientX;
+    const dy = event.clientY - state.startClientY;
+    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
+    state.moved = true;
+    state.lastForwardedClientX = event.clientX;
+    state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
+    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
+    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
+    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
+    compactToolOriginSuppressClickRef.current = true;
+    // 拖动是「移动对话框」手势而非工具/输入手势，收起轮盘。
+    closeCompactInputToolFan();
+    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），同时带上当前点。
+    // Wayland 下宿主优先用 renderer client delta，避免 screenX/screenY 在合成器下不可靠。
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: state.startClientX,
+        clientY: state.startClientY,
+        screenX: state.startScreenX,
+        screenY: state.startScreenY,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        currentScreenX: event.screenX,
+        currentScreenY: event.screenY,
+      },
+    }));
+  }, [closeCompactInputToolFan, dispatchCompactToolOriginDragMove]);
+
+  const dispatchCompactToolOriginDragPrime = useCallback((event: ReactPointerEvent) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-prime', {
+      detail: {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      },
+    }));
+  }, []);
+
+  const dispatchCompactToolOriginDragPrimeEnd = useCallback((pointerId: number) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-prime-end', {
+      detail: { pointerId },
+    }));
+  }, []);
+
+  const finishCompactToolOriginDragFromPointer = useCallback((
+    event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'> & { type?: string },
+  ) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    dispatchCompactToolOriginDragEnd(event, event.type);
+    if (!state.primeEnded) {
+      state.primeEnded = true;
+      dispatchCompactToolOriginDragPrimeEnd(state.pointerId);
+    }
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    clearCompactToolOriginDocumentListeners();
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
+          captureTarget.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+  }, [
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragEnd,
+    dispatchCompactToolOriginDragPrimeEnd,
+  ]);
+
+  const cancelCompactToolOriginDrag = useCallback((reason: string) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state) {
+      clearCompactToolOriginDocumentListeners();
+      return;
+    }
+    const pointerId = state.pointerId;
+    dispatchCompactToolOriginDragEnd({
+      pointerId,
+      clientX: state.lastForwardedClientX ?? state.startClientX,
+      clientY: state.lastForwardedClientY ?? state.startClientY,
+      screenX: state.lastForwardedScreenX ?? state.startScreenX,
+      screenY: state.lastForwardedScreenY ?? state.startScreenY,
+    }, reason);
+    if (!state.primeEnded) {
+      state.primeEnded = true;
+      dispatchCompactToolOriginDragPrimeEnd(pointerId);
+    }
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    clearCompactToolOriginDocumentListeners();
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(pointerId)) {
+          captureTarget.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
+    }
+  }, [
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragEnd,
+    dispatchCompactToolOriginDragPrimeEnd,
+  ]);
+
   const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const existing = compactToolOriginDragRef.current;
+    if (existing && existing.pointerId === event.pointerId) return;
+    if (existing) {
+      cancelCompactToolOriginDrag('replaced');
+    } else {
+      clearCompactToolOriginDocumentListeners();
+    }
     // 每次新的原点按下都清掉可能残留的抑制标志（上一次拖拽若没补发 click 会留下 true），
     // 保证本次点按/拖拽自洁——抑制只靠「拖动置位 + click 消费 / 下次按下清零」，不再用定时器。
     compactToolOriginSuppressClickRef.current = false;
-    const previous = compactToolOriginDragRef.current;
-    if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
-      // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
-      try { previous.captureTarget.releasePointerCapture(previous.pointerId); } catch (_) {}
-    }
-    const captureTarget = event.currentTarget instanceof Element ? event.currentTarget : null;
+    const captureTarget = event.target instanceof Element
+      ? event.target
+      : (event.currentTarget instanceof Element ? event.currentTarget : null);
+    try {
+      captureTarget?.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+    dispatchCompactToolOriginDragPrime(event);
     compactToolOriginDragRef.current = {
       pointerId: event.pointerId,
       startClientX: event.clientX,
@@ -4565,57 +4767,55 @@ function CompactChatApp({
       moved: false,
       captureTarget,
     };
-    try {
-      captureTarget?.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-  }, []);
+    const pointerId = event.pointerId;
+    const handleDocumentPointerMove = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      updateCompactToolOriginDragFromPointer(nativeEvent);
+    };
+    const handleDocumentPointerEnd = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      finishCompactToolOriginDragFromPointer(nativeEvent);
+    };
+    document.addEventListener('pointermove', handleDocumentPointerMove, true);
+    document.addEventListener('pointerup', handleDocumentPointerEnd, true);
+    document.addEventListener('pointercancel', handleDocumentPointerEnd, true);
+    compactToolOriginDocumentCleanupRef.current = () => {
+      document.removeEventListener('pointermove', handleDocumentPointerMove, true);
+      document.removeEventListener('pointerup', handleDocumentPointerEnd, true);
+      document.removeEventListener('pointercancel', handleDocumentPointerEnd, true);
+    };
+  }, [
+    cancelCompactToolOriginDrag,
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragPrime,
+    finishCompactToolOriginDragFromPointer,
+    updateCompactToolOriginDragFromPointer,
+  ]);
 
   const updateCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
-    const state = compactToolOriginDragRef.current;
-    if (!state || state.pointerId !== event.pointerId || state.moved) return;
-    const dx = event.clientX - state.startClientX;
-    const dy = event.clientY - state.startClientY;
-    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
-    state.moved = true;
-    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
-    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
-    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
-    compactToolOriginSuppressClickRef.current = true;
-    // 拖动是「移动文本框」手势而非工具手势，收起轮盘。
-    closeCompactInputToolFan();
-    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），避免 surface 跳变。
-    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
-      detail: {
-        clientX: state.startClientX,
-        clientY: state.startClientY,
-        screenX: state.startScreenX,
-        screenY: state.startScreenY,
-      },
-    }));
-  }, [closeCompactInputToolFan]);
+    updateCompactToolOriginDragFromPointer(event.nativeEvent);
+  }, [updateCompactToolOriginDragFromPointer]);
 
   const endCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
-    const state = compactToolOriginDragRef.current;
-    if (!state || state.pointerId !== event.pointerId) return;
-    const captureTarget = state.captureTarget;
-    compactToolOriginDragRef.current = null;
-    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
-      try {
-        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
-          captureTarget.releasePointerCapture(event.pointerId);
-        }
-      } catch (_) {}
-    }
-    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+    finishCompactToolOriginDragFromPointer(event.nativeEvent);
+  }, [finishCompactToolOriginDragFromPointer]);
+
+  const suppressCompactToolOriginClickAfterDrag = useCallback((event: ReactMouseEvent) => {
+    if (!compactToolOriginSuppressClickRef.current) return;
+    compactToolOriginSuppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   }, []);
 
   useEffect(() => () => {
+    cancelCompactToolOriginDrag('unmount');
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     clearCompactInputToolWheelDragGuardTimer();
     clearCompactInputToolWheelFastAnimationTimer();
     clearCompactInputToolWheelChargeReleaseTimer();
   }, [
+    cancelCompactToolOriginDrag,
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
     clearCompactInputToolWheelDragGuardTimer,
@@ -5147,6 +5347,9 @@ function CompactChatApp({
       ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
       : 'primary';
     const textContext = sanitizeInteractionTextContext(draft);
+    const latestPointerPosition = latestPointerPositionRef.current;
+    const hasCursorScreenPoint = Number.isFinite(latestPointerPosition.screenX)
+      && Number.isFinite(latestPointerPosition.screenY);
 
     onAvatarToolStateChange({
       active: !!activeToolItem,
@@ -5158,6 +5361,12 @@ function CompactChatApp({
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
+      cursorClientX: latestPointerPosition.x,
+      cursorClientY: latestPointerPosition.y,
+      ...(hasCursorScreenPoint ? {
+        cursorScreenX: latestPointerPosition.screenX,
+        cursorScreenY: latestPointerPosition.screenY,
+      } : {}),
       tool: activeToolItem
         ? {
           id: activeToolItem.id,
@@ -5270,7 +5479,6 @@ function CompactChatApp({
   }
 
   function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
     if (!overlayNode || !hammerToolItem) return;
     const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
@@ -5278,7 +5486,6 @@ function CompactChatApp({
   }
 
   function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = avatarCursorOverlayRef.current;
     if (!overlayNode || !activeToolItem) return;
     const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
@@ -5429,6 +5636,8 @@ function CompactChatApp({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
+      latestPointerTargetRef.current = event.target;
       const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
       setIsCursorOverCompactCursorZone(previousValue => (
         previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
@@ -5617,7 +5826,7 @@ function CompactChatApp({
 
     const handlePointerMove = (event: PointerEvent) => {
       setIsCursorInsideHostWindow(true);
-      latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
       latestPointerTargetRef.current = event.target;
       if (activeCursorToolId === 'hammer') {
         updateHammerCursorOverlayPosition(event.clientX, event.clientY);
@@ -6871,6 +7080,7 @@ function CompactChatApp({
           </span>
         </div>
       ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
@@ -7005,6 +7215,11 @@ function CompactChatApp({
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                     data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                    onPointerDown={beginCompactToolOriginDrag}
+                    onPointerMove={updateCompactToolOriginDrag}
+                    onPointerUp={endCompactToolOriginDrag}
+                    onPointerCancel={endCompactToolOriginDrag}
+                    onClickCapture={suppressCompactToolOriginClickAfterDrag}
                   >
                     {effectiveCompactChatState === 'input' ? (
                       <>

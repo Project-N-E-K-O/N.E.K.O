@@ -2,7 +2,7 @@
     'use strict';
 
     var SOURCE = 'new_user_icebreaker';
-    var GAME_TYPE = 'new_user_icebreaker';
+    var ICEBREAKER_API_BASE = '/api/icebreaker';
     var STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     var AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
@@ -17,6 +17,7 @@
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
+    var icebreakerSubtitlePanelOpenedSessionId = '';
     var contextAppendPromise = Promise.resolve();
 
     function safeJsonParse(raw, fallback) {
@@ -129,7 +130,7 @@
         }
 
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + path, {
+            return fetch(ICEBREAKER_API_BASE + path, {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -145,6 +146,36 @@
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
         });
+    }
+
+    function openSubtitleTranslationForIcebreakerAssistantMessage() {
+        var opened = false;
+        try {
+            var bridge = window.subtitleBridge;
+            if (bridge && typeof bridge.setSubtitleEnabled === 'function') {
+                bridge.setSubtitleEnabled(true, {
+                    persist: false,
+                    source: 'new-user-icebreaker-auto-open'
+                });
+                opened = true;
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle bridge open failed:', error);
+        }
+        try {
+            var host = window.reactChatWindowHost;
+            if (host && typeof host.setTranslateEnabled === 'function') {
+                host.setTranslateEnabled(true, {
+                    syncBridge: false,
+                    suppressHostEvent: true,
+                    persist: false
+                });
+                opened = true;
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] subtitle host translation open failed:', error);
+        }
+        return opened;
     }
 
     function clearPendingStartDay(dayKey) {
@@ -378,7 +409,7 @@
         }
 
         function postContextWithHeaders(headers, allowRetry) {
-            return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/context', {
+            return fetch(ICEBREAKER_API_BASE + '/context', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -436,6 +467,22 @@
         }
     }
 
+    function shouldOpenIcebreakerSubtitlePanelOnce() {
+        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        if (!sessionId || icebreakerSubtitlePanelOpenedSessionId === sessionId) return false;
+        return true;
+    }
+
+    function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
+        if (role !== 'assistant' || contextOk !== true) return;
+        if (shouldOpenIcebreakerSubtitlePanelOnce()) {
+            if (openSubtitleTranslationForIcebreakerAssistantMessage()) {
+                icebreakerSubtitlePanelOpenedSessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+            }
+        }
+        finalizeIcebreakerAssistantSubtitle(text);
+    }
+
     function appendChatMessage(role, text, meta) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
@@ -455,10 +502,8 @@
         };
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
-            if (role === 'assistant' && contextOk === true) {
-                finalizeIcebreakerAssistantSubtitle(messageText);
-            }
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
+                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
                 return message;
             }
             return waitForChatHost(30000).then(function (host) {
@@ -466,6 +511,9 @@
                     host.openWindow();
                 }
                 return host.appendMessage(message);
+            }).then(function (result) {
+                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
+                return result;
             });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);
@@ -491,11 +539,13 @@
                 voice_key: String(voiceKey || '')
             }
         };
-        return fetch('/api/game/' + encodeURIComponent(GAME_TYPE) + '/speak', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(body)
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch(ICEBREAKER_API_BASE + '/speak', {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            });
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
@@ -542,7 +592,7 @@
     function setChoicePrompt(node, localeData) {
         var prompt = {
             sessionId: activeSession.sessionId,
-            gameType: GAME_TYPE,
+            gameType: SOURCE,
             options: buildPromptOptions(node, localeData)
         };
         broadcastIcebreakerChoicePrompt(prompt);

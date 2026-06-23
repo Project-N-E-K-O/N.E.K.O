@@ -490,6 +490,24 @@ def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause(
     )[1]
 
 
+def test_external_chat_ready_replays_compact_fixed_layout_when_tutorial_is_active():
+    takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
+    ready_block = takeover_source.split("onExternalChatReady() {", 1)[1].split(
+        "destroy()",
+        1,
+    )[0]
+    fixed_method_block = takeover_source.split("setExternalizedChatCompactFixedLayout(fixed, reason) {", 1)[1].split(
+        "clearExternalizedChatGuideMessages()",
+        1,
+    )[0]
+
+    assert "this.document.body.classList.contains('yui-guide-compact-chat-fixed')" in ready_block
+    assert "this.setExternalizedChatCompactFixedLayout(true, 'external-chat-ready')" in ready_block
+    assert "yui_guide_set_compact_chat_fixed_layout" in fixed_method_block
+    assert "fixed: fixed === true" in fixed_method_block
+    assert "reason: typeof reason === 'string' ? reason : ''" in fixed_method_block
+
+
 def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
     interpage_source = INTERPAGE_PATH.read_text(encoding="utf-8")
     overlay_source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
@@ -677,16 +695,21 @@ def test_avatar_floating_round_does_not_start_idle_sway_before_first_scene():
     assert "ensureGuideIdleSwayPerformance()" not in before_scene_loop
 
 
-def test_avatar_floating_round_does_not_await_look_at_before_first_scene():
+def test_day1_round_defers_cursor_look_at_until_capsule_mouse_hint():
     source = (ROOT / "static" / "tutorial/core/scene-orchestrator.js").read_text(encoding="utf-8")
     round_block = source.split("async playRound(round, options)", 1)[1].split(
         "return {",
         1,
     )[0]
-    before_scene_loop = round_block.split("for (let index = 0; index < config.scenes.length; index += 1)", 1)[0]
+    scene_loop = round_block.split("for (let index = 0; index < config.scenes.length; index += 1)", 1)[1].split(
+        "const keepGoing = await director.playAvatarFloatingScene",
+        1,
+    )[0]
 
-    assert "director.withLookAt({" in before_scene_loop
-    assert "director.ensurePersistentGhostCursorLookAtPerformance(" not in before_scene_loop
+    assert "return await playScenes();" in round_block
+    assert "return await director.withLookAt({" in round_block
+    assert "config.scenes[index].id === 'day1_capsule_drag_hint'" in scene_loop
+    assert "startDay1LookAt();" in scene_loop
 
 
 def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():

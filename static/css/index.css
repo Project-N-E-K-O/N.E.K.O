@@ -582,12 +582,14 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(1);
     --neko-idle-return-edge-transform: rotate(0deg);
+    --neko-idle-return-edge-visual-shift-y: 0px;
     width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
     object-position: center;
     position: relative;
+    top: var(--neko-idle-return-edge-visual-shift-y);
     z-index: 1;
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
@@ -2856,6 +2858,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 6px 8px;
     border-radius: 12px;
@@ -2871,11 +2874,13 @@ body.react-chat-window-dragging {
 
 .crop-tool-group {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 2px;
 }
 
 .crop-tool-divider {
+    flex: 0 0 auto;
     width: 1px;
     align-self: stretch;
     margin: 4px;
@@ -3001,6 +3006,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 14px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 8px 14px;
     border-radius: 12px;
@@ -3677,6 +3683,28 @@ body.react-chat-window-dragging {
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
     }
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    left: clamp(24px, 6vw, 72px) !important;
+    top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;
+    bottom: auto !important;
+    width: min(400px, calc(100vw - 32px)) !important;
+    transform: none !important;
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+    left: calc(clamp(24px, 6vw, 72px) + 200px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+    top: auto;
+    bottom: calc(100vh - min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + 16px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+    top: calc(min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + var(--compact-surface-height, 58px) + 16px);
+    bottom: auto;
 }
 
 /* Agent HUD 空状态折叠按钮样式 */

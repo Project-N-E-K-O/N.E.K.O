@@ -67,6 +67,8 @@
     };
 
     let currentPlayingTrack = null;
+    let currentMusicPlaybackId = null;
+    let currentMusicOwnerStartedAt = 0;
     let localPlayer = null;
     let musicCardMessageId = null;
     let aplayerLoadPromise = null;
@@ -92,11 +94,35 @@
     // dispatchMusicPlay 在 source==='proactive' 时把远程视作"已占用"。 ---
     const MUSIC_COORD_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
     const REMOTE_MUSIC_TTL_MS = 30 * 1000; // 心跳超时
+    const REMOTE_MUSIC_PENDING_TTL_MS = 12 * 1000;
+    // 跨窗口音乐协调走桌面端主进程 IPC relay：compact 与 full 聊天窗处于隔离的
+    // Electron partition（persist:neko-full-chat），BroadcastChannel/localStorage
+    // 不跨 partition，无法保证「一次只有一个播放器 owner + 当前可见聊天窗镜像显示」。
+    // 沿用 goodbye composer 同样的「partition 隔离 → 主进程 IPC」做法（N.E.K.O.-PC
+    // 的 ipc-router 把事件 sender-aware 转发给其它窗口）。Web / 非 Electron 没有
+    // IPC 时回落到 BroadcastChannel：同 session 多 tab 本就互通、无 partition 隔离。
+    const MUSIC_BRIDGE_EVENT_NAME = 'neko:electron-music-bridge';
+    const PEER_SURFACE_TTL_MS = 8 * 1000;
+    const MUSIC_SURFACE_PULSE_MS = 2500;
     // sender_id -> expireAt
     const remoteMusicSenders = new Map();
+    // sender_id -> { sender, mode, active, focused, visible, updatedAt, expireAt }
+    // 对端上报的 surface 状态，用于在客户端复刻原服务端的 active_surface 仲裁
+    // （谁该显示镜像播放器条）。
+    const peerMusicSurfaces = new Map();
+    let musicSurfacePulseTimer = null;
     let musicCoordChannel = null;
+
+    // 桌面端主进程注入的音乐协调 IPC 桥（preload-common.js 的 setupMusicPlayerBridge）。
+    // 存在即用 IPC（覆盖跨 partition 的 compact/full）；不存在则回落 BroadcastChannel。
+    function getMusicIpcBridge() {
+        const b = window.nekoElectronMusicBridge;
+        return (b && typeof b.send === 'function') ? b : null;
+    }
     try {
-        if (typeof BroadcastChannel !== 'undefined') {
+        // 有 IPC 桥时只走 IPC（覆盖跨 partition 的全部窗口），不再开 BroadcastChannel，
+        // 否则同 partition 窗口（pet+compact）会同时收到 IPC 与 BC 两份、重复处理。
+        if (typeof BroadcastChannel !== 'undefined' && !getMusicIpcBridge()) {
             musicCoordChannel = new BroadcastChannel('neko_music_coord');
             musicCoordChannel.onmessage = (event) => {
                 const data = event && event.data;
@@ -105,7 +131,10 @@
                 if (!sid || sid === MUSIC_COORD_SENDER_ID) return;
                 if (data.type === 'music_started' || data.type === 'music_heartbeat') {
                     remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_TTL_MS);
+                } else if (data.type === 'music_pending') {
+                    remoteMusicSenders.set(sid, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
                 } else if (data.type === 'music_ended') {
+                    if (sid === mirrorBarLeaderSender && !isCurrentMirrorPlayback(data)) return;
                     remoteMusicSenders.delete(sid);
                 }
             };
@@ -116,6 +145,7 @@
                         musicCoordChannel.postMessage({
                             type: 'music_ended',
                             sender: MUSIC_COORD_SENDER_ID,
+                            playbackId: getCurrentMusicPlaybackId(),
                             ts: Date.now()
                         });
                         musicCoordChannel.close();
@@ -129,10 +159,13 @@
     }
 
     const broadcastMusicCoord = (type) => {
-        if (!musicCoordChannel) return;
-        try {
-            musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, ts: Date.now() });
-        } catch (_) { /* ignore */ }
+        const playbackId = getCurrentMusicPlaybackId();
+        if (musicCoordChannel) {
+            try {
+                musicCoordChannel.postMessage({ type, sender: MUSIC_COORD_SENDER_ID, playbackId, ts: Date.now() });
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('coord', { coordType: type, playbackId });
     };
 
     // 心跳：当本地正在播时定期广播，防止其他窗口误以为对方已退出
@@ -159,14 +192,23 @@
     };
 
     const isRemoteMusicActive = () => {
-        if (remoteMusicSenders.size === 0) return false;
         const now = Date.now();
+        if (remoteMusicSenders.size === 0) return false;
         // 顺手清理已过期的 sender
         for (const [sid, exp] of remoteMusicSenders) {
             if (now > exp) remoteMusicSenders.delete(sid);
         }
         return remoteMusicSenders.size > 0;
     };
+
+    function createMusicPlaybackId(trackInfo, token) {
+        const trackPart = trackInfo && trackInfo.url ? String(trackInfo.url).slice(0, 256) : 'unknown';
+        return MUSIC_COORD_SENDER_ID + ':' + String(token || Date.now()) + ':' + trackPart;
+    }
+
+    function getCurrentMusicPlaybackId() {
+        return currentMusicPlaybackId || '';
+    }
 
     // --- 跨窗口 React 聊天镜像：把本窗口写入 reactChatWindowHost 的
     // append/update 动作同步广播给其他窗口，解决 PR #780 之后的问题 ——
@@ -254,48 +296,114 @@
     // follower 记录当前镜像绑定的 leader sender id。所有 ctrl/destroyed 校验
     // 都要比对这个值，避免 leader 切换重叠时别的 owner 被误触发 pause/close。
     let mirrorBarLeaderSender = null;
+    let mirrorBarLeaderSource = null;
+    const processedBarCtrlIds = new Set();
+    const processedBarCtrlOrder = [];
+
+    function setMirrorBarLeader(sender, source) {
+        const leaderChanged = sender !== mirrorBarLeaderSender;
+        mirrorBarLeaderSender = sender || null;
+        if (!sender) {
+            mirrorBarLeaderSource = null;
+            return;
+        }
+        if (source === 'broadcast' || leaderChanged || mirrorBarLeaderSource !== 'broadcast') {
+            mirrorBarLeaderSource = source || null;
+        }
+    }
+
+    function shouldSkipProcessedBarCtrl(ctrlId) {
+        if (!ctrlId) return false;
+        if (processedBarCtrlIds.has(ctrlId)) return true;
+        processedBarCtrlIds.add(ctrlId);
+        processedBarCtrlOrder.push(ctrlId);
+        while (processedBarCtrlOrder.length > 120) {
+            processedBarCtrlIds.delete(processedBarCtrlOrder.shift());
+        }
+        return false;
+    }
 
     const isBarOwner = () => !!localPlayer;
 
+    function getRemoteMusicStateTimestamp(state, eventTs) {
+        const ts = Number(eventTs || (state && state.ts) || 0);
+        return Number.isFinite(ts) ? ts : 0;
+    }
+
+    function acceptRemoteMusicOwnerState(sender, state, eventTs) {
+        if (!isBarOwner()) return true;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID || !state || !state.track) return false;
+
+        const remotePlaybackId = state.playbackId || '';
+        if (remotePlaybackId && remotePlaybackId === getCurrentMusicPlaybackId()) return false;
+
+        const remoteTs = getRemoteMusicStateTimestamp(state, eventTs);
+        if (remoteTs && currentMusicOwnerStartedAt && remoteTs < currentMusicOwnerStartedAt) return false;
+
+        // A newer remote owner wins; remove the local owner bar immediately so a mirror can replace it.
+        destroyMusicPlayer(true, false, true);
+        return true;
+    }
+
     const broadcastBarState = (patch) => {
-        if (!musicBarChannel) return;
-        try {
-            musicBarChannel.postMessage(Object.assign({
-                type: 'state',
-                sender: MUSIC_COORD_SENDER_ID,
-                ts: Date.now()
-            }, patch));
-        } catch (_) { /* ignore */ }
+        const statePayload = Object.assign({}, patch || {});
+        if (!statePayload.playbackId) statePayload.playbackId = getCurrentMusicPlaybackId();
+        const message = Object.assign({
+            type: 'state',
+            sender: MUSIC_COORD_SENDER_ID,
+            ts: Date.now()
+        }, statePayload);
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_state', statePayload);
     };
 
-    const broadcastBarDestroyed = (fullTeardown) => {
-        if (!musicBarChannel) return;
-        try {
-            musicBarChannel.postMessage({
-                type: 'destroyed',
-                sender: MUSIC_COORD_SENDER_ID,
-                ts: Date.now(),
-                fullTeardown: !!fullTeardown
-            });
-        } catch (_) { /* ignore */ }
+    const broadcastBarDestroyed = (fullTeardown, playbackIdOverride) => {
+        const playbackId = playbackIdOverride || getCurrentMusicPlaybackId();
+        const message = {
+            type: 'destroyed',
+            sender: MUSIC_COORD_SENDER_ID,
+            ts: Date.now(),
+            playbackId: playbackId,
+            fullTeardown: !!fullTeardown
+        };
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: !!fullTeardown, playbackId: playbackId });
     };
 
     const broadcastBarCtrl = (action, value) => {
-        if (!musicBarChannel) return;
         // 没绑到 leader（镜像 bar 没建或已 teardown）就不发 ctrl
         if (!mirrorBarLeaderSender) return;
-        try {
-            musicBarChannel.postMessage({
-                type: 'ctrl',
-                sender: MUSIC_COORD_SENDER_ID,
-                // target 指明给哪个 leader——owner 侧校验 target 才执行，避免
-                // 非当前绑定的 leader 也一起 pause/seek/close
-                target: mirrorBarLeaderSender,
-                ts: Date.now(),
-                action: action,
-                value: value
-            });
-        } catch (_) { /* ignore */ }
+        const ctrlId = MUSIC_COORD_SENDER_ID + ':' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2, 8);
+        const message = {
+            type: 'ctrl',
+            sender: MUSIC_COORD_SENDER_ID,
+            // target 指明给哪个 leader——owner 侧校验 target 才执行，避免
+            // 非当前绑定的 leader 也一起 pause/seek/close
+            target: mirrorBarLeaderSender,
+            ts: Date.now(),
+            ctrlId: ctrlId,
+            action: action,
+            value: value
+        };
+        if (musicBarChannel) {
+            try {
+                musicBarChannel.postMessage(message);
+            } catch (_) { /* ignore */ }
+        }
+        postMusicPlayerBridgeEvent('bar_ctrl', {
+            target: mirrorBarLeaderSender,
+            ctrlId: ctrlId,
+            action: action,
+            value: value
+        });
     };
 
     const computeCurrentBarState = () => {
@@ -312,7 +420,8 @@
             currentTime: audio ? (audio.currentTime || 0) : 0,
             duration: audio && isFinite(audio.duration) ? (audio.duration || 0) : 0,
             volume: (typeof localPlayer.volume === 'function') ? (localPlayer.volume() || 0) : 0,
-            loadError: !!localPlayer._loadError
+            loadError: !!localPlayer._loadError,
+            playbackId: getCurrentMusicPlaybackId()
         };
     };
 
@@ -349,25 +458,259 @@
             duration: 0,
             volume: MUSIC_CONFIG.defaultVolume,
             loadError: false,
+            playbackId: getCurrentMusicPlaybackId(),
             initial: true
         });
     };
 
     let musicMountObserver = null;
     let musicMountRelocationFrame = 0;
+    let musicMountRelocationRetryTimer = 0;
+    let musicMountRelocationRetryCount = 0;
     let musicMountGeometryFrame = 0;
     let pendingDetachedMusicBar = null;
+    const MUSIC_MOUNT_RELOCATION_MAX_RETRIES = 6;
 
     function getCompactMusicMountTarget() {
         const compactMount = document.querySelector('[data-music-player-mount="compact-surface"]');
         return compactMount instanceof Element ? compactMount : null;
     }
 
-    function getPreferredMusicMountTarget() {
-        const compactMount = getCompactMusicMountTarget();
-        if (compactMount) return { mountTarget: compactMount, insertBeforeEl: null };
+    function getFullMusicMountTarget() {
+        const mounts = document.querySelectorAll('#music-player-mount');
+        for (const mount of mounts) {
+            if (mount instanceof Element && mount.getAttribute('data-music-player-mount') !== 'compact-surface') {
+                return mount;
+            }
+        }
+        return null;
+    }
 
-        const reactMount = document.getElementById('music-player-mount');
+    function getMountSurfaceMode(mount) {
+        if (!(mount instanceof Element)) return '';
+        const surfaceNode = mount.closest && mount.closest('[data-chat-surface-mode]');
+        if (surfaceNode && surfaceNode.getAttribute) {
+            const mode = surfaceNode.getAttribute('data-chat-surface-mode');
+            if (mode === 'compact' || mode === 'full' || mode === 'minimized') return mode;
+        }
+        if (mount.getAttribute('data-music-player-mount') === 'compact-surface') return 'compact';
+        return '';
+    }
+
+    function getRenderedChatMusicSurfaceMode() {
+        const compactMount = getCompactMusicMountTarget();
+        const fullMount = getFullMusicMountTarget();
+        const compactMode = getMountSurfaceMode(compactMount);
+        const fullMode = getMountSurfaceMode(fullMount);
+
+        if (compactMode === 'minimized' || fullMode === 'minimized') return 'minimized';
+        if (fullMode === 'full' && compactMode !== 'compact') return 'full';
+        if (compactMode === 'compact' && fullMode !== 'full') return 'compact';
+        if (fullMount && !compactMount && !fullMode) return 'full';
+        if (compactMount && !fullMount && !compactMode) return 'compact';
+        return '';
+    }
+
+    function getChatMusicSurfaceMode() {
+        const renderedMode = getRenderedChatMusicSurfaceMode();
+        if (renderedMode) return renderedMode;
+
+        try {
+            if (typeof window.getNekoChatMusicSurfaceState === 'function') {
+                const state = window.getNekoChatMusicSurfaceState();
+                if (state && state.mode) return String(state.mode);
+            }
+        } catch (_) { /* ignore */ }
+
+        try {
+            const host = window.reactChatWindowHost;
+            if (host && typeof host.getChatSurfaceMode === 'function') {
+                const mode = host.getChatSurfaceMode();
+                if (mode) return String(mode);
+            }
+        } catch (_) { /* ignore */ }
+
+        const shell = document.getElementById('react-chat-window-shell');
+        if (shell && shell.getAttribute) {
+            const mode = shell.getAttribute('data-chat-surface-mode');
+            if (mode) return mode;
+        }
+
+        const body = document.body;
+        if (body && body.getAttribute) {
+            const declaredMode = body.getAttribute('data-initial-chat-surface-mode');
+            if (declaredMode) return declaredMode;
+        }
+
+        try {
+            const path = (window.location && window.location.pathname) || '';
+            if (path === '/chat_full') return 'full';
+            if (path === '/chat') return 'compact';
+        } catch (_) { /* ignore */ }
+
+        if (getCompactMusicMountTarget()) return 'compact';
+        if (getFullMusicMountTarget()) return 'full';
+        return '';
+    }
+
+    function isEmptyChatMusicMount(element) {
+        return !!(element && element.id === 'music-player-mount' && !element.firstChild);
+    }
+
+    function isElementInHiddenTree(element) {
+        let node = element;
+        while (node && node instanceof Element) {
+            if (node.hidden) return true;
+            if (node.getAttribute('aria-hidden') === 'true') return true;
+            if (node.getAttribute('data-compact-music-player-visibility') === 'closed') return true;
+            try {
+                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                const emptyMountHiddenByCss = node === element
+                    && isEmptyChatMusicMount(node)
+                    && (!node.style || node.style.display !== 'none');
+                if (style && (
+                    (style.display === 'none' && !emptyMountHiddenByCss)
+                    || style.visibility === 'hidden'
+                    || style.visibility === 'collapse'
+                )) {
+                    return true;
+                }
+            } catch (_) { /* ignore */ }
+            node = node.parentElement;
+        }
+        return false;
+    }
+
+    function hasUsableLocalChatMusicSurface() {
+        const mode = getChatMusicSurfaceMode();
+        if (mode === 'minimized') return false;
+        const mount = mode === 'compact'
+            ? getCompactMusicMountTarget()
+            : (mode === 'full' ? getFullMusicMountTarget() : (getFullMusicMountTarget() || getCompactMusicMountTarget()));
+        if (!mount || isElementInHiddenTree(mount)) return false;
+
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (overlay && isElementInHiddenTree(overlay)) return false;
+        return true;
+    }
+
+    function isLocalChatMusicSurfaceFocused() {
+        if (!hasUsableLocalChatMusicSurface()) return false;
+        try {
+            if (document.visibilityState === 'hidden') return false;
+        } catch (_) { /* ignore */ }
+        try {
+            return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function isDedicatedChatMusicSurface() {
+        try {
+            const path = (window.location && window.location.pathname) || '';
+            if (path === '/chat' || path === '/chat_full') return true;
+        } catch (_) { /* ignore */ }
+        const body = document.body;
+        return !!(body && body.classList && body.classList.contains('electron-chat-window'));
+    }
+
+    function getMusicBridgeSurfaceState(reason) {
+        const active = isLocalChatMusicSurfaceFocused();
+        return {
+            mode: getChatMusicSurfaceMode() || 'unknown',
+            active: active,
+            focused: active,
+            visible: hasUsableLocalChatMusicSurface(),
+            reason: reason || ''
+        };
+    }
+
+    // --- 客户端 active surface 仲裁（替代原服务端 _choose_music_player_active_surface）---
+    // 每个窗口周期性 pulse 自己的 surface 状态，其它窗口收到后存入 peerMusicSurfaces。
+    // 判断「本窗口是否该显示镜像条」时，在 {本地 live surface} ∪ {对端 surface} 里
+    // 取最强者：本地胜/平 → 显示；对端严格胜 → 让位。排序键纯由 surface 权重 + sender id
+    // 决定（确定性，跨窗口一致），不掺本地时间戳，避免各窗口都以为自己最新而同时渲染。
+    const MUSIC_SURFACE_MODE_WEIGHT = { full: 4, compact: 3, web: 2, pet: 1, unknown: 0, minimized: -1 };
+
+    function updatePeerMusicSurface(sender, surface) {
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        const s = surface || {};
+        const active = !!s.active;
+        const focused = !!(s.focused || active);
+        peerMusicSurfaces.set(sender, {
+            sender: sender,
+            mode: typeof s.mode === 'string' ? s.mode : 'unknown',
+            active: active,
+            focused: focused,
+            visible: !!(s.visible || active || focused),
+            updatedAt: Date.now(),
+            expireAt: Date.now() + PEER_SURFACE_TTL_MS
+        });
+    }
+
+    function purgePeerMusicSurfaces(now) {
+        for (const [sid, s] of peerMusicSurfaces) {
+            if ((s.expireAt || 0) <= now) peerMusicSurfaces.delete(sid);
+        }
+    }
+
+    function musicSurfaceWeights(s) {
+        return [
+            s.active ? 2 : (s.focused ? 1 : 0),
+            s.visible ? 1 : 0,
+            MUSIC_SURFACE_MODE_WEIGHT[s.mode] || 0
+        ];
+    }
+
+    // 返回 >0 表示 a 胜出。tiebreak 用 sender id 字典序，保证各窗口一致地选出同一个赢家。
+    function compareMusicSurface(a, b) {
+        const wa = musicSurfaceWeights(a), wb = musicSurfaceWeights(b);
+        for (let i = 0; i < wa.length; i++) {
+            if (wa[i] !== wb[i]) return wa[i] - wb[i];
+        }
+        if (a.sender === b.sender) return 0;
+        return a.sender > b.sender ? 1 : -1;
+    }
+
+    function hasBridgeActiveChatMusicSurface() {
+        const now = Date.now();
+        purgePeerMusicSurfaces(now);
+        const mine = getMusicBridgeSurfaceState('arbitrate');
+        let winner = (mine.active || mine.focused || mine.visible)
+            ? { sender: MUSIC_COORD_SENDER_ID, mode: mine.mode, active: mine.active, focused: mine.focused, visible: mine.visible }
+            : null;
+        for (const [sid, s] of peerMusicSurfaces) {
+            if (!(s.active || s.focused || s.visible)) continue;
+            if (!winner || compareMusicSurface(s, winner) > 0) {
+                winner = { sender: sid, mode: s.mode, active: s.active, focused: s.focused, visible: s.visible };
+            }
+        }
+        // 没有任何可用 surface（含本地）→ 无 active surface 信息，不拦截本地渲染。
+        if (!winner) return false;
+        // 赢家是对端 → 让对端显示，本窗口不渲染镜像条。
+        return winner.sender !== MUSIC_COORD_SENDER_ID;
+    }
+
+    function shouldRenderMusicBarInThisSurface() {
+        if (isLocalChatMusicSurfaceFocused()) return true;
+        if (hasBridgeActiveChatMusicSurface()) return false;
+        if (isDedicatedChatMusicSurface()) return hasUsableLocalChatMusicSurface();
+        return hasUsableLocalChatMusicSurface();
+    }
+
+    function getPreferredMusicMountTarget(options = {}) {
+        const renderHere = shouldRenderMusicBarInThisSurface();
+        const allowInactiveOwner = !!options.allowInactiveOwner;
+        if (!renderHere && !allowInactiveOwner) return { mountTarget: null, insertBeforeEl: null };
+
+        const mode = getChatMusicSurfaceMode();
+        let reactMount = null;
+        if (mode === 'compact') reactMount = getCompactMusicMountTarget();
+        else if (mode === 'full') reactMount = getFullMusicMountTarget();
+
+        if (!reactMount && mode !== 'compact') reactMount = getFullMusicMountTarget();
+        if (!reactMount && mode !== 'full') reactMount = getCompactMusicMountTarget();
         if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
 
         const legacyMount = document.getElementById(MUSIC_CONFIG.dom.containerId);
@@ -386,6 +729,25 @@
         });
     }
 
+    function clearMusicMountRelocationRetry() {
+        if (musicMountRelocationRetryTimer) {
+            window.clearTimeout(musicMountRelocationRetryTimer);
+            musicMountRelocationRetryTimer = 0;
+        }
+        musicMountRelocationRetryCount = 0;
+    }
+
+    function scheduleMusicBarRelocationRetry() {
+        if (musicMountRelocationRetryTimer) return;
+        if (musicMountRelocationRetryCount >= MUSIC_MOUNT_RELOCATION_MAX_RETRIES) return;
+        musicMountRelocationRetryCount += 1;
+        const delay = Math.min(320, 40 + musicMountRelocationRetryCount * 40);
+        musicMountRelocationRetryTimer = window.setTimeout(() => {
+            musicMountRelocationRetryTimer = 0;
+            scheduleMusicBarRelocation();
+        }, delay);
+    }
+
     function prepareMusicBarHitRegion(musicBar) {
         if (!musicBar) return;
         musicBar.setAttribute('data-compact-hit-region', 'true');
@@ -398,8 +760,15 @@
         ensureMusicMountObserver();
         if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
         prepareMusicBarHitRegion(musicBar);
-        const target = getPreferredMusicMountTarget();
-        if (!target || !target.mountTarget) return false;
+        const isMirrorBar = !!(musicBar.dataset && musicBar.dataset.mirror === 'true');
+        const renderHere = shouldRenderMusicBarInThisSurface();
+        const target = getPreferredMusicMountTarget({ allowInactiveOwner: !isMirrorBar });
+        if (!target || !target.mountTarget) {
+            musicBar.hidden = true;
+            requestCompactMusicGeometrySync();
+            return false;
+        }
+        musicBar.hidden = !renderHere;
         if (musicBar.parentNode === target.mountTarget) {
             requestCompactMusicGeometrySync();
             return true;
@@ -432,12 +801,15 @@
     function isMusicMountMutationNode(node) {
         if (!(node instanceof Element)) return false;
         if (node.id === 'music-player-mount' || node.getAttribute('data-music-player-mount') === 'compact-surface') return true;
-        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"]'));
+        if (node.id === 'react-chat-window-shell' || node.id === 'react-chat-window-overlay') return true;
+        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"], #react-chat-window-shell, #react-chat-window-overlay'));
     }
 
     function isMusicMountMutationTarget(node) {
         if (!(node instanceof Element)) return false;
         return node.id === 'music-player-mount'
+            || node.id === 'react-chat-window-shell'
+            || node.id === 'react-chat-window-overlay'
             || node.getAttribute('data-music-player-mount') === 'compact-surface';
     }
 
@@ -450,14 +822,34 @@
     }
 
     function scheduleMusicBarRelocation(detachedMusicBar) {
-        if (detachedMusicBar) pendingDetachedMusicBar = detachedMusicBar;
+        if (detachedMusicBar) {
+            pendingDetachedMusicBar = detachedMusicBar;
+            clearMusicMountRelocationRetry();
+        }
         if (musicMountRelocationFrame) return;
         const raf = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
         musicMountRelocationFrame = raf(() => {
             musicMountRelocationFrame = 0;
             const musicBar = pendingDetachedMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
-            pendingDetachedMusicBar = null;
-            mountMusicBar(musicBar);
+            if (musicBar) {
+                const mounted = mountMusicBar(musicBar);
+                if (mounted || musicBar.isConnected) {
+                    pendingDetachedMusicBar = null;
+                    clearMusicMountRelocationRetry();
+                } else {
+                    pendingDetachedMusicBar = musicBar;
+                    scheduleMusicBarRelocationRetry();
+                }
+            } else if (!isBarOwner() && mirrorBarLastState) {
+                if (renderMirrorBar(mirrorBarLastState)) {
+                    clearMusicMountRelocationRetry();
+                } else {
+                    scheduleMusicBarRelocationRetry();
+                }
+            } else {
+                pendingDetachedMusicBar = null;
+                clearMusicMountRelocationRetry();
+            }
         });
     }
 
@@ -499,9 +891,30 @@
             attributeFilter: [
                 'class',
                 'data-music-player-mount',
+                'data-chat-surface-mode',
+                'aria-hidden',
+                'hidden',
                 'style'
             ]
         });
+    }
+
+    // 把一条音乐协调事件经主进程 IPC relay 发给其它窗口。无 IPC 桥（Web）时是
+    // no-op —— 那条路径由 BroadcastChannel 直接承载（见 broadcastMusicCoord /
+    // broadcastBarState 等里的 musicCoordChannel / musicBarChannel 分支）。
+    // ipcRenderer.send 是 fire-and-forget，beforeunload 里也能可靠送出，
+    // 故不再需要原 HTTP 路径的 cachedOnly / CSRF 处理。
+    function postMusicPlayerBridgeEvent(type, payload, options = {}) {
+        const bridge = getMusicIpcBridge();
+        if (!bridge) return;
+        const message = {
+            sender: MUSIC_COORD_SENDER_ID,
+            type: type,
+            payload: payload || {},
+            surface: options.surface || getMusicBridgeSurfaceState(type),
+            ts: Date.now()
+        };
+        try { bridge.send(message); } catch (_) { /* ignore */ }
     }
 
     const bindMirrorBarControls = (musicBar) => {
@@ -662,8 +1075,14 @@
 
     let mirrorBarLastState = null; // 供 seek UI 计算 currentTime 显示
 
+    function isCurrentMirrorPlayback(payload) {
+        const currentPlaybackId = mirrorBarLastState && mirrorBarLastState.playbackId;
+        if (!currentPlaybackId) return true;
+        return !!(payload && payload.playbackId === currentPlaybackId);
+    }
+
     const renderMirrorBar = (state) => {
-        if (!state) return;
+        if (!state) return false;
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
         mirrorBarLastState = state;
 
@@ -674,18 +1093,18 @@
         const firstRender = !musicBar;
 
         // 已存在但属于本窗口的 owner bar（非 mirror）：说明 leader 是自己，不应覆盖
-        if (musicBar && musicBar.dataset.mirror !== 'true') return;
+        if (musicBar && musicBar.dataset.mirror !== 'true') return false;
 
         if (firstRender) {
             ensureMusicUiCSS();
             const mountTarget = getPreferredMusicMountTarget().mountTarget;
-            if (!mountTarget) return;
+            if (!mountTarget) return false;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
-            mountMusicBar(musicBar);
+            if (!mountMusicBar(musicBar)) return false;
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -728,7 +1147,7 @@
             bindMirrorBarControls(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
-            mountMusicBar(musicBar);
+            if (!mountMusicBar(musicBar)) return false;
         }
 
         // 切歌 / 首次：刷新标题 + 歌手 + 封面
@@ -797,6 +1216,7 @@
                 else volumeBtn.textContent = '🔊';
             }
         }
+        return true;
     };
 
     const teardownMirrorBar = (fullTeardown) => {
@@ -891,8 +1311,120 @@
         }
     };
 
+    function applyMusicPlayerBridgeCoord(sender, coordType, payload) {
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return;
+        if (coordType === 'music_started' || coordType === 'music_heartbeat') {
+            remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_TTL_MS);
+        } else if (coordType === 'music_pending') {
+            remoteMusicSenders.set(sender, Date.now() + REMOTE_MUSIC_PENDING_TTL_MS);
+        } else if (coordType === 'music_ended') {
+            if (sender === mirrorBarLeaderSender && !isCurrentMirrorPlayback(payload)) return;
+            remoteMusicSenders.delete(sender);
+        }
+    }
+
+    function applyMusicPlayerBridgeEvent(event) {
+        if (!event || typeof event !== 'object') return false;
+        const sender = event.sender;
+        if (!sender || sender === MUSIC_COORD_SENDER_ID) return false;
+        const payload = event.payload || {};
+        try {
+            if (event.type === 'coord') {
+                if (payload.coordType === 'request_state') {
+                    // 晚加入的窗口请求当前 owner 状态：我是 owner 就立即补发一帧 bar_state，
+                    // 让它无需等下一次 timeupdate / 心跳就能镜像出播放器条。
+                    if (isBarOwner()) emitBarState();
+                    return true;
+                }
+                applyMusicPlayerBridgeCoord(sender, payload.coordType, payload);
+                return true;
+            } else if (event.type === 'surface_state') {
+                // 对端上报的 surface 状态：存入 peerMusicSurfaces 供 active surface 仲裁。
+                updatePeerMusicSurface(sender, payload);
+                return true;
+            } else if (event.type === 'bar_state') {
+                if (!acceptRemoteMusicOwnerState(sender, payload, event.ts)) return false;
+                setMirrorBarLeader(sender, 'bridge');
+                const rendered = renderMirrorBar(payload);
+                if (!rendered) scheduleMusicBarRelocation();
+                return rendered;
+            } else if (event.type === 'bar_destroyed') {
+                if (isBarOwner()) return false;
+                if (sender !== mirrorBarLeaderSender) return false;
+                if (!isCurrentMirrorPlayback(payload)) return false;
+                setMirrorBarLeader(null);
+                teardownMirrorBar(!!payload.fullTeardown);
+                return true;
+            } else if (event.type === 'bar_ctrl') {
+                if (!isBarOwner()) return false;
+                if (payload.target !== MUSIC_COORD_SENDER_ID) return false;
+                if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return false;
+                handleRemoteBarCtrl(payload.action, payload.value);
+                return true;
+            }
+        } catch (e) {
+            console.warn('[Music UI] music player bridge event failed:', e);
+        }
+        return false;
+    }
+
+    const publishMusicSurfaceState = (reason) => {
+        postMusicPlayerBridgeEvent('surface_state', getMusicBridgeSurfaceState(reason));
+        scheduleMusicBarRelocation();
+    };
+
+    function initializeMusicPlayerBridge() {
+        const bridge = getMusicIpcBridge();
+        if (!bridge) return; // Web / 非 Electron：BroadcastChannel 已承载，无需 IPC bridge
+
+        // 主进程把其它窗口的协调事件经此 CustomEvent 投递进来（preload 的 ipcRenderer.on）。
+        window.addEventListener(MUSIC_BRIDGE_EVENT_NAME, (e) => {
+            const event = e && e.detail;
+            applyMusicPlayerBridgeEvent(event);
+            // surface / owner 变化后本窗口可能需要重新判断是否显示镜像条。
+            if (event && (event.type === 'surface_state' || event.type === 'bar_state' || event.type === 'bar_destroyed')) {
+                scheduleMusicBarRelocation();
+            }
+        });
+
+        // 周期性 pulse 本窗口 surface 状态，供其它窗口做 active surface 仲裁。
+        musicSurfacePulseTimer = window.setInterval(() => publishMusicSurfaceState('pulse'), MUSIC_SURFACE_PULSE_MS);
+        window.addEventListener('focus', () => publishMusicSurfaceState('focus'));
+        window.addEventListener('blur', () => publishMusicSurfaceState('blur'));
+        window.addEventListener('react-chat-window:chat-surface-mode-change', () => publishMusicSurfaceState('surface-mode'));
+        window.addEventListener('neko:chat-music-surface-change', () => publishMusicSurfaceState('surface-state'));
+        document.addEventListener('visibilitychange', () => publishMusicSurfaceState('visibility'));
+
+        // 初次 pulse 本窗口 surface + 主动请求当前 owner 状态：晚加入的窗口立即补镜像，
+        // 不必等 owner 下一次 timeupdate / 心跳。
+        window.setTimeout(() => {
+            publishMusicSurfaceState('init');
+            postMusicPlayerBridgeEvent('coord', { coordType: 'request_state' });
+        }, 0);
+
+        window.addEventListener('beforeunload', () => {
+            // 退出前明确通告本窗口不再可用 + 若是 owner 则摘镜像，避免对端等 TTL。
+            postMusicPlayerBridgeEvent('surface_state', Object.assign(
+                getMusicBridgeSurfaceState('unload'),
+                { active: false, focused: false, visible: false, reason: 'unload' }
+            ));
+            if (isBarOwner()) {
+                const playbackId = getCurrentMusicPlaybackId();
+                postMusicPlayerBridgeEvent('bar_destroyed', { fullTeardown: true, playbackId: playbackId });
+                postMusicPlayerBridgeEvent('coord', { coordType: 'music_ended', playbackId: playbackId });
+            }
+            if (musicSurfacePulseTimer) {
+                window.clearInterval(musicSurfacePulseTimer);
+                musicSurfacePulseTimer = null;
+            }
+        });
+    }
+
+    initializeMusicPlayerBridge();
+
     try {
-        if (typeof BroadcastChannel !== 'undefined') {
+        // 同 coord channel：有 IPC 桥时不开 BroadcastChannel，避免与 IPC 双发。
+        if (typeof BroadcastChannel !== 'undefined' && !getMusicIpcBridge()) {
             musicBarChannel = new BroadcastChannel(MUSIC_BAR_CHANNEL_NAME);
             musicBarChannel.onmessage = (event) => {
                 const data = event && event.data;
@@ -900,26 +1432,27 @@
                 if (!data.sender || data.sender === MUSIC_COORD_SENDER_ID) return;
                 try {
                     if (data.type === 'state') {
-                        // 本地是 owner 时忽略来自别人的 state；既防止 race 下
-                        // 另一个窗口的旧 state 覆盖掉自己真实 audio，也让
-                        // leader 切换瞬间不会有两份 bar 互相抢。
-                        if (isBarOwner()) return;
+                        // 如果本地仍是 owner，只接受比本地当前播放更新的远端 owner state，
+                        // 防止旧 state 反杀新播放，也避免两个窗口同时保留 audio。
+                        if (!acceptRemoteMusicOwnerState(data.sender, data, data.ts)) return;
                         // 绑定/切换到当前 leader —— 后续 ctrl 会带 target 指向它，
                         // destroyed 也只接受来自它的那一条，避免多 leader 交接时串窗
-                        mirrorBarLeaderSender = data.sender;
-                        renderMirrorBar(data);
+                        setMirrorBarLeader(data.sender, 'broadcast');
+                        if (!renderMirrorBar(data)) scheduleMusicBarRelocation();
                     } else if (data.type === 'destroyed') {
                         if (isBarOwner()) return;
                         // 只尊重来自当前绑定 leader 的 destroyed；别的 owner 退出
                         // 不应该把我当前镜像的那条 bar 也一起摘掉
                         if (data.sender !== mirrorBarLeaderSender) return;
-                        mirrorBarLeaderSender = null;
+                        if (!isCurrentMirrorPlayback(data)) return;
+                        setMirrorBarLeader(null);
                         teardownMirrorBar(!!data.fullTeardown);
                     } else if (data.type === 'ctrl') {
                         // owner 只响应明确 target 到自己的 ctrl，避免别的 leader
                         // 被 follower 的指令误触（leader 交接瞬间最容易发生）
                         if (!isBarOwner()) return;
-                        if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+                        if (data.target !== MUSIC_COORD_SENDER_ID) return;
+                        if (shouldSkipProcessedBarCtrl(data.ctrlId)) return;
                         handleRemoteBarCtrl(data.action, data.value);
                     }
                 } catch (e) {
@@ -1253,6 +1786,7 @@
 
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false, updateToken = false) => {
+        const destroyedPlaybackId = getCurrentMusicPlaybackId();
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
         if (updateToken || fullTeardown) {
@@ -1341,7 +1875,9 @@
 
         // bar 镜像：让 follower 同步摘掉镜像 bar。fullTeardown 传下去
         // 是为了 follower 能走淡出动画而不是硬删。
-        if (removeDOM) broadcastBarDestroyed(fullTeardown);
+        if (removeDOM) broadcastBarDestroyed(fullTeardown, destroyedPlaybackId);
+        currentMusicPlaybackId = null;
+        currentMusicOwnerStartedAt = 0;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -1427,7 +1963,7 @@
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
-            mirrorBarLeaderSender = null;
+            setMirrorBarLeader(null);
         }
 
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
@@ -1437,7 +1973,7 @@
         // --- 1. DOM 基础架构 ---
         if (isFirstRender) {
             // 优先使用紧凑历史目标，其次 React composer 挂载点，最后回退旧 chat-container。
-            const mountTarget = getPreferredMusicMountTarget().mountTarget;
+            const mountTarget = getPreferredMusicMountTarget({ allowInactiveOwner: true }).mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
@@ -1495,6 +2031,9 @@
         const previousCardId = musicCardMessageId;
 
         // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
+        const playbackIdForRequest = createMusicPlaybackId(trackInfo, currentToken);
+        currentMusicPlaybackId = playbackIdForRequest;
+        currentMusicOwnerStartedAt = Date.now();
         currentPlayingTrack = trackInfo;
         // 广播一次占位 state —— APlayer 还在初始化/切曲，但 follower 现在
         // 就能把 bar 刷新到新 track，避免旧歌信息停留或 bar 空白。
@@ -1622,7 +2161,7 @@
                     // bar，但现在请求被更新的 token 取代，我们不会再发权威
                     // state，得主动广播 destroyed 把占位 bar 摘掉，不然 follower
                     // 会卡在一条假 bar 直到被下一次 state 盖掉。
-                    broadcastBarDestroyed(false);
+                    broadcastBarDestroyed(false, playbackIdForRequest);
                     return;
                 }
 
@@ -2006,7 +2545,7 @@
             if (isFirstRender && musicBar) removeMusicBarWithoutRelocation(musicBar);
             // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
             // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
-            broadcastBarDestroyed(false);
+            broadcastBarDestroyed(false, playbackIdForRequest);
             showErrorToast('music.playError', '音乐播放加载失败');
         }
     };
@@ -2029,6 +2568,7 @@
             pendingReleased = true;
             musicDispatchPendingCount = Math.max(0, musicDispatchPendingCount - 1);
         };
+        broadcastMusicCoord('music_pending');
 
         // --- 核心修复：更鲁棒的 URL 预清理 ---
         if (trackInfo.url && typeof trackInfo.url === 'string') {

@@ -39,10 +39,12 @@ from main_logic.session_state import (
 
 
 # ── helpers ─────────────────────────────────────────────────────────
-def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True):
+def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True,
+        cap=1.0, time_decay=0.0, time_decay_activated=0.0):
     return FocusThresholds(
         enabled=enabled, retention=retention, enter=enter, exit=exit,
-        hard_cap_turns=hard_cap_turns,
+        hard_cap_turns=hard_cap_turns, cap=cap, time_decay=time_decay,
+        time_decay_activated=time_decay_activated,
     )
 
 
@@ -78,6 +80,43 @@ def test_decide_charge_capped_at_enter():
                       score=0.9, topic_changed=False, th=_th())
     # 0.9*0.5 + 0.9 = 1.35 → cap 1.0
     assert d.action is _FocusAction.ENTER and d.charge == 1.0
+
+
+def test_decide_charge_climbs_above_enter_to_cap():
+    # Entry no longer caps charge at `enter`: with cap=1.0 > enter=0.6, sustained
+    # strong scores keep climbing toward the cap (drives a brighter/longer glow).
+    th = _th(enter=0.6, cap=1.0)
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, charge=0.9,
+                      score=0.9, topic_changed=False, th=th)
+    # 0.9*0.5 + 0.9 = 1.35 → cap 1.0, NOT clamped down to enter 0.6
+    assert d.action is _FocusAction.STAY and d.charge == 1.0
+
+
+def test_decide_negative_score_clamps_charge_at_zero():
+    # A happy turn now yields a NEGATIVE score (emotion votes Focus down); the
+    # accumulator must clamp at 0, not go negative.
+    th = _th(enter=0.6)
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.2,
+                      score=-0.5, topic_changed=False, th=th)
+    # 0.2*0.5 + (-0.5) = -0.4 → clamped to 0.0, stays REGULAR
+    assert d.action is _FocusAction.STAY and d.charge == 0.0
+
+
+def test_time_decay_floors_at_activation():
+    from main_logic.session_state import _decay_charge_over_time
+    th = _th(enter=0.6, time_decay=0.02, time_decay_activated=0.01)
+    # Below enter → fast rate, bleeds toward 0: 0.5 - 0.02*5 = 0.4
+    assert abs(_decay_charge_over_time(0.5, 5.0, th) - 0.4) < 1e-9
+    # At/above enter → slow rate: 0.9 - 0.01*5 = 0.85 (still above the 0.6 floor)
+    assert abs(_decay_charge_over_time(0.9, 5.0, th) - 0.85) < 1e-9
+    # Activated charge can ONLY decay down to enter, never below — dropping out
+    # of 0.6 needs a turn, not silence: 1.0 for 60s → max(0.6, 0.4) = 0.6.
+    assert abs(_decay_charge_over_time(1.0, 60.0, th) - 0.6) < 1e-9
+    # Sitting at the floor stays at the floor no matter how long.
+    assert _decay_charge_over_time(0.6, 10000.0, th) == 0.6
+    # Below enter clamps to zero; no rates configured → no decay.
+    assert _decay_charge_over_time(0.1, 100.0, th) == 0.0
+    assert _decay_charge_over_time(0.5, 100.0, _th(enter=0.6)) == 0.5
 
 
 def test_decide_focus_stays_while_charge_above_exit():
