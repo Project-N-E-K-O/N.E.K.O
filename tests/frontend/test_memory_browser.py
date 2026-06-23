@@ -323,6 +323,53 @@ def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
 
 
 @pytest.mark.frontend
+def test_memory_browser_home_all_reset_falls_back_to_prompt_reset_api_without_manager(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    prompt_reset_payloads = []
+
+    def handle_prompt_reset(route):
+        prompt_reset_payloads.append(_request_json(route))
+        route.fulfill(status=200, content_type="application/json", json={"ok": True})
+
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.route("**/api/tutorial-prompt/reset", handle_prompt_reset)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialResetCalls = [];
+            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
+                resetAllAvatarFloatingGuideDays: async (options) => {
+                    window.__tutorialResetCalls.push({ type: 'avatar', options });
+                }
+            });
+            delete window.universalTutorialManager;
+        }
+        """
+    )
+
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-home-all='true']").click()
+
+    with mock_page.expect_event("dialog") as dialog_info:
+        mock_page.locator("#tutorial-reset-btn").click()
+
+    dialog = dialog_info.value
+    dialog.accept()
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
+
+    assert mock_page.evaluate("window.__tutorialResetCalls") == [
+        {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
+    ]
+    assert prompt_reset_payloads == [{"reason": "memory_browser_home_all_reset"}]
+
+
+@pytest.mark.frontend
 def test_memory_browser_tutorial_cascader_localizes_home_day_labels_for_english(
     mock_page: Page,
     running_server: str,

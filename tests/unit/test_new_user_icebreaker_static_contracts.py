@@ -857,6 +857,13 @@ def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
     assert "state.skippedRounds = []" in reset_source
     assert "selection.pageKey === 'all'" in memory_browser_source
     assert "resetAllAvatarFloatingGuideDays({" in memory_browser_source
+    home_all_block = memory_browser_source.split("if (selection.type === 'home-all') {", 1)[1].split(
+        "if (selection.type === 'page'",
+        1,
+    )[0]
+    assert "resetHomeTutorialPromptState('memory_browser_home_all_reset')" in home_all_block
+    assert "resetHomeTutorialPromptStateViaApi('memory_browser_home_all_reset')" in home_all_block
+    assert "'/api/tutorial-prompt/reset'" in memory_browser_source
 
 
 def test_react_chat_fallback_sort_key_stays_after_existing_timestamped_messages():
