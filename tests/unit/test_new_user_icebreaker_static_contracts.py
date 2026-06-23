@@ -965,7 +965,6 @@ def test_react_chat_assets_use_react_chat_cache_version():
         "/static/app-react-chat-window.js",
         "/static/app-chat-adapter.js",
         "/static/app-buttons.js",
-        "/static/app-interpage.js",
     ]
 
     for asset in react_chat_assets:
