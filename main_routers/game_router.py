@@ -103,7 +103,9 @@ from utils.game_route_state import (
 )
 from utils.game_log import (
     append_game_session_debug_log as _append_game_session_debug_log,
+    enable_game_session_debug_log as _enable_game_session_debug_log,
     find_game_session_debug_log as _find_game_session_debug_log,
+    GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS,
     GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
     GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
     GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
@@ -140,6 +142,7 @@ async def game_logs(session_id: str = "", game_type: str = "", since: int = 0, l
         "sessions": list_game_session_debug_log_summaries(str(game_type or "").strip()),
         "retention": {
             "entry_limit": GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT,
+            "active_idle_ttl_seconds": GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS,
             "retained_completed_session_limit": GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT,
             "retained_completed_session_ttl_seconds": GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS,
         },
@@ -183,6 +186,51 @@ pre {{ white-space: pre-wrap; word-break: break-word; line-height: 1.35; }}
 </body>
 </html>"""
     )
+
+
+@router.post("/logs/enable")
+async def game_log_enable(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
+    game_type = str(data.get("game_type") or data.get("gameType") or "game").strip()
+    lanlan_name = str(data.get("lanlan_name") or data.get("lanlanName") or "").strip()
+    if not session_id:
+        return {"ok": False, "reason": "missing_session_id"}
+
+    from .system_router import _validate_local_mutation_request
+
+    validation_error = _validate_local_mutation_request(
+        request,
+        payload=data,
+        error_defaults={"ok": False, "reason": "csrf_validation_failed"},
+    )
+    if validation_error is not None:
+        return validation_error
+
+    entry = _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
+    if entry is None:
+        return {"ok": False, "reason": "enable_failed", "session_id": session_id, "game_type": game_type}
+    item = _append_game_session_debug_log(
+        game_type,
+        session_id,
+        lanlan_name=lanlan_name,
+        category="route",
+        event="session_log_enabled",
+        source=str(data.get("source") or "backend"),
+        message="小游戏场次诊断日志已手动启用",
+        details={"reason": str(data.get("reason") or "manual")},
+    )
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "game_type": game_type,
+        "seq": item.get("seq") if isinstance(item, dict) else None,
+    }
 
 
 @router.post("/logs")
@@ -4472,6 +4520,7 @@ async def _finalize_game_route_state(
     *,
     reason: str,
     close_game_session: bool = False,
+    close_debug_log: bool = True,
 ) -> dict:
     """Run the game route exit flow once, including archive submission.
 
@@ -4501,6 +4550,10 @@ async def _finalize_game_route_state(
         state["_exit_close_session_request"] = True
     elif "_exit_close_session_request" not in state:
         state["_exit_close_session_request"] = False
+    if close_debug_log:
+        state["_exit_close_debug_log_request"] = True
+    elif "_exit_close_debug_log_request" not in state:
+        state["_exit_close_debug_log_request"] = False
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -4517,6 +4570,14 @@ async def _finalize_game_route_state(
                 # return dict is the single source of truth handed back to
                 # every shielded await.
                 result["game_session_closed"] = True
+        if state.get("_exit_close_debug_log_request") and not result.get("debug_log_ended"):
+            _mark_game_session_debug_log_ended(
+                str(state.get("game_type") or ""),
+                str(state.get("session_id") or "default"),
+                lanlan_name=str(state.get("lanlan_name") or ""),
+                reason=reason,
+            )
+            result["debug_log_ended"] = True
         return result
 
     task = asyncio.create_task(_finalize_game_route_state_inner(state, reason=reason))
@@ -4630,11 +4691,21 @@ async def _finalize_game_route_state_inner(
             str(state.get("session_id") or "default"),
             str(state.get("lanlan_name") or ""),
         )
+    debug_log_ended = False
+    if state.get("_exit_close_debug_log_request"):
+        _mark_game_session_debug_log_ended(
+            str(state.get("game_type") or ""),
+            str(state.get("session_id") or "default"),
+            lanlan_name=str(state.get("lanlan_name") or ""),
+            reason=reason,
+        )
+        debug_log_ended = True
 
     return {
         "archive": archive,
         "archive_memory": memory_result,
         "game_session_closed": session_closed,
+        "debug_log_ended": debug_log_ended,
         "exit_reason": reason,
         "realtime_restore": realtime_restore,
         "postgame_context_snapshot": postgame_context_snapshot,
@@ -6819,6 +6890,8 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
+    if game_type == "soccer":
+        _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
     _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
     _append_game_session_debug_log(
         game_type,
@@ -8223,6 +8296,7 @@ async def _complete_game_end_from_payload(
                     state,
                     reason=exit_reason,
                     close_game_session=True,
+                    close_debug_log=False,
                 )
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]

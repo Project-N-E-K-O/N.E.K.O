@@ -91,11 +91,18 @@ def test_soccer_template_posts_session_debug_errors():
     )[0]
 
     assert "/api/game/logs" in html
+    assert "/api/game/logs/enable" in html
     assert "window.SoccerDemoDebugLog = soccerSessionDebugLog" in html
+    assert "window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog" in html
     assert "window.addEventListener('error'" in html
     assert "window.addEventListener('unhandledrejection'" in html
     assert "console.warn = function soccerDebugConsoleWarn" in html
     assert "console.error = function soccerDebugConsoleError" in html
+    assert "sessionDebugLogEnabled: false" in html
+    assert "sessionDebugLogEnablePromise: null" in html
+    assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
+    assert "enableSoccerSessionDebugLog('keyboard_l')" in html
+    assert "await enableSoccerSessionDebugLog('auto_route_start')" in html
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html
     assert "lanlan_name: _llm.routeLanlanName || ''" in html
