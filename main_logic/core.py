@@ -2560,7 +2560,7 @@ class LLMSessionManager:
 
     async def _push_focus_thinking(self, active: bool) -> None:
         """Pulse a transient "model is thinking" signal to the frontend so the
-        chat history can show a thinking-dots bubble while a Focus (凝神) turn runs
+        chat history can show a thinking-dots bubble while a Focus turn runs
         thinking-on but hasn't emitted any visible content yet. Pushed True right
         before such a turn streams, cleared (False) the moment the first visible
         chunk lands (send_lanlan_response) or the turn ends. Idempotent on the
