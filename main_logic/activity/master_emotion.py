@@ -67,13 +67,14 @@ class MasterEmotionReading:
     (calm → activated), ``confidence`` ∈ [0, 1]. ``complexity`` ∈ [0, 1] is an
     orthogonal cognitive read — how much the speaker is posing a COMPLEX,
     OBJECTIVE question (math / logic / reasoning), a Focus bonus axis independent
-    of emotion. ``action_intent`` ∈ [0, 1] (or ``None``) is a second orthogonal
-    read — how strongly the user is EXPLICITLY asking to perform an external
-    action / operation. It rides this same cheap call so the agent analyzer can
-    cheaply gate its expensive turn-end assessment. ``None`` means the model gave
-    no usable signal: the consuming gate MUST fail open (run the assessment),
-    never treat it as "no action". ``source_excerpt`` keeps a short prefix for
-    diagnostics only.
+    of emotion. ``external_intent`` ∈ [0, 1] (or ``None``) is a second orthogonal
+    read — how much the turn needs an EXTERNAL capability: either an explicit
+    outward action / operation, OR external / real-time / beyond-known
+    information to answer (weather, prices, news, …). It rides this same cheap
+    call so the agent analyzer can cheaply gate its expensive turn-end
+    assessment. ``None`` means the model gave no usable signal: the consuming
+    gate MUST fail open (run the assessment), never treat it as "no external
+    need". ``source_excerpt`` keeps a short prefix for diagnostics only.
     """
 
     valence: float
@@ -81,7 +82,7 @@ class MasterEmotionReading:
     confidence: float
     updated_at: float
     complexity: float = 0.0
-    action_intent: Optional[float] = None
+    external_intent: Optional[float] = None
     source_excerpt: str = ""
     # Stable fingerprint (sha1 of the whitespace-normalized FULL text) of the
     # analyzed turn, used to match this reading to the turn it came from — the
@@ -116,13 +117,13 @@ def _coerce_axis(value) -> Optional[float]:
     return v
 
 
-def _action_intent_from(value) -> Optional[float]:
-    """Clamp a parsed ``action_intent`` to [0, 1], or ``None`` when absent/junk.
+def _external_intent_from(value) -> Optional[float]:
+    """Clamp a parsed ``external_intent`` to [0, 1], or ``None`` when absent/junk.
 
     Unlike the emotion axes, ``None`` is meaningful downstream: the agent gate
-    must fail open (run the assessment) when it has no usable action signal,
-    instead of reading a phantom ``0.0`` as "confidently no action" and wrongly
-    braking a real tool request.
+    must fail open (run the assessment) when it has no usable external signal,
+    instead of reading a phantom ``0.0`` as "confidently no external need" and
+    wrongly braking a real tool / info-fetch request.
     """
     v = _coerce_axis(value)
     if v is None:
@@ -146,7 +147,7 @@ def _normalize_for_match(text: Optional[str]) -> str:
 
 # Per-lanlan registry of live trackers, so an out-of-band caller — the
 # cross-server analyze_request publisher at turn_end — can read the latest
-# ``action_intent`` without holding the session / core handle. A
+# ``external_intent`` without holding the session / core handle. A
 # ``WeakValueDictionary`` so a torn-down session's tracker auto-evicts (no leak
 # across sessions); a stale entry is harmless anyway since ``.latest`` is
 # TTL-gated.
@@ -166,11 +167,11 @@ def gate_signal_for(lanlan_name: str, user_text: str) -> Optional[float]:
         stale reading from an earlier (chattier) turn can never gate the current
         one (master-emotion is throttled + fire-and-forget, so ``.latest`` may
         lag the current turn);
-    (c) carried a usable ``action_intent``.
+    (c) carried a usable ``external_intent``.
 
-    When all hold, returns ``max(action_intent, complexity)`` so a hard reasoning
+    When all hold, returns ``max(external_intent, complexity)`` so a hard reasoning
     turn (high complexity — e.g. an openfang multi-step request) keeps the gate
-    open even at low action_intent.
+    open even at low external_intent.
     """
     tracker = _TRACKERS_BY_LANLAN.get(lanlan_name)
     if tracker is None:
@@ -181,9 +182,9 @@ def gate_signal_for(lanlan_name: str, user_text: str) -> Optional[float]:
     norm = _normalize_for_match(user_text)
     if not norm or norm != reading.source_norm:
         return None  # stale / different turn → fail open
-    if reading.action_intent is None:
-        return None  # no usable action signal → fail open
-    return max(reading.action_intent, reading.complexity)
+    if reading.external_intent is None:
+        return None  # no usable external signal → fail open
+    return max(reading.external_intent, reading.complexity)
 
 
 class MasterEmotionTracker:
@@ -195,7 +196,7 @@ class MasterEmotionTracker:
         self._last_attempt_at: float = 0.0
         self._seq: int = 0
         # Register so the cross-server analyze_request publisher can read the
-        # latest action_intent by lanlan_name without the core/session handle.
+        # latest external_intent by lanlan_name without the core/session handle.
         _TRACKERS_BY_LANLAN[lanlan_name] = self
 
     # ── public API ──────────────────────────────────────────────────
@@ -260,14 +261,15 @@ class MasterEmotionTracker:
         if reading is None:
             return None
         # Truncation guard: the model only saw ``cleaned[:MAX_INPUT_CHARS]``. If
-        # the turn was longer, an action verb in the unseen tail makes the
-        # action_intent read an unreliable basis for the agent gate — null it so
-        # the gate fails open (run the assessment). Emotion / complexity, which
-        # are judgeable from the opening, stay valid. The source_norm fingerprint
-        # remains the FULL text so the freshness match is unaffected.
+        # the turn was longer, an action verb / info request in the unseen tail
+        # makes the external_intent read an unreliable basis for the agent gate —
+        # null it so the gate fails open (run the assessment). Emotion /
+        # complexity, which are judgeable from the opening, stay valid. The
+        # source_norm fingerprint remains the FULL text so the freshness match is
+        # unaffected.
         _max_chars = max(1, int(getattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 500)))
-        if reading.action_intent is not None and len(cleaned) > _max_chars:
-            reading = replace(reading, action_intent=None)
+        if reading.external_intent is not None and len(cleaned) > _max_chars:
+            reading = replace(reading, external_intent=None)
         # Stale-result guard: if a newer analysis (or a reset) was kicked off
         # while this one awaited — possible under a slow tier — the newer turn
         # wins; never let this older turn's reading overwrite it.
@@ -365,10 +367,10 @@ class MasterEmotionTracker:
             # missing value safely defaults to 0 (no cognitive bonus), so it
             # never blocks a valid emotional reading.
             complexity=_clamp(data.get("complexity"), 0.0, 1.0, 0.0),
-            # action_intent: keep None when the model omitted it / gave junk so
+            # external_intent: keep None when the model omitted it / gave junk so
             # the consuming agent gate fails open instead of reading a phantom
-            # 0.0 as "confidently no action" and braking a real request.
-            action_intent=_action_intent_from(data.get("action_intent")),
+            # 0.0 as "confidently no external need" and braking a real request.
+            external_intent=_external_intent_from(data.get("external_intent")),
             source_excerpt=source[:80],
             source_norm=_normalize_for_match(source),
         )
