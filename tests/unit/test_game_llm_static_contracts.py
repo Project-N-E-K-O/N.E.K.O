@@ -104,13 +104,18 @@ def test_soccer_template_posts_session_debug_errors():
     assert "if (!_llm.sessionDebugLogEnabled) return;" in debug_block
     assert "function resetSoccerSessionDebugLogEnableState()" in html
     assert "resetSoccerSessionDebugLogEnableState();" in html
+    assert "SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS" in html
+    assert "function _hasSoccerSessionDebugLogSendCredentials()" in html
+    assert "function _startSoccerSessionDebugLogEnablePromise(workPromise)" in html
     assert "then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))" in html
     assert "_llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;" in html
     assert "_llm.sessionDebugLogMutationHeaders = null;" in html
     assert "_postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders)" in debug_block
-    assert "if (data.ok) {\n\t        _llm.sessionDebugLogEnabled = true;" in html
+    assert "await enableSoccerSessionDebugLog('auto_route_start')" not in html
+    assert "enableSoccerSessionDebugLog('auto_route_start').catch(() => {});" in html
+    assert "if (data.ok) {\n\t        _llm.sessionDebugLogEnabled = true;" not in html
+    assert "if (_hasSoccerSessionDebugLogSendCredentials()) {\n\t          _llm.sessionDebugLogEnabled = true;" in html
     assert "enableSoccerSessionDebugLog('keyboard_l')" in html
-    assert "await enableSoccerSessionDebugLog('auto_route_start')" in html
     assert "session_id: _llm.sessionId" in html
     assert "game_type: 'soccer'" in html
     assert "lanlan_name: _llm.routeLanlanName || ''" in html

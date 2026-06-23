@@ -3354,6 +3354,55 @@
     _llm.sessionDebugLogEnablePromise = null;
     _llm.sessionDebugLogMutationHeaders = null;
   }
+  const SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS = 3500;
+  function _hasSoccerSessionDebugLogSendCredentials() {
+    const security = window.nekoLocalMutationSecurity;
+    return !!(
+      _llm.sessionDebugLogMutationHeaders ||
+      (security && (
+        typeof security.peekCachedToken === 'function' ||
+        typeof security.getMutationHeaders === 'function'
+      ))
+    );
+  }
+  function _startSoccerSessionDebugLogEnablePromise(workPromise) {
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: false, reason: 'enable_timeout' }), SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS);
+    });
+    const guardedWork = Promise.resolve(workPromise)
+      .then((result) => {
+        const enabledResult = onSoccerSessionDebugLogEnabled(result);
+        return enabledResult;
+      })
+      .catch(onSoccerSessionDebugLogEnableFailed);
+    _llm.sessionDebugLogEnablePromise = Promise.race([guardedWork, timeoutPromise])
+      .then((result) => {
+        if (result && result.reason === 'enable_timeout') {
+          _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用超时，稍后可重试');
+        }
+        return result;
+      })
+      .finally(() => {
+        _llm.sessionDebugLogEnableInFlight = false;
+      });
+    return _llm.sessionDebugLogEnablePromise;
+  }
+  function onSoccerSessionDebugLogEnabled(result) {
+    if (result && result.ok) {
+      _llm.sessionDebugLogEnabled = true;
+      console.log('[Soccer] [SessionLog] 小游戏场次诊断日志已启用', {
+        sessionId: _llm.sessionId,
+        reason: result.enableReason || result.reason || 'unknown',
+      });
+    } else {
+      _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用失败', result || {});
+    }
+    return result;
+  }
+  function onSoccerSessionDebugLogEnableFailed(error) {
+    _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用请求失败', error);
+    return { ok: false, reason: 'request_failed' };
+  }
   function enableSoccerSessionDebugLog(reason = 'keyboard') {
     if (_llm.sessionDebugLogEnabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
     if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
@@ -3361,47 +3410,25 @@
     }
     _llm.sessionDebugLogEnableInFlight = true;
     const security = window.nekoLocalMutationSecurity;
-    const onEnabled = (result) => {
-      if (result && result.ok) {
-        _llm.sessionDebugLogEnabled = true;
-        console.log('[Soccer] [SessionLog] 小游戏场次诊断日志已启用', {
-          sessionId: _llm.sessionId,
-          reason,
-        });
-      } else {
-        _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用失败', result || {});
-      }
-    };
-    const onFailed = (error) => {
-      _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用请求失败', error);
-      return { ok: false, reason: 'request_failed' };
-    };
+    const withEnableReason = (result) => ({ ...(result || {}), enableReason: reason });
     try {
       if (security && typeof security.peekCachedToken === 'function') {
         const token = security.peekCachedToken();
         if (token) {
-          _llm.sessionDebugLogEnablePromise = _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token })
-            .then(onEnabled)
-            .catch(onFailed)
-            .finally(() => { _llm.sessionDebugLogEnableInFlight = false; });
-          return _llm.sessionDebugLogEnablePromise;
+          return _startSoccerSessionDebugLogEnablePromise(
+            _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token }).then(withEnableReason)
+          );
         }
       }
     } catch (_) {}
     if (security && typeof security.getMutationHeaders === 'function') {
-      _llm.sessionDebugLogEnablePromise = Promise.resolve(security.getMutationHeaders())
+      return _startSoccerSessionDebugLogEnablePromise(Promise.resolve(security.getMutationHeaders())
         .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-        .then(onEnabled)
-        .catch(onFailed)
-        .finally(() => { _llm.sessionDebugLogEnableInFlight = false; });
-      return _llm.sessionDebugLogEnablePromise;
+        .then(withEnableReason));
     }
-    _llm.sessionDebugLogEnablePromise = _getLocalMutationHeaders()
+    return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
       .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-      .then(onEnabled)
-      .catch(onFailed)
-      .finally(() => { _llm.sessionDebugLogEnableInFlight = false; });
-    return _llm.sessionDebugLogEnablePromise;
+      .then(withEnableReason));
   }
   function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
     try {
@@ -3956,7 +3983,7 @@
 	    try {
 	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
 	      resetSoccerSessionDebugLogEnableState();
-	      await enableSoccerSessionDebugLog('auto_route_start');
+	      enableSoccerSessionDebugLog('auto_route_start').catch(() => {});
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
 	        headers: { 'Content-Type': 'application/json' },
@@ -3964,7 +3991,9 @@
 	      });
 	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
-	        _llm.sessionDebugLogEnabled = true;
+	        if (_hasSoccerSessionDebugLogSendCredentials()) {
+	          _llm.sessionDebugLogEnabled = true;
+	        }
 	        _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
 	        console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
 	        _applyPreGameContext(data.state);
