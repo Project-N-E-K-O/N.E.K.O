@@ -1087,11 +1087,6 @@
     window.addEventListener('unload', function () {
         endIcebreakerRouteOnPageExit('icebreaker_unload');
     });
-    document.addEventListener('visibilitychange', function () {
-        if (document.visibilityState === 'hidden') {
-            endIcebreakerRouteOnPageExit('icebreaker_visibility_hidden');
-        }
-    });
     window.addEventListener('neko:icebreaker-choice-selected', function (event) {
         handleChoice(event && event.detail);
     });
