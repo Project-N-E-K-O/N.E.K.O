@@ -68,6 +68,14 @@ def _context_with_latest_route_and_signal() -> dict:
     }
 
 
+def _context_from_other_checkout() -> dict:
+    context = _context_with_latest_route_and_signal()
+    context["plugin"] = {
+        "config_path": r"D:\Users\zheng\Documents\Code\other\N.E.K.O\plugin\plugins\neko_roast\plugin.toml"
+    }
+    return context
+
+
 def _solo_idle_context() -> dict:
     return {
         "state": {
@@ -175,6 +183,13 @@ def test_monitor_live_script_defaults_to_plugin_host_port() -> None:
     script = root / "tools" / "monitor_live.ps1"
 
     assert '[string]$BaseUrl = "http://127.0.0.1:48916"' in script.read_text(encoding="utf-8")
+
+
+def test_monitor_live_script_reports_checkout_mismatch(tmp_path: Path) -> None:
+    completed = _run_monitor(tmp_path, _context_from_other_checkout())
+
+    assert completed.returncode == 0, completed.stderr
+    assert "checkout=mismatch" in completed.stdout
 
 
 def test_monitor_live_script_reports_latest_response_latency(tmp_path: Path) -> None:

@@ -148,6 +148,26 @@ function Format-Error {
     return ($text -replace "\s+", "_")
 }
 
+function Get-CheckoutStatus {
+    param([object]$Context)
+    $configPath = $Context.plugin.config_path
+    if ($null -eq $configPath -or "$configPath" -eq "") {
+        return "unknown"
+    }
+
+    try {
+        $expectedRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd("\", "/")
+        $actualPath = [System.IO.Path]::GetFullPath("$configPath")
+    } catch {
+        return "unknown"
+    }
+
+    if ($actualPath.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "ok"
+    }
+    return "mismatch"
+}
+
 function Write-Snapshot {
     try {
         $context = Read-Context
@@ -196,6 +216,7 @@ function Write-Snapshot {
 
     $parts = @(
         "[neko_roast]",
+        "checkout=$(Get-CheckoutStatus $context)",
         "dry_run=$(Get-Field $config.dry_run)",
         "mode=$(Get-Field $config.live_mode)",
         "live=$(Get-Field $live.state)",

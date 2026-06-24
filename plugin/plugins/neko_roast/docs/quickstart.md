@@ -43,6 +43,7 @@ NEKO Live 当前有两条使用路径：
 - 顶部状态刷新后，面板能解释 NEKO 为什么暂时没说话。
 - 节奏档位先用“标准”；如果 NEKO 太安静再切“活跃”，太吵再切“安静”。
 - 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once`，记录 `mode`、`live_status`、`live_state`、`idle_candidate`、`idle_ready` 和 `latency_status`。
+  - `checkout=mismatch`：当前插件服务来自另一个 N.E.K.O 工作区，先重启正确工作区的后端再继续直播测试。
   - `solo_test_focus=chain_only`：dry_run 开启，本轮只验证链路，不判断真实开口。
   - `solo_test_focus=danmaku_response`：可以发一条真实弹幕，观察弹幕到回复。
   - `solo_test_focus=idle_hosting`：可以进入冷场补位观察。
