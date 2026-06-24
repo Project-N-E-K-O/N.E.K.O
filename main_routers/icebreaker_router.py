@@ -12,6 +12,7 @@ make ``/api/game/route/active`` report an open mini-game window.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, Dict
 
@@ -28,6 +29,7 @@ from utils.icebreaker_route_state import (
 )
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.tutorial_choices_state import record_tutorial_choice
 
 from .shared_state import get_config_manager, get_session_manager
 
@@ -385,6 +387,83 @@ async def icebreaker_context(request: Request):
         "session_id": session_id,
         "memory_cached": memory_cached,
     }
+    return result
+
+
+@router.post("/choice")
+async def icebreaker_choice(request: Request):
+    """Persist a single effective tutorial choice into the durable choices pool.
+
+    Write-only for now: the choice is recorded so it survives across sessions,
+    but it does not enter the memory system and does not influence the model.
+    Kept separate from ``/context`` (which feeds transient session history) so the
+    pool stays an independent signal we can consume incrementally later.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
+
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+
+    requested_session_id = str(data.get("session_id") or "")
+    # 选项必须属于当前 active 的破冰 route，才能写进「有效路径」池——与 /context、
+    # /speak 完全对齐：无 active route → route_not_active；session 不匹配（双 tab 下
+    # 新 session 顶掉旧的）→ stale 拒绝。这样被取代的旧 tab、以及 route 结束后迟到的
+    # 旧请求都进不来，池子不被污染。
+    # 不必担心丢掉收尾的 handoff 选择：前端 recordChoiceToPool 在 handleChoice 开头
+    # 同步发起本请求，而 route/end 要等之后两次 appendChatMessage（各含一个 /context
+    # 往返）才发起，本请求实质上比 route/end 早约两个往返，落地时 route 仍 active。
+    active_state = _get_active_icebreaker_route_state(lanlan_name)
+    if not active_state:
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+            "method": "tutorial_choices",
+        }
+    stale_response = _stale_icebreaker_session_response(
+        active_state,
+        requested_session_id,
+        lanlan_name=lanlan_name,
+        method="tutorial_choices",
+    )
+    if stale_response:
+        return stale_response
+
+    payload = {
+        "lanlan_name": lanlan_name,
+        "session_id": data.get("session_id"),
+        "day": data.get("day"),
+        "node_id": data.get("node_id"),
+        "choice": data.get("choice"),
+        "label": data.get("label"),
+        "handoff": data.get("handoff"),
+        "completed": data.get("completed"),
+        "seq": data.get("seq"),
+        "source": ICEBREAKER_SOURCE,
+    }
+    try:
+        result = await asyncio.to_thread(record_tutorial_choice, payload)
+    except Exception as exc:
+        logger.warning("icebreaker choice persist failed for %s: %s", lanlan_name, exc, exc_info=True)
+        return {
+            "ok": False,
+            "reason": "choice_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+        }
+    result.setdefault("source", ICEBREAKER_SOURCE)
     return result
 
 
