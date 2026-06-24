@@ -2694,8 +2694,10 @@ function CompactChatApp({
   const hammerCursorOverlaySecondaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
     : '';
+  const shouldReportAvatarRangeImageKind = shouldRenderAvatarRangeOverlay
+    || (activeCursorToolId === 'hammer' && hammerCursorOverlayMotionActive);
   const avatarToolImageKind = activeToolItem
-    ? (shouldRenderAvatarRangeOverlay ? 'icon' : 'cursor')
+    ? (shouldReportAvatarRangeImageKind ? 'icon' : 'cursor')
     : 'cursor';
 
   useEffect(() => {

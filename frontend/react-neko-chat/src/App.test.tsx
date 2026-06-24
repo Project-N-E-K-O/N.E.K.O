@@ -8377,12 +8377,19 @@ describe('App', () => {
         }));
       });
 
+      onAvatarToolStateChange.mockClear();
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
       fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
 
       await waitFor(() => {
         expect(queryHammerCursorCompactImage()).toBeNull();
         expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: false,
+        }));
       });
     } finally {
       restoreLive2dManager();

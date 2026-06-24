@@ -382,6 +382,8 @@ en / es / ja / ko / pt / ru / zh-CN / zh-TW
 5. 明确是否需要 burst history。
 6. 明确是否需要 cleanup timer。
 7. 明确头像范围内的大形态 `imageKind`。
+   - 如果新道具遵循“范围内 `icon`、范围外 `cursor`”的规则，需要确认未被 `shouldRenderAvatarRangeOverlay` 排除。
+   - 如果新道具应始终保持 `cursor` 形态，需要在排除条件和文档里写清楚原因。
 
 不要把新道具做成默认 fallback 分支。每个道具都应有清晰的事件语义。
 
@@ -455,6 +457,8 @@ uv run pytest tests/unit/test_avatar_interaction_memory_contract.py
 ```
 
 涉及桌面光标、命中区、窗口外同步时，需要用 NEKO-PC 真实运行或自动化观察。不能只靠代码阅读判断。
+
+如果新增或修改 `imageKind` 值，还需要确认 NEKO-PC 的 `avatar-tool-cursor-service.js` 和相关 preload 链路已支持该值的图片资源、尺寸切换和 hotspot，否则前端上报完整也不会得到正确桌面反馈。
 
 ## 常见误区
 
