@@ -1373,6 +1373,7 @@
         "vrmAnimation": {
             "title": "VRMアニメーションプレビュー:",
             "selectAnimation": "アニメーション",
+            "addAnimation": "アニメーションを追加",
             "noAnimations": "アニメーションファイルなし",
             "loading": "リスト読み込み中...",
             "animationListLoaded": "リスト読み込み成功",

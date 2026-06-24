@@ -1373,6 +1373,7 @@
         "vrmAnimation": {
             "title": "Предпросмотр анимации VRM:",
             "selectAnimation": "Анимация",
+            "addAnimation": "Добавить анимацию",
             "noAnimations": "Файлы анимации не найдены",
             "loading": "Загрузка списка анимаций...",
             "animationListLoaded": "Список анимаций загружен",
