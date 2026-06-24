@@ -1626,8 +1626,14 @@ REDACTED_USER_TURN_MARKER = (
 )
 
 
-def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> list:
+def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, preserve_trailing_assistant: bool = False) -> list:
     """Return a messages copy with cancelled user turns removed.
+
+    ``preserve_trailing_assistant`` keeps the LAST assistant message out of the
+    redaction. On a proactive turn that message is lanlan's own utterance being
+    analyzed (no next-user boundary follows it), so it must survive even when it
+    trails a cancelled user — otherwise the proactive intent is stripped before
+    ``_format_messages`` and the turn spends a budget slot without dispatching.
 
     Rule: a user message matches the cancel set (its sig is in
     `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
@@ -1689,6 +1695,15 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
     if not redact_indices:
         return messages
 
+    # Index of the last assistant message — preserved from redaction when
+    # ``preserve_trailing_assistant`` is set (the proactive utterance).
+    keep_assistant_idx = -1
+    if preserve_trailing_assistant:
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                keep_assistant_idx = i
+                break
+
     redacted: list = []
     drop_until_next_user = False
     for idx, m in enumerate(messages):
@@ -1704,6 +1719,10 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
             # 只吞掉被取消任务产出的 assistant/tool 段；夹在中间的 system
             # 消息（session callback、context 注入等）跟取消请求无关，保留。
             if isinstance(m, dict) and m.get("role") in {"assistant", "tool"}:
+                # 主动搭话轮：那条被分析的主动台词（最后一条 assistant）必须留下，
+                # 否则下游 _format_messages 取不到主动意图、白白消耗一个预算名额。
+                if idx == keep_assistant_idx:
+                    redacted.append(m)
                 continue
         redacted.append(m)
     return redacted
@@ -2271,7 +2290,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
         # 在 inject 之前先把已被用户 UI 取消的 user turn 整段 redact，让 analyzer
         # 完全看不到那条请求；inject 阶段也会跳过 cancelled 任务的所有 record。
-        redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name)
+        redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name, preserve_trailing_assistant=proactive)
         # 单条 user 消息签名：派单时塞到 task info 里。取自 redacted_messages
         # 而非 raw —— analyzer 实际看到的最新 user 才是该任务的真触发者；
         # 正常场景下 raw-latest 是 first-time bypass、没被 redact，两个签名

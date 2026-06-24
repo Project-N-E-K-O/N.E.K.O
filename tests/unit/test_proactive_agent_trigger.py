@@ -159,6 +159,26 @@ def test_refresh_does_not_reset_budget(monkeypatch):
     assert a.Modules.proactive_analyze_count.get("lan") == 2
 
 
+# ── cancel redaction preserves the proactive utterance ──────────────
+def test_redact_preserves_proactive_utterance(monkeypatch):
+    user_msg = {"role": "user", "content": "取消了的旧请求"}
+    msgs = [
+        user_msg,
+        {"role": "assistant", "content": "旧任务回复"},
+        {"role": "assistant", "content": "我帮你查下天气"},  # proactive utterance (trailing)
+    ]
+    sig = a._user_message_signature(user_msg)
+    monkeypatch.setattr(a._task_tracker, "get_cancelled_user_sigs", lambda ln: {sig})
+
+    def _has_proactive(out):
+        return any(m.get("role") == "assistant" and "天气" in str(m.get("content", "")) for m in out)
+
+    # default: the trailing proactive assistant is dropped with the cancelled user
+    assert not _has_proactive(a._redact_cancelled_user_turns(msgs, "lan"))
+    # preserve_trailing_assistant: the proactive utterance survives
+    assert _has_proactive(a._redact_cancelled_user_turns(msgs, "lan", preserve_trailing_assistant=True))
+
+
 # ── executor uses the assistant utterance as LATEST_USER_REQUEST on proactive ─
 def test_executor_format_messages_proactive_intent():
     ex = DirectTaskExecutor(computer_use=object())
