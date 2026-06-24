@@ -167,7 +167,9 @@ def load_tutorial_choices_state(config_manager=None) -> dict[str, Any]:
 def save_tutorial_choices_state(state: dict[str, Any], config_manager=None) -> dict[str, Any]:
     normalized = _normalize_state(state)
     path = get_tutorial_choices_state_path(config_manager)
-    atomic_write_json(path, normalized, ensure_ascii=False, indent=2)
+    # 通用 safe dump：原子写（写临时文件再 rename，绝不留半截文件），显式 utf-8、
+    # ensure_ascii=False 保留中文 label 原文。读侧 _load_state_file 同样显式 utf-8 打开。
+    atomic_write_json(path, normalized, encoding="utf-8", ensure_ascii=False, indent=2)
     return normalized
 
 
