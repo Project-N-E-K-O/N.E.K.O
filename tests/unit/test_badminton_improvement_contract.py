@@ -1887,6 +1887,7 @@ def test_badminton_mood_bgm_uses_looped_configs_instead_of_end_segments():
     assert "if (moodBgm.loop) {" in resolve_section
     assert "if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {" in resolve_section
     assert "moodBgm = null;" in resolve_section
+    assert "if ((currentMood === 'happy' || currentMood === 'relaxed') && ['lv3', 'lv4'].indexOf(getDuelDifficultyName()) === -1) {" in resolve_section
     assert "var moodBgmKey = (currentMood === 'happy' || currentMood === 'relaxed')" in resolve_section
     assert "? 'mood:chocobos'" in resolve_section
     assert "key: moodBgmKey" in resolve_section

@@ -1780,6 +1780,9 @@
         if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {
           moodBgm = null;
         }
+        if ((currentMood === 'happy' || currentMood === 'relaxed') && ['lv3', 'lv4'].indexOf(getDuelDifficultyName()) === -1) {
+          moodBgm = null;
+        }
       }
       if (moodBgm && (Array.isArray(moodBgm) ? moodBgm.length : moodBgm)) {
         var moodBgmKey = (currentMood === 'happy' || currentMood === 'relaxed')
