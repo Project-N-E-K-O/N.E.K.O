@@ -19,8 +19,8 @@ from .pngtuber_protocol import (
     PNGTUBER_IMAGE_KEYS,
     PNGTUBER_USER_PATH,
     adapter_for_metadata,
-    is_neko_pngtuber_v1_model,
-    validate_neko_pngtuber_v1_package,
+    is_neko_pngtuber_v2_model,
+    validate_neko_pngtuber_v2_package,
 )
 from .shared_state import get_config_manager
 from utils.logger_config import get_module_logger
@@ -152,10 +152,11 @@ def _validate_model_package(package_dir: Path, model_json: dict) -> tuple[bool, 
     if model_json.get("model_type") != "pngtuber":
         return False, "model.json 的 model_type 必须是 pngtuber"
 
-    if is_neko_pngtuber_v1_model(model_json):
-        ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
-        if not ok:
-            return False, error
+    if not is_neko_pngtuber_v2_model(model_json):
+        return False, "PNGTuber 模型必须使用 neko.pngtuber.package.v2"
+    ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
+    if not ok:
+        return False, error
 
     config = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     idle_image = config.get("idle_image")

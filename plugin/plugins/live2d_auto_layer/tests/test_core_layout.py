@@ -312,25 +312,26 @@ def test_export_pngtuber_model_package(tmp_path) -> None:
     assert zip_path.is_file()
 
     model = json.loads((package_dir / "model.json").read_text(encoding="utf-8"))
-    metadata = json.loads((package_dir / "metadata.neko-pngtuber.v1.json").read_text(encoding="utf-8"))
+    metadata = json.loads((package_dir / "metadata.neko-pngtuber.v2.json").read_text(encoding="utf-8"))
     ok, error = _validate_model_package(package_dir, model)
 
     assert ok is True, error
-    assert model["format"] == "neko.pngtuber.package.v1"
+    assert model["format"] == "neko.pngtuber.package.v2"
     assert model["model_type"] == "pngtuber"
     assert model["name"] == "Layered Smoke"
-    assert model["pngtuber"]["adapter"] == "neko_pngtuber_v1"
+    assert model["pngtuber"]["adapter"] == "neko_pngtuber_v2"
     assert model["pngtuber"]["idle_image"] == "idle.png"
     assert model["pngtuber"]["talking_image"] == "talking.png"
-    assert model["pngtuber"]["metadata"] == "metadata.neko-pngtuber.v1.json"
-    assert model["pngtuber"]["layered_metadata"] == "metadata.neko-pngtuber.v1.json"
-    assert metadata["format"] == "neko.pngtuber.v1"
+    assert model["pngtuber"]["metadata"] == "metadata.neko-pngtuber.v2.json"
+    assert model["pngtuber"]["layered_metadata"] == "metadata.neko-pngtuber.v2.json"
+    assert metadata["format"] == "neko.pngtuber.v2"
     assert metadata["runtime"] == "neko_layered_canvas"
     assert metadata["source_session_id"] == "pngtuber-smoke"
     assert metadata["canvas"] == {"width": 16, "height": 16}
     assert metadata["fallback"] == {"idle": "idle.png", "talking": "talking.png"}
     assert len(metadata["layers"]) == 5
     assert metadata["state_count"] == 2
+    assert metadata["emotions"] == {"neutral": {"state_index": 0, "duration_ms": 0}}
     assert metadata["capabilities"]["generated_talking_mouth"] is True
     assert metadata["layers"][0]["id"] == "layer_00_body"
     assert metadata["layers"][0]["image"] == "layers/00_Body.png"
@@ -350,7 +351,7 @@ def test_export_pngtuber_model_package(tmp_path) -> None:
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
         assert "model.json" in names
-        assert "metadata.neko-pngtuber.v1.json" in names
+        assert "metadata.neko-pngtuber.v2.json" in names
         assert "idle.png" in names
         assert "talking.png" in names
         assert "layers/00_Body.png" in names
@@ -395,24 +396,25 @@ def test_install_pngtuber_package_from_export(tmp_path) -> None:
 
     target_dir = pngtuber_dir / str(installed["folder"])
     model = json.loads((target_dir / "model.json").read_text(encoding="utf-8"))
-    metadata = json.loads((target_dir / "metadata.neko-pngtuber.v1.json").read_text(encoding="utf-8"))
+    metadata = json.loads((target_dir / "metadata.neko-pngtuber.v2.json").read_text(encoding="utf-8"))
 
     assert installed["success"] is True
     assert installed["url"] == f"/user_pngtuber/{installed['folder']}/model.json"
-    assert model["format"] == "neko.pngtuber.package.v1"
+    assert model["format"] == "neko.pngtuber.package.v2"
     assert model["model_type"] == "pngtuber"
     assert model["source_format"] == "live2d_auto_layer"
-    assert model["pngtuber"]["adapter"] == "neko_pngtuber_v1"
+    assert model["pngtuber"]["adapter"] == "neko_pngtuber_v2"
     assert model["pngtuber"]["idle_image"] == "idle.png"
-    assert model["pngtuber"]["metadata"] == "metadata.neko-pngtuber.v1.json"
-    assert model["pngtuber"]["layered_metadata"] == "metadata.neko-pngtuber.v1.json"
+    assert model["pngtuber"]["metadata"] == "metadata.neko-pngtuber.v2.json"
+    assert model["pngtuber"]["layered_metadata"] == "metadata.neko-pngtuber.v2.json"
     ok, error = _validate_model_package(target_dir, model)
     assert ok is True, error
-    assert installed["pngtuber"]["protocol"] == "neko.pngtuber.v1"
+    assert installed["pngtuber"]["protocol"] == "neko.pngtuber.v2"
     assert installed["pngtuber"]["idle_image"] == f"/user_pngtuber/{installed['folder']}/idle.png"
-    assert installed["pngtuber"]["metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
-    assert installed["pngtuber"]["layered_metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v1.json"
-    assert metadata["format"] == "neko.pngtuber.v1"
+    assert installed["pngtuber"]["metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v2.json"
+    assert installed["pngtuber"]["layered_metadata"] == f"/user_pngtuber/{installed['folder']}/metadata.neko-pngtuber.v2.json"
+    assert metadata["format"] == "neko.pngtuber.v2"
+    assert metadata["emotions"] == {"neutral": {"state_index": 0, "duration_ms": 0}}
     assert (target_dir / "layers" / "00_Body.png").is_file()
 
     second = install_pngtuber_package(

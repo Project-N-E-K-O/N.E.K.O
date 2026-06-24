@@ -5,13 +5,13 @@ from main_routers.pngtuber_protocol import (
     NEKO_PNGTUBER_ADAPTER,
     NEKO_PNGTUBER_METADATA_FORMAT,
     NEKO_PNGTUBER_PACKAGE_FORMAT,
-    is_neko_pngtuber_v1_model,
-    validate_neko_pngtuber_v1_package,
+    is_neko_pngtuber_v2_model,
+    validate_neko_pngtuber_v2_package,
 )
 from main_routers.pngtuber_router import _normalize_pngtuber_config, _validate_model_package
 
 
-def _write_minimal_neko_pngtuber_v1_package(package_dir):
+def _write_minimal_neko_pngtuber_v2_package(package_dir):
     assets_dir = package_dir / "assets"
     layers_dir = assets_dir / "layers"
     layers_dir.mkdir(parents=True, exist_ok=True)
@@ -28,16 +28,16 @@ def _write_minimal_neko_pngtuber_v1_package(package_dir):
 
     model_json = {
         "format": NEKO_PNGTUBER_PACKAGE_FORMAT,
-        "name": "NEKO PNGTuber v1 Minimal Sample",
+        "name": "NEKO PNGTuber v2 Minimal Sample",
         "version": 1,
         "model_type": "pngtuber",
-        "source_format": "neko_pngtuber_v1",
+        "source_format": "neko_pngtuber_v2",
         "pngtuber": {
             "adapter": NEKO_PNGTUBER_ADAPTER,
             "idle_image": "assets/idle.png",
             "talking_image": "assets/talking.png",
-            "metadata": "metadata.neko-pngtuber.v1.json",
-            "layered_metadata": "metadata.neko-pngtuber.v1.json",
+            "metadata": "metadata.neko-pngtuber.v2.json",
+            "layered_metadata": "metadata.neko-pngtuber.v2.json",
             "scale": 1,
             "offset_x": 0,
             "offset_y": 0,
@@ -48,6 +48,11 @@ def _write_minimal_neko_pngtuber_v1_package(package_dir):
         "format": NEKO_PNGTUBER_METADATA_FORMAT,
         "runtime": "neko_layered_canvas",
         "canvas": {"width": 192, "height": 192},
+        "state_count": 2,
+        "emotions": {
+            "happy": {"state_index": 1, "duration_ms": 3200},
+            "sad": {"state_index": 1, "duration_ms": 3200},
+        },
         "layers": [
             {"id": "body", "role": "body", "order": 0, "image": "assets/layers/00_body.png"},
             {"id": "eye_open", "role": "eye", "order": 1, "image": "assets/layers/01_eye_open.png", "showBlink": 1},
@@ -57,51 +62,51 @@ def _write_minimal_neko_pngtuber_v1_package(package_dir):
         ],
     }
     (package_dir / "model.json").write_text(json.dumps(model_json), encoding="utf-8")
-    (package_dir / "metadata.neko-pngtuber.v1.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (package_dir / "metadata.neko-pngtuber.v2.json").write_text(json.dumps(metadata), encoding="utf-8")
     return model_json
 
 
-def test_neko_pngtuber_v1_sample_package_validates(tmp_path):
+def test_neko_pngtuber_v2_sample_package_validates(tmp_path):
     package_dir = tmp_path / "sample"
     package_dir.mkdir()
-    model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+    model_json = _write_minimal_neko_pngtuber_v2_package(package_dir)
 
-    assert is_neko_pngtuber_v1_model(model_json) is True
-    assert validate_neko_pngtuber_v1_package(package_dir, model_json) == (True, "")
+    assert is_neko_pngtuber_v2_model(model_json) is True
+    assert validate_neko_pngtuber_v2_package(package_dir, model_json) == (True, "")
     assert _validate_model_package(package_dir, model_json) == (True, "")
 
 
-def test_neko_pngtuber_v1_sample_import_and_normalize_contract(tmp_path):
+def test_neko_pngtuber_v2_sample_import_and_normalize_contract(tmp_path):
     package_dir = tmp_path / "sample"
     package_dir.mkdir()
-    _write_minimal_neko_pngtuber_v1_package(package_dir)
+    _write_minimal_neko_pngtuber_v2_package(package_dir)
 
     imported = import_pngtuber_package(package_dir, "fallback")
-    normalized = _normalize_pngtuber_config("sample_v1", imported.model_json)
+    normalized = _normalize_pngtuber_config("sample_v2", imported.model_json)
 
     assert imported.source_format == NEKO_PNGTUBER_PACKAGE_FORMAT
-    assert imported.model_name == "NEKO PNGTuber v1 Minimal Sample"
+    assert imported.model_name == "NEKO PNGTuber v2 Minimal Sample"
     assert normalized["adapter"] == NEKO_PNGTUBER_ADAPTER
     assert normalized["protocol"] == NEKO_PNGTUBER_METADATA_FORMAT
-    assert normalized["metadata"] == "/user_pngtuber/sample_v1/metadata.neko-pngtuber.v1.json"
+    assert normalized["metadata"] == "/user_pngtuber/sample_v2/metadata.neko-pngtuber.v2.json"
     assert normalized["layered_metadata"] == normalized["metadata"]
-    assert normalized["idle_image"] == "/user_pngtuber/sample_v1/assets/idle.png"
+    assert normalized["idle_image"] == "/user_pngtuber/sample_v2/assets/idle.png"
 
 
-def test_neko_pngtuber_v1_validator_rejects_missing_layer_asset(tmp_path):
+def test_neko_pngtuber_v2_validator_rejects_missing_layer_asset(tmp_path):
     package_dir = tmp_path / "sample"
     package_dir.mkdir()
-    model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+    model_json = _write_minimal_neko_pngtuber_v2_package(package_dir)
     missing = package_dir / "assets" / "layers" / "04_mouth_open.png"
     missing.unlink()
 
-    ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
+    ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
 
     assert ok is False
     assert "metadata.layers[4].image" in error
 
 
-def test_neko_pngtuber_v1_validator_rejects_unsafe_package_paths(tmp_path):
+def test_neko_pngtuber_v2_validator_rejects_unsafe_package_paths(tmp_path):
     package_dir = tmp_path / "sample"
     package_dir.mkdir()
 
@@ -114,10 +119,25 @@ def test_neko_pngtuber_v1_validator_rejects_unsafe_package_paths(tmp_path):
         "https://example.invalid/idle.png",
     ]
     for index, unsafe_path in enumerate(unsafe_values):
-        model_json = _write_minimal_neko_pngtuber_v1_package(package_dir)
+        model_json = _write_minimal_neko_pngtuber_v2_package(package_dir)
         model_json["pngtuber"]["idle_image"] = unsafe_path
 
-        ok, error = validate_neko_pngtuber_v1_package(package_dir, model_json)
+        ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
 
         assert ok is False, f"unsafe path accepted at case {index}: {unsafe_path}"
         assert "pngtuber.idle_image" in error
+
+
+def test_neko_pngtuber_v2_validator_requires_emotion_mapping(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+    model_json = _write_minimal_neko_pngtuber_v2_package(package_dir)
+    metadata_path = package_dir / "metadata.neko-pngtuber.v2.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("emotions")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
+
+    assert ok is False
+    assert "emotions" in error

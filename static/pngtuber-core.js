@@ -6,6 +6,14 @@
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
+    const EMOTION_STATE_ALIASES = {
+        neutral: ['neutral', 'idle', 'default', 'normal', 'calm'],
+        idle: ['idle', 'neutral', 'default', 'normal', 'calm'],
+        happy: ['happy', 'joy', 'joyful', 'cheerful', 'smile', 'smiling', 'laugh', 'laughing'],
+        sad: ['sad', 'sorrow', 'cry', 'crying', 'down', 'depressed'],
+        angry: ['angry', 'anger', 'mad', 'annoyed', 'irritated'],
+        surprised: ['surprised', 'surprise', 'shock', 'shocked', 'amazed'],
+    };
     const getProtocol = () => window.NekoPNGTuberProtocol || null;
 
     function clampNumber(value, min, max, fallback) {
@@ -101,10 +109,11 @@
         }
         const normalized = normalizeConfig(config);
         const hasLayeredMetadata = !!normalized.layered_metadata;
+        const layered = normalized.adapter === 'neko_pngtuber_v2' && hasLayeredMetadata;
         return {
-            protocol: 'neko.pngtuber.load_plan.legacy',
-            mode: normalized.adapter === 'layered_canvas_v1' && hasLayeredMetadata ? 'layered' : 'image',
-            renderer: normalized.adapter === 'layered_canvas_v1' && hasLayeredMetadata ? 'layered_canvas' : 'image',
+            protocol: 'neko.pngtuber.load_plan.v2',
+            mode: layered ? 'layered' : 'image',
+            renderer: layered ? 'layered_canvas' : 'image',
             adapter: normalized.adapter,
             metadataUrl: normalized.layered_metadata || '',
             config: normalized,
@@ -154,6 +163,7 @@
             this.speakingBounceSquish = 0;
             this.lastSpeakingBounceAt = 0;
             this.clickTimer = null;
+            this.emotionTimer = null;
             this._suppressNextClick = false;
             this._boundSpeechStart = () => this.setSpeaking(true);
             this._boundSpeechEnd = () => this.setSpeaking(false);
@@ -206,7 +216,7 @@
             if (protocol && typeof protocol.isLayeredAdapter === 'function') {
                 return protocol.isLayeredAdapter(this.config.adapter, this.config.layered_metadata);
             }
-            return this.config.adapter === 'layered_canvas_v1' && !!this.config.layered_metadata;
+            return this.config.adapter === 'neko_pngtuber_v2' && !!this.config.layered_metadata;
         }
 
         isLayeredActive() {
@@ -428,6 +438,89 @@
                 returnToDefaultAfterMs: options.returnToDefaultAfterMs,
                 source: options.source || 'api'
             });
+        }
+
+        normalizeEmotionName(emotion) {
+            const raw = String(emotion || '').trim().toLowerCase();
+            if (!raw) return 'neutral';
+            for (const [canonical, aliases] of Object.entries(EMOTION_STATE_ALIASES)) {
+                if (aliases.includes(raw)) return canonical;
+            }
+            return raw.replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'neutral';
+        }
+
+        emotionAliasesFor(emotion) {
+            const normalized = this.normalizeEmotionName(emotion);
+            const aliases = EMOTION_STATE_ALIASES[normalized] || [normalized];
+            return Array.from(new Set([normalized, ...aliases].map((item) => String(item || '').toLowerCase())));
+        }
+
+        resolveLayeredEmotionConfig(emotion) {
+            if (!this.layeredMetadata || typeof this.layeredMetadata !== 'object') return null;
+            const aliases = this.emotionAliasesFor(emotion);
+            const emotions = this.layeredMetadata.emotions;
+            if (!emotions || typeof emotions !== 'object' || Array.isArray(emotions)) return null;
+            const key = aliases.find((alias) => Object.prototype.hasOwnProperty.call(emotions, alias));
+            if (!key) return null;
+            const entry = emotions[key];
+            if (entry && typeof entry === 'object') {
+                return entry;
+            }
+            return null;
+        }
+
+        resolveLayeredEmotionTarget(emotion) {
+            const entry = this.resolveLayeredEmotionConfig(emotion);
+            return entry ? (entry.state_index ?? null) : null;
+        }
+
+        clearEmotion(options = {}) {
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            if (this.isLayeredActive()) {
+                this.setLayeredStateIndex(0, { source: options.source || 'emotion-clear' });
+            }
+            if (!this.isSpeaking) {
+                this.setState('idle');
+            }
+            return true;
+        }
+
+        setEmotion(emotion, options = {}) {
+            const normalized = this.normalizeEmotionName(emotion);
+            const emotionConfig = this.resolveLayeredEmotionConfig(normalized);
+            const durationMs = Math.max(0, Number(
+                options.durationMs
+                ?? options.returnToDefaultAfterMs
+                ?? emotionConfig?.duration_ms
+                ?? 3200
+            ) || 0);
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            if (normalized === 'neutral' || normalized === 'idle') {
+                return this.clearEmotion({ source: options.source || 'emotion' });
+            }
+
+            let applied = false;
+            const layeredTarget = emotionConfig ? (emotionConfig.state_index ?? null) : null;
+            if (this.isLayeredActive() && layeredTarget !== null && layeredTarget !== undefined && layeredTarget !== '') {
+                applied = this.playLayeredAnimation(layeredTarget, {
+                    returnToDefaultAfterMs: durationMs,
+                    source: options.source || 'emotion'
+                }) || applied;
+            }
+
+            if (applied && durationMs > 0 && !this.isSpeaking) {
+                this.emotionTimer = setTimeout(() => {
+                    this.emotionTimer = null;
+                    this.clearEmotion({ source: 'emotion-timeout' });
+                }, durationMs);
+            }
+            return applied;
         }
 
         hotkeyMatchesEvent(hotkey, event) {
@@ -1521,6 +1614,10 @@
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
             }
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
             this.stopSpeakingMouthAnimation();
             const container = this.container || document.getElementById(this.containerId);
             if (container) {
@@ -1543,6 +1640,10 @@
             if (this.clickTimer) {
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
+            }
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
             }
             if (typeof this.cleanupFloatingButtons === 'function') {
                 this.cleanupFloatingButtons();
@@ -1882,10 +1983,18 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
+    function performPNGTuberEmotion(emotion, options = {}) {
+        if (!window.pngtuberManager || typeof window.pngtuberManager.setEmotion !== 'function') {
+            return false;
+        }
+        return window.pngtuberManager.setEmotion(emotion, options);
+    }
+
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.performPNGTuberEmotion = performPNGTuberEmotion;
     window.getPNGTuberDebugState = function getPNGTuberDebugState() {
         if (!window.pngtuberManager || typeof window.pngtuberManager.getDebugState !== 'function') {
             return {

@@ -8,6 +8,7 @@ AGENT_UI_V2_JS = PROJECT_ROOT / "static" / "js" / "agent_ui_v2.js"
 APP_REACT_CHAT_WINDOW_JS = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_WEBSOCKET_JS = PROJECT_ROOT / "static" / "app-websocket.js"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
+PNGTUBER_PROTOCOL_JS = PROJECT_ROOT / "static" / "neko-pngtuber-protocol.js"
 
 
 def test_app_agent_includes_pngtuber_agent_prefix():
@@ -52,6 +53,7 @@ def test_agent_pngtuber_scripts_bust_static_asset_cache():
         APP_AGENT_JS,
         AGENT_UI_V2_JS,
         COMMON_UI_HUD_JS,
+        PNGTUBER_PROTOCOL_JS,
         PNGTUBER_CORE_JS,
         APP_REACT_CHAT_WINDOW_JS,
         APP_WEBSOCKET_JS,

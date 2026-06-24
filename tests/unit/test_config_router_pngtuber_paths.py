@@ -45,25 +45,25 @@ def test_resolve_pngtuber_rejects_protocol_relative_url(tmp_path):
     assert _resolve_pngtuber_image_path("//evil.example/avatar.png", config_manager, "Neko") == ""
 
 
-def test_resolve_pngtuber_metadata_keeps_auto_layer_json_for_existing_file(tmp_path):
+def test_resolve_pngtuber_metadata_keeps_v2_json_for_existing_file(tmp_path):
     pngtuber_dir = tmp_path / "pngtuber"
     model_dir = pngtuber_dir / "avatar"
     model_dir.mkdir(parents=True)
-    (model_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
+    (model_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
 
     config_manager = SimpleNamespace(pngtuber_dir=pngtuber_dir)
 
     assert (
         _resolve_pngtuber_metadata_path(
-            "avatar/metadata.live2d-auto-layer.json?t=2",
+            "avatar/metadata.neko-pngtuber.v2.json?t=2",
             config_manager,
             "Neko",
         )
-        == f"{PNGTUBER_USER_PATH}/avatar/metadata.live2d-auto-layer.json"
+        == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v2.json"
     )
 
 
-def test_infer_pngtuber_metadata_from_idle_prefers_auto_layer_metadata(tmp_path):
+def test_infer_pngtuber_metadata_from_idle_ignores_legacy_metadata(tmp_path):
     pngtuber_dir = tmp_path / "pngtuber"
     model_dir = pngtuber_dir / "avatar"
     model_dir.mkdir(parents=True)
@@ -77,15 +77,15 @@ def test_infer_pngtuber_metadata_from_idle_prefers_auto_layer_metadata(tmp_path)
             f"{PNGTUBER_USER_PATH}/avatar/idle.png?v=1#preview",
             config_manager,
         )
-        == f"{PNGTUBER_USER_PATH}/avatar/metadata.live2d-auto-layer.json"
+        == ""
     )
 
 
-def test_infer_pngtuber_metadata_prefers_neko_v1_metadata(tmp_path):
+def test_infer_pngtuber_metadata_prefers_neko_v2_metadata(tmp_path):
     pngtuber_dir = tmp_path / "pngtuber"
     model_dir = pngtuber_dir / "avatar"
     model_dir.mkdir(parents=True)
-    (model_dir / "metadata.neko-pngtuber.v1.json").write_text("{}", encoding="utf-8")
+    (model_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
     (model_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
 
     config_manager = SimpleNamespace(pngtuber_dir=pngtuber_dir)
@@ -95,16 +95,16 @@ def test_infer_pngtuber_metadata_prefers_neko_v1_metadata(tmp_path):
             f"{PNGTUBER_USER_PATH}/avatar/idle.png",
             config_manager,
         )
-        == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v1.json"
+        == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v2.json"
     )
 
 
-def test_pngtuber_protocol_normalizes_neko_v1_runtime_config(tmp_path):
+def test_pngtuber_protocol_normalizes_neko_v2_runtime_config(tmp_path):
     pngtuber_dir = tmp_path / "pngtuber"
     model_dir = pngtuber_dir / "avatar"
     model_dir.mkdir(parents=True)
     (model_dir / "idle.png").write_bytes(b"png")
-    (model_dir / "metadata.neko-pngtuber.v1.json").write_text("{}", encoding="utf-8")
+    (model_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
 
     config_manager = SimpleNamespace(pngtuber_dir=pngtuber_dir)
 
@@ -115,10 +115,10 @@ def test_pngtuber_protocol_normalizes_neko_v1_runtime_config(tmp_path):
     )
 
     assert config["idle_image"] == f"{PNGTUBER_USER_PATH}/avatar/idle.png"
-    assert config["metadata"] == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v1.json"
+    assert config["metadata"] == f"{PNGTUBER_USER_PATH}/avatar/metadata.neko-pngtuber.v2.json"
     assert config["layered_metadata"] == config["metadata"]
     assert config["adapter"] == NEKO_PNGTUBER_ADAPTER
 
 
-def test_pngtuber_protocol_keeps_legacy_layered_adapter_for_legacy_metadata():
-    assert adapter_for_metadata("/user_pngtuber/avatar/metadata.live2d-auto-layer.json") == "layered_canvas_v1"
+def test_pngtuber_protocol_rejects_legacy_layered_adapter_for_legacy_metadata():
+    assert adapter_for_metadata("/user_pngtuber/avatar/metadata.live2d-auto-layer.json") == ""

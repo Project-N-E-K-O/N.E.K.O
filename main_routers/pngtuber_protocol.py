@@ -12,11 +12,10 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
-NEKO_PNGTUBER_PACKAGE_FORMAT = "neko.pngtuber.package.v1"
-NEKO_PNGTUBER_METADATA_FORMAT = "neko.pngtuber.v1"
-NEKO_PNGTUBER_METADATA_FILENAME = "metadata.neko-pngtuber.v1.json"
-NEKO_PNGTUBER_ADAPTER = "neko_pngtuber_v1"
-LEGACY_LAYERED_CANVAS_ADAPTER = "layered_canvas_v1"
+NEKO_PNGTUBER_PACKAGE_FORMAT = "neko.pngtuber.package.v2"
+NEKO_PNGTUBER_METADATA_FORMAT = "neko.pngtuber.v2"
+NEKO_PNGTUBER_METADATA_FILENAME = "metadata.neko-pngtuber.v2.json"
+NEKO_PNGTUBER_ADAPTER = "neko_pngtuber_v2"
 
 PNGTUBER_USER_PATH = "/user_pngtuber"
 PNGTUBER_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
@@ -32,10 +31,6 @@ PNGTUBER_IMAGE_KEYS = (
 )
 PNGTUBER_METADATA_FILENAMES = (
     NEKO_PNGTUBER_METADATA_FILENAME,
-    "metadata.live2d-auto-layer.json",
-    "metadata.pngtube-remix.json",
-    "metadata.pngtuber-plus.json",
-    "metadata.json",
 )
 
 
@@ -63,16 +58,16 @@ def safe_relative_path(raw_path: str) -> PurePosixPath | None:
 
 def adapter_for_metadata(metadata_path: str, raw_adapter: str = "") -> str:
     adapter = str(raw_adapter or "").strip()
-    if adapter in {NEKO_PNGTUBER_ADAPTER, LEGACY_LAYERED_CANVAS_ADAPTER}:
+    if adapter == NEKO_PNGTUBER_ADAPTER:
         return adapter
     filename = PurePosixPath(urlsplit(str(metadata_path or "").replace("\\", "/")).path).name
-    if filename == "metadata.neko-pngtuber.v1.json":
+    if filename == NEKO_PNGTUBER_METADATA_FILENAME:
         return NEKO_PNGTUBER_ADAPTER
-    return LEGACY_LAYERED_CANVAS_ADAPTER if metadata_path else ""
+    return ""
 
 
-def is_neko_pngtuber_v1_model(model_json: dict) -> bool:
-    """Return true when a model manifest opts into NEKO PNGTuber v1."""
+def is_neko_pngtuber_v2_model(model_json: dict) -> bool:
+    """Return true when a model manifest opts into NEKO PNGTuber v2."""
     model = model_json if isinstance(model_json, dict) else {}
     config = model.get("pngtuber") or model.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     metadata_path = str(config.get("layered_metadata") or config.get("metadata") or "")
@@ -114,8 +109,8 @@ def _positive_int(value) -> bool:
         return False
 
 
-def validate_neko_pngtuber_v1_package(package_dir: Path, model_json: dict) -> tuple[bool, str]:
-    """Validate a package against the NEKO PNGTuber v1 file contract."""
+def validate_neko_pngtuber_v2_package(package_dir: Path, model_json: dict) -> tuple[bool, str]:
+    """Validate a package against the NEKO PNGTuber v2 file contract."""
     package_dir = Path(package_dir)
     model = model_json if isinstance(model_json, dict) else {}
     if model.get("format") != NEKO_PNGTUBER_PACKAGE_FORMAT:
@@ -131,7 +126,7 @@ def validate_neko_pngtuber_v1_package(package_dir: Path, model_json: dict) -> tu
 
     idle_image = str(config.get("idle_image") or "").strip()
     if not idle_image:
-        return False, "PNGTuber v1 必须配置 pngtuber.idle_image"
+        return False, "PNGTuber v2 必须配置 pngtuber.idle_image"
     _, error = _validate_local_asset_ref(package_dir, idle_image, label="pngtuber.idle_image")
     if error:
         return False, error
@@ -146,9 +141,9 @@ def validate_neko_pngtuber_v1_package(package_dir: Path, model_json: dict) -> tu
 
     metadata_ref = str(config.get("metadata") or config.get("layered_metadata") or "").strip()
     if not metadata_ref:
-        return False, f"PNGTuber v1 必须配置 pngtuber.metadata 指向 {NEKO_PNGTUBER_METADATA_FILENAME}"
+        return False, f"PNGTuber v2 必须配置 pngtuber.metadata 指向 {NEKO_PNGTUBER_METADATA_FILENAME}"
     if PurePosixPath(metadata_ref.replace("\\", "/")).name != NEKO_PNGTUBER_METADATA_FILENAME:
-        return False, f"PNGTuber v1 metadata 文件名必须是 {NEKO_PNGTUBER_METADATA_FILENAME}"
+        return False, f"PNGTuber v2 metadata 文件名必须是 {NEKO_PNGTUBER_METADATA_FILENAME}"
     metadata_path, error = _validate_local_json_ref(package_dir, metadata_ref, label="pngtuber.metadata")
     if error:
         return False, error
@@ -156,14 +151,14 @@ def validate_neko_pngtuber_v1_package(package_dir: Path, model_json: dict) -> tu
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return False, f"metadata.neko-pngtuber.v1.json 解析失败: {exc}"
+        return False, f"{NEKO_PNGTUBER_METADATA_FILENAME} 解析失败: {exc}"
 
     if not isinstance(metadata, dict):
-        return False, "metadata.neko-pngtuber.v1.json 必须是 JSON object"
+        return False, f"{NEKO_PNGTUBER_METADATA_FILENAME} 必须是 JSON object"
     if metadata.get("format") != NEKO_PNGTUBER_METADATA_FORMAT:
         return False, f"metadata.format 必须是 {NEKO_PNGTUBER_METADATA_FORMAT}"
-    if str(metadata.get("runtime") or "").strip() not in {"neko_layered_canvas", "layered_canvas"}:
-        return False, "metadata.runtime 必须是 neko_layered_canvas 或 layered_canvas"
+    if str(metadata.get("runtime") or "").strip() != "neko_layered_canvas":
+        return False, "metadata.runtime 必须是 neko_layered_canvas"
 
     canvas = metadata.get("canvas")
     if not isinstance(canvas, dict) or not _positive_int(canvas.get("width")) or not _positive_int(canvas.get("height")):
@@ -172,6 +167,23 @@ def validate_neko_pngtuber_v1_package(package_dir: Path, model_json: dict) -> tu
     layers = metadata.get("layers")
     if not isinstance(layers, list) or not layers:
         return False, "metadata.layers 必须至少包含一个图层"
+    if not _positive_int(metadata.get("state_count")):
+        return False, "metadata.state_count 必须是正整数"
+    state_count = int(metadata.get("state_count"))
+    emotions = metadata.get("emotions")
+    if not isinstance(emotions, dict) or not emotions:
+        return False, "PNGTuber v2 metadata 必须包含非空 emotions 映射"
+    for emotion_name, emotion_config in emotions.items():
+        if not str(emotion_name or "").strip():
+            return False, "metadata.emotions 不能包含空情绪名"
+        if not isinstance(emotion_config, dict):
+            return False, f"metadata.emotions.{emotion_name} 必须是 object"
+        try:
+            state_index = int(emotion_config["state_index"])
+        except (KeyError, TypeError, ValueError):
+            return False, f"metadata.emotions.{emotion_name}.state_index 必须是整数"
+        if state_index < 0 or state_index >= state_count:
+            return False, f"metadata.emotions.{emotion_name}.state_index 超出 state_count"
     seen_ids: set[str] = set()
     for index, layer in enumerate(layers):
         if not isinstance(layer, dict):
