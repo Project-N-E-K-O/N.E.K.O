@@ -808,6 +808,7 @@
   var badmintonLoadingProgress = 8;
   var badmintonLoadingTimer = 0;
   var badmintonStartAccepted = false;
+  var badmintonStartMenuAudioActivated = false;
   var badmintonRouteStartPromise = null;
   var BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY = 'bd_start_tutorial_dismissed';
   var BADMINTON_BUBBLE_EMOTE_IMAGES = {
@@ -974,6 +975,7 @@
   var badmintonResizeFrame = 0;
   var badmintonGameDisposed = false;
   var badmintonEventCleanupFns = [];
+  var badmintonStartMenuAudioListenerCleanups = [];
   var NET_COLS = 17;
   var NET_ROWS = 7;
   var BADMINTON = {
@@ -1517,12 +1519,18 @@
     writeBadmintonStorage(key, JSON.stringify(value));
   }
   function addBadmintonEventListener(target, type, handler, options) {
-    if (!target || typeof target.addEventListener !== 'function') return handler;
+    if (!target || typeof target.addEventListener !== 'function') return function () {};
     target.addEventListener(type, handler, options);
-    badmintonEventCleanupFns.push(function () {
+    var active = true;
+    var cleanup = function () {
+      if (!active) return;
+      active = false;
       try { target.removeEventListener(type, handler, options); } catch (_) {}
-    });
-    return handler;
+      var cleanupIndex = badmintonEventCleanupFns.indexOf(cleanup);
+      if (cleanupIndex >= 0) badmintonEventCleanupFns.splice(cleanupIndex, 1);
+    };
+    badmintonEventCleanupFns.push(cleanup);
+    return cleanup;
   }
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
   function getBadmintonFrameNow() {
@@ -1755,21 +1763,49 @@
     }
     var _bdBgmCurrentKey = '';
     var _bdResultBgmTriggered = false;
-    var _bdSelectedInGameBgm = (function () {
+    function _bdPickInGameBgm() {
       var variants = Array.isArray(config.bgm.inGame && config.bgm.inGame.variants)
         ? config.bgm.inGame.variants
         : [];
       if (!variants.length) return null;
       return variants[Math.floor(Math.random() * variants.length)];
-    })();
+    }
+    function _bdShouldReselectInGameBgm() {
+      return _bdBgmCurrentKey.indexOf('mood:') === 0;
+    }
+    var _bdSelectedInGameBgm = _bdPickInGameBgm();
     function _bdResolvePlaylist() {
+      if (!badmintonStartAccepted) {
+        return { key: 'startMenu', playlist: config.bgm.startMenu, repeat: true };
+      }
       if (game.state === 'game_over') {
         var gameOverBgm = config.bgm.result && config.bgm.result.gameOver;
         return { key: 'gameOver', playlist: gameOverBgm || config.bgm.startMenu, repeat: false };
       }
       var moodBgm = config.bgm.mood && config.bgm.mood[currentMood];
       if (moodBgm && (Array.isArray(moodBgm) ? moodBgm.length : moodBgm)) {
-        return { key: 'mood:' + currentMood, playlist: moodBgm, repeat: true };
+        if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {
+          moodBgm = null;
+        }
+        if ((currentMood === 'happy' || currentMood === 'relaxed') && ['lv3', 'lv4'].indexOf(getDuelDifficultyName()) === -1) {
+          moodBgm = null;
+        }
+      }
+      if (moodBgm && (Array.isArray(moodBgm) ? moodBgm.length : moodBgm)) {
+        var moodBgmKey = (currentMood === 'happy' || currentMood === 'relaxed')
+          ? 'mood:chocobos'
+          : 'mood:' + currentMood;
+        if (moodBgm.loop) {
+          return {
+            key: moodBgmKey,
+            loopedConfig: moodBgm,
+            repeat: true,
+          };
+        }
+        return { key: moodBgmKey, playlist: moodBgm, repeat: true };
+      }
+      if (_bdShouldReselectInGameBgm()) {
+        _bdSelectedInGameBgm = _bdPickInGameBgm();
       }
       if (_bdSelectedInGameBgm && _bdSelectedInGameBgm.loop) {
         return {
@@ -1925,6 +1961,28 @@
   function isBadmintonStartOverlayActive() {
     return !!(badmintonStartOverlay && !badmintonStartOverlay.hidden && !badmintonStartAccepted);
   }
+  function removeBadmintonStartMenuAudioListeners() {
+    while (badmintonStartMenuAudioListenerCleanups.length) {
+      var cleanup = badmintonStartMenuAudioListenerCleanups.pop();
+      try { cleanup(); } catch (_) {}
+    }
+  }
+  function activateBadmintonStartMenuAudio(ev) {
+    if (badmintonStartMenuAudioActivated || !isBadmintonStartOverlayActive()) return;
+    if (
+      badmintonStartButton &&
+      ev &&
+      ev.target &&
+      typeof badmintonStartButton.contains === 'function' &&
+      badmintonStartButton.contains(ev.target)
+    ) return;
+    badmintonStartMenuAudioActivated = true;
+    var ac = getAudioCtx();
+    if (ac && ac.state === 'suspended') ac.resume().catch(function () {});
+    badmintonGameAudio.unlock();
+    if (bgmEnabled) startBgm();
+    removeBadmintonStartMenuAudioListeners();
+  }
   function hideBadmintonStartOverlay() {
     if (!badmintonStartOverlay || badmintonStartOverlay.hidden) return;
     badmintonStartOverlay.classList.add('hide');
@@ -1939,6 +1997,7 @@
     options = options || {};
     if (badmintonStartAccepted) return badmintonRouteStartPromise || Promise.resolve();
     badmintonStartAccepted = true;
+    removeBadmintonStartMenuAudioListeners();
     if (options.skipTutorial || (badmintonStartNeverToggle && badmintonStartNeverToggle.checked)) {
       _setBadmintonStartTutorialSkipped(true);
     }
@@ -2484,10 +2543,12 @@
     var target = String(name || '').trim();
     for (var i = 0; i < DUEL_DIFFICULTY.length; i++) {
       if (DUEL_DIFFICULTY[i].name === target) {
+        var changed = duelDifficultyIdx !== i;
         duelDifficultyIdx = i;
         writeJson('bd_duel_difficulty', target);
         showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: target }));
         updateDebugReadout();
+        if (changed && bgmEnabled) badmintonGameAudio.sync('difficulty-changed');
         return true;
       }
     }
@@ -5465,6 +5526,7 @@
     game.duel.pendingShot = null;
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
+    if (bgmEnabled) badmintonGameAudio.sync('reset');
     currentSessionEntryId = '';
     isPositionTransitioning = false;
     clearTimeout(shotAnimationTimer);
@@ -6192,6 +6254,7 @@
     }
     game.totalScore = game.duel.playerScore;
     var currentDifficulty = getDuelDifficultyName();
+    if (currentDifficulty !== previousDifficulty && bgmEnabled) badmintonGameAudio.sync('difficulty-ramp');
     if (pointWinner === 'player' && currentDifficulty !== previousDifficulty) {
       showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: currentDifficulty }));
       speakDuelDifficultyRampLine(currentDifficulty);
@@ -9907,6 +9970,9 @@
       startBadmintonFromStartScreen();
     });
   }
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'keydown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'touchstart', activateBadmintonStartMenuAudio, true));
   addBadmintonEventListener(window, 'resize', scheduleBadmintonResize);
   window.addEventListener('beforeunload', function () {
     disposeBadmintonGame('beforeunload');

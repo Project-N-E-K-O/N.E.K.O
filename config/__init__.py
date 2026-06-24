@@ -1007,6 +1007,15 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── activity_guess 自适应退避门控 ──────────────────────────────────────
+# 活动心跳 (main_logic/activity/tracker.py:_activity_guess_loop) 通过 emotion-tier
+# LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
+# 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
+# (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
+ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 600.0   # 活动稳定后重述间隔的封顶
+ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
+
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
 # 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
 # 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
@@ -2438,6 +2447,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_BASE_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_CAP_SECONDS',
+    'ACTIVITY_GUESS_SIG_CACHE_SIZE',
     'PERSONA_RENDER_MAX_TOKENS',
     'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
