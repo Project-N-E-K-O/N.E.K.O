@@ -489,6 +489,15 @@ def test_focus_stream_overrides_decision():
     )
     # thinking off → base ignored, no bump (and no extra_body)
     assert _C._focus_stream_overrides(False, "qwen-flash", base_max_tokens=500) == {}
+    # Headroom only when Focus actually flips thinking ON: Claude is kept
+    # disabled (focus form == regular) → base provided but NO bump…
+    assert _C._focus_stream_overrides(True, "claude-opus-4-7", base_max_tokens=500) == {
+        "extra_body": {"thinking": {"type": "disabled"}}
+    }
+    # …and an unknown model (focus form == regular == None) likewise no bump
+    assert "max_completion_tokens" not in _C._focus_stream_overrides(
+        True, "test-model", base_max_tokens=500,
+    )
 
 
 def test_focus_extra_body_provider_dialects():
@@ -584,8 +593,11 @@ async def test_focus_override_threads_through_visible_stream():
     # astream too (same per-call path as extra_body). Read the base off the llm
     # the SAME way the stream_text call site does, so this also exercises the
     # ``self.llm.max_completion_tokens`` wiring (not just the helper in isolation).
+    # Use a real thinking model (qwen-flash) so the bump is actually emitted —
+    # "test-model" resolves to a no-op focus form and (by design) gets no bump.
     from config import FOCUS_THINKING_EXTRA_TOKENS
     c3 = _make_client()
+    c3.model = "qwen-flash"
     overrides3 = OmniOfflineClient._focus_stream_overrides(
         True, c3.model,
         base_max_tokens=c3.llm.max_completion_tokens if c3.llm else None,

@@ -1884,15 +1884,21 @@ class OmniOfflineClient:
         Returns ``{}`` (instance default, thinking off) otherwise.
 
         Also bumps ``max_completion_tokens`` by ``FOCUS_THINKING_EXTRA_TOKENS``
-        on a thinking-on turn: thinking models (Qwen / GLM / Kimi / Doubao /
-        OpenRouter) bill reasoning tokens against the SAME budget as the visible
-        reply, so without headroom the chain-of-thought squeezes the answer
-        short. The bump is layered on ``base_max_tokens`` (the live instance
-        ceiling, already reflecting summary-mode lift / vision-model switch),
-        so it composes with both. ``base_max_tokens=None`` (unlimited budget)
-        omits the field — the request stays uncapped. The Python-side length
-        guard still caps the visible reply at ``max_response_length``; this only
-        gives reasoning its own slack on the API side.
+        — but ONLY when this turn actually flips thinking ON for the provider:
+        thinking models (Qwen / GLM / Kimi / Doubao / OpenRouter) bill reasoning
+        tokens against the SAME budget as the visible reply, so without headroom
+        the chain-of-thought squeezes the answer short. "Actually on" is detected
+        by ``focus_extra_body(model) != get_extra_body(model)`` — when the focus
+        form equals the regular (thinking-off) extra_body (Claude kept disabled,
+        unknown models → None, non-thinking providers only preserving their
+        non-thinking extras) there is no reasoning to reserve for, and a needless
+        +800 could push a request past a model's output ceiling near the cap /
+        summary floor. The bump is layered on ``base_max_tokens`` (the live
+        instance ceiling, already reflecting summary-mode lift / vision-model
+        switch), so it composes with both. ``base_max_tokens=None`` (unlimited
+        budget) omits the field — the request stays uncapped. The Python-side
+        length guard still caps the visible reply at ``max_response_length``;
+        this only gives reasoning its own slack on the API side.
 
         Vision-model turns are included: Focus runs thinking-on regardless of
         whether the turn carries images. The inline streaming timeout
@@ -1902,9 +1908,21 @@ class OmniOfflineClient:
         """
         if not thinking_on:
             return {}
-        from config.providers import focus_extra_body
-        overrides: dict = {"extra_body": focus_extra_body(model)}
-        if base_max_tokens is not None:
+        from config.providers import focus_extra_body, get_extra_body
+        fb = focus_extra_body(model)
+        overrides: dict = {"extra_body": fb}
+        # Headroom only when Focus actually enables thinking for this provider:
+        # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
+        # ``fb == get_extra_body(model)`` ⇒ focus form equals the regular
+        # (thinking-off) form (Claude kept disabled, non-thinking providers only
+        # preserving their own extras). Either way there's no reasoning to
+        # reserve for, and a needless +800 could push a request past a model's
+        # output ceiling.
+        if (
+            base_max_tokens is not None
+            and fb is not None
+            and fb != get_extra_body(model)
+        ):
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
 
