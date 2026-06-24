@@ -3,6 +3,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
+PNGTUBER_PROTOCOL_PATH = PROJECT_ROOT / "static" / "neko-pngtuber-protocol.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
@@ -30,6 +31,21 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     ]
 
     assert "normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);" in normalize_block
+    assert "normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;" in normalize_block
+    assert "normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;" in normalize_block
+    assert "normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));" in normalize_block
+    assert "normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;" in normalize_block
+    assert "normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;" in normalize_block
+    assert "centerPreview ? 0" not in normalize_block
+
+
+def test_pngtuber_protocol_normalize_preserves_saved_layout_fields():
+    source = PNGTUBER_PROTOCOL_PATH.read_text(encoding="utf-8")
+    normalize_block = source[
+        source.index("function normalizeConfig(config, options = {})"):
+        source.index("function createLoadPlan(config, options = {})")
+    ]
+
     assert "normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;" in normalize_block
     assert "normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;" in normalize_block
     assert "normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));" in normalize_block

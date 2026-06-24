@@ -65,9 +65,11 @@
         normalized.drag_image = normalized.drag_image || normalized.idle_image;
         normalized.click_image = normalized.click_image || normalized.talking_image;
         normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);
-        const centerPreview = !!options.centerPreview && !source.preserve_model_manager_position;
-        normalized.offset_x = centerPreview ? 0 : (Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0);
-        normalized.offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0);
+        normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;
+        normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;
+        normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));
+        normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;
+        normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
         normalized.mirror = !!source.mirror;
         const metadataUrl = resolveSiblingAsset(
             normalized.idle_image,
