@@ -271,6 +271,15 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "if (isYuiGuideLive2DPreparing()) {" in live2d_buttons_source
     assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer)" in live2d_buttons_source
     assert "buttonsContainer.style.setProperty('display', 'flex', 'important');" in live2d_buttons_source
+    protection_timer_block = live2d_buttons_source.split(
+        "this.tutorialProtectionTimer = setInterval(() => {",
+        1,
+    )[1].split("}, 300);", 1)[0]
+    assert "if (isYuiGuideLive2DPreparing()) {" in protection_timer_block
+    assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);" in protection_timer_block
+    assert protection_timer_block.index(
+        "if (isYuiGuideLive2DPreparing()) {"
+    ) < protection_timer_block.index("const style = window.getComputedStyle(buttonsContainer);")
 
     assert "hideTutorialLive2dPreparingControls()" in manager_source
     assert "fadeOutCurrentModel: () => this.fadeOutCurrentTutorialSourceModel()" in manager_source

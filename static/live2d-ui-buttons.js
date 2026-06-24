@@ -679,6 +679,10 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     this.tutorialProtectionTimer = setInterval(() => {
         if (window.isInTutorial === true) {
+            if (isYuiGuideLive2DPreparing()) {
+                hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+                return;
+            }
             const style = window.getComputedStyle(buttonsContainer);
             if (style.display === 'none') {
                 buttonsContainer.style.setProperty('display', 'flex', 'important');
