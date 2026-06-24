@@ -2669,7 +2669,9 @@ function CompactChatApp({
   const shouldRenderAvatarRangeOverlay = isCursorWithinAvatarToolRange
     && activeCursorToolId !== 'lollipop';
   const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
-  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayCompact = hammerCursorOverlayActive
+    && !shouldRenderAvatarRangeOverlay
+    && !hammerCursorOverlayMotionActive;
   const hammerCompactImagePaths = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
     : null;

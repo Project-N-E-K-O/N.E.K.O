@@ -154,6 +154,31 @@ describe('App', () => {
   ) => render(<App compactChatState="input" {...props} />);
   const queryAvatarCursorOverlay = () => document.body.querySelector<HTMLElement>('.avatar-cursor-overlay');
   const queryHammerCursorCompactImage = () => document.body.querySelector<HTMLImageElement>('.hammer-cursor-overlay-compact-image');
+  const installLive2dBoundsMock = () => {
+    const testWindow = window as Window & { live2dManager?: unknown };
+    const hadLive2dManager = Object.prototype.hasOwnProperty.call(testWindow, 'live2dManager');
+    const previousLive2dManager = testWindow.live2dManager;
+
+    testWindow.live2dManager = {
+      currentModel: {},
+      getModelScreenBounds: () => ({
+        left: 100,
+        right: 200,
+        top: 100,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      }),
+    };
+
+    return () => {
+      if (hadLive2dManager) {
+        testWindow.live2dManager = previousLive2dManager;
+      } else {
+        delete testWindow.live2dManager;
+      }
+    };
+  };
 
   it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
@@ -8273,6 +8298,7 @@ describe('App', () => {
   });
 
   it('expands the desktop avatar tool overlay when the pointer enters the avatar range', async () => {
+    const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -8280,23 +8306,10 @@ describe('App', () => {
       value: () => [{ width: 100, height: 100 }],
     });
     document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
+    const restoreLive2dManager = installLive2dBoundsMock();
 
     try {
-      renderInputApp();
+      renderInputApp({ onAvatarToolStateChange });
 
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
@@ -8315,14 +8328,21 @@ describe('App', () => {
       await waitFor(() => {
         expect(overlay).not.toHaveClass('is-compact');
         expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'fist',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
       });
     } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      restoreLive2dManager();
       live2dContainer.remove();
     }
   });
 
   it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    const onAvatarToolStateChange = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -8330,23 +8350,10 @@ describe('App', () => {
       value: () => [{ width: 100, height: 100 }],
     });
     document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
+    const restoreLive2dManager = installLive2dBoundsMock();
 
     try {
-      renderInputApp();
+      renderInputApp({ onAvatarToolStateChange });
 
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
@@ -8362,9 +8369,23 @@ describe('App', () => {
       await waitFor(() => {
         expect(queryHammerCursorCompactImage()).toBeNull();
         expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
+      });
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
       });
     } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      restoreLive2dManager();
       live2dContainer.remove();
     }
   });
