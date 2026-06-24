@@ -16,6 +16,10 @@
 """Prompt templates for game routes."""
 
 from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_badminton import (
+    get_badminton_quick_lines_prompt as _get_badminton_quick_lines_prompt,
+    get_badminton_quick_lines_user_prompt as _get_badminton_quick_lines_user_prompt,
+)
 
 
 def _normalize_prompt_lang(lang: str | None) -> str:
@@ -2243,24 +2247,8 @@ def get_badminton_system_prompt(lang: str | None = None, mode: str = "spectator"
 
 
 def get_badminton_quick_lines_prompt(lang: str | None = None, mode: str = "spectator") -> str:
-    mode_name = _normalize_badminton_prompt_mode(mode)
-    if mode_name == "shooter":
-        prompt_set = _BADMINTON_QUICK_LINES_PROMPTS_SHOOTER
-    elif mode_name == "duel":
-        prompt_set = _BADMINTON_QUICK_LINES_PROMPTS_DUEL
-    elif mode_name == "timed":
-        prompt_set = _BADMINTON_QUICK_LINES_PROMPTS_TIMED
-    elif mode_name == "horse":
-        prompt_set = _BADMINTON_QUICK_LINES_PROMPTS_HORSE
-    else:
-        prompt_set = BADMINTON_QUICK_LINES_PROMPTS
-    return _localized_template(prompt_set, lang)
+    return _get_badminton_quick_lines_prompt(lang, mode=mode)
 
 
 def get_badminton_quick_lines_user_prompt(lang: str | None = None, mode: str = "spectator") -> str:
-    prompt = _localized_template(BADMINTON_QUICK_LINES_USER_PROMPT, lang)
-    mode_name = _normalize_badminton_prompt_mode(mode)
-    if mode_name and mode_name != "spectator":
-        mode_label = "当前模式" if _normalize_prompt_lang(lang) == "zh" else "Current mode"
-        return f"{prompt}\n{mode_label}: {mode_name}"
-    return prompt
+    return _get_badminton_quick_lines_user_prompt(lang, mode=mode)

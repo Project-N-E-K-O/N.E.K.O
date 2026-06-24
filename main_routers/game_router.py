@@ -51,6 +51,7 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from config.prompts.prompts_badminton import get_badminton_quick_lines_fallback
 from config.prompts.prompts_game import (
     PREGAME_CONTEXT_INPUT_WATERMARK,
     get_badminton_pregame_context_formatter_labels,
@@ -322,54 +323,6 @@ _BADMINTON_QUICK_LINE_KEYS = {
     "line_in", "net_touch", "zone_in", "out", "net",
     "shot_missed", "game_over", "long_aim", "close_to_record",
     "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
-}
-_BADMINTON_QUICK_LINES_FALLBACK: Dict[str, list[str]] = {
-    "line_in": ["贴线了，算你准", "这球压得挺好"],
-    "net_touch": ["擦网偷过去了", "这角度有点险"],
-    "zone_in": ["刚好进区", "落点挺会挑"],
-    "out": ["差一点出去了", "这拍有点长"],
-    "net": ["被网挡住了", "拍面再抬一点"],
-    "shot_missed": ["没事，下一拍", "别急，先看准"],
-    "game_over": ["这局到这儿", "还要再打一局吗"],
-    "long_aim": ["再不挥球要落了", "想太久会僵哦"],
-    "close_to_record": ["纪录快到了", "再稳一拍就到"],
-    "new_record": ["好吧，破纪录了", "这球我认了"],
-    "streak_5": ["五拍连住了", "手感开始热了"],
-    "streak_10": ["十连了？有点稳", "别得意，还没完"],
-    "streak_15": ["十五连还不断", "我开始认真看了"],
-    "streak_20": ["二十连也太久了", "这回合还没结束？"],
-}
-_BADMINTON_QUICK_LINES_FALLBACK_EN: Dict[str, list[str]] = {
-    "line_in": ["On the line!", "Nice placement"],
-    "net_touch": ["Net touch counts", "Nice angle"],
-    "zone_in": ["Right in the zone", "Sharp landing"],
-    "out": ["Just out", "A little too long"],
-    "net": ["Caught the net", "Open the racket face"],
-    "shot_missed": ["Still in it", "Settle and swing again"],
-    "game_over": ["One more round?", "I'll remember this one"],
-    "long_aim": ["Swing already", "Still waiting?"],
-    "close_to_record": ["Almost a record", "Just a little more"],
-    "new_record": ["New record!", "That was too far"],
-    "streak_5": ["Five rallies in a row!", "You're heating up"],
-    "streak_10": ["Ten straight rallies?!", "You're unreal"],
-    "streak_15": ["Fifteen is wild", "This run is steady"],
-    "streak_20": ["Twenty?!", "This round is absurd"],
-}
-_BADMINTON_QUICK_LINES_FALLBACK_JA: Dict[str, list[str]] = {
-    "line_in": ["ラインぎりぎり！", "いい落としどころ"],
-    "net_touch": ["ネットに触れたけど入った", "今の角度、危なかったね"],
-    "zone_in": ["ゾーンに入ったよ", "落点が鋭いね"],
-    "out": ["少しアウト", "ちょっと長かったね"],
-    "net": ["ネットに捕まったね", "ラケット面を少し上げて"],
-    "shot_missed": ["まだいけるよ", "落ち着いてもう一回"],
-    "game_over": ["もう一回やる？", "この一本、覚えておくね"],
-    "long_aim": ["そろそろ振って", "待ちすぎると固まるよ"],
-    "close_to_record": ["記録まであと少し", "もう一拍、安定させて"],
-    "new_record": ["新記録だね！", "今のは認めるよ"],
-    "streak_5": ["五連続だね", "調子が上がってきた"],
-    "streak_10": ["十連続？すごいね", "かなり安定してる"],
-    "streak_15": ["十五連続はすごい", "このラリー、粘るね"],
-    "streak_20": ["二十連続？！", "まだ終わらないの？"],
 }
 _badminton_quick_lines_cache: OrderedDict[str, Dict[str, list[str]]] = OrderedDict()
 _BADMINTON_QUICK_LINES_CACHE_MAX = 32
@@ -1877,17 +1830,19 @@ def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> 
 
 
 def _get_badminton_quick_lines_fallback(language: str | None = None) -> Dict[str, list[str]]:
+    return get_badminton_quick_lines_fallback(language)
+
+
+def _extract_request_language_full(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    raw = data.get('i18n_language') or data.get('language') or data.get('lang')
+    if not raw or not is_supported_language_code(raw):
+        return None
     try:
-        normalized = normalize_language_code(str(language or ""), format="short") if language else ""
+        return normalize_language_code(str(raw), format='full')
     except Exception:
-        normalized = ""
-    if normalized == "zh":
-        source = _BADMINTON_QUICK_LINES_FALLBACK
-    elif normalized == "ja":
-        source = _BADMINTON_QUICK_LINES_FALLBACK_JA
-    else:
-        source = _BADMINTON_QUICK_LINES_FALLBACK_EN
-    return {key: list(lines) for key, lines in source.items()}
+        return None
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
@@ -8458,8 +8413,9 @@ async def game_quick_lines(game_type: str, request: Request):
         # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
         # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
         request_language = _absorb_request_language(data, requested_name)
+        request_language_full = _extract_request_language_full(data) if _is_badminton_game_type(game_type) else None
         char_info = _get_character_info(requested_name)
-        language = request_language or char_info.get("user_language")
+        language = request_language_full or request_language or char_info.get("user_language")
         fallback_language = language
         cache_key = ""
         if _is_badminton_game_type(game_type):
