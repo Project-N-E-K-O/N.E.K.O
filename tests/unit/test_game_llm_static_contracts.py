@@ -137,6 +137,58 @@ def test_soccer_template_posts_session_debug_errors():
 
 
 @pytest.mark.unit
+def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+
+    assert "function _shouldUsePureGameMoodRotationFallback()" in html
+    assert "source === 'fallback' || !!error" in html
+    assert "moodRotationFallbackEnabled" in html
+    assert "'mood_rotation_policy'" in html
+    assert "默认开启 20s 心情轮换" not in html
+    assert "if (!moodDebugMode) enableMoodRotation(20);" not in html
+    assert "setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000)" in html
+
+    llm_control_block = html.split("if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood))", 1)[1].split(
+        "} else if (result.control.mood)",
+        1,
+    )[0]
+    assert "_llm.moodRotationFallbackEnabled" in llm_control_block
+
+
+@pytest.mark.unit
+def test_soccer_passive_guard_writes_structured_debug_events():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+
+    assert "function _passiveGuardDebugLog(" in html
+    assert "'passive_guard'" in html
+    assert "'passive_guard_counter'" in html
+    assert "'passive_guard_hint'" in html
+    assert "'passive_guard_sidecar'" in html
+    assert "'passive_guard_modal'" in html
+    assert "'passive_guard_teaching'" in html
+    assert "'passive_guard_state_change'" in html
+    assert "payload?.category === 'passive_guard'" in html
+    assert "startsWith('passive_guard_')" in html
+
+    set_difficulty_block = html.split("function setDifficultyInternal(name, opts = {})", 1)[1].split(
+        "function targetDifficultyForScoreDiff",
+        1,
+    )[0]
+    set_mood_block = html.split("setMood = function(name, opts = {})", 1)[1].split(
+        "const __cycleDiffBase",
+        1,
+    )[0]
+    sidecar_block = html.split("async function _requestPassiveGuardSidecar", 1)[1].split(
+        "function _handleSidecarAction",
+        1,
+    )[0]
+
+    assert "'passive_guard_state_change'" in set_difficulty_block
+    assert "'passive_guard_state_change'" in set_mood_block
+    assert "'passive_guard_sidecar'" in sidecar_block
+
+
+@pytest.mark.unit
 def test_pregame_prompt_must_not_be_format_called():
     """Pregame schema uses literal {} for JSON output; callers must not .format() it.
     If a future change needs a {placeholder}, every JSON literal must be doubled first."""

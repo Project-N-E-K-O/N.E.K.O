@@ -4757,6 +4757,19 @@
             "send": "Send",
             "voiceStatusHidden": "Debug STT: hidden"
         },
+        "surrenderReminder": {
+            "label": "Surrender reminder"
+        },
+        "exitPrompt": {
+            "continuePlay": "Keep playing",
+            "endGame": "End game",
+            "stayLonger": "Stay a little longer",
+            "rest": "Rest",
+            "neverAgain": "Do not remind again",
+            "neverAgainNote": "Do not automatically show NEKO surrender or rest prompts anymore. You can turn Surrender reminder back on from the top right. If NEKO seems low, you can comfort her by voice or text.",
+            "surrenderFallback": "Meow.. I surrender...",
+            "restFallback": "Meow... I'm a little tired. I want to be quiet for a while."
+        },
         "debug": {
             "mouse": "mouse: {{x}}, {{y}}",
             "playerCenter": "player ctr: {{x}}, {{y}}",

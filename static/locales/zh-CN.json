@@ -4757,6 +4757,19 @@
             "send": "发送",
             "voiceStatusHidden": "调试 STT：隐藏"
         },
+        "surrenderReminder": {
+            "label": "认输提醒"
+        },
+        "exitPrompt": {
+            "continuePlay": "继续玩",
+            "endGame": "结束游戏",
+            "stayLonger": "再陪一会",
+            "rest": "休息",
+            "neverAgain": "不再提示",
+            "neverAgainNote": "以后不再自动弹出猫娘认输或休息提示。可在右上角重新开启“认输提醒”。如果猫娘情绪低落，可以用语音或文字哄哄她。",
+            "surrenderFallback": "喵..认输喵...",
+            "restFallback": "喵...有点累了，想先安静一会。"
+        },
         "debug": {
             "mouse": "鼠标：{{x}}, {{y}}",
             "playerCenter": "玩家中心：{{x}}, {{y}}",

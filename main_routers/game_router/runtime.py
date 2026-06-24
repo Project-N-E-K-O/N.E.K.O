@@ -123,6 +123,8 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request
 from config.prompts.prompts_soccer import (
+    get_soccer_passive_guard_system_prompt,
+    get_soccer_passive_guard_user_prompt,
     get_soccer_quick_lines_prompt,
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
@@ -2925,6 +2927,149 @@ async def _run_game_chat(
     return result
 
 
+_PASSIVE_GUARD_ACTIONS = {
+    "observe_more",
+    "cancel_candidate",
+    "send_rescue_hint",
+    "prepare_exit_prompt",
+}
+_PASSIVE_GUARD_EXIT_TYPES = {"none", "surrender", "rest"}
+
+
+def _passive_guard_stage_number(stage: Any) -> int:
+    try:
+        return int(stage)
+    except Exception:
+        return 0
+
+
+def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        value = {}
+    stage_num = _passive_guard_stage_number(stage)
+    prompt_type = prompt_type if prompt_type in {"surrender", "rest"} else "surrender"
+
+    action = str(value.get("recommendedAction") or "").strip()
+    if action not in _PASSIVE_GUARD_ACTIONS:
+        action = "observe_more"
+
+    exit_type = str(value.get("exitPromptType") or "").strip()
+    if exit_type not in _PASSIVE_GUARD_EXIT_TYPES:
+        exit_type = "none"
+
+    classification = _normalize_short_text(value.get("classification"), max_chars=40) or "inconclusive"
+    if str(stage) in {"user_soothing", "user_recovery"} and classification in {"soothed", "recovered"}:
+        action = "cancel_candidate"
+        exit_type = "none"
+
+    if action == "prepare_exit_prompt":
+        if stage_num < 8:
+            action = "observe_more"
+            exit_type = "none"
+        elif prompt_type == "rest":
+            exit_type = "rest"
+        else:
+            exit_type = "surrender"
+    elif action != "prepare_exit_prompt":
+        exit_type = "none"
+
+    try:
+        confidence = float(value.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    evidence = value.get("evidenceTags")
+    if not isinstance(evidence, list):
+        evidence = []
+    evidence_tags = [
+        _normalize_short_text(item, max_chars=40)
+        for item in evidence[:8]
+    ]
+    evidence_tags = [item for item in evidence_tags if item]
+
+    return {
+        "ok": True,
+        "classification": classification,
+        "confidence": confidence,
+        "recommendedAction": action,
+        "exitPromptType": exit_type,
+        "evidenceTags": evidence_tags,
+        "counterAction": _normalize_short_text(value.get("counterAction"), max_chars=80),
+        "reasonForDebug": _normalize_short_text(value.get("reasonForDebug"), max_chars=160),
+    }
+
+
+async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
+    route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
+    char_info = _get_game_route_summary_llm_info(lanlan_name)
+    language = _absorb_request_language(data, lanlan_name) or char_info.get("user_language")
+    stage = data.get("stage")
+    prompt_type = str(data.get("promptType") or "surrender").strip()
+
+    context_payload = _build_game_context_prompt_payload(route_state)
+    recent_dialogues = []
+    if isinstance(route_state, dict):
+        recent_dialogues = _game_context_recent_dialogues(route_state, keep_count=15)
+
+    payload = {
+        "staticRules": {
+            "schemaVersion": 1,
+            "stageLessThan8CannotOpenPrompt": True,
+            "ordinaryExitType": "surrender",
+            "withdrawnExitType": "rest",
+            "teachingNeverUsesPrompt": True,
+        },
+        "preGameContext": data.get("preGameContext") or (route_state or {}).get("preGameContext"),
+        "contextSummaryAndSignals": context_payload,
+        "recentDialogues": recent_dialogues,
+        "currentState": data.get("currentState"),
+        "passiveGuardState": data.get("passiveGuardState"),
+        "stage": stage,
+        "trigger": data.get("trigger"),
+        "promptType": prompt_type,
+    }
+    if data.get("userSpeech"):
+        # Only the sidecar sees this input; logs below intentionally do not print it.
+        payload["userSpeech"] = _normalize_short_text(data.get("userSpeech"), max_chars=240)
+
+    prompt_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    from utils.file_utils import robust_json_loads
+    from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
+    from utils.token_tracker import set_call_type
+
+    set_call_type("game_passive_guard")
+    llm = await create_chat_llm_async(
+        char_info["model"],
+        char_info["base_url"],
+        char_info["api_key"],
+        max_completion_tokens=500,
+        timeout=6,
+    )
+    async with llm:
+        result = await asyncio.wait_for(
+            llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # Soccer passive-guard input is bounded by compact context, capped recent dialogues, and short user speech.
+                SystemMessage(content=get_soccer_passive_guard_system_prompt(language)),
+                HumanMessage(content=get_soccer_passive_guard_user_prompt(language).format(payload=prompt_payload)),
+            ]),
+            timeout=6.5,
+        )
+
+    raw = _strip_json_fence(str(result.content or ""))
+    parsed = robust_json_loads(raw)
+    normalized = _normalize_passive_guard_result(parsed, stage=stage, prompt_type=prompt_type)
+    logger.info(
+        "🎮 PassiveGuard 判定: stage=%s prompt_type=%s action=%s exit=%s classification=%s",
+        stage,
+        prompt_type,
+        normalized["recommendedAction"],
+        normalized["exitPromptType"],
+        normalized["classification"],
+    )
+    return normalized
+
+
 # ── 路由端点 ───────────────────────────────────────────────────────
 
 @router.post("/{game_type}/chat")
@@ -3012,6 +3157,29 @@ async def game_chat(game_type: str, request: Request):
                 "control": result.get("control", {}),
             })
     return result
+
+
+@router.post("/{game_type}/passive-guard")
+async def game_passive_guard(game_type: str, request: Request):
+    if game_type != "soccer":
+        return {"ok": False, "reason": f"暂不支持 {game_type} 的 PassiveGuard"}
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_request"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_request"}
+
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    session_id = str(data.get("session_id") or "").strip()
+    try:
+        return await _run_soccer_passive_guard_ai(data, lanlan_name)
+    except asyncio.TimeoutError:
+        logger.warning("🎮 PassiveGuard 响应超时: sid=%s", session_id)
+        return {"ok": False, "reason": "timeout", "recommendedAction": "observe_more", "exitPromptType": "none"}
+    except Exception as e:
+        logger.warning("🎮 PassiveGuard 判定失败: sid=%s err=%s", session_id, e, exc_info=True)
+        return {"ok": False, "reason": "exception", "recommendedAction": "observe_more", "exitPromptType": "none"}
 
 
 @router.post("/{game_type}/route/start")
