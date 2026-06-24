@@ -591,8 +591,8 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
 
 @pytest.mark.asyncio
 async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
-    """非 thinking 端点（delta 全无 reasoning_content）不应触发 on_thinking_active，
-    免得普通轮也莫名其妙弹思考气泡。"""
+    """A non-thinking endpoint (no reasoning_content on any delta) must NOT fire
+    on_thinking_active, so a regular turn never flashes a spurious thinking bubble."""
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
 
