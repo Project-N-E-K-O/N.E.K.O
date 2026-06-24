@@ -7,6 +7,7 @@ from main_routers.config_router import (
     _resolve_pngtuber_metadata_path,
 )
 from main_routers.pngtuber_protocol import (
+    LAYERED_CANVAS_ADAPTER,
     NEKO_PNGTUBER_ADAPTER,
     adapter_for_metadata,
     normalize_pngtuber_runtime_config,
@@ -63,7 +64,7 @@ def test_resolve_pngtuber_metadata_keeps_v2_json_for_existing_file(tmp_path):
     )
 
 
-def test_infer_pngtuber_metadata_from_idle_ignores_legacy_metadata(tmp_path):
+def test_infer_pngtuber_metadata_from_idle_supports_legacy_metadata(tmp_path):
     pngtuber_dir = tmp_path / "pngtuber"
     model_dir = pngtuber_dir / "avatar"
     model_dir.mkdir(parents=True)
@@ -77,7 +78,7 @@ def test_infer_pngtuber_metadata_from_idle_ignores_legacy_metadata(tmp_path):
             f"{PNGTUBER_USER_PATH}/avatar/idle.png?v=1#preview",
             config_manager,
         )
-        == ""
+        == f"{PNGTUBER_USER_PATH}/avatar/metadata.live2d-auto-layer.json"
     )
 
 
@@ -120,5 +121,5 @@ def test_pngtuber_protocol_normalizes_neko_v2_runtime_config(tmp_path):
     assert config["adapter"] == NEKO_PNGTUBER_ADAPTER
 
 
-def test_pngtuber_protocol_rejects_legacy_layered_adapter_for_legacy_metadata():
-    assert adapter_for_metadata("/user_pngtuber/avatar/metadata.live2d-auto-layer.json") == ""
+def test_pngtuber_protocol_supports_legacy_layered_adapter_for_legacy_metadata():
+    assert adapter_for_metadata("/user_pngtuber/avatar/metadata.live2d-auto-layer.json") == LAYERED_CANVAS_ADAPTER

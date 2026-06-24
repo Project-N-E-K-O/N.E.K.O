@@ -251,7 +251,7 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
 
 
 @pytest.mark.asyncio
-async def test_pngtuber_save_rejects_legacy_auto_layer_metadata(monkeypatch, tmp_path):
+async def test_pngtuber_save_accepts_legacy_auto_layer_metadata(monkeypatch, tmp_path):
     characters = _build_characters_fixture()
     pngtuber_dir = tmp_path / "pngtuber"
     avatar_dir = pngtuber_dir / "avatar"
@@ -283,9 +283,14 @@ async def test_pngtuber_save_rejects_legacy_auto_layer_metadata(monkeypatch, tmp
     )
     body = json.loads(response.body)
 
-    assert response.status_code == 400
-    assert body['success'] is False
-    assert 'PNGTuber v2' in body['error']
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = config_manager.saved_characters['猫娘']['测试角色']
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber', default={})
+    assert pngtuber['metadata'] == '/user_pngtuber/avatar/metadata.live2d-auto-layer.json'
+    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.live2d-auto-layer.json'
+    assert pngtuber['adapter'] == 'layered_canvas_v1'
+    assert pngtuber['protocol'] == ''
 
 
 @pytest.mark.asyncio

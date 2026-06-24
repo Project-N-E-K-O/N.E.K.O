@@ -12,8 +12,10 @@
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const NEKO_ADAPTER = 'neko_pngtuber_v2';
+    const LEGACY_LAYERED_ADAPTER = 'layered_canvas_v1';
     const NEKO_METADATA_FORMAT = 'neko.pngtuber.v2';
     const NEKO_METADATA_FILENAME_PATTERN = /metadata\.neko-pngtuber\.v2\.json(?:[?#].*)?$/i;
+    const LEGACY_METADATA_FILENAME_PATTERN = /metadata\.(?:pngtube-remix|pngtuber-plus|live2d-auto-layer)\.json(?:[?#].*)?$|\/metadata\.json(?:[?#].*)?$/i;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -44,14 +46,16 @@
 
     function isLayeredAdapter(adapter, metadataUrl) {
         const text = sanitizePath(adapter);
-        return text === NEKO_ADAPTER && !!metadataUrl;
+        return (text === NEKO_ADAPTER || text === LEGACY_LAYERED_ADAPTER) && !!metadataUrl;
     }
 
     function inferAdapter(adapter, metadataUrl) {
         const text = sanitizePath(adapter);
-        if (text) return text;
         if (!metadataUrl) return '';
-        return NEKO_METADATA_FILENAME_PATTERN.test(metadataUrl) ? NEKO_ADAPTER : '';
+        if (NEKO_METADATA_FILENAME_PATTERN.test(metadataUrl)) return NEKO_ADAPTER;
+        if (LEGACY_METADATA_FILENAME_PATTERN.test(metadataUrl)) return LEGACY_LAYERED_ADAPTER;
+        if (text === NEKO_ADAPTER || text === LEGACY_LAYERED_ADAPTER) return text;
+        return '';
     }
 
     function normalizeConfig(config, options = {}) {
@@ -109,20 +113,21 @@
         if (!metadata || typeof metadata !== 'object') {
             return { valid: false, reason: 'metadata is not an object' };
         }
-        if (metadata.format !== NEKO_METADATA_FORMAT) {
+        const runtime = String(metadata.runtime || '').trim();
+        const isLegacy = runtime === 'layered_canvas';
+        if (!isLegacy && metadata.format !== NEKO_METADATA_FORMAT) {
             return { valid: false, reason: 'metadata format is not neko.pngtuber.v2' };
         }
-        const runtime = String(metadata.runtime || '').trim();
-        if (runtime !== 'neko_layered_canvas') {
+        if (!isLegacy && runtime !== 'neko_layered_canvas') {
             return { valid: false, reason: 'metadata runtime is not neko_layered_canvas' };
         }
         if (!Array.isArray(metadata.layers) || metadata.layers.length === 0) {
             return { valid: false, reason: 'metadata has no layers' };
         }
-        if (!Number.isFinite(Number(metadata.state_count)) || Number(metadata.state_count) < 1) {
+        if (!isLegacy && (!Number.isFinite(Number(metadata.state_count)) || Number(metadata.state_count) < 1)) {
             return { valid: false, reason: 'metadata state_count is invalid' };
         }
-        if (!metadata.emotions || typeof metadata.emotions !== 'object' || Array.isArray(metadata.emotions)) {
+        if (!isLegacy && (!metadata.emotions || typeof metadata.emotions !== 'object' || Array.isArray(metadata.emotions))) {
             return { valid: false, reason: 'metadata emotions is required' };
         }
         return { valid: true, reason: '' };
@@ -131,6 +136,7 @@
     window.NekoPNGTuberProtocol = {
         IMAGE_KEYS,
         NEKO_ADAPTER,
+        LEGACY_LAYERED_ADAPTER,
         NEKO_METADATA_FORMAT,
         sanitizePath,
         resolveSiblingAsset,

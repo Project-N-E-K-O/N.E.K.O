@@ -93,6 +93,39 @@ def test_neko_pngtuber_v2_sample_import_and_normalize_contract(tmp_path):
     assert normalized["idle_image"] == "/user_pngtuber/sample_v2/assets/idle.png"
 
 
+def test_legacy_layered_canvas_package_still_validates(tmp_path):
+    package_dir = tmp_path / "legacy"
+    package_dir.mkdir()
+    (package_dir / "idle.png").write_bytes(b"png")
+    (package_dir / "talking.png").write_bytes(b"png")
+    (package_dir / "metadata.pngtube-remix.json").write_text(
+        json.dumps({
+            "runtime": "layered_canvas",
+            "canvas": {"width": 128, "height": 128},
+            "layers": [{"id": "body", "image": "idle.png"}],
+        }),
+        encoding="utf-8",
+    )
+    model_json = {
+        "name": "Legacy PNGTubeRemix",
+        "model_type": "pngtuber",
+        "source_format": "pngtube_remix_pngremix",
+        "pngtuber": {
+            "adapter": "layered_canvas_v1",
+            "idle_image": "idle.png",
+            "talking_image": "talking.png",
+            "layered_metadata": "metadata.pngtube-remix.json",
+        },
+    }
+
+    assert is_neko_pngtuber_v2_model(model_json) is False
+    assert _validate_model_package(package_dir, model_json) == (True, "")
+    normalized = _normalize_pngtuber_config("legacy", model_json)
+    assert normalized["adapter"] == "layered_canvas_v1"
+    assert normalized["protocol"] == ""
+    assert normalized["metadata"] == "/user_pngtuber/legacy/metadata.pngtube-remix.json"
+
+
 def test_neko_pngtuber_v2_validator_rejects_missing_layer_asset(tmp_path):
     package_dir = tmp_path / "sample"
     package_dir.mkdir()

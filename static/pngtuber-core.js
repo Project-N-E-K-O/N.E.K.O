@@ -6,6 +6,7 @@
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
+    const LAYERED_ADAPTERS = new Set(['neko_pngtuber_v2', 'layered_canvas_v1']);
     const EMOTION_STATE_ALIASES = {
         neutral: ['neutral', 'idle', 'default', 'normal', 'calm'],
         idle: ['idle', 'neutral', 'default', 'normal', 'calm'],
@@ -119,7 +120,7 @@
         }
         const normalized = normalizeConfig(config);
         const hasLayeredMetadata = !!normalized.layered_metadata;
-        const layered = normalized.adapter === 'neko_pngtuber_v2' && hasLayeredMetadata;
+        const layered = LAYERED_ADAPTERS.has(normalized.adapter) && hasLayeredMetadata;
         return {
             protocol: 'neko.pngtuber.load_plan.v2',
             mode: layered ? 'layered' : 'image',
@@ -226,7 +227,7 @@
             if (protocol && typeof protocol.isLayeredAdapter === 'function') {
                 return protocol.isLayeredAdapter(this.config.adapter, this.config.layered_metadata);
             }
-            return this.config.adapter === 'neko_pngtuber_v2' && !!this.config.layered_metadata;
+            return LAYERED_ADAPTERS.has(this.config.adapter) && !!this.config.layered_metadata;
         }
 
         isLayeredActive() {

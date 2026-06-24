@@ -54,6 +54,16 @@ def test_pngtuber_protocol_normalize_preserves_saved_layout_fields():
     assert "centerPreview ? 0" not in normalize_block
 
 
+def test_pngtuber_protocol_keeps_legacy_layered_canvas_compatibility():
+    source = PNGTUBER_PROTOCOL_PATH.read_text(encoding="utf-8")
+
+    assert "const LEGACY_LAYERED_ADAPTER = 'layered_canvas_v1';" in source
+    assert "pngtube-remix" in source
+    assert "pngtuber-plus" in source
+    assert "live2d-auto-layer" in source
+    assert "runtime === 'layered_canvas'" in source
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[

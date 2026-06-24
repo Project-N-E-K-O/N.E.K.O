@@ -74,6 +74,7 @@ from .pngtuber_protocol import (
     NEKO_PNGTUBER_ADAPTER,
     NEKO_PNGTUBER_METADATA_FORMAT,
     PNGTUBER_IMAGE_KEYS,
+    PNGTUBER_METADATA_FILENAMES,
     adapter_for_metadata,
     infer_pngtuber_metadata_from_idle,
 )
@@ -268,9 +269,7 @@ def _infer_pngtuber_metadata_from_saved_image(idle_image: str, config_manager) -
             return ''
     except Exception:
         return ''
-    for filename in (
-        'metadata.neko-pngtuber.v2.json',
-    ):
+    for filename in PNGTUBER_METADATA_FILENAMES:
         if (root / filename).is_file():
             return f'{url_prefix}/{model_folder}/{filename}'
     return ''
@@ -314,7 +313,7 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
         metadata_path = _infer_pngtuber_metadata_from_saved_image(idle_image, config_manager)
 
     if not metadata_path:
-        raise ValueError('PNGTuber v2 必须提供 metadata.neko-pngtuber.v2.json')
+        raise ValueError('PNGTuber 必须提供分层 metadata JSON')
     if metadata_path.startswith('data:'):
         raise ValueError('PNGTuber分层metadata路径不能使用data URL')
     if '..' in metadata_path:
@@ -323,14 +322,19 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
     if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in _PNGTUBER_ALLOWED_PREFIXES):
         raise ValueError('PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头')
     metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
-    if not metadata_ext_path.endswith('metadata.neko-pngtuber.v2.json'):
-        raise ValueError('PNGTuber v2 metadata 文件名必须是 metadata.neko-pngtuber.v2.json')
+    metadata_filename = metadata_ext_path.rsplit('/', 1)[-1]
+    if metadata_filename not in PNGTUBER_METADATA_FILENAMES:
+        raise ValueError('PNGTuber metadata 文件名不受支持')
     pngtuber_payload['metadata'] = metadata_path
     pngtuber_payload['layered_metadata'] = metadata_path
-    pngtuber_payload['adapter'] = adapter_for_metadata(metadata_path)
-    if pngtuber_payload['adapter'] != NEKO_PNGTUBER_ADAPTER:
-        raise ValueError('PNGTuber v2 必须使用 neko_pngtuber_v2 adapter')
-    pngtuber_payload['protocol'] = NEKO_PNGTUBER_METADATA_FORMAT
+    pngtuber_payload['adapter'] = adapter_for_metadata(metadata_path, str(pngtuber_payload.get('adapter') or ''))
+    if not pngtuber_payload['adapter']:
+        raise ValueError('PNGTuber metadata adapter 不受支持')
+    pngtuber_payload['protocol'] = (
+        NEKO_PNGTUBER_METADATA_FORMAT
+        if pngtuber_payload['adapter'] == NEKO_PNGTUBER_ADAPTER
+        else ''
+    )
 
     for key in ('source_type', 'source_format'):
         pngtuber_payload[key] = str(pngtuber_payload.get(key) or '').strip()

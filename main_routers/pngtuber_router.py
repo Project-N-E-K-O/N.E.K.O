@@ -14,10 +14,12 @@ from fastapi.responses import JSONResponse
 
 from .pngtuber_importers import PNGTuberImportError, import_pngtuber_package
 from .pngtuber_protocol import (
+    LAYERED_CANVAS_ADAPTER,
     NEKO_PNGTUBER_ADAPTER,
     NEKO_PNGTUBER_METADATA_FORMAT,
     PNGTUBER_EXTENSIONS,
     PNGTUBER_IMAGE_KEYS,
+    PNGTUBER_METADATA_FILENAMES,
     PNGTUBER_USER_PATH,
     adapter_for_metadata,
     is_neko_pngtuber_v2_model,
@@ -161,13 +163,29 @@ def _validate_model_package(package_dir: Path, model_json: dict) -> tuple[bool, 
     if model_json.get("model_type") != "pngtuber":
         return False, "model.json 的 model_type 必须是 pngtuber"
 
-    if not is_neko_pngtuber_v2_model(model_json):
-        return False, "PNGTuber 模型必须使用 neko.pngtuber.package.v2"
-    ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
-    if not ok:
-        return False, error
-
     config = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
+    if not isinstance(config, dict):
+        return False, "model.json 必须包含 pngtuber 配置"
+
+    if is_neko_pngtuber_v2_model(model_json):
+        ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
+        if not ok:
+            return False, error
+    else:
+        metadata_ref = config.get("layered_metadata") or config.get("metadata")
+        if metadata_ref:
+            if not isinstance(metadata_ref, str):
+                return False, "PNGTuber metadata 路径无效"
+            metadata_rel = _safe_relative_path(metadata_ref)
+            if metadata_rel is None:
+                return False, f"PNGTuber metadata 路径无效: {metadata_ref}"
+            if metadata_rel.name not in PNGTUBER_METADATA_FILENAMES:
+                return False, f"PNGTuber metadata 文件名不受支持: {metadata_ref}"
+            if not (package_dir / metadata_rel.as_posix()).is_file():
+                return False, f"PNGTuber metadata 引用的文件不存在: {metadata_ref}"
+            if adapter_for_metadata(metadata_ref, str(config.get("adapter") or "")) != LAYERED_CANVAS_ADAPTER:
+                return False, "PNGTuber legacy metadata 必须使用 layered_canvas_v1 adapter"
+
     idle_image = config.get("idle_image")
     if not isinstance(idle_image, str) or not idle_image.strip():
         return False, "PNGTuber 模型必须配置 idle_image"

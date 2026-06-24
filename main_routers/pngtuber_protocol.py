@@ -16,6 +16,7 @@ NEKO_PNGTUBER_PACKAGE_FORMAT = "neko.pngtuber.package.v2"
 NEKO_PNGTUBER_METADATA_FORMAT = "neko.pngtuber.v2"
 NEKO_PNGTUBER_METADATA_FILENAME = "metadata.neko-pngtuber.v2.json"
 NEKO_PNGTUBER_ADAPTER = "neko_pngtuber_v2"
+LAYERED_CANVAS_ADAPTER = "layered_canvas_v1"
 
 PNGTUBER_USER_PATH = "/user_pngtuber"
 PNGTUBER_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
@@ -29,9 +30,17 @@ PNGTUBER_IMAGE_KEYS = (
     "angry_image",
     "surprised_image",
 )
+LEGACY_PNGTUBER_METADATA_FILENAMES = (
+    "metadata.pngtube-remix.json",
+    "metadata.pngtuber-plus.json",
+    "metadata.live2d-auto-layer.json",
+    "metadata.json",
+)
 PNGTUBER_METADATA_FILENAMES = (
     NEKO_PNGTUBER_METADATA_FILENAME,
+    *LEGACY_PNGTUBER_METADATA_FILENAMES,
 )
+PNGTUBER_LAYERED_ADAPTERS = (NEKO_PNGTUBER_ADAPTER, LAYERED_CANVAS_ADAPTER)
 
 
 def _warn(logger, message: str) -> None:
@@ -58,11 +67,13 @@ def safe_relative_path(raw_path: str) -> PurePosixPath | None:
 
 def adapter_for_metadata(metadata_path: str, raw_adapter: str = "") -> str:
     adapter = str(raw_adapter or "").strip()
-    if adapter == NEKO_PNGTUBER_ADAPTER:
-        return adapter
     filename = PurePosixPath(urlsplit(str(metadata_path or "").replace("\\", "/")).path).name
     if filename == NEKO_PNGTUBER_METADATA_FILENAME:
         return NEKO_PNGTUBER_ADAPTER
+    if filename in LEGACY_PNGTUBER_METADATA_FILENAMES:
+        return LAYERED_CANVAS_ADAPTER
+    if adapter in PNGTUBER_LAYERED_ADAPTERS:
+        return adapter
     return ""
 
 
