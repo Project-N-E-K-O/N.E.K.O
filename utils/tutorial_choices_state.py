@@ -173,6 +173,20 @@ def save_tutorial_choices_state(state: dict[str, Any], config_manager=None) -> d
     return normalized
 
 
+def _character_last_updated(character: Any) -> int:
+    """该角色所有天里最大的 updated_at，用于到角色上限时淘汰最久未更新的一个。"""
+    if not isinstance(character, dict):
+        return 0
+    days = character.get("days")
+    if not isinstance(days, dict):
+        return 0
+    latest = 0
+    for day in days.values():
+        if isinstance(day, dict):
+            latest = max(latest, _clamp_int(day.get("updated_at")))
+    return latest
+
+
 def _is_duplicate_choice(existing: list[dict[str, Any]], candidate: dict[str, Any], session_id: str) -> bool:
     # 只挡「同一 session 内的精确重放」（网络重试 / 重复事件把同一次点击重发）：
     # 按 (session_id, node_id, choice, handoff) 比较。session_id 入了比较键，所以
@@ -227,7 +241,15 @@ def record_tutorial_choice(
     with _STATE_LOCK:
         state = load_tutorial_choices_state(config_manager)
         characters = state["characters"]
-        character = characters.setdefault(lanlan_name, {"days": {}})
+        character = characters.get(lanlan_name)
+        if not isinstance(character, dict):
+            if len(characters) >= MAX_CHARACTERS:
+                # 已到角色上限：淘汰最久未更新的一个给当前写入腾位。否则 _normalize_state 会在
+                # save 时把新角色静默截掉，却仍返回 ok=True（单用户本地几乎不可触发，但不能谎报成功）。
+                oldest = min(characters, key=lambda n: _character_last_updated(characters.get(n)))
+                characters.pop(oldest, None)
+            character = {"days": {}}
+            characters[lanlan_name] = character
         days = character.setdefault("days", {})
         day = days.get(day_key)
         if not isinstance(day, dict):
