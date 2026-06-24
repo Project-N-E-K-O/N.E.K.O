@@ -4179,7 +4179,8 @@ async def get_recent_history(lanlan_name: str):
         if i.type == 'system':
             result += content + "\n"
         else:
-            result += f"{name_mapping[i.type]} | {content}\n"
+            speaker = name_mapping.get(i.type, i.type)
+            result += f"{speaker} | {content}\n"
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
