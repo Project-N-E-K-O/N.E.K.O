@@ -2661,16 +2661,25 @@ function CompactChatApp({
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
     && shouldRenderLocalDesktopCursorOverlay;
-  const avatarCursorOverlayCompact = avatarCursorOverlayActive;
   const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
-  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !hammerCursorOverlayMotionActive;
+  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
+    && isCursorOverAvatarRange
+    && !isCursorOverCompactCursorZone;
+  const shouldRenderAvatarRangeOverlay = isCursorWithinAvatarToolRange
+    && activeCursorToolId !== 'lollipop';
+  const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayCompact = hammerCursorOverlayActive
+    && !shouldRenderAvatarRangeOverlay
+    && !hammerCursorOverlayMotionActive;
   const hammerCompactImagePaths = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
     : null;
   const hammerCursorOverlayUsesCompactImage = hammerCursorOverlayCompact && !hammerCursorOverlayMotionActive;
   const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
-    ? (activeToolImagePaths?.cursorImagePath ?? '')
+    ? (avatarCursorOverlayCompact
+      ? (activeToolImagePaths?.cursorImagePath ?? '')
+      : (activeToolImagePaths?.iconImagePath ?? ''))
     : '';
   const avatarCursorOverlayScale = activeToolItem
     ? getToolCursorOverlayScale(activeToolItem.id, avatarCursorOverlayCompact)
@@ -2685,9 +2694,11 @@ function CompactChatApp({
   const hammerCursorOverlaySecondaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
     : '';
-  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
-    && isCursorOverAvatarRange
-    && !isCursorOverCompactCursorZone;
+  const shouldReportAvatarRangeImageKind = shouldRenderAvatarRangeOverlay
+    || (activeCursorToolId === 'hammer' && hammerCursorOverlayMotionActive);
+  const avatarToolImageKind = activeToolItem
+    ? (shouldReportAvatarRangeImageKind ? 'icon' : 'cursor')
+    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -5380,7 +5391,7 @@ function CompactChatApp({
       variant: effectiveCursorVariant,
       avatarRangeVariant: avatarRangeCursorVariant,
       outsideRangeVariant,
-      imageKind: 'cursor',
+      imageKind: avatarToolImageKind,
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
@@ -5424,6 +5435,7 @@ function CompactChatApp({
     activeCursorToolId,
     activeToolItem,
     avatarRangeCursorVariant,
+    avatarToolImageKind,
     draft,
     effectiveCursorVariant,
     isCursorInsideHostWindow,
