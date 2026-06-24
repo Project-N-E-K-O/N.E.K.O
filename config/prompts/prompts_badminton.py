@@ -1181,15 +1181,8 @@ def get_badminton_pregame_context_formatter_labels(lang: str | None = None) -> d
     return BADMINTON_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or BADMINTON_PREGAME_CONTEXT_FORMATTER_LABELS["en"]
 
 
-def _normalize_badminton_prompt_mode(mode: str | None) -> str:
-    mode_name = str(mode or "").strip().lower()
-    if mode_name.startswith("duel"):
-        return "duel"
-    return "spectator"
-
-
 def get_badminton_system_prompt(lang: str | None = None, mode: str = "spectator") -> str:
-    mode_name = _normalize_badminton_prompt_mode(mode)
+    mode_name = _normalize_mode(mode)
     if mode_name == "duel":
         prompt_set = BADMINTON_DUEL_SYSTEM_PROMPTS
     else:
