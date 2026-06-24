@@ -3216,12 +3216,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
-        window.lanlan_config = window.lanlan_config && typeof window.lanlan_config === 'object'
-            ? window.lanlan_config
-            : {};
-        window.lanlan_config.model_type = 'pngtuber';
-        window.lanlan_config.live3d_sub_type = '';
-        window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);
+        window._modelManagerCurrentAvatarType = 'pngtuber';
         currentLive3dSubType = '';
         currentModelInfo = {
             name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),

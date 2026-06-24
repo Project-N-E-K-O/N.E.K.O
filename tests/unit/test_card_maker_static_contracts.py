@@ -7,6 +7,7 @@ CARD_MAKER_JS = PROJECT_ROOT / "static" / "js" / "card_maker.js"
 CARD_MAKER_CSS = PROJECT_ROOT / "static" / "css" / "card_maker.css"
 CHARACTER_CARD_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
 MODEL_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "model_manager.js"
+PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
 WINDOW_CONTROLS_JS = PROJECT_ROOT / "static" / "js" / "window_controls.js"
 CARD_MAKER_TEMPLATE = PROJECT_ROOT / "templates" / "card_maker.html"
 LOCALE_DIR = PROJECT_ROOT / "static" / "locales"
@@ -130,10 +131,10 @@ def test_model_manager_pngtuber_character_config_fallback_loads_preview():
 
     assert script.index(timer_decl) < script.index("await switchModelDisplay(savedModelType, savedSubType);")
     assert script.count(timer_decl) == 1
-    assert "window.lanlan_config.model_type = 'pngtuber';" in preview_block
-    assert "window.lanlan_config.live3d_sub_type = '';" in preview_block
-    assert "window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);" in preview_block
-    assert preview_block.index("window.lanlan_config.model_type = 'pngtuber';") < preview_block.index("await window.loadPNGTuberAvatar(pngtuberConfig);")
+    assert "window._modelManagerCurrentAvatarType = 'pngtuber';" in preview_block
+    assert preview_block.index("window._modelManagerCurrentAvatarType = 'pngtuber';") < preview_block.index("await window.loadPNGTuberAvatar(pngtuberConfig);")
+    assert "window.lanlan_config.model_type = 'pngtuber';" not in preview_block
+    assert "window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);" not in preview_block
     assert "if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;" in preview_block
     assert "await window.loadPNGTuberAvatar(pngtuberConfig);" in preview_block
     assert "throw new Error('PNGTuber runtime not loaded');" in preview_block
@@ -141,6 +142,22 @@ def test_model_manager_pngtuber_character_config_fallback_loads_preview():
     assert "return await previewPNGTuberConfig(preferredConfig" in select_block
     assert "if (preferredConfig) return false;" not in select_block
     assert "await previewPNGTuberConfig(pngtuberConfig, {" in current_character_block
+
+
+def test_pngtuber_model_manager_preview_does_not_auto_save():
+    script = PNGTUBER_CORE_JS.read_text(encoding="utf-8")
+    sync_block = script[
+        script.index("syncGlobalConfig() {"):
+        script.index("setLocked(locked", script.index("syncGlobalConfig() {"))
+    ]
+    save_block = script[
+        script.index("async saveCurrentConfig() {"):
+        script.index("scheduleSaveCurrentConfig", script.index("async saveCurrentConfig() {"))
+    ]
+
+    assert "if (isModelManagerPage()) return;" in sync_block
+    assert "if (isModelManagerPage()) return false;" in save_block
+    assert save_block.index("if (isModelManagerPage()) return false;") < save_block.index("fetch(`/api/characters/catgirl/l2d/")
 
 
 def test_card_maker_rejects_remote_pngtuber_assets_before_export():

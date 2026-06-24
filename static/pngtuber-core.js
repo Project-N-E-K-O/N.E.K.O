@@ -759,6 +759,7 @@
         }
 
         syncGlobalConfig() {
+            if (isModelManagerPage()) return;
             if (window.lanlan_config && typeof window.lanlan_config === 'object') {
                 const modelType = (window.lanlan_config.model_type || '').toLowerCase();
                 if (modelType === 'pngtuber') {
@@ -1096,6 +1097,7 @@
         }
 
         async saveCurrentConfig() {
+            if (isModelManagerPage()) return false;
             if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                 return false;
             }
