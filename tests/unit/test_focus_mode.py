@@ -397,7 +397,7 @@ def test_vulnerability_profanity_counts_as_cue():
     # Profanity/venting is part of the vulnerability lexicon now — swearing is
     # a strong distress tell. Sampled across every locale.
     for msg in [
-        "卧槽这也太难了", "靠北喔", "fuck this", "this is bullshit",
+        "草泥马这也太难了", "靠北喔", "fuck this", "this is bullshit",
         "もうくそだ", "씨발 진짜", "блять как же тяжело", "joder qué mierda",
         "que merda, caralho",
     ]:
@@ -416,6 +416,17 @@ def test_vulnerability_profanity_avoids_short_substring_false_positives():
         "застрахуй меня", "надо страхуй оформить",  # bare хуй removed (insurance)
     ]:
         assert scan_vulnerability_keywords(clean) == 0, clean
+
+
+def test_vulnerability_excludes_filler_interjections():
+    # Mild interjections that have become everyday filler are deliberately NOT
+    # cues — too noisy as a distress signal (卧槽好牛 / damn cool are often
+    # positive; 馬鹿 is affectionate; 존나 means "very").
+    for filler in [
+        "卧槽这也太牛了", "我擦真的假的", "wtf is this", "damn that's cool",
+        "馬鹿だなあ", "존나 좋아", "hostia tío", "que cacete bom",
+    ]:
+        assert scan_vulnerability_keywords(filler) == 0, filler
 
 
 def test_topic_switch_anchored_at_start():
