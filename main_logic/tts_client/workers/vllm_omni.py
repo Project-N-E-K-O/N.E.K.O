@@ -685,7 +685,7 @@ def _vllm_omni_clone_resolve(ctx):
     )
     # 凭证防泄漏：与 preset 路径一致，读 ttsModelApiKey；无 key 返回空串，禁止 fallback
     # 到别家 provider 的 key（见 _vllm_omni_resolve L713 同源逻辑）。
-    vllm_key = (raw.get('ttsModelApiKey') or '')
+    vllm_key = (raw.get('ttsModelApiKey') or '').strip()
     return worker, vllm_key, 'vllm_omni'
 
 def _vllm_omni_resolve(ctx):
@@ -712,7 +712,7 @@ def _vllm_omni_resolve(ctx):
     # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
     # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
     # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
-    vllm_key = (raw.get('ttsModelApiKey') or '')
+    vllm_key = (raw.get('ttsModelApiKey') or '').strip()
     worker = partial(
         vllm_omni_tts_worker,
         base_url=vllm_url, model=vllm_model, voice=vllm_voice,

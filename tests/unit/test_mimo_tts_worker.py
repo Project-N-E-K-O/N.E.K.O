@@ -375,8 +375,8 @@ def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
     assert worker.keywords.get("voice") == "default"
     assert worker.keywords.get("ref_audio") == f"data:audio/wav;base64,{CLONE_B64}"
     assert worker.keywords.get("ref_text") == "你好"
-    # vllm_omni 无 key → 空串（凭证防泄漏）
-    assert api_key == ""
+    # clone 路径读取 ttsModelApiKey 用于 WS 鉴权（与 preset 路径一致，见 _vllm_omni_clone_resolve L688）
+    assert api_key == "vllm-key"
     assert provider_key == "vllm_omni"
     class _CM:
         def get_core_config(self):
