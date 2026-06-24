@@ -87,6 +87,27 @@ def test_once_per_uid_copy_scopes_to_first_appearance_roast():
     assert data["panel.interaction.tags.oncePerUid"] == "出场锐评一次"
 
 
+def test_interaction_module_titles_do_not_expose_internal_ids():
+    root = Path(__file__).resolve().parents[1]
+    title_keys = {
+        "panel.interaction.module.avatarRoast.title",
+        "panel.interaction.module.danmakuResponse.title",
+        "panel.interaction.module.warmupHosting.title",
+        "panel.interaction.module.idleHosting.title",
+        "panel.interaction.module.activeEngagement.title",
+    }
+    forbidden = ("avatar_roast", "danmaku_response", "warmup_hosting", "idle_hosting", "active_engagement")
+
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        leaked = {
+            key: data.get(key)
+            for key in title_keys
+            if any(token in str(data.get(key, "")) for token in forbidden)
+        }
+        assert not leaked, f"{locale_path.name} exposes internal IDs: {leaked}"
+
+
 def test_chinese_panel_copy_has_no_question_mark_placeholders():
     root = Path(__file__).resolve().parents[1]
     checked_prefixes = ("panel.", "entries.trigger_warmup_hosting")
@@ -163,6 +184,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusReason.safety_tripped",
         "panel.liveStatusReason.safety_degraded",
         "panel.liveStatusReason.output_channel_unavailable",
+        "panel.liveStatusReason.all_ready",
         "panel.liveModeRole.co_stream",
         "panel.liveModeRole.solo_stream",
         "panel.fields.activityLevel",
@@ -181,6 +203,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStateReason.recent_activity",
         "panel.liveStateReason.solo_stream_warmup",
         "panel.liveStateReason.quiet_activity_gap",
+        "panel.liveStateReason.low_activity",
         "panel.liveStateReason.no_recent_activity",
         "panel.liveStateReason.manual_paused",
         "panel.liveStateReason.blocked_by_live_status",
@@ -198,6 +221,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.idleHostingStatus.reason.not_candidate",
         "panel.idleHostingStatus.reason.minimum_interval",
         "panel.idleHostingStatus.reason.auto_disabled",
+        "panel.idleHostingStatus.reason.solo_idle_ready",
         "panel.speechExplanation.title",
         "panel.speechExplanation.lastResult",
         "panel.speechExplanation.summary.ready",
@@ -208,6 +232,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.summary.recently_spoke",
         "panel.speechExplanation.summary.recently_skipped",
         "panel.speechExplanation.summary.failed",
+        "panel.speechExplanation.summary.waiting",
         "panel.speechExplanation.reason.ready",
         "panel.speechExplanation.reason.dry_run",
         "panel.speechExplanation.reason.manual_paused",
@@ -221,6 +246,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.reason.idle_hosting_candidate",
         "panel.speechExplanation.reason.quiet_activity_gap",
         "panel.speechExplanation.reason.no_recent_activity",
+        "panel.speechExplanation.reason.waiting_for_viewer_or_idle_slot",
         "panel.speechExplanation.reason.recent_output",
         "panel.speechExplanation.reason.recently_skipped",
         "panel.speechExplanation.reason.failed",
@@ -247,6 +273,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveDirector.reason.solo_quiet",
         "panel.liveDirector.reason.solo_warmup",
         "panel.liveDirector.reason.solo_idle",
+        "panel.liveDirector.reason.solo_idle_ready",
         "panel.liveDirector.reason.minimum_interval",
         "panel.liveDirector.reason.recent_danmaku_output",
         "panel.liveDirector.reason.not_candidate",
@@ -274,6 +301,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.soloTestReadiness.title",
         "panel.soloTestReadiness.summary.ready_for_test",
         "panel.soloTestReadiness.summary.ready_for_live_test",
+        "panel.soloTestReadiness.summary.ready",
         "panel.soloTestReadiness.summary.not_solo_stream",
         "panel.soloTestReadiness.summary.live_not_ready",
         "panel.soloTestReadiness.status.ready",
@@ -289,6 +317,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.activeEngagementCandidate.true",
         "panel.activeEngagementCandidate.false",
         "panel.activeEngagementStatus.reason.eligible",
+        "panel.activeEngagementStatus.reason.deferred",
         "panel.activeEngagementStatus.reason.not_solo_stream",
         "panel.activeEngagementStatus.reason.paused",
         "panel.activeEngagementStatus.reason.blocked",

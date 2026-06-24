@@ -160,6 +160,15 @@ function interactionRouteTone(route: string): "success" | "warning" | "danger" |
   return "default"
 }
 
+function interactionRouteLabel(route: string, t: (key: string) => string): string {
+  if (route === "avatar_roast") return t("panel.interaction.module.avatarRoast.title")
+  if (route === "danmaku_response") return t("panel.interaction.module.danmakuResponse.title")
+  if (route === "warmup_hosting") return t("panel.interaction.module.warmupHosting.title")
+  if (route === "idle_hosting") return t("panel.interaction.module.idleHosting.title")
+  if (route === "active_engagement") return t("panel.interaction.module.activeEngagement.title")
+  return route
+}
+
 function latestEventLabel(result: any): string {
   const event = (result && result.event) || {}
   const identity = (result && result.identity) || {}
@@ -926,7 +935,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Text>{t("panel.interaction.currentDecision.subtitle")}</Text>
         <Grid cols={4}>
           <StatCard label={t("panel.interaction.currentDecision.latestEvent")} value={latestResult ? latestEventLabel(latestResult) : t("panel.interaction.currentDecision.noResult")} />
-          <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={latestRoute} />} />
+          <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={interactionRouteLabel(latestRoute, t)} />} />
           <StatCard label={t("panel.interaction.currentDecision.eventSignal")} value={latestEventSignal} />
           <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
         </Grid>
@@ -1359,7 +1368,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     { id: "viewers", label: t("panel.tabs.viewers"), content: dataSection },
     { id: "dm", label: t("panel.tabs.dm"), content: dmSection },
     { id: "automation", label: t("panel.tabs.automation"), content: automationSection },
-    { id: "settings", label: "鈿?" + t("panel.tabs.settings"), content: advancedSection },
+    { id: "settings", label: t("panel.tabs.settings"), content: advancedSection },
   ]
   if (developerToolsEnabled) {
     tabItems.push({ id: "dev", label: t("panel.tabs.dev"), content: developerSandbox })
