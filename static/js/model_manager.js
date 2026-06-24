@@ -5375,9 +5375,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
-                const hasPreviousValue = previousValue && Array.from(vrmAnimationSelect.options)
-                    .some(option => option.value === previousValue);
-                vrmAnimationSelect.value = hasPreviousValue ? previousValue : '_no_motion_';
+                // 选中态优先级：会话内已有选择（previousValue，如上传新动作后重载列表）
+                // > 角色已保存的单动作（reserved vrm.animation）> 无动作。
+                // 不恢复已保存值就会默认落在 _no_motion_，而 saveModelToCharacter 把 _no_motion_
+                // 映射成 vrm_animation:''，后端据此清空保留字段——于是任何无关保存都会静默抹掉已存动作。
+                let resolvedValue = '_no_motion_';
+                if (previousValue && Array.from(vrmAnimationSelect.options)
+                        .some(option => option.value === previousValue)) {
+                    resolvedValue = previousValue;
+                } else {
+                    // previousValue 匹配不上（典型：首次进入页面，select 尚无选中值）→ 回退到已保存动作
+                    const savedAnimation = await getSavedVrmAnimationUrl();
+                    if (savedAnimation) {
+                        const matched = Array.from(vrmAnimationSelect.options).find(option =>
+                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                        if (matched) resolvedValue = matched.value;
+                    }
+                }
+                vrmAnimationSelect.value = resolvedValue;
                 lastVrmAnimationSelection = vrmAnimationSelect.value || '_no_motion_';
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
@@ -7488,6 +7503,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
         } catch (error) {
             console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 读取角色已保存的单个 VRM 动作（reserved vrm.animation）。
+    // 与 restoreVrmIdleAnimation 对偶：后者恢复待机动作多选，本函数为 loadVRMAnimations
+    // 提供单动作下拉的恢复值，避免首次进入页面时下拉默认落在 _no_motion_。
+    async function getSavedVrmAnimationUrl() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return null;
+
+            const data = await RequestHelper.fetchJson('/api/characters');
+            const charData = data['猫娘']?.[lanlanName];
+            const saved = charData?.vrm_animation;
+            return (typeof saved === 'string' && saved) ? saved : null;
+        } catch (error) {
+            console.error('[VRM] 读取已保存动作失败:', error);
+            return null;
         }
     }
 
