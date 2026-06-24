@@ -189,17 +189,26 @@ def _character_last_updated(character: Any) -> int:
 
 
 def _is_duplicate_choice(existing: list[dict[str, Any]], candidate: dict[str, Any], session_id: str) -> bool:
-    # 只挡「同一 session 内的精确重放」（网络重试 / 重复事件把同一次点击重发）：
-    # 按 (session_id, node_id, choice, handoff) 比较。session_id 入了比较键，所以
-    # 用户刷新后用新 session 重走同一天会照常落盘（视作新信号，不静默丢弃），而同一
-    # session 改投不同选项也不受影响（choice 字段不同）。session_id 为空则不去重，
-    # 让无 session 的调用方无损写入。
+    # 只挡「同一 session 内的精确重放」（网络重试 / 重复事件把同一次点击重发）。
+    #
+    # 优先按 (session_id, seq) 去重：seq 是客户端每次点击单调自增的步序，唯一标识一次
+    # 点击，且与 node_id 的结构 / 唯一性完全无关——未来 tutorial 改成可重访节点的图、
+    # 或换任意 node_id 方案，同一节点的多次合法选择都不会被误判成重放。retry 重发同一
+    # 次点击 body 不变、seq 相同 → 仍被挡；两次不同点击 seq 必不同 → 永不误杀。
+    #
+    # seq 缺失（seq<=0，非 icebreaker 调用方）才回退到 (node_id, choice, handoff)，
+    # 保留旧行为。session_id 为空则一律不去重，让无 session 的调用方无损写入。
     if not session_id:
         return False
+    candidate_seq = _clamp_int(candidate.get("seq"))
     for item in existing:
-        if (
-            item.get("session_id") == session_id
-            and item.get("node_id") == candidate["node_id"]
+        if item.get("session_id") != session_id:
+            continue
+        if candidate_seq > 0:
+            if _clamp_int(item.get("seq")) == candidate_seq:
+                return True
+        elif (
+            item.get("node_id") == candidate["node_id"]
             and item.get("choice") == candidate["choice"]
             and bool(item.get("handoff")) == candidate["handoff"]
         ):
