@@ -1904,12 +1904,12 @@ class DirectTaskExecutor:
         # external_intent 是 master-emotion 在 input-time 那次小模型调用产出的
         # 「外部能力相关度」信号（显式对外操作 + 需要外部/实时信息两类合一），已在
         # main 侧做过两件事：(1) 按本轮 user 文本做 freshness 匹配（陈旧/异轮读数 →
-        # None，绝不用上一轮信号刹本轮；主动搭话轮直接不带信号 → None）；(2) 折进
-        # complexity 取 max，所以高 complexity 的硬推理轮（如 openfang 多步推理）
-        # 即便 external 低也不会被刹。这里只要：自信地低 + 零 LLM 确定性 shortcut
-        # （magic word 规则 + 插件关键词）也全静默，就跳过下面 1~2 次大模型评估。
-        # 闸非对称：None（无可用信号/陈旧/主动搭话）或任一确定性命中都不刹车 —— 最坏
-        # 多花一次评估，绝不漏真任务。
+        # None，绝不用上一轮信号刹本轮）；(2) 折进 complexity 取 max，所以高
+        # complexity 的硬推理轮（如 openfang 多步推理）即便 external 低也不会被刹。
+        # 这里只要：自信地低 + 零 LLM 确定性 shortcut（magic word 规则 + 插件关键词）
+        # 也全静默，就跳过下面 1~2 次大模型评估。
+        # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
+        # 评估，绝不漏真任务。
         if external_intent is not None and AGENT_EXTERNAL_GATE_ENABLED:
             if external_intent < AGENT_EXTERNAL_GATE_THRESHOLD and not self._deterministic_action_signal(
                 latest_user_request,

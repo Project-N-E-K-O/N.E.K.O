@@ -59,20 +59,8 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True) -> bool:
-    """Publish analyze request via EventBus with ack/retry.
-
-    ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
-    user input). On such a turn master-emotion did NOT re-run — ``.latest`` still
-    holds the PREVIOUS user turn's reading, and the "latest user message" in
-    ``messages`` is that same stale message. ``gate_signal_for`` matches on text
-    identity, so it would happily return that stale reading and brake the
-    proactive turn's analyzer on a signal that never saw the proactive content
-    (lanlan's own outward intent is never measured for external_intent). So on a
-    proactive turn we skip the gate hint entirely → external_intent stays None →
-    the agent fails open and assesses the turn, restoring proactive tool / info
-    actions. Consistent with the gate's asymmetric fail-open design.
-    """
+async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
+    """Publish analyze request via EventBus with ack/retry."""
     try:
         # Optional optimization hint: the cheap pre-gate signal the master-emotion
         # call produced at input-time, matched to THIS turn's latest user message.
@@ -80,24 +68,23 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
         # lazy-import/read failure degrades to None (the agent gate then fails open
         # and runs its assessment). turn_end also never blocks on the emotion call,
         # so this only reads an already-cached value. Cache miss / disabled / stale
-        # (different turn) / no-signal / proactive turn → None.
+        # (different turn) / no-signal → None.
         external_intent = None
-        if had_user_input:
-            try:
-                from main_logic.activity.master_emotion import gate_signal_for
-                _latest_user_msg = next(
-                    (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
-                    None,
-                )
-                # Skip the gate hint when the latest user turn carries attachments:
-                # the actionable intent may live in the image, which the text-only
-                # signal never saw → leave external_intent None so the agent fails
-                # open and assesses the turn (never drop an image-driven task).
-                if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
-                    _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
-                    external_intent = gate_signal_for(lanlan_name, _latest_user_text)
-            except Exception:
-                external_intent = None
+        try:
+            from main_logic.activity.master_emotion import gate_signal_for
+            _latest_user_msg = next(
+                (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
+                None,
+            )
+            # Skip the gate hint when the latest user turn carries attachments:
+            # the actionable intent may live in the image, which the text-only
+            # signal never saw → leave external_intent None so the agent fails open
+            # and assesses the turn (never drop an image-driven task).
+            if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
+                _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
+                external_intent = gate_signal_for(lanlan_name, _latest_user_text)
+        except Exception:
+            external_intent = None
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,
@@ -1055,7 +1042,6 @@ async def run_sync_connector(
                                                 trigger="turn_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=had_user_input_this_turn,
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -1149,7 +1135,6 @@ async def run_sync_connector(
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=had_user_input_this_turn,
                                             )
                                             if sent:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")

@@ -1634,8 +1634,8 @@ AGENT_EXTERNAL_GATE_ENABLED = True
   （既没要求对外操作、也不需要外部/实时信息），且零 LLM 的确定性 shortcut（magic
   word 规则 + 插件关键词）也全静默，就跳过那 1~2 次大模型评估，省掉闲聊轮的
   analyzer 开销。关掉则每个 turn 照常全量评估。
-- 闸是非对称的：external_intent 缺失（None，含主动搭话轮）或确定性命中都不刹车，
-  所以最坏只是多花一次评估，绝不漏真任务。
+- 闸是非对称的：external_intent 缺失（None）或确定性命中都不刹车，所以最坏只是多花
+  一次评估，绝不漏真任务。
 - 上游：DirectTaskExecutor._analyze_and_execute_inner 的前置判定。"""
 
 AGENT_EXTERNAL_GATE_THRESHOLD = 0.2
