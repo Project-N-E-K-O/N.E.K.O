@@ -5375,16 +5375,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
-                // 选中态优先级：会话内已有选择（previousValue，如上传新动作后重载列表）
+                // 选中态优先级：会话内用户主动选的真实动作（previousValue）
                 // > 角色已保存的单动作（reserved vrm.animation）> 无动作。
-                // 不恢复已保存值就会默认落在 _no_motion_，而 saveModelToCharacter 把 _no_motion_
-                // 映射成 vrm_animation:''，后端据此清空保留字段——于是任何无关保存都会静默抹掉已存动作。
+                // 关键：模板给 select 预置了 value=_no_motion_ 的初始 option（见 model_manager.html），
+                // 首次进页面 previousValue 就是这个 sentinel——必须把它排除在「会话内选择」外，
+                // 否则恢复分支永远走不到，下拉停在 _no_motion_，无关保存又把 vrm_animation 清成 ''
+                // （即本次要修的回归）。不恢复已保存值时，saveModelToCharacter 会把 _no_motion_
+                // 映射成 vrm_animation:''，后端据此清空保留字段。
                 let resolvedValue = '_no_motion_';
-                if (previousValue && Array.from(vrmAnimationSelect.options)
+                if (previousValue && previousValue !== '_no_motion_' && Array.from(vrmAnimationSelect.options)
                         .some(option => option.value === previousValue)) {
                     resolvedValue = previousValue;
                 } else {
-                    // previousValue 匹配不上（典型：首次进入页面，select 尚无选中值）→ 回退到已保存动作
+                    // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
                     const savedAnimation = await getSavedVrmAnimationUrl();
                     if (savedAnimation) {
                         const matched = Array.from(vrmAnimationSelect.options).find(option =>
