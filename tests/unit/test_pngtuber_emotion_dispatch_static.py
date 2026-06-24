@@ -35,3 +35,13 @@ def test_pngtuber_runtime_exposes_emotion_dispatch_api():
     assert "window.performPNGTuberEmotion = performPNGTuberEmotion;" in script
     assert "const emotions = this.layeredMetadata.emotions;" in script
     assert "this.layeredMetadata.emotion_mapping" not in script
+
+
+def test_pngtuber_emotion_uses_zero_based_layered_state_index():
+    script = PNGTUBER_CORE_JS.read_text(encoding="utf-8")
+    start = script.index("        setEmotion(emotion, options = {})")
+    end = script.index("        hotkeyMatchesEvent(hotkey, event)", start)
+    block = script[start:end]
+
+    assert "applied = this.setLayeredStateIndex(layeredTarget, {" in block
+    assert "applied = this.playLayeredAnimation(layeredTarget, {" not in block

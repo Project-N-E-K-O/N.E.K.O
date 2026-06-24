@@ -892,7 +892,8 @@ function Select(props) {
   );
 }
 function RadioGroup(props) {
-  const name = props.name || ('radio-' + Math.random().toString(36).slice(2));
+  const generatedName = useMemo(() => 'radio-' + Math.random().toString(36).slice(2), []);
+  const name = props.name || generatedName;
   return h('div', { className: classNames('neko-choice-group', props.className), role: 'radiogroup' },
     normalizeOptions(props.options).map((option) => {
       const value = optionValue(option);
@@ -964,7 +965,9 @@ function CheckboxGroup(props) {
   );
 }
 function Accordion(props) {
-  const [open, setOpen] = useLocalState(`accordion:${props.id || props.title || props.label || 'default'}`, props.open !== false);
+  const fallbackId = useMemo(() => 'instance-' + Math.random().toString(36).slice(2), []);
+  const stateKey = `accordion:${props.id || fallbackId}`;
+  const [open, setOpen] = useLocalState(stateKey, props.open !== false);
   return h('section', { className: classNames('neko-accordion', props.className), 'data-open': open ? 'true' : 'false' },
     h('button', { className: 'neko-accordion-trigger', type: 'button', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
       h('span', null, props.title || props.label || ''),

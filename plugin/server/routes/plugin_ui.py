@@ -390,7 +390,7 @@ async def plugin_hosted_ui_artifact(
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' has no config_path")
     try:
         plugin_dir = Path(config_path_obj).parent.resolve()
-        candidate = Path(file_path).expanduser()
+        candidate = Path(file_path)
         target_file = candidate.resolve() if candidate.is_absolute() else (plugin_dir / candidate).resolve()
         target_file.relative_to(plugin_dir)
     except ValueError:

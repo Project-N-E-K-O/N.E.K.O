@@ -74,6 +74,7 @@ from .pngtuber_protocol import (
     NEKO_PNGTUBER_ADAPTER,
     NEKO_PNGTUBER_METADATA_FORMAT,
     PNGTUBER_IMAGE_KEYS,
+    PNGTUBER_LAYERED_ADAPTERS,
     PNGTUBER_METADATA_FILENAMES,
     adapter_for_metadata,
     infer_pngtuber_metadata_from_idle,
@@ -313,28 +314,36 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
         metadata_path = _infer_pngtuber_metadata_from_saved_image(idle_image, config_manager)
 
     if not metadata_path:
-        raise ValueError('PNGTuber 必须提供分层 metadata JSON')
-    if metadata_path.startswith('data:'):
-        raise ValueError('PNGTuber分层metadata路径不能使用data URL')
-    if '..' in metadata_path:
-        raise ValueError('PNGTuber分层metadata路径不能包含路径遍历（..）')
-    is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
-    if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in _PNGTUBER_ALLOWED_PREFIXES):
-        raise ValueError('PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头')
-    metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
-    metadata_filename = metadata_ext_path.rsplit('/', 1)[-1]
-    if metadata_filename not in PNGTUBER_METADATA_FILENAMES:
-        raise ValueError('PNGTuber metadata 文件名不受支持')
-    pngtuber_payload['metadata'] = metadata_path
-    pngtuber_payload['layered_metadata'] = metadata_path
-    pngtuber_payload['adapter'] = adapter_for_metadata(metadata_path, str(pngtuber_payload.get('adapter') or ''))
-    if not pngtuber_payload['adapter']:
-        raise ValueError('PNGTuber metadata adapter 不受支持')
-    pngtuber_payload['protocol'] = (
-        NEKO_PNGTUBER_METADATA_FORMAT
-        if pngtuber_payload['adapter'] == NEKO_PNGTUBER_ADAPTER
-        else ''
-    )
+        raw_adapter = str(pngtuber_payload.get('adapter') or '').strip()
+        raw_protocol = str(pngtuber_payload.get('protocol') or '').strip()
+        if raw_adapter in PNGTUBER_LAYERED_ADAPTERS or raw_protocol == NEKO_PNGTUBER_METADATA_FORMAT:
+            raise ValueError('PNGTuber 必须提供分层 metadata JSON')
+        pngtuber_payload['metadata'] = ''
+        pngtuber_payload['layered_metadata'] = ''
+        pngtuber_payload['adapter'] = ''
+        pngtuber_payload['protocol'] = ''
+    else:
+        if metadata_path.startswith('data:'):
+            raise ValueError('PNGTuber分层metadata路径不能使用data URL')
+        if '..' in metadata_path:
+            raise ValueError('PNGTuber分层metadata路径不能包含路径遍历（..）')
+        is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
+        if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in _PNGTUBER_ALLOWED_PREFIXES):
+            raise ValueError('PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头')
+        metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
+        metadata_filename = metadata_ext_path.rsplit('/', 1)[-1]
+        if metadata_filename not in PNGTUBER_METADATA_FILENAMES:
+            raise ValueError('PNGTuber metadata 文件名不受支持')
+        pngtuber_payload['metadata'] = metadata_path
+        pngtuber_payload['layered_metadata'] = metadata_path
+        pngtuber_payload['adapter'] = adapter_for_metadata(metadata_path, str(pngtuber_payload.get('adapter') or ''))
+        if not pngtuber_payload['adapter']:
+            raise ValueError('PNGTuber metadata adapter 不受支持')
+        pngtuber_payload['protocol'] = (
+            NEKO_PNGTUBER_METADATA_FORMAT
+            if pngtuber_payload['adapter'] == NEKO_PNGTUBER_ADAPTER
+            else ''
+        )
 
     for key in ('source_type', 'source_format'):
         pngtuber_payload[key] = str(pngtuber_payload.get(key) or '').strip()

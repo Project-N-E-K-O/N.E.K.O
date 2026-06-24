@@ -519,7 +519,7 @@
             let applied = false;
             const layeredTarget = emotionConfig ? (emotionConfig.state_index ?? null) : null;
             if (this.isLayeredActive() && layeredTarget !== null && layeredTarget !== undefined && layeredTarget !== '') {
-                applied = this.playLayeredAnimation(layeredTarget, {
+                applied = this.setLayeredStateIndex(layeredTarget, {
                     returnToDefaultAfterMs: durationMs,
                     source: options.source || 'emotion'
                 }) || applied;

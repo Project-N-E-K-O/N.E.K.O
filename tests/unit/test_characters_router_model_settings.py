@@ -181,6 +181,38 @@ async def test_pngtuber_save_defaults_missing_mobile_layout_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pngtuber_save_accepts_image_mode_without_metadata(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/simple-pngtuber/idle.png',
+                'talking_image': '/static/simple-pngtuber/talking.png',
+                'scale': 1.2,
+                'offset_x': 24,
+                'offset_y': -18,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert pngtuber['idle_image'] == '/static/simple-pngtuber/idle.png'
+    assert pngtuber['talking_image'] == '/static/simple-pngtuber/talking.png'
+    assert pngtuber['metadata'] == ''
+    assert pngtuber['layered_metadata'] == ''
+    assert pngtuber['adapter'] == ''
+    assert pngtuber['protocol'] == ''
+    assert pngtuber['scale'] == 1.2
+    assert pngtuber['offset_x'] == 24
+    assert pngtuber['offset_y'] == -18
+
+
+@pytest.mark.asyncio
 async def test_switching_back_to_live2d_preserves_saved_live3d_configs(monkeypatch):
     response, body, saved = await _call_update(
         monkeypatch,
