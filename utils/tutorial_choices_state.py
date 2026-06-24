@@ -257,6 +257,15 @@ def record_tutorial_choice(
             day = _normalize_day({"day": day_key}, day_key)
             days[day_key] = day
 
+        # 重置教程后用新 session 重走这一天：新一轮覆盖旧一轮——清掉上一轮该天的选择、完成
+        # 标记和起始时间，只保留最新一次走法。仅当该天已记过、且来的是另一个非空 session 时
+        # 触发（同一 session 的后续选择 prior_session==session_id，不会误清）。
+        prior_session = _clean_str(day.get("session_id"), limit=_SESSION_LIMIT)
+        if session_id and prior_session and prior_session != session_id:
+            day["choices"] = []
+            day["completed"] = False
+            day["first_recorded_at"] = 0
+
         deduped = _is_duplicate_choice(day["choices"], candidate, session_id)
         if not deduped:
             day["choices"].append(candidate)
