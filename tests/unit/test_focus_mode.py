@@ -482,6 +482,10 @@ def test_focus_extra_body_provider_dialects():
     # returns a fresh dict each call — mutating the result can't poison the constant
     focus_extra_body("qwen-flash")["enable_thinking"] = False
     assert focus_extra_body("qwen-flash") == {"enable_thinking": True}
+    # deepcopy also protects NESTED dialects (glm thinking dict) from alias pollution
+    nested = focus_extra_body("glm-5.2")
+    nested["thinking"]["type"] = "disabled"
+    assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
 
 
 async def test_focus_override_threads_through_visible_stream():

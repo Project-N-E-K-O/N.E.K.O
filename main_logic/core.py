@@ -2550,7 +2550,7 @@ class LLMSessionManager:
         await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
 
     async def _maybe_purge_focus_artifacts(self) -> None:
-        """On the edge where 凝神 (Focus) turns OFF, wipe the thinking + closed
+        """On the edge where Focus mode turns OFF, wipe the thinking + closed
         tool-call traces the just-ended episode left in history, so they can't
         bias the REGULAR reply that follows (or a fresh session).
 
