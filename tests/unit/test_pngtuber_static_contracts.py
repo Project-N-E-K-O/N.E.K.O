@@ -84,7 +84,7 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
 def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     render_block = source[
-        source.index("getRenderPlacement(placement)"):
+        source.index("getRenderPlacement(placement) {"):
         source.index("        setActiveScale(nextScale)")
     ]
 
