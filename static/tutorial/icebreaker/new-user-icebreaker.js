@@ -815,8 +815,12 @@
                 sessionId: sessionId,
                 nodeId: nodeId
             });
-            // 等收尾选择的池写入到达服务端再关 route，否则严格后端会拒掉迟到的它。
-            return Promise.resolve(session.pendingChoiceWrite).catch(function () {}).then(function () {
+            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
+            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
+            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
+                return Promise.resolve(p).catch(function () {});
+            });
+            return Promise.all(pendingWrites).then(function () {
                 return endIcebreakerRoute(session, 'icebreaker_handoff');
             });
         }).then(function () {
@@ -875,12 +879,11 @@
                 completed: isHandoffChoice,
                 seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
             });
-            if (isHandoffChoice) {
-                // 收尾选择会结束 route，严格后端 route 一关就拒收。把写入 promise 挂到 session，
-                // 让 completeWithHandoff 在 endIcebreakerRoute 前 await 它，保证它在 route 仍
-                // active 时到达服务端（recordChoiceToPool 内部已 catch、永不 reject，await 不挂）。
-                session.pendingChoiceWrite = choiceWritePromise;
-            }
+            // 收集本 session 每一条写入 promise（中间+收尾）。收尾选择会结束 route，而严格后端
+            // route 一关就拒收 /choice，故 completeWithHandoff 在 endIcebreakerRoute 前 await 全部
+            // 未决写入，确保任何仍在途的选择都在 route 仍 active 时到达服务端、不被拒掉丢失
+            // （recordChoiceToPool 内部已 catch、永不 reject，await 不会挂）。
+            (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
             if (option.next) {
                 return deliverNode(option.next);
             }
