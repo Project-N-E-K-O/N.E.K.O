@@ -12,6 +12,7 @@ make ``/api/game/route/active`` report an open mini-game window.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, Dict
 
@@ -28,6 +29,7 @@ from utils.icebreaker_route_state import (
 )
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.tutorial_choices_state import record_tutorial_choice
 
 from .shared_state import get_config_manager, get_session_manager
 
@@ -337,6 +339,56 @@ async def icebreaker_context(request: Request):
         "source": ICEBREAKER_SOURCE,
         "session_id": session_id,
     }
+
+
+@router.post("/choice")
+async def icebreaker_choice(request: Request):
+    """Persist a single effective tutorial choice into the durable choices pool.
+
+    Write-only for now: the choice is recorded so it survives across sessions,
+    but it does not enter the memory system and does not influence the model.
+    Kept separate from ``/context`` (which feeds transient session history) so the
+    pool stays an independent signal we can consume incrementally later.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "reason": "invalid_body"}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "invalid_body"}
+
+    validation_error = _validate_icebreaker_local_mutation(request, data)
+    if validation_error is not None:
+        return validation_error
+
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+
+    payload = {
+        "lanlan_name": lanlan_name,
+        "session_id": data.get("session_id"),
+        "day": data.get("day"),
+        "node_id": data.get("node_id"),
+        "choice": data.get("choice"),
+        "label": data.get("label"),
+        "handoff": data.get("handoff"),
+        "completed": data.get("completed"),
+        "source": ICEBREAKER_SOURCE,
+    }
+    try:
+        result = await asyncio.to_thread(record_tutorial_choice, payload)
+    except Exception as exc:
+        logger.warning("icebreaker choice persist failed for %s: %s", lanlan_name, exc, exc_info=True)
+        return {
+            "ok": False,
+            "reason": "choice_write_failed",
+            "error": str(exc),
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+        }
+    result.setdefault("source", ICEBREAKER_SOURCE)
+    return result
 
 
 @router.post("/speak")

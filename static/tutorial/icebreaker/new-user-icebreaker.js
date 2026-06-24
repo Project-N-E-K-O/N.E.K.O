@@ -478,6 +478,42 @@
         return contextAppendPromise;
     }
 
+    // 把用户在破冰里点的「有效选项」追加进后端持久化选项池（/api/icebreaker/choice）。
+    // 这条独立于 appendLlmContext：后者写的是临时会话上下文，这里写的是跨会话留存、
+    // 当前不喂模型也不进记忆的独立信号，纯 fire-and-forget，失败只告警不阻断教程流。
+    function recordChoiceToPool(meta) {
+        var info = meta && typeof meta === 'object' ? meta : {};
+        var nodeId = String(info.nodeId || '').trim();
+        var choice = String(info.choice || '').trim();
+        if (!nodeId || !choice) return Promise.resolve(false);
+        var body = {
+            lanlan_name: resolveLanlanName(),
+            session_id: String(info.sessionId || (activeSession && activeSession.sessionId) || ''),
+            day: String(info.day || (activeSession && activeSession.day) || ''),
+            node_id: nodeId,
+            choice: choice,
+            label: String(info.label || ''),
+            handoff: info.handoff === true,
+            completed: info.completed === true
+        };
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch(ICEBREAKER_API_BASE + '/choice', {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                body: JSON.stringify(body)
+            });
+        }).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        }).then(function (data) {
+            return !!(data && data.ok);
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
+            return false;
+        });
+    }
+
     function finalizeIcebreakerAssistantSubtitle(text) {
         var line = String(text || '').trim();
         if (!line) return;
@@ -775,6 +811,19 @@
         session.choiceInFlight = true;
         clearChoicePrompt();
         var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
+        // 叶子节点的选项带 handoffKey（无 next），那一次点击就是这天的收尾选择；中间节点
+        // 带 next。两种都在这里被点，统一在此落进持久化选项池（session.nodeId 即本次选择
+        // 所属节点，deliverNode 之后会被改写，所以现在就记）。
+        var isHandoffChoice = !!option.handoffKey;
+        recordChoiceToPool({
+            day: session.day,
+            sessionId: session.sessionId,
+            nodeId: session.nodeId,
+            choice: choice,
+            label: label,
+            handoff: isHandoffChoice,
+            completed: isHandoffChoice
+        });
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
