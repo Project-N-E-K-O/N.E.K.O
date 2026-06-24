@@ -583,6 +583,37 @@ class ActivityStateMachine:
             self._current_window_started_at = ts
             self._window_history.append(_WindowEntry(timestamp=ts, observation=obs))
 
+    def recent_window_trail(
+        self, *, now: float, limit: int = 3, max_age_seconds: float | None = None,
+    ) -> list[tuple[str, float]]:
+        """Recent foreground windows as ``(canonical_name, dwell_seconds)``, oldest
+        first and the still-active current window last.
+
+        Built from ``_window_history`` (one entry per genuine window change). Each
+        entry's dwell is the time until the *next* change, or ``now`` for the
+        current window. Lets a caller describe activity FLOW ("coded, then
+        browsed, now chatting") instead of only the instantaneous window.
+
+        Canonical app names only — never window titles — so this widens the
+        sensitive surface no further than the single ``active_window`` already
+        does. Entries without a canonical name are skipped; ``max_age_seconds``
+        (when set) drops windows whose switch is older than that. Because the
+        history is time-ordered, both filters keep a contiguous recent tail, so
+        each surviving entry's dwell stays correct.
+        """
+        entries = [
+            e for e in self._window_history
+            if e.observation is not None and e.observation.canonical
+        ]
+        if max_age_seconds is not None:
+            entries = [e for e in entries if now - e.timestamp <= max_age_seconds]
+        entries = entries[-limit:] if limit > 0 else []
+        trail: list[tuple[str, float]] = []
+        for i, entry in enumerate(entries):
+            end = entries[i + 1].timestamp if i + 1 < len(entries) else now
+            trail.append((entry.observation.canonical, max(0.0, end - entry.timestamp)))
+        return trail
+
     def update_system(self, sys_snap: SystemSnapshot) -> None:
         """Cache the latest system snapshot (idle / CPU)."""
         self._latest_system = sys_snap
