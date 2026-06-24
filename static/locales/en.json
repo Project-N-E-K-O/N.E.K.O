@@ -4287,10 +4287,7 @@
          "modeSwitcher": "Badminton mode",
          "mode": {
              "spectator": "Free Practice",
-             "shooter": "Shot Challenge",
-             "duel": "Duel Yui",
-             "timed": "Time Attack",
-             "horse": "HORSE"
+             "duel": "Duel with Yui"
          },
          "hud": {
              "score": "Score {{score}}",
@@ -4303,16 +4300,11 @@
              "practice": "Free Practice",
              "yourTurn": "Your turn",
              "nekoTurn": "Neko's shot",
-             "horseLetters": "You {{player}} / Neko {{neko}}",
-             "horseChallenge": "Copy {{distance}} {{angle}}°",
-             "horseSet": "Set a shot",
              "unlimitedAttempts": "Unlimited",
              "chances": "Chances {{count}}",
              "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
              "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
              "duelTitle": "In duel mode, you and NEKO take turns. First to 11 points wins.",
-             "timedTitle": "Time Attack: unlimited shots in 60 seconds",
-             "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "on",
              "off": "off"
@@ -4325,8 +4317,6 @@
              "rating": "Control rating: {{rating}}",
              "duel": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Rounds: {{rounds}} | Last distance: {{distance}}",
              "duelElimination": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Misses: You {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rounds: {{rounds}} | Last distance: {{distance}}",
-             "horse": "HORSE result: {{outcome}} | You {{player}} / Neko {{neko}} | Made: {{made}} | Best streak: {{best}}",
-             "timed": "Time Attack: {{made}} made, best streak {{best}}, score {{score}}",
              "practice": "Free Practice: leaderboard score is not recorded | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Shot distance: {{distance}}",
              "summary": "Score: {{score}} | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Farthest: {{record}} | Shot distance: {{distance}}",
              "attemptsSummary": "Shot summary: {{summary}}",
@@ -4343,7 +4333,6 @@
              "title": "Leaderboard",
              "global": "Global",
              "local": "Local",
-             "shooter": "Shooter",
              "duel": "Duel",
              "empty": "No records yet",
              "totalPlayers": "Players {{count}}",
@@ -4351,11 +4340,8 @@
              "recent": "Recent {{count}} games",
              "loading": "Loading...",
              "mode": {
-                 "shooter": "Shooter",
-                 "duel": "Duel",
-                 "timed": "Timed",
-                 "horse": "HORSE",
-                 "spectator": "Spectator"
+                 "spectator": "Spectator",
+                 "duel": "Duel"
              }
          },
          "debug": {
@@ -4376,8 +4362,7 @@
                  "streaks": "Streak={{streak}}  Best={{best}}  Made={{made}}",
                  "score": "Score={{score}}  Left={{remaining}}/{{total}}",
                  "difficulty": "Difficulty={{difficulty}}  Mood={{mood}}  Theme={{theme}}",
-                 "duel": "Duel: You {{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: You {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "Duel: You {{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4524,64 +4509,6 @@
                      "Lift the racket face."
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "Reset your control.",
-                     "Stay steady. I can follow."
-                 ],
-                 "game_over": [
-                     "Your control still needs work.",
-                     "Do not make me run for nothing."
-                 ],
-                 "long_aim": [
-                     "Hurry up, my hand is stiff.",
-                     "Still choosing the angle?"
-                 ],
-                 "close_to_record": [
-                     "The record is close.",
-                     "Do not shake on this shot."
-                 ],
-                 "new_record": [
-                     "Fine, new record.",
-                     "That cooperation was decent."
-                 ],
-                 "streak_5": [
-                     "Five in a row. Do not float.",
-                     "This rhythm is stable."
-                 ],
-                 "streak_10": [
-                     "Ten straight? Do not brag.",
-                     "Your hand is pretty steady."
-                 ],
-                 "streak_15": [
-                     "Fifteen? Do not get smug.",
-                     "You really held this one."
-                 ],
-                 "streak_20": [
-                     "Twenty? Still going?",
-                     "This round is getting wild."
-                 ],
-                 "line_in": [
-                     "Fine, that was accurate.",
-                     "Racket face was controlled."
-                 ],
-                 "net_touch": [
-                     "You brushed it over.",
-                     "The risky angle worked."
-                 ],
-                 "zone_in": [
-                     "Do not grin. Lucky spot.",
-                     "You picked that landing well."
-                 ],
-                 "out": [
-                     "A little less force.",
-                     "You rushed that one."
-                 ],
-                 "net": [
-                     "Where are you steering me?",
-                     "Lift the racket face."
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "Still a chance.",
@@ -4698,10 +4625,6 @@
                  "lastBehind": "Make this and you win.",
                  "playerAhead": "You are pretty good...",
                  "playerBehind": "Push harder."
-             },
-             "horse": {
-                 "nekoMiss": "Did not copy it. Add {{letters}}.",
-                 "playerMiss": "You add {{letters}} too."
              },
              "mindGame": [
                  "Your hand is shaking.",

@@ -5375,9 +5375,40 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
-                const hasPreviousValue = previousValue && Array.from(vrmAnimationSelect.options)
-                    .some(option => option.value === previousValue);
-                vrmAnimationSelect.value = hasPreviousValue ? previousValue : '_no_motion_';
+                // 选中态优先级：会话内用户主动选的真实动作（previousValue）
+                // > 角色已保存的单动作（reserved vrm.animation）> 无动作。
+                // 关键：模板给 select 预置了 value=_no_motion_ 的初始 option（见 model_manager.html），
+                // 首次进页面 previousValue 就是这个 sentinel——必须把它排除在「会话内选择」外，
+                // 否则恢复分支永远走不到，下拉停在 _no_motion_，无关保存又把 vrm_animation 清成 ''
+                // （即本次要修的回归）。不恢复已保存值时，saveModelToCharacter 会把 _no_motion_
+                // 映射成 vrm_animation:''，后端据此清空保留字段。
+                let resolvedValue = '_no_motion_';
+                if (previousValue && previousValue !== '_no_motion_' && Array.from(vrmAnimationSelect.options)
+                        .some(option => option.value === previousValue)) {
+                    resolvedValue = previousValue;
+                } else {
+                    // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
+                    const savedAnimation = await getSavedVrmAnimationUrl();
+                    if (savedAnimation) {
+                        let matched = Array.from(vrmAnimationSelect.options).find(option =>
+                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                        if (!matched) {
+                            // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
+                            // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
+                            // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
+                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
+                            matched = document.createElement('option');
+                            matched.value = savedAnimation;
+                            matched.setAttribute('data-path', savedAnimation);
+                            matched.setAttribute('data-filename', label);
+                            matched.textContent = label;
+                            vrmAnimationSelect.appendChild(matched);
+                        }
+                        resolvedValue = matched.value;
+                    }
+                }
+                vrmAnimationSelect.value = resolvedValue;
                 lastVrmAnimationSelection = vrmAnimationSelect.value || '_no_motion_';
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
@@ -7488,6 +7519,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
         } catch (error) {
             console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 读取角色已保存的单个 VRM 动作（reserved vrm.animation）。
+    // 与 restoreVrmIdleAnimation 对偶：后者恢复待机动作多选，本函数为 loadVRMAnimations
+    // 提供单动作下拉的恢复值，避免首次进入页面时下拉默认落在 _no_motion_。
+    async function getSavedVrmAnimationUrl() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return null;
+
+            const data = await RequestHelper.fetchJson('/api/characters');
+            const charData = data['猫娘']?.[lanlanName];
+            const saved = charData?.vrm_animation;
+            return (typeof saved === 'string' && saved) ? saved : null;
+        } catch (error) {
+            console.error('[VRM] 读取已保存动作失败:', error);
+            return null;
         }
     }
 

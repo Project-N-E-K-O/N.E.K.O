@@ -4287,10 +4287,7 @@
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由练习",
-             "shooter": "羽毛球挑战",
-             "duel": "跟 Yui 对战",
-             "timed": "限时挑战",
-             "horse": "HORSE"
+             "duel": "和 Yui 对战"
          },
          "hud": {
              "score": "得分 {{score}}",
@@ -4303,16 +4300,11 @@
              "practice": "自由练习",
              "yourTurn": "轮到你",
              "nekoTurn": "Yui 挥拍",
-             "horseLetters": "你 {{player}} / Neko {{neko}}",
-             "horseChallenge": "复刻 {{distance}} {{angle}}°",
-             "horseSet": "出题回合",
              "unlimitedAttempts": "不限次数",
              "chances": "机会 {{count}}",
              "practiceTitle": "自由练习：不限羽毛球次数，不记录排行榜分数",
              "attemptsTitle": "剩余机会 {{remaining}}/{{total}}，已失误 {{missed}}",
              "duelTitle": "对拉模式下你和 NEKO 轮流挥拍，先得到 11 分的一方获胜。",
-            "timedTitle": "限时挑战：60 秒内不限挥拍次数",
-             "horseTitle": "HORSE：复刻对手命中的距离、角度和甜区",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
              "on": "开",
              "off": "关"
@@ -4325,8 +4317,6 @@
              "rating": "操控评级：{{rating}}",
              "duel": "对拉结果：{{outcome}} | 你 {{player}} - {{neko}} Yui | 回合：{{rounds}} | 最后距离：{{distance}}",
              "duelElimination": "对拉结果：{{outcome}} | 你 {{player}} - {{neko}} Yui | 失误：你 {{playerMisses}}/{{max}} - Yui {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最后距离：{{distance}}",
-             "horse": "HORSE结果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳连中：{{best}}",
-             "timed": "限时挑战：命中 {{made}} 球，最长连中 {{best}}，总分 {{score}}",
              "practice": "自由练习：不记录排行榜分数 | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 本球距离：{{distance}}",
              "summary": "总分：{{score}} | 命中：{{made}} | 当前连中：{{streak}} | 最佳连中：{{best}} | 最远：{{record}} | 本球距离：{{distance}}",
              "attemptsSummary": "羽毛球摘要：{{summary}}",
@@ -4343,7 +4333,6 @@
              "title": "排行榜",
              "global": "全球",
              "local": "本地",
-             "shooter": "操控",
              "duel": "对战",
              "empty": "暂无记录",
              "totalPlayers": "总玩家 {{count}}",
@@ -4351,11 +4340,8 @@
              "recent": "最近 {{count}} 局",
              "loading": "加载中...",
              "mode": {
-                 "shooter": "操控",
-                 "duel": "对战",
-                 "timed": "限时",
-                 "horse": "HORSE",
-                 "spectator": "观战"
+                 "spectator": "观战",
+                 "duel": "对战"
              }
          },
          "debug": {
@@ -4376,8 +4362,7 @@
                  "streaks": "连中={{streak}}  最佳={{best}}  命中={{made}}",
                  "score": "分数={{score}}  剩余={{remaining}}/{{total}}",
                  "difficulty": "难度={{difficulty}}  心情={{mood}}  主题={{theme}}",
-                 "duel": "对拉: 你{{player}}-{{neko}} Yui R{{round}}",
-                 "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "对拉: 你{{player}}-{{neko}} Yui R{{round}}"
              }
          },
          "stats": {
@@ -4524,64 +4509,6 @@
                      "拍面再抬一点"
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "没事，别乱带拍",
-                     "稳一点，我跟得上"
-                 ],
-                 "game_over": [
-                     "这次操控还得练",
-                    "下次别让我白跑"
-                 ],
-                 "long_aim": [
-                     "快点啦，手要僵了",
-                     "还没想好角度吗"
-                 ],
-                 "close_to_record": [
-                     "纪录快到了",
-                     "这拍别抖"
-                 ],
-                 "new_record": [
-                     "好吧，新纪录",
-                     "这次配合还行"
-                 ],
-                 "streak_5": [
-                     "五连了，别飘",
-                     "这节奏还算稳"
-                 ],
-                 "streak_10": [
-                     "十连了？别得意",
-                     "你手还挺稳"
-                 ],
-                 "streak_15": [
-                     "十五连？别太得意",
-                     "这次确实接住了"
-                 ],
-                 "streak_20": [
-                     "二十连？还不停吗",
-                     "这局有点离谱"
-                 ],
-                 "line_in": [
-                     "哼，这次算你准",
-                     "拍面控得还行"
-                 ],
-                 "net_touch": [
-                     "擦网也被你蹭过了",
-                     "角度险得刚好"
-                 ],
-                 "zone_in": [
-                     "落点挺会挑",
-                     "这落点还挺会选"
-                 ],
-                 "out": [
-                     "力度再收一点",
-                     "你刚刚急了吧"
-                 ],
-                 "net": [
-                     "你往哪儿带拍呢",
-                     "拍面再抬一点啦"
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "下一回合补回来",
@@ -4698,10 +4625,6 @@
                  "lastBehind": "这球拿下就赢了",
                  "playerAhead": "你还挺厉害嘛...",
                  "playerBehind": "再加把劲喵"
-             },
-             "horse": {
-                 "nekoMiss": "没复刻上？记一个 {{letters}}",
-                 "playerMiss": "你也记一个 {{letters}}"
              },
              "mindGame": [
                  "你手在抖哦",

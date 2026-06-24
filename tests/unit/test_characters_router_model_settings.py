@@ -249,6 +249,43 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
 
 
 @pytest.mark.asyncio
+async def test_vrm_save_omitting_animation_preserves_saved_animation(monkeypatch):
+    # 不带 vrm_animation 字段的保存不得动到已存的单动作。
+    # 这是前端动作下拉恢复机制（restore -> 下拉显示已存动作 -> 保存回传原值）依赖的契约：
+    # 若契约破坏，无关保存会静默清空已存动作。
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live3d',
+            'vrm': '/user_vrm/models/hero.vrm',
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    assert get_reserved(catgirl, 'avatar', 'vrm', 'animation') == '/user_vrm/animation/pose.vrma'
+
+
+@pytest.mark.asyncio
+async def test_vrm_save_empty_animation_clears_saved_animation(monkeypatch):
+    # 只有显式传 vrm_animation='' 才清空，对应用户主动选择"无动作"(_no_motion_)。
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live3d',
+            'vrm': '/user_vrm/models/hero.vrm',
+            'vrm_animation': '',
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    assert get_reserved(catgirl, 'avatar', 'vrm', 'animation') is None
+
+
+@pytest.mark.asyncio
 async def test_switching_workshop_origin_character_to_local_live3d_model_updates_current_asset_source_only(monkeypatch):
     characters = _build_characters_fixture()
     catgirl = characters['猫娘']['测试角色']

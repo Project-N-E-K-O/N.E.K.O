@@ -60,7 +60,7 @@ def _put_game_session(lanlan_name, game_type, session_id, session):
     return key
 
 
-def _allow_badminton_score_session(lanlan_name, session_id, mode="shooter"):
+def _allow_badminton_score_session(lanlan_name, session_id, mode="duel"):
     state = {
         "game_type": "badminton",
         "session_id": session_id,
@@ -83,6 +83,9 @@ def _clear_game_session_debug_logs():
 
 @pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
+    assert game_router._normalize_badminton_mode("shooter") == "spectator"
+    assert game_router._normalize_badminton_mode("SHOOTER") == "spectator"
+    assert game_router._is_badminton_scoring_mode("shooter") is False
     assert game_router._normalize_badminton_mode("horse") == "spectator"
     assert game_router._normalize_badminton_mode("HORSE") == "spectator"
     assert game_router._is_badminton_scoring_mode("horse") is False
@@ -98,20 +101,20 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is False
-        return game_router._default_badminton_pregame_context(mode="shooter"), "lightweight", ""
+        return game_router._default_badminton_pregame_context(mode="duel"), "lightweight", ""
 
     monkeypatch.setattr(game_router, "_build_badminton_pregame_context", fake_pregame_context)
 
     with reset_game_route_state():
         result = await game_router.game_route_start(
             "badminton",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "shooter"}),
+            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "duel"}),
         )
 
         assert result["ok"] is True
         assert result["state"]["game_type"] == "badminton"
         assert result["state"]["session_id"] == "debug-badminton"
-        assert result["state"]["mode"] == "shooter"
+        assert result["state"]["mode"] == "duel"
         assert game_router._route_state_key("Lan", "badminton") in game_router._game_route_states
         debug_log = await game_router.game_logs(session_id="debug-badminton", game_type="badminton")
         assert debug_log["ok"] is True
@@ -714,7 +717,7 @@ def test_badminton_prompt_and_control_contract():
         language="zh",
     )
 
-    assert "羽毛球挑战小游戏" in prompt
+    assert "羽毛球小游戏" in prompt
     assert "有效区域或目标落点" in prompt
     assert "line_in、net_touch、zone_in、out、net" in prompt
     assert "expression" in prompt
@@ -730,23 +733,6 @@ def test_badminton_prompt_and_control_contract():
         "line": "破纪录了喵！",
         "control": {"mood": "surprised", "expression": "hype", "intensity": "high", "difficulty": "max"},
     }
-
-
-@pytest.mark.unit
-def test_badminton_shooter_prompt_contract():
-    prompt = game_router._build_game_prompt(
-        "badminton",
-        "Lan",
-        "傲娇但会认真看比赛。",
-        language="zh",
-        mode="shooter",
-    )
-
-    assert "被玩家操控挥拍" in prompt
-    assert "挥拍的是 Yui" in prompt
-    assert "评价的是玩家操控 Yui 控拍的技术" in prompt
-    assert "shooterEvaluation" in prompt
-    assert "shooterRating" in prompt
 
 
 @pytest.mark.unit
@@ -1006,75 +992,6 @@ def test_badminton_event_sanitizer_keeps_bounded_current_state_attempts():
 
 
 @pytest.mark.unit
-def test_badminton_shooter_helper_boundaries():
-    assert game_router._compute_distance_tier(80) == "close"
-    assert game_router._compute_distance_tier(150) == "mid"
-    assert game_router._compute_distance_tier(300) == "far"
-    assert game_router._compute_distance_tier(451) == "deep"
-
-    assert game_router._compute_streak_tier(0) == "cold"
-    assert game_router._compute_streak_tier(1) == "cold"
-    assert game_router._compute_streak_tier(2) == "neutral"
-    assert game_router._compute_streak_tier(3) == "warming"
-    assert game_router._compute_streak_tier(4) == "warming"
-    assert game_router._compute_streak_tier(5) == "on_fire"
-
-    assert game_router._compute_shooter_rating({"final_streak": 15}) == "S"
-    assert game_router._compute_shooter_rating({"final_streak": 10}) == "A"
-    assert game_router._compute_shooter_rating({"final_streak": 5}) == "B"
-    assert game_router._compute_shooter_rating({"final_streak": 2}) == "C"
-    assert game_router._compute_shooter_rating({"final_streak": 1}) == "D"
-    assert game_router._compute_shooter_rating({"final_streak": 0}) == "D"
-
-
-@pytest.mark.unit
-def test_badminton_shooter_evaluation_and_sanitizer_fields():
-    event, error = game_router._sanitize_badminton_event({
-        "kind": "shot_result",
-        "mode": "shooter",
-        "result": "scored",
-        "shot_type": "line_in",
-        "streak": 3,
-        "distance": 180,
-        "shot_angle": 50,
-        "shot_power": 34,
-        "aim_duration_seconds": 61,
-        "currentState": {"mode": "shooter", "streak": 3, "distance": 180},
-    })
-
-    assert error == ""
-    assert event["mode"] == "shooter"
-    assert event["aim_duration_seconds"] == 60.0
-    assert event["currentState"]["mode"] == "shooter"
-
-    evaluation = game_router._compute_shooter_evaluation(event)
-    assert evaluation["best_angle"] == 58.0
-    assert evaluation["sweet_power"] == {"min": 38.0, "max": 44.0}
-    assert evaluation["angle_deviation"] == 8.0
-    assert evaluation["power_deviation"] == 4.0
-    assert evaluation["aim_duration_seconds"] == 60.0
-    assert evaluation["distance_tier"] == "mid"
-    assert evaluation["streak_tier"] == "warming"
-
-    weak = game_router._compute_shooter_evaluation({
-        "distance": 180,
-        "shot_angle": 40,
-        "shot_power": 25,
-        "aim_duration": -2,
-    })
-    assert weak["angle_deviation"] == 18.0
-    assert weak["power_deviation"] == 13.0
-    assert weak["aim_duration_seconds"] == 0.0
-
-    invalid_mode, invalid_error = game_router._sanitize_badminton_event({
-        "kind": "shot_result",
-        "mode": "invalid",
-    })
-    assert invalid_error == ""
-    assert invalid_mode["mode"] == "spectator"
-
-
-@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_quick_lines_returns_fallback_on_llm_failure(monkeypatch):
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
@@ -1086,11 +1003,11 @@ async def test_badminton_quick_lines_returns_fallback_on_llm_failure(monkeypatch
         "api_key": "fake",
     })
 
-    def fail_llm(*_args, **_kwargs):
+    async def fail_llm_async(*_args, **_kwargs):
         raise RuntimeError("llm unavailable")
 
     import utils.llm_client as llm_client
-    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
 
     result = await game_router.game_quick_lines(
         "badminton",
@@ -1119,11 +1036,11 @@ async def test_badminton_quick_lines_fallback_uses_request_language(monkeypatch)
         "api_key": "fake",
     })
 
-    def fail_llm(*_args, **_kwargs):
+    async def fail_llm_async(*_args, **_kwargs):
         raise RuntimeError("llm unavailable")
 
     import utils.llm_client as llm_client
-    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
 
     result = await game_router.game_quick_lines(
         "badminton",
@@ -1134,6 +1051,84 @@ async def test_badminton_quick_lines_fallback_uses_request_language(monkeypatch)
     assert result["fallback"] is True
     assert result["lines"]["line_in"][0] == "On the line!"
     assert result["lines"]["shot_missed"][0] == "Still in it"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_quick_lines_fallback_supports_japanese_request_language(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "Tsundere but focused.",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    async def fail_llm_async(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-ja-1", "i18n_language": "ja-JP"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert result["lines"]["line_in"][0] == "ラインぎりぎり！"
+    assert result["lines"]["game_over"][1] == "この一本、覚えておくね"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_quick_lines_fallback_preserves_traditional_chinese_request_language(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "Tsundere but focused.",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    async def fail_llm_async(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-zh-tw-1", "i18n_language": "zh-TW"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert result["lines"]["line_in"][0] == "壓線，算你準"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("language", "expected_line"),
+    (
+        ("zh-CN", "压线，算你准"),
+        ("zh-TW", "壓線，算你準"),
+        ("en", "On the line!"),
+        ("ja", "ラインぎりぎり！"),
+        ("ko", "라인에 걸쳤어!"),
+        ("ru", "По линии!"),
+        ("es", "¡En la línea!"),
+        ("pt", "Na linha!"),
+    ),
+)
+def test_badminton_quick_lines_fallback_supports_neko_core_languages(language, expected_line):
+    lines = game_router._get_badminton_quick_lines_fallback(language)
+
+    assert lines["line_in"][0] == expected_line
+    assert set(lines) == game_router._BADMINTON_QUICK_LINE_KEYS
 
 
 @pytest.mark.unit
@@ -1175,7 +1170,7 @@ async def test_badminton_quick_lines_uses_requested_character(monkeypatch):
 
     result = await game_router.game_quick_lines(
         "badminton",
-        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bd-1", "mode": "shooter"}),
+        _FakeRequest({"lanlan_name": "InviteLan", "session_id": "bd-1", "mode": "duel"}),
     )
 
     assert result["ok"] is True
@@ -1243,7 +1238,7 @@ def test_badminton_template_contract():
     assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
     assert "function drawCourt()" in html
     assert "function drawNet()" in html
-    assert "function drawAiming(" in html
+    assert "function drawAiming(now)" in html
     assert "drawDistanceMarkers" in html
     assert "drawFreeThrowLine" not in html
     assert "drawThreePointLine" not in html
@@ -1302,7 +1297,7 @@ def test_badminton_template_contract():
     assert "if (requestedMode === 'duel') currentMode = 'duel';" not in html
     assert "await initLive2DAvatar(live2dPath);" in html
     assert "aim_duration_seconds" in html
-    assert "latestShooterRating" in html
+    assert "latestShooterRating" not in html
     assert "控拍评级" not in html
     assert "function getRequestLanguage()" in html
     assert "i18n_language: getRequestLanguage()" in html
@@ -1367,7 +1362,7 @@ async def test_badminton_leaderboard_post_and_get_sorting(tmp_path, monkeypatch)
     monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_badminton_score_session("Lan A", "s1", "shooter")
+        _allow_badminton_score_session("Lan A", "s1", "duel")
         first = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "s1",
             "lanlan_name": "Lan A",
@@ -1377,9 +1372,9 @@ async def test_badminton_leaderboard_post_and_get_sorting(tmp_path, monkeypatch)
             "line_in_count": 1,
             "net_touch_count": 0,
             "zone_in_count": 0,
-            "mode": "shooter",
+            "mode": "duel",
         }))
-        _allow_badminton_score_session("Lan B", "s2", "shooter")
+        _allow_badminton_score_session("Lan B", "s2", "duel")
         second = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "s2",
             "lanlan_name": "Lan B",
@@ -1389,7 +1384,7 @@ async def test_badminton_leaderboard_post_and_get_sorting(tmp_path, monkeypatch)
             "line_in_count": 0,
             "net_touch_count": 1,
             "zone_in_count": 0,
-            "mode": "shooter",
+            "mode": "duel",
         }))
         _allow_badminton_score_session("Lan A", "s3", "duel")
         third = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
@@ -1460,20 +1455,20 @@ async def test_badminton_leaderboard_migrates_legacy_table_without_new_columns(t
         )
 
     with reset_game_route_state():
-        _allow_badminton_score_session("Lan Legacy", "legacy-session", "shooter")
+        _allow_badminton_score_session("Lan Legacy", "legacy-session", "duel")
         result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "legacy-session",
             "lanlan_name": "Lan Legacy",
             "score": 24,
             "streak": 3,
             "max_distance_px": 300,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert result["ok"] is True
         leaderboard = await game_router.game_badminton_leaderboard("badminton")
 
-    assert leaderboard["top"][0]["mode"] == "shooter"
+    assert leaderboard["top"][0]["mode"] == "duel"
     with sqlite3.connect(str(db_path)) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(badminton_scores)").fetchall()}
     assert {"mode", "line_in_count", "net_touch_count", "zone_in_count"} <= columns
@@ -1486,7 +1481,7 @@ async def test_badminton_leaderboard_get_paginates_results(tmp_path, monkeypatch
 
     with reset_game_route_state():
         for index in range(12):
-            _allow_badminton_score_session(f"Lan {index}", f"s{index}", "shooter")
+            _allow_badminton_score_session(f"Lan {index}", f"s{index}", "duel")
             await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
                 "session_id": f"s{index}",
                 "lanlan_name": f"Lan {index}",
@@ -1496,7 +1491,7 @@ async def test_badminton_leaderboard_get_paginates_results(tmp_path, monkeypatch
                 "line_in_count": 0,
                 "net_touch_count": 0,
                 "zone_in_count": 0,
-                "mode": "shooter",
+                "mode": "duel",
             }))
 
         page = await game_router.game_badminton_leaderboard(
@@ -1529,7 +1524,7 @@ async def test_badminton_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_pa
     monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        _allow_badminton_score_session("Lan C", "session-9", "shooter")
+        _allow_badminton_score_session("Lan C", "session-9", "duel")
         result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "  session-9  ",
             "lanlan_name": "  Lan C  ",
@@ -1539,7 +1534,7 @@ async def test_badminton_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_pa
             "line_in_count": "-2",
             "net_touch_count": "2.8",
             "zone_in_count": "3.2",
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert result["ok"] is True
@@ -1556,7 +1551,7 @@ async def test_badminton_leaderboard_sanitizes_inputs_and_normalizes_mode(tmp_pa
         assert leaderboard["top"][0]["name"] == "Lan C"
         assert leaderboard["top"][0]["score"] == 0
         assert leaderboard["top"][0]["streak"] == 4
-        assert leaderboard["top"][0]["mode"] == "shooter"
+        assert leaderboard["top"][0]["mode"] == "duel"
         assert leaderboard["your_best"] == {"rank": 1, "score": 0}
 
 
@@ -1570,7 +1565,7 @@ async def test_badminton_leaderboard_rejects_unknown_score_session(tmp_path, mon
             "session_id": "fake-session",
             "lanlan_name": "Lan Fake",
             "score": 999999,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
@@ -1618,9 +1613,9 @@ async def test_badminton_route_end_uses_server_mode_for_score_session(monkeypatc
             {
                 "session_id": "practice-session",
                 "lanlan_name": "Lan Practice",
-                "mode": "shooter",
+                "mode": "duel",
                 "gameStarted": True,
-                "finalScore": {"mode": "shooter", "score": 999999},
+                "finalScore": {"mode": "duel", "score": 999999},
             },
             default_reason="route_end",
         )
@@ -1641,7 +1636,7 @@ async def test_badminton_route_end_requires_completed_round_for_score_session(mo
 
     with reset_game_route_state():
         state = game_router._activate_game_route("badminton", "early-exit-session", "Lan Early")
-        state["mode"] = "shooter"
+        state["mode"] = "duel"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
@@ -1649,9 +1644,9 @@ async def test_badminton_route_end_requires_completed_round_for_score_session(mo
             {
                 "session_id": "early-exit-session",
                 "lanlan_name": "Lan Early",
-                "mode": "shooter",
+                "mode": "duel",
                 "gameStarted": True,
-                "finalScore": {"mode": "shooter", "score": 999999},
+                "finalScore": {"mode": "duel", "score": 999999},
             },
             default_reason="route_end",
         )
@@ -1672,7 +1667,7 @@ async def test_badminton_route_end_remembers_completed_round_score_session(monke
 
     with reset_game_route_state():
         state = game_router._activate_game_route("badminton", "completed-session", "Lan Done")
-        state["mode"] = "shooter"
+        state["mode"] = "duel"
         _mark_game_started(state)
 
         result = await game_router._complete_game_end_from_payload(
@@ -1680,10 +1675,10 @@ async def test_badminton_route_end_remembers_completed_round_score_session(monke
             {
                 "session_id": "completed-session",
                 "lanlan_name": "Lan Done",
-                "mode": "shooter",
+                "mode": "duel",
                 "gameStarted": True,
                 "round_completed": True,
-                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 4, "max_distance_px": 240},
+                "finalScore": {"mode": "duel", "score": 12, "best_streak": 4, "max_distance_px": 240},
             },
             default_reason="route_end",
         )
@@ -1692,7 +1687,7 @@ async def test_badminton_route_end_remembers_completed_round_score_session(monke
         assert result["route_closed"] is True
         assert result["state"]["lanlan_name"] == "Lan Done"
         score_session = game_router._badminton_recent_score_sessions[("Lan Done", "completed-session")]
-        assert score_session["mode"] == "shooter"
+        assert score_session["mode"] == "duel"
         assert score_session["score_totals"] == {"score": 12, "streak": 4, "max_distance_px": 240.0}
 
 
@@ -1708,7 +1703,7 @@ async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp
 
     with reset_game_route_state():
         state = game_router._activate_game_route("badminton", "bound-session", "Lan Bound")
-        state["mode"] = "shooter"
+        state["mode"] = "duel"
         _mark_game_started(state)
 
         await game_router._complete_game_end_from_payload(
@@ -1716,10 +1711,10 @@ async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp
             {
                 "session_id": "bound-session",
                 "lanlan_name": "Lan Bound",
-                "mode": "shooter",
+                "mode": "duel",
                 "gameStarted": True,
                 "round_completed": True,
-                "finalScore": {"mode": "shooter", "score": 12, "best_streak": 3, "max_distance_px": 240},
+                "finalScore": {"mode": "duel", "score": 12, "best_streak": 3, "max_distance_px": 240},
             },
             default_reason="route_end",
         )
@@ -1730,7 +1725,7 @@ async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp
             "score": 999999,
             "streak": 3,
             "max_distance_px": 240,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert tampered == {"ok": False, "reason": "invalid_session"}
@@ -1742,7 +1737,7 @@ async def test_badminton_leaderboard_rejects_score_mismatched_from_route_end(tmp
             "score": 12,
             "streak": 3,
             "max_distance_px": 240,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert accepted["ok"] is True
@@ -1763,7 +1758,7 @@ async def test_badminton_leaderboard_rejects_live_active_route_score(tmp_path, m
             "session_id": "live-session",
             "lanlan_name": "Lan Live",
             "game_route_active": True,
-            "mode": "shooter",
+            "mode": "duel",
         }
         _mark_game_started(state)
         game_router._game_route_states[game_router._route_state_key("Lan Live", "badminton")] = state
@@ -1772,7 +1767,7 @@ async def test_badminton_leaderboard_rejects_live_active_route_score(tmp_path, m
             "session_id": "live-session",
             "lanlan_name": "Lan Live",
             "score": 999999,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert result == {"ok": False, "reason": "invalid_session"}
@@ -1786,9 +1781,9 @@ async def test_badminton_leaderboard_allows_recently_ended_route_score(tmp_path,
     monkeypatch.setattr(game_router, "_BADMINTON_SCORES_DB_PATH", tmp_path / "badminton_scores.db")
 
     with reset_game_route_state():
-        state = _allow_badminton_score_session("Lan Ended", "ended-session", "shooter")
+        state = _allow_badminton_score_session("Lan Ended", "ended-session", "duel")
         state["game_route_active"] = False
-        game_router._remember_badminton_score_session("Lan Ended", "ended-session", "shooter")
+        game_router._remember_badminton_score_session("Lan Ended", "ended-session", "duel")
 
         result = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "ended-session",
@@ -1796,7 +1791,7 @@ async def test_badminton_leaderboard_allows_recently_ended_route_score(tmp_path,
             "score": 42,
             "streak": 2,
             "max_distance_px": 180,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert result["ok"] is True
@@ -1808,7 +1803,7 @@ async def test_badminton_leaderboard_allows_recently_ended_route_score(tmp_path,
             "score": 99,
             "streak": 9,
             "max_distance_px": 500,
-            "mode": "shooter",
+            "mode": "duel",
         }))
 
         assert duplicate == {"ok": False, "reason": "invalid_session"}
@@ -1875,20 +1870,20 @@ async def test_badminton_leaderboard_keeps_score_session_when_insert_fails(monke
     monkeypatch.setattr(game_router, "_badminton_insert_score", flaky_insert)
 
     with reset_game_route_state():
-        _allow_badminton_score_session("Lan Retry", "retry-session", "shooter")
+        _allow_badminton_score_session("Lan Retry", "retry-session", "duel")
         payload = {
             "session_id": "retry-session",
             "lanlan_name": "Lan Retry",
             "score": 42,
             "streak": 2,
             "max_distance_px": 180,
-            "mode": "shooter",
+            "mode": "duel",
         }
 
         with pytest.raises(sqlite3.OperationalError):
             await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
 
-        assert game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "shooter"
+        assert game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]["mode"] == "duel"
         assert "reserved" not in game_router._badminton_recent_score_sessions[("Lan Retry", "retry-session")]
 
         retry = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest(payload))
@@ -1932,14 +1927,14 @@ async def test_badminton_leaderboard_uses_separate_scores_db(tmp_path, monkeypat
     monkeypatch.setattr(game_router, "get_config_manager", lambda: fake_config)
 
     with reset_game_route_state():
-        _allow_badminton_score_session("Lan Badminton", "bd-session", "shooter")
+        _allow_badminton_score_session("Lan Badminton", "bd-session", "duel")
         submitted = await game_router.game_badminton_leaderboard_submit("badminton", _FakeRequest({
             "session_id": "bd-session",
             "lanlan_name": "Lan Badminton",
             "score": 12,
             "streak": 3,
             "max_distance_px": 180,
-            "mode": "shooter",
+            "mode": "duel",
         }))
         leaderboard = await game_router.game_badminton_leaderboard(
             "badminton",
@@ -2988,14 +2983,14 @@ def test_build_game_llm_visible_event_filters_badminton_memory_flags_from_camel_
         "badminton_game_memory_archive_enabled": True,
         "badmintonGameMemoryPostgameContextEnabled": True,
         "badminton_game_memory_postgame_context_enabled": True,
-        "currentState": {"mode": "shooter", "streak": 3},
+        "currentState": {"mode": "duel", "streak": 3},
     }
 
     visible = game_router._build_game_llm_visible_event("badminton", event)
 
     assert visible == {
         "kind": "shot-made",
-        "currentState": {"mode": "shooter", "streak": 3},
+        "currentState": {"mode": "duel", "streak": 3},
     }
     assert event["badmintonGameMemoryEnabled"] is True
 
@@ -3014,14 +3009,14 @@ def test_build_game_llm_visible_event_filters_badminton_memory_flags():
         "badminton_game_memory_archive_enabled": True,
         "badmintonGameMemoryPostgameContextEnabled": True,
         "badminton_game_memory_postgame_context_enabled": True,
-        "currentState": {"mode": "shooter", "streak": 3},
+        "currentState": {"mode": "duel", "streak": 3},
     }
 
     visible = game_router._build_game_llm_visible_event("badminton", event)
 
     assert visible == {
         "kind": "shot-made",
-        "currentState": {"mode": "shooter", "streak": 3},
+        "currentState": {"mode": "duel", "streak": 3},
     }
     assert event["badmintonGameMemoryEnabled"] is True
 
@@ -3260,12 +3255,12 @@ async def test_badminton_game_chat_rejects_stale_session_before_llm(monkeypatch)
 
     with reset_game_route_state():
         state = game_router._activate_game_route("badminton", "fresh-session", "Lan")
-        state["mode"] = "shooter"
+        state["mode"] = "duel"
 
         result = await game_router.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
-            "event": {"kind": "shot_missed", "mode": "shooter"},
+            "event": {"kind": "shot_missed", "mode": "duel"},
         }))
 
     assert result["ok"] is True
@@ -3288,7 +3283,7 @@ async def test_badminton_game_chat_rejects_missing_route_before_llm(monkeypatch)
         result = await game_router.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
-            "event": {"kind": "shot_missed", "mode": "shooter"},
+            "event": {"kind": "shot_missed", "mode": "duel"},
         }))
 
     assert result == {

@@ -1158,7 +1158,6 @@
   var isPositionTransitioning = false;
   var shotAnimationTimer = 0;
   var yuiActionTimer = 0;
-  var latestShooterRating = '';
   function createBadmintonSessionId() {
     return 'badminton-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   }
@@ -1363,7 +1362,40 @@
     streak_15: ['十五连还不断', '我开始认真看了'],
     streak_20: ['二十连也太久了', '这回合还没结束？']
   };
+  var quickLinesFallbackEn = {
+    line_in: ['On the line!', 'Nice placement'],
+    net_touch: ['Net touch, still over', 'That angle was close'],
+    zone_in: ['Right in the zone', 'Sharp landing'],
+    out: ['Just out', 'A little too long'],
+    net: ['Caught by the net', 'Lift the racket face a bit'],
+    shot_missed: ['Still in it', 'Settle in and try again'],
+    game_over: ['Another round?', 'I will remember that rally'],
+    long_aim: ['Swing soon', 'Wait too long and you will freeze'],
+    close_to_record: ['Almost at the record', 'One steadier beat'],
+    new_record: ['New record!', 'That one counts'],
+    streak_5: ['Five in a row', 'You are warming up'],
+    streak_10: ['Ten straight?', 'That is steady'],
+    streak_15: ['Fifteen is wild', 'This rally has grit'],
+    streak_20: ['Twenty?!', 'This round will not end']
+  };
+  var quickLinesFallbackJa = {
+    line_in: ['ラインぎりぎり！', 'いい落としどころ'],
+    net_touch: ['ネットに触れたけど入った', '今の角度、危なかったね'],
+    zone_in: ['ゾーンに入ったよ', '落点が鋭いね'],
+    out: ['少しアウト', 'ちょっと長かったね'],
+    net: ['ネットに捕まったね', 'ラケット面を少し上げて'],
+    shot_missed: ['まだいけるよ', '落ち着いてもう一回'],
+    game_over: ['もう一回やる？', 'この一本、覚えておくね'],
+    long_aim: ['そろそろ振って', '待ちすぎると固まるよ'],
+    close_to_record: ['記録まであと少し', 'もう一拍、安定させて'],
+    new_record: ['新記録だね！', '今のは認めるよ'],
+    streak_5: ['五連続だね', '調子が上がってきた'],
+    streak_10: ['十連続？すごいね', 'かなり安定してる'],
+    streak_15: ['十五連続はすごい', 'このラリー、粘るね'],
+    streak_20: ['二十連続？！', 'まだ終わらないの？']
+  };
   var generatedQuickLines = {};
+  var generatedQuickLinesRequestSeq = 0;
   var YUI_PASSIVE_LINES_DUEL = {
     line_in: ['这球压得挺准', '边线都帮你了'],
     net_touch: ['擦网也敢打啊', '这球贴得真险'],
@@ -1379,6 +1411,38 @@
     streak_10: ['十连了？有意思', '我开始盯紧了'],
     streak_15: ['十五连还不断', '别让我太没面子'],
     streak_20: ['二十连也太久了', '这回合还不结束？']
+  };
+  var YUI_PASSIVE_LINES_DUEL_EN = {
+    line_in: ['That line was clean', 'The sideline helped you'],
+    net_touch: ['A net touch and still brave', 'That skim was close'],
+    zone_in: ['Nice landing choice', 'I almost reached that'],
+    out: ['Missed by a little', 'That one flew too deep'],
+    net: ['The net stopped it for me', 'You rushed that swing'],
+    shot_missed: ['Stay calm, next shot', 'You were half a beat late'],
+    game_over: ['That is it for now', 'Do not run from the next round'],
+    long_aim: ['Time to swing', 'Think too long and you will stiffen'],
+    close_to_record: ['The record is on your racket', 'One steadier shot'],
+    new_record: ['Fine, that was good', 'You can borrow the new record'],
+    streak_5: ['Five connected', 'The rhythm is coming together'],
+    streak_10: ['Ten straight? Interesting', 'I am watching more closely now'],
+    streak_15: ['Fifteen and still going', 'Do not make me look too bad'],
+    streak_20: ['Twenty is too long', 'Is this rally ever ending?']
+  };
+  var YUI_PASSIVE_LINES_DUEL_JA = {
+    line_in: ['今のライン、きれいだったね', 'サイドラインに助けられたね'],
+    net_touch: ['ネットに触れても攻めるんだ', '今のかすり方、ぎりぎり'],
+    zone_in: ['落点の選び方、いいね', 'もう少しで届いたのに'],
+    out: ['ほんの少し外れたね', '今のは奥まで飛びすぎ'],
+    net: ['ネットが私の味方をしたね', 'その一振り、急ぎすぎ'],
+    shot_missed: ['落ち着いて、次の一拍', '今のは半拍遅れたね'],
+    game_over: ['今回はここまで', '次のラウンド、逃げないでね'],
+    long_aim: ['そろそろ振ろうか', '考えすぎると固まるよ'],
+    close_to_record: ['記録はラケットの先だよ', 'もう一拍だけ安定させて'],
+    new_record: ['いいよ、今のはきれい', '新記録、少しだけ貸してあげる'],
+    streak_5: ['五本つながったね', 'リズムが合ってきた'],
+    streak_10: ['十連続？面白いね', '少し本気で見てるよ'],
+    streak_15: ['十五連続、まだ続くの？', '私の面目も少し考えて'],
+    streak_20: ['二十連続は長すぎるよ', 'このラリー、終わる気ある？']
   };
   // Endpoint contract:
   // /api/game/badminton/route/start
@@ -2240,33 +2304,131 @@
     if (mode === 'practice') return _i18n('leaderboard.mode.practice', '练习');
     return mode || _i18n('leaderboard.mode.duel', '对拉');
   }
-  function pickLocalizedLine(scope, key, fallback) {
+  function normalizeRequestLanguagePrimary(value) {
+    var lang = String(value || '').trim().replace(/_/g, '-').toLowerCase();
+    if (!lang || lang === 'undefined' || lang === 'null') return '';
+    return lang.split('-')[0] || '';
+  }
+  function normalizeRequestLanguageTag(value) {
+    var lang = String(value || '').trim().replace(/_/g, '-');
+    if (!lang || lang === 'undefined' || lang === 'null') return '';
+    return lang;
+  }
+  function getDefaultQuickLineFallback(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return quickLines;
+    if (primary === 'ja') return quickLinesFallbackJa;
+    return quickLinesFallbackEn;
+  }
+  function getQuickLineFallbackSource(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return YUI_PASSIVE_LINES_DUEL;
+    if (primary === 'ja') return YUI_PASSIVE_LINES_DUEL_JA;
+    return YUI_PASSIVE_LINES_DUEL_EN;
+  }
+  function isLikelyChineseFallbackLine(line) {
+    var text = String(line || '').trim();
+    if (!/[\u3400-\u9fff]/.test(text)) return false;
+    if (/[\u3040-\u30ff\uac00-\ud7af]/.test(text)) return false;
+    if (/[A-Za-zÀ-ÖØ-öø-ÿ\u0400-\u04ff]/.test(text)) return false;
+    return true;
+  }
+  var _jaFallbackLineLookup = null;
+  function isKnownJapaneseFallbackLine(text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (!_jaFallbackLineLookup) {
+      _jaFallbackLineLookup = Object.create(null);
+      [quickLinesFallbackJa, YUI_PASSIVE_LINES_DUEL_JA].forEach(function (pool) {
+        Object.keys(pool || {}).forEach(function (key) {
+          (pool[key] || []).forEach(function (line) {
+            var normalized = String(line || '').trim();
+            if (normalized) _jaFallbackLineLookup[normalized] = true;
+          });
+        });
+      });
+    }
+    return !!_jaFallbackLineLookup[t];
+  }
+  var _zhFallbackLineLookup = null;
+  function isKnownChineseFallbackLine(text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (!_zhFallbackLineLookup) {
+      _zhFallbackLineLookup = Object.create(null);
+      [quickLines, YUI_PASSIVE_LINES_DUEL].forEach(function (pool) {
+        Object.keys(pool || {}).forEach(function (key) {
+          (pool[key] || []).forEach(function (line) {
+            var normalized = String(line || '').trim();
+            if (normalized) _zhFallbackLineLookup[normalized] = true;
+          });
+        });
+      });
+    }
+    return !!_zhFallbackLineLookup[t];
+  }
+  function replaceUnexpectedChineseFallbackLine(line, event) {
+    var text = String(line || '').trim();
+    var primary = normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return text;
+    if (event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply')) return text;
+    if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;
+    if (primary === 'ja' && !isKnownChineseFallbackLine(text)) return text;
+    if (!isLikelyChineseFallbackLine(text)) return text;
+    var fallbackKey = getFallbackLineKey(event || {});
+    var fallback = pickLine(fallbackKey, primary, { skipGenerated: true });
+    return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');
+  }
+  function pickLocalizedLine(scope, key, fallback, primary, options) {
     var generated = generatedQuickLines[key] || [];
-    if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
+    if (!(options && options.skipGenerated) && generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    var defaultFallback = getDefaultQuickLineFallback(primary);
     var lines = _i18nArray('lines.' + scope + '.' + key, fallback || []);
-    if (!lines.length && scope !== 'default') lines = _i18nArray('lines.default.' + key, quickLines[key] || []);
-    if (!lines.length) lines = _i18nArray('lines.fallback', ['再来一次喵']);
+    if (!lines.length && scope !== 'default') lines = _i18nArray('lines.default.' + key, defaultFallback[key] || quickLinesFallbackEn[key] || quickLines[key] || []);
+    if (!lines.length) lines = _i18nArray('lines.fallback', primary === 'zh' ? ['再来一次喵'] : ['One more rally.']);
     return lines[Math.floor(Math.random() * lines.length)] || '';
   }
-  function pickLine(key) {
-    var source = YUI_PASSIVE_LINES_DUEL;
+  function pickLine(key, primary, options) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    var source = getQuickLineFallbackSource(primary);
+    var defaultFallback = getDefaultQuickLineFallback(primary);
     var scope = 'duel';
-    var fallback = source[key] || quickLines[key] || source.game_over || quickLines.game_over || ['再来一次喵'];
-    return moodStyleLine(pickLocalizedLine(scope, key, fallback), currentMood);
+    var fallback = source[key] || defaultFallback[key] || source.game_over || defaultFallback.game_over || ['One more rally.'];
+    return moodStyleLine(pickLocalizedLine(scope, key, fallback, primary, options), currentMood);
   }
   function getRequestLanguage() {
     var candidates = [];
+    var hasResolvedI18nLanguage = false;
+    function pushResolvedLanguage(value) {
+      var lang = normalizeRequestLanguageTag(value);
+      if (!lang) return false;
+      candidates.push(lang);
+      hasResolvedI18nLanguage = true;
+      return true;
+    }
     try {
       var params = new URLSearchParams(window.location.search);
-      candidates.push(params.get('i18n_language'), params.get('lang'), params.get('locale'));
+      pushResolvedLanguage(params.get('i18n_language')) || pushResolvedLanguage(params.get('lang')) || pushResolvedLanguage(params.get('locale'));
     } catch (_) {}
-    try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
-    try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
-    try { candidates.push(localStorage.getItem('i18nextLng')); } catch (_) {}
-    candidates.push((document.documentElement && document.documentElement.lang) || '', navigator.language || '');
+    try {
+      var i18nInstance = window.i18n || window.i18next;
+      if (i18nInstance && i18nInstance.language && i18nInstance.isInitialized) pushResolvedLanguage(i18nInstance.language);
+    } catch (_) {}
+    try {
+      if (window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE) {
+        pushResolvedLanguage(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE);
+      }
+    } catch (_) {}
+    try { pushResolvedLanguage(localStorage.getItem('i18nextLng')); } catch (_) {}
+    var documentLang = '';
+    try { documentLang = (document.documentElement && document.documentElement.lang) || ''; } catch (_) {}
+    var documentLangIsTemplateDefault = /^zh(?:-CN)?$/i.test(documentLang) && !hasResolvedI18nLanguage;
+    if (documentLang && !documentLangIsTemplateDefault) candidates.push(documentLang);
+    candidates.push(navigator.language || '');
     for (var i = 0; i < candidates.length; i++) {
-      var lang = String(candidates[i] || '').trim();
-      if (lang) return lang.replace('_', '-');
+      var lang = normalizeRequestLanguageTag(candidates[i]);
+      if (lang) return lang;
     }
     return 'zh';
   }
@@ -2538,18 +2700,22 @@
   }
   function loadGeneratedQuickLines() {
     if (debugMode) return;
+    var quickLinesRequestSeq = ++generatedQuickLinesRequestSeq;
+    var quickLinesRequestLanguage = getRequestLanguage();
+    var quickLinesRequestPrimary = normalizeRequestLanguagePrimary(quickLinesRequestLanguage);
     var QUICK_LINE_KEYS = [
       'line_in', 'net_touch', 'zone_in', 'out', 'net',
       'shot_missed', 'game_over', 'long_aim', 'close_to_record',
       'new_record', 'streak_5', 'streak_10', 'streak_15', 'streak_20',
     ];
-    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: getRequestLanguage() }, 5000).then(function (res) {
+    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: quickLinesRequestLanguage }, 5000).then(function (res) {
+      if (quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return;
+      if (quickLinesRequestPrimary !== normalizeRequestLanguagePrimary(getRequestLanguage())) return;
       if (!res || !res.lines) return;
       QUICK_LINE_KEYS.forEach(function (key) {
         var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
         if (pool.length) {
           generatedQuickLines[key] = pool;
-          quickLines[key] = pool;
         }
       });
     }).catch(function () {});
@@ -2687,7 +2853,7 @@
       line: entry.line,
       expiresAt: Date.now() + holdMs
     };
-    showBubble(entry.line, entry.control);
+    showBubble(entry.line, entry.control, entry.event);
     return _mirrorAndSpeak(entry).finally(function () {
       if (voiceArbiter.inFlight && voiceArbiter.inFlight.id === entry.id) {
         setTimeout(function () {
@@ -2720,8 +2886,8 @@
     voiceArbiter.pending = null;
     void _requestVoicePlayback(pending);
   }
-  function showBubble(line, control) {
-    var text = String(line || '').trim();
+  function showBubble(line, control, event) {
+    var text = replaceUnexpectedChineseFallbackLine(line, event);
     if (!text) return;
     if (shouldKeepCurrentBubble(control || {})) return false;
     bubble.dataset.mood = (control && control.mood) || '';
@@ -2763,14 +2929,15 @@
     var lines = pools[kind] || pools.banana;
     var line = lines[Math.floor(Math.random() * lines.length)] || '';
     var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 3200, bubbleDurationMs: 4200 };
-    showBubble(line, control);
-    speakLine(line, control, {
+    var event = {
       kind: 'yui_cheat_item',
       label: 'yui_cheat_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
       voice_deadline_ms: 3600
-    });
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
   }
   function showYuiCheatScoreLine(kind) {
     var pools = {
@@ -2780,14 +2947,15 @@
     var lines = pools[kind] || pools.banana;
     var line = lines[Math.floor(Math.random() * lines.length)] || '';
     var control = { expression: 'tease', intensity: 'high', mood: 'happy', bubbleVariant: 'yui-cheat-score', bubblePriority: 9, bubbleHoldMs: 3600, bubbleDurationMs: 4600 };
-    showBubble(line, control);
-    speakLine(line, control, {
+    var event = {
       kind: 'yui_cheat_score',
       label: 'yui_cheat_score_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
       voice_deadline_ms: 5200
-    });
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
   }
   function renderBubbleContent(text, emote) {
     text = String(text || '').trim();
@@ -2873,6 +3041,7 @@
     return false;
   }
   function speakLine(line, control, event) {
+    line = replaceUnexpectedChineseFallbackLine(line, event);
     if (!shouldReadBadmintonVoice(event, control)) {
       lastVoiceRequest = {
         line: line,
@@ -2886,7 +3055,7 @@
       };
       lastVoiceFallbackReason = '';
       lastVoiceMutedReason = 'voice_event_not_selected';
-      showBubble(line, control || {});
+      showBubble(line, control || {}, event);
       return;
     }
     lastVoiceMutedReason = '';
@@ -3791,10 +3960,6 @@
     }), chatClientTimeoutMs)
       .then(function (res) {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
-        if (res && res.shooter_rating) {
-          latestShooterRating = res.shooter_rating;
-          if (resultPanel.classList.contains('show')) showResult();
-        }
         if (res && res.control) {
           if (res.control.difficulty) setDuelDifficulty(res.control.difficulty);
           if (res.control.mood) setMood(res.control.mood, { reason: 'llm' });
@@ -5301,7 +5466,6 @@
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
     currentSessionEntryId = '';
-    latestShooterRating = '';
     isPositionTransitioning = false;
     clearTimeout(shotAnimationTimer);
     clearTimeout(yuiActionTimer);
@@ -9752,6 +9916,9 @@
   });
   addBadmintonEventListener(window, 'localechange', function () {
     invalidateBadmintonCourtCache();
+    generatedQuickLinesRequestSeq++;
+    generatedQuickLines = {};
+    if (routeActive) loadGeneratedQuickLines();
     applyStaticI18n();
     updateHud();
     updateThemeButton();

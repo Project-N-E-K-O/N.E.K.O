@@ -1252,9 +1252,10 @@ async def get_changelog(since: str = "", lang: str = ""):
     The frontend passes the lastNotifiedVersion stored in localStorage; the backend
     returns all changelog entries > since (ascending by version) plus the current
     version number.
-    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW);
-    for non-Chinese locales the matching translation is preferred, falling back to en,
-    then to the original Chinese.
+    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW).
+    A concrete locale (including Chinese variants like zh-TW) prefers its own subdir
+    first; non-Chinese locales then fall back to en; everything finally lands on the
+    Simplified Chinese base file. Mirrors the survey loader's fallback chain.
     """
     from config import APP_VERSION
     import glob as _glob
@@ -1273,14 +1274,16 @@ async def get_changelog(since: str = "", lang: str = ""):
     # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
     # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
     lang = _safe_locale(lang)
-    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    # 确定 fallback 链，与 survey 下发口（_load_survey_for_version）保持一致：
+    # 具体 locale（含 zh-TW 等中文变体）先试自己的子目录 -> 非中文再回退 en ->
+    # 最后都落到简体中文原文（zh_content）。zh-TW 也 startswith("zh")，但简体
+    # base 并无 zh-CN/ 子目录，所以简体请求自然落回原文，不受影响。
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
-    if not is_chinese:
-        if lang:
-            fallback_langs.append(lang)
-        if "en" not in fallback_langs:
-            fallback_langs.append("en")
+    if lang:
+        fallback_langs.append(lang)
+    if not is_chinese and "en" not in fallback_langs:
+        fallback_langs.append("en")
 
     def _read_localized(stem: str, zh_content: str) -> str:
         """Look up the localized version along the fallback chain; returns the original Chinese when not found."""
@@ -1306,7 +1309,7 @@ async def get_changelog(since: str = "", lang: str = ""):
                         zh_content = f.read()
                 except Exception:
                     zh_content = ""
-                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                content = _read_localized(stem, zh_content)
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}

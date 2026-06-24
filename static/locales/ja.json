@@ -4287,10 +4287,7 @@
          "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
-             "shooter": "バドミントンチャレンジ",
-             "duel": "Yui と対戦",
-             "timed": "タイムアタック",
-             "horse": "HORSE"
+             "duel": "Yui と勝負"
          },
          "hud": {
              "score": "スコア {{score}}",
@@ -4303,16 +4300,11 @@
              "practice": "フリー練習",
              "yourTurn": "あなたの番",
              "nekoTurn": "Neko のショット",
-             "horseLetters": "あなた {{player}} / Neko {{neko}}",
-             "horseChallenge": "再現 {{distance}} {{angle}}°",
-             "horseSet": "お題ターン",
              "unlimitedAttempts": "無制限",
              "chances": "残り {{count}}",
              "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
              "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
              "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
-             "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
-             "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "オン",
              "off": "オフ"
@@ -4325,8 +4317,6 @@
              "rating": "操作評価：{{rating}}",
              "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
              "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-             "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
-             "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
              "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
              "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
              "attemptsSummary": "ショット概要：{{summary}}",
@@ -4343,7 +4333,6 @@
              "title": "ランキング",
              "global": "グローバル",
              "local": "ローカル",
-             "shooter": "ショット",
              "duel": "対戦",
              "empty": "記録はまだありません",
              "totalPlayers": "プレイヤー {{count}}",
@@ -4351,11 +4340,8 @@
              "recent": "最近 {{count}} 試合",
              "loading": "読み込み中...",
              "mode": {
-                 "shooter": "ショット",
-                 "duel": "対戦",
-                 "timed": "タイム",
-                 "horse": "HORSE",
-                 "spectator": "観戦"
+                 "spectator": "観戦",
+                 "duel": "対戦"
              }
          },
          "debug": {
@@ -4376,8 +4362,7 @@
                  "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
                  "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
                  "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
-                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4524,64 +4509,6 @@
                      "??????????"
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "?????????",
-                     "?????????????"
-                 ],
-                 "game_over": [
-                     "?????????",
-                     "??????????"
-                 ],
-                 "long_aim": [
-                     "?????????",
-                     "???????????"
-                 ],
-                 "close_to_record": [
-                     "???????",
-                     "???????????"
-                 ],
-                 "new_record": [
-                     "???????",
-                     "????????"
-                 ],
-                 "streak_5": [
-                     "????????????",
-                     "????????????"
-                 ],
-                 "streak_10": [
-                     "??????????",
-                     "?????????????"
-                 ],
-                 "streak_15": [
-                     "?????????????",
-                     "????????????"
-                 ],
-                 "streak_20": [
-                     "???????????",
-                     "????????????????"
-                 ],
-                 "line_in": [
-                     "?????????",
-                     "?????????????"
-                 ],
-                 "net_touch": [
-                     "?????????",
-                     "??????????"
-                 ],
-                 "zone_in": [
-                     "???????????",
-                     "??????????"
-                 ],
-                 "out": [
-                     "????????",
-                     "????????"
-                 ],
-                 "net": [
-                     "??????????",
-                     "??????????"
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "まだチャンスはある。",
@@ -4698,10 +4625,6 @@
                  "lastBehind": "これを決めれば勝ち。",
                  "playerAhead": "なかなかやるね...",
                  "playerBehind": "もっと押して。"
-             },
-             "horse": {
-                 "nekoMiss": "再現できなかったね。{{letters}} を追加。",
-                 "playerMiss": "あなたにも {{letters}} を追加。"
              },
              "mindGame": [
                  "手が震えてるよ。",

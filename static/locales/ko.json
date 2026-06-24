@@ -4287,10 +4287,7 @@
          "modeSwitcher": "배드민턴 모드",
          "mode": {
              "spectator": "자유 연습",
-             "shooter": "샷 챌린지",
-             "duel": "Yui와 대결",
-             "timed": "타임 어택",
-             "horse": "HORSE"
+             "duel": "Yui와 승부"
          },
          "hud": {
              "score": "점수 {{score}}",
@@ -4303,16 +4300,11 @@
              "practice": "자유 연습",
              "yourTurn": "내 차례",
              "nekoTurn": "Neko 샷",
-             "horseLetters": "나 {{player}} / Neko {{neko}}",
-             "horseChallenge": "재현 {{distance}} {{angle}}°",
-             "horseSet": "문제 내기",
              "unlimitedAttempts": "무제한",
              "chances": "기회 {{count}}",
              "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
              "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
              "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
-             "timedTitle": "타임 어택: 60초 동안 무제한 샷",
-             "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "켜짐",
              "off": "꺼짐"
@@ -4325,8 +4317,6 @@
              "rating": "조작 평가: {{rating}}",
              "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
              "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
-             "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
-             "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
              "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
              "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
              "attemptsSummary": "샷 요약: {{summary}}",
@@ -4343,7 +4333,6 @@
              "title": "순위표",
              "global": "글로벌",
              "local": "로컬",
-             "shooter": "샷",
              "duel": "대결",
              "empty": "아직 기록이 없습니다",
              "totalPlayers": "플레이어 {{count}}",
@@ -4351,11 +4340,8 @@
              "recent": "최근 {{count}}경기",
              "loading": "로딩 중...",
              "mode": {
-                 "shooter": "샷",
-                 "duel": "대결",
-                 "timed": "시간 제한",
-                 "horse": "HORSE",
-                 "spectator": "관전"
+                 "spectator": "관전",
+                 "duel": "대결"
              }
          },
          "debug": {
@@ -4376,8 +4362,7 @@
                  "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
                  "score": "점수={{score}}  남음={{remaining}}/{{total}}",
                  "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
-                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4524,64 +4509,6 @@
                      "?? ?? ??."
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "??? ?? ??.",
-                     "???. ?? ?? ? ??."
-                 ],
-                 "game_over": [
-                     "??? ? ???? ?.",
-                     "?? ?? ?? ?."
-                 ],
-                 "long_aim": [
-                     "??, ?? ??.",
-                     "?? ?? ??? ????"
-                 ],
-                 "close_to_record": [
-                     "??? ???.",
-                     "?? ??? ?? ?."
-                 ],
-                 "new_record": [
-                     "??, ? ??.",
-                     "??? ???? ???."
-                 ],
-                 "streak_5": [
-                     "?? ? ??. ??? ?.",
-                     "? ??? ?????."
-                 ],
-                 "streak_10": [
-                     "? ?? ???? ?.",
-                     "?? ? ?????."
-                 ],
-                 "streak_15": [
-                     "???? ???? ?.",
-                     "?? ? ? ???."
-                 ],
-                 "streak_20": [
-                     "?? ?? ??? ??",
-                     "?? ??? ? ?????."
-                 ],
-                 "line_in": [
-                     "??, ????.",
-                     "?? ?? ? ???."
-                 ],
-                 "net_touch": [
-                     "??? ???.",
-                     "??? ??? ???."
-                 ],
-                 "zone_in": [
-                     "?? ?. ?? ???.",
-                     "???? ? ???."
-                 ],
-                 "out": [
-                     "?? ??? ?.",
-                     "??? ????."
-                 ],
-                 "net": [
-                     "??? ???? ???",
-                     "?? ?? ??."
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "아직 기회가 있어.",
@@ -4698,10 +4625,6 @@
                  "lastBehind": "이걸 넣으면 이겨.",
                  "playerAhead": "제법인데...",
                  "playerBehind": "더 밀어붙여."
-             },
-             "horse": {
-                 "nekoMiss": "못 따라 했네. {{letters}} 추가.",
-                 "playerMiss": "너도 {{letters}} 추가."
              },
              "mindGame": [
                  "손 떨리는 거 봤어.",
