@@ -460,9 +460,9 @@ def test_focus_extra_body_provider_dialects():
         "extra_body": {"google": {"thinking_config": {"thinking_budget": -1}}}
     }
     assert focus_extra_body("gemini-3-flash-preview") == {
-        "extra_body": {"google": {"thinking_config": {"thinking_level": "high", "include_thoughts": True}}}
+        "extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}
     }
-    assert focus_extra_body("google/gemini-2.5-flash") == {"reasoning": {"effort": "high"}}
+    assert focus_extra_body("google/gemini-2.5-flash") == {"reasoning": {"effort": "low"}}
 
     # MiniMax reasoning_split is not an on/off knob → preserved, not flipped
     assert focus_extra_body("MiniMax-M2.5") == EXTRA_BODY_MINIMAX

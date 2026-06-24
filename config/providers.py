@@ -47,12 +47,12 @@ EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_bud
 EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_budget": -1}}}}
 
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
-# Gemini 3: 思考档位 low→high，并透出思考过程（thoughts 走独立字段，不混进 content）。
-EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "high", "include_thoughts": True}}}}
+# Gemini 3: 思考档位保持最低(low)，只把思考过程透出(thoughts 走独立字段，不混进 content)。
+EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
 
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
-# OpenRouter: effort none→high（凝神是深思场景）。
-EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "high"}}
+# OpenRouter: effort none→low（开思考但取最低努力档）。
+EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
 # MiniMax 的 reasoning_split 在本仓无语义记录，且不像 thinking 的 on/off 开关；凝神
 # 暂不翻它（不收录进下方 _THINKING_ENABLE_FORM 即表示「保持原值」），待其真实语义确认。
@@ -180,8 +180,8 @@ def focus_extra_body(model: str) -> dict | None:
       - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
       - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
       - thinking_budget: 0 -> -1 (dynamic)              (Gemini 2.5)
-      - thinking_level low->high, include_thoughts->True (Gemini 3)
-      - reasoning.effort: none -> high                  (OpenRouter)
+      - thinking_level low (最低档), include_thoughts->True (Gemini 3)
+      - reasoning.effort: none -> low                   (OpenRouter)
 
     Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
     ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.
