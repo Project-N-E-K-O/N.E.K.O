@@ -169,6 +169,20 @@ function interactionRouteLabel(route: string, t: (key: string) => string): strin
   return route
 }
 
+function eventSignalTone(signal: string): "success" | "warning" | "danger" | "default" {
+  if (signal === "gift_signal") return "warning"
+  if (signal === "super_chat_signal") return "success"
+  if (signal === "danmaku_signal") return "default"
+  return "default"
+}
+
+function eventSignalLabel(signal: string, t: (key: string) => string): string {
+  if (signal === "gift_signal") return t("panel.eventSignal.gift_signal")
+  if (signal === "super_chat_signal") return t("panel.eventSignal.super_chat_signal")
+  if (signal === "danmaku_signal") return t("panel.eventSignal.danmaku_signal")
+  return t("panel.eventSignal.unknown")
+}
+
 function latestEventLabel(result: any): string {
   const event = (result && result.event) || {}
   const identity = (result && result.identity) || {}
@@ -936,7 +950,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Grid cols={4}>
           <StatCard label={t("panel.interaction.currentDecision.latestEvent")} value={latestResult ? latestEventLabel(latestResult) : t("panel.interaction.currentDecision.noResult")} />
           <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={interactionRouteLabel(latestRoute, t)} />} />
-          <StatCard label={t("panel.interaction.currentDecision.eventSignal")} value={latestEventSignal} />
+          <StatCard label={t("panel.interaction.currentDecision.eventSignal")} value={<StatusBadge tone={eventSignalTone(latestEventSignal)} label={eventSignalLabel(latestEventSignal, t)} />} />
           <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
         </Grid>
         <Grid cols={3}>
@@ -1201,6 +1215,14 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             columns={[
               { key: "uid", label: "UID", render: (row: any) => row.identity?.uid || row.event?.uid || "-" },
               { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.identity?.nickname || row.event?.nickname || "-" },
+              { key: "response_module", label: t("panel.columns.responseModule"), render: (row: any) => {
+                const route = interactionRoute(row)
+                return <StatusBadge tone={interactionRouteTone(route)} label={interactionRouteLabel(route, t)} />
+              } },
+              { key: "event_signal", label: t("panel.columns.eventSignal"), render: (row: any) => {
+                const signal = String(row.event_signal || "unknown")
+                return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
+              } },
               { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
               { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
               { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },

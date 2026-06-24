@@ -68,6 +68,18 @@ def test_panel_renders_interaction_module_split_and_speaking_decision():
     assert "panel.interaction.module.activeEngagement.desc" in source
 
 
+def test_panel_recent_results_show_route_and_signal_labels():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+
+    assert "panel.columns.responseModule" in source
+    assert "panel.columns.eventSignal" in source
+    assert "eventSignalLabel" in source
+    assert "panel.eventSignal.gift_signal" in source
+    assert "panel.eventSignal.super_chat_signal" in source
+    assert "panel.eventSignal.danmaku_signal" in source
+
+
 def test_panel_renders_solo_stream_test_readiness():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
@@ -175,6 +187,8 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusSummary.cannot_stream",
         "panel.liveStatusSummary.cooldown",
         "panel.columns.responseLatency",
+        "panel.columns.responseModule",
+        "panel.columns.eventSignal",
         "panel.liveStatusReason.ready",
         "panel.liveStatusReason.dry_run",
         "panel.liveStatusReason.manual_paused",
@@ -339,6 +353,10 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.interaction.tags.cooldown",
         "panel.interaction.tags.activeQuestion",
         "panel.interaction.tags.openingBeat",
+        "panel.eventSignal.danmaku_signal",
+        "panel.eventSignal.gift_signal",
+        "panel.eventSignal.super_chat_signal",
+        "panel.eventSignal.unknown",
     }
 
     for locale_path in sorted((root / "i18n").glob("*.json")):
