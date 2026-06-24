@@ -794,7 +794,7 @@ async def test_update_focus_retention_override_and_count_turn(monkeypatch):
 # 凝神退出(任何路径)时，把上一个 episode 留在历史里的 reasoning_content + 已闭合
 # tool call 配对清掉，防止带偏退出后的 REGULAR 对话乃至新 session。
 def _tool_pair(call_id="c1", *, reasoning=None, name="t"):
-    """构造一条 assistant tool_calls 消息 + 紧随的 tool result（已闭合配对）。"""
+    """Build one assistant tool_calls message + the following tool result (closed pair)."""
     assistant = {
         "role": "assistant",
         "content": "",
@@ -808,8 +808,9 @@ def _tool_pair(call_id="c1", *, reasoning=None, name="t"):
 
 
 def test_purge_closed_tool_calls():
-    """已闭合 tool-call 配对(assistant tool_calls + tool result)连同寄生其上的
-    reasoning_content 一并整对删除；普通 Human/AI/System 消息保留。"""
+    """A closed tool-call pair (assistant tool_calls + tool result) is deleted as a
+    whole, together with the reasoning_content riding on it; plain Human/AI/System
+    messages are kept."""
     from main_logic.core import _purge_closed_tool_calls
     from utils.llm_client import SystemMessage, HumanMessage, AIMessage
 
@@ -849,7 +850,7 @@ def test_purge_multiple_calls_one_turn():
 
 
 def test_purge_respects_start():
-    """start 把清理限定在 episode 的历史后缀：start 之前的闭合 tool call 保留。"""
+    """start confines the purge to the episode's history suffix: closed tool calls before start are kept."""
     from main_logic.core import _purge_closed_tool_calls
     pre_a, pre_r = _tool_pair("pre")
     ep_a, ep_r = _tool_pair("ep", reasoning="…")
@@ -863,7 +864,7 @@ def test_purge_respects_start():
 
 
 def _purge_mgr(monkeypatch, history):
-    """裸 LLMSessionManager + 携带 _conversation_history 的假 OmniOfflineClient。"""
+    """Bare LLMSessionManager + a fake OmniOfflineClient carrying _conversation_history."""
     from main_logic.core import LLMSessionManager
     from main_logic.omni_offline_client import OmniOfflineClient
     mgr = LLMSessionManager.__new__(LLMSessionManager)
@@ -883,8 +884,9 @@ def _purge_mgr(monkeypatch, history):
 
 
 async def test_maybe_purge_only_after_exit(monkeypatch):
-    """_maybe_purge 只在「曾进入 FOCUS(armed) 且已回到 REGULAR」时清一次；未 arm /
-    仍在 FOCUS 时不动；清后 disarm 且幂等。"""
+    """_maybe_purge cleans once only when Focus was entered (armed) AND has dropped
+    back to REGULAR; no-ops when not armed / still in FOCUS; after cleaning it
+    disarms and is idempotent."""
     _patch_charge(monkeypatch, enter=1.0, exit=0.3)
     a, r = _tool_pair("c1", reasoning="…")
     mgr, sess = _purge_mgr(monkeypatch, [a, r])
@@ -912,8 +914,9 @@ async def test_maybe_purge_only_after_exit(monkeypatch):
 
 
 async def test_inline_decision_purges_episode_only(monkeypatch):
-    """inline 端到端 + episode-scope：进 FOCUS 记历史起点；退出只清 episode 期间
-    产生的已闭合 tool call，Focus 之前的普通 tool call 保留。"""
+    """inline end-to-end + episode-scope: entering FOCUS records the history start;
+    exiting purges only the closed tool calls produced during the episode, keeping
+    the plain tool calls from before Focus."""
     from main_logic.omni_offline_client import OmniOfflineClient
     keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
     _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1), exit=0.3, retention=0.5)

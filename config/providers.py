@@ -193,7 +193,7 @@ def focus_extra_body(model: str) -> dict | None:
       - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
       - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
-      - thinking_level low (最低档), include_thoughts->True (Gemini 3)
+      - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none -> low                   (OpenRouter)
 
     Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in

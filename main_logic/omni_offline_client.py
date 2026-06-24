@@ -1738,7 +1738,7 @@ class OmniOfflineClient:
         built-in web_search), which a blunt ``extra_body=None`` would drop.
         Returns ``{}`` (instance default, thinking off) otherwise.
 
-        Vision-model turns are included: 凝神 runs thinking-on regardless of
+        Vision-model turns are included: Focus runs thinking-on regardless of
         whether the turn carries images. The inline streaming timeout
         (``DIALOG_LLM_STREAM_TIMEOUT_SECONDS``, 180s) is generous enough for a
         vision reasoning turn — unlike the short-windowed proactive Phase-2 path,
