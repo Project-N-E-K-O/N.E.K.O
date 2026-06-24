@@ -508,10 +508,6 @@
                 ?? emotionConfig?.duration_ms
                 ?? 3200
             ) || 0);
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
-            }
             if (normalized === 'neutral' || normalized === 'idle') {
                 return this.clearEmotion({ source: options.source || 'emotion' });
             }
@@ -529,13 +525,19 @@
                 applied = true;
             }
 
-            if (applied && durationMs > 0 && !this.isSpeaking) {
+            if (!applied) return false;
+
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            if (durationMs > 0 && !this.isSpeaking) {
                 this.emotionTimer = setTimeout(() => {
                     this.emotionTimer = null;
                     this.clearEmotion({ source: 'emotion-timeout' });
                 }, durationMs);
             }
-            return applied;
+            return true;
         }
 
         hotkeyMatchesEvent(hotkey, event) {

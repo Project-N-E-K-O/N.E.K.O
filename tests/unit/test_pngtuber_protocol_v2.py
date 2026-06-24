@@ -1,6 +1,9 @@
 import json
-from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from main_routers import pngtuber_router as pngtuber_router_module
 from main_routers.pngtuber_importers import import_pngtuber_package
 from main_routers.pngtuber_protocol import (
     NEKO_PNGTUBER_ADAPTER,
@@ -11,10 +14,6 @@ from main_routers.pngtuber_protocol import (
     validate_neko_pngtuber_v2_package,
 )
 from main_routers.pngtuber_router import _normalize_pngtuber_config, _validate_model_package
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PNGTUBER_ROUTER_PATH = PROJECT_ROOT / "main_routers" / "pngtuber_router.py"
 
 
 def _write_minimal_neko_pngtuber_v2_package(package_dir):
@@ -99,15 +98,78 @@ def test_neko_pngtuber_v2_sample_import_and_normalize_contract(tmp_path):
     assert normalized["idle_image"] == "/user_pngtuber/sample_v2/assets/idle.png"
 
 
-def test_pngtuber_upload_writes_source_format_before_normalizing_config():
-    source = PNGTUBER_ROUTER_PATH.read_text(encoding="utf-8")
-    upload_block = source[
-        source.index("        source_format = str(model_json.get(\"source_format\") or import_result.source_format)"):
-        source.index("        with open(temp_dir / \"model.json\"", source.index("        source_format = str(model_json.get(\"source_format\") or import_result.source_format)"))
-    ]
+@pytest.mark.asyncio
+async def test_pngtuber_upload_writes_source_format_before_normalizing_config(tmp_path, monkeypatch):
+    class FakeUploadFile:
+        def __init__(self, filename, data):
+            self.filename = filename
+            self._data = data
+            self._read = False
 
-    assert upload_block.index("model_json[\"source_format\"] = source_format") < upload_block.index("normalized_config = _normalize_pngtuber_config")
-    assert "pngtuber_config[\"source_format\"] = source_format" in upload_block
+        async def read(self, _size=-1):
+            if self._read:
+                return b""
+            self._read = True
+            return self._data
+
+        async def close(self):
+            pass
+
+    pngtuber_dir = tmp_path / "user_pngtuber"
+
+    monkeypatch.setattr(
+        pngtuber_router_module,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            pngtuber_dir=pngtuber_dir,
+            ensure_pngtuber_directory=lambda: (pngtuber_dir.mkdir(parents=True, exist_ok=True) or True),
+        ),
+    )
+
+    import_model_json = {
+        "name": "Imported PNGTuber",
+        "model_type": "pngtuber",
+        "pngtuber": {
+            "idle_image": "idle.png",
+            "talking_image": "talking.png",
+        },
+    }
+    monkeypatch.setattr(
+        pngtuber_router_module,
+        "import_pngtuber_package",
+        lambda *_args: SimpleNamespace(
+            model_json=import_model_json,
+            source_format="pngtube_remix_pngremix",
+            model_name="Imported PNGTuber",
+            message="",
+            warnings=[],
+        ),
+    )
+
+    observed = {}
+
+    def capture_normalized_config(model_dir_name, model_json):
+        observed["model_dir_name"] = model_dir_name
+        observed["source_format"] = model_json.get("source_format")
+        observed["pngtuber_source_format"] = model_json["pngtuber"].get("source_format")
+        return {"source_format": model_json.get("source_format")}
+
+    monkeypatch.setattr(pngtuber_router_module, "_normalize_pngtuber_config", capture_normalized_config)
+
+    response = await pngtuber_router_module.upload_pngtuber_model([
+        FakeUploadFile("model.json", b"{}"),
+        FakeUploadFile("idle.png", b"png"),
+        FakeUploadFile("talking.png", b"png"),
+    ])
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert observed == {
+        "model_dir_name": "Imported_PNGTuber",
+        "source_format": "pngtube_remix_pngremix",
+        "pngtuber_source_format": "pngtube_remix_pngremix",
+    }
+    assert body["pngtuber"]["source_format"] == "pngtube_remix_pngremix"
 
 
 def test_legacy_layered_canvas_package_still_validates(tmp_path):

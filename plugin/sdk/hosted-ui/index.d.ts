@@ -43,9 +43,18 @@ export type AsyncState<T> = { loading: boolean; error: any; data: T | undefined;
 export type FormState<T extends Record<string, any>> = {
   values: T
   setValues: (next: T | ((previous: T) => T)) => T
-  setField: (name: keyof T | string, value: any) => T
-  field: (name: keyof T | string) => { value: any; onChange: (value: any) => T }
-  checkbox: (name: keyof T | string) => { checked: boolean; onChange: (value: boolean) => T }
+  setField: {
+    <K extends keyof T>(name: K, value: T[K]): T
+    (name: string, value: any): T
+  }
+  field: {
+    <K extends keyof T>(name: K): { value: T[K]; onChange: (value: T[K]) => T }
+    (name: string): { value: any; onChange: (value: any) => T }
+  }
+  checkbox: {
+    <K extends keyof T>(name: K): { checked: boolean; onChange: (value: boolean) => T }
+    (name: string): { checked: boolean; onChange: (value: boolean) => T }
+  }
   reset: (next?: T | (() => T)) => T
 }
 

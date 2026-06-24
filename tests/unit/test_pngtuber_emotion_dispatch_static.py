@@ -56,3 +56,12 @@ def test_pngtuber_emotion_falls_back_to_image_state():
     assert "if (!applied && !this.isLayeredActive() && this.config[`${normalized}_image`])" in block
     assert "this.setState(normalized);" in block
     assert "applied = true;" in block
+
+
+def test_pngtuber_unknown_emotion_keeps_existing_return_timer():
+    script = PNGTUBER_CORE_JS.read_text(encoding="utf-8")
+    start = script.index("        setEmotion(emotion, options = {})")
+    end = script.index("        hotkeyMatchesEvent(hotkey, event)", start)
+    block = script[start:end]
+
+    assert block.index("if (!applied) return false;") < block.index("if (this.emotionTimer)")
