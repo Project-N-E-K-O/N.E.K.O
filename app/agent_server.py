@@ -59,6 +59,8 @@ from config import (
     TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
     USER_NOTIFICATION_REASON_MAX_CHARS,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
+    AGENT_PROACTIVE_ANALYZE_ENABLED,
+    AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
 )
 from utils.config_manager import get_config_manager
 from utils.tokenize import truncate_to_tokens as _tt
@@ -154,6 +156,11 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
+    # Proactive-analyze throttle state (opt-in feature, see AGENT_PROACTIVE_ANALYZE_*).
+    # Per-lanlan count of proactive analyses run this session (reset on greeting_check)
+    # and the last proactive assistant-turn fingerprint already consumed (dedupe).
+    proactive_analyze_count: ClassVar[Dict[str, int]] = {}
+    last_proactive_assistant_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
@@ -1553,6 +1560,31 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     return hashlib.sha256(payload_bytes).hexdigest()
 
 
+def _build_assistant_turn_fingerprint(messages: Any) -> Optional[str]:
+    """Build a stable fingerprint from assistant-role message texts only.
+
+    Used by the proactive-analyze path to ensure each distinct proactive
+    utterance is analyzed at most once (a re-sent / duplicate proactive
+    ``turn end`` carries the same assistant text → same fingerprint → skip).
+    Mirrors ``_build_user_turn_fingerprint`` but on the assistant side, since a
+    proactive turn has no new user message to key on. Returns None when the
+    window has no assistant text.
+    """
+    if not isinstance(messages, list):
+        return None
+    parts: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict) or str(m.get("role") or "").lower() != "assistant":
+            continue
+        text = str(m.get("text") or m.get("content") or "").strip()
+        if text:
+            parts.append(text)
+    if not parts:
+        return None
+    payload_bytes = "\n".join(parts).encode("utf-8", errors="ignore")
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
 def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:
     fp = _build_user_turn_fingerprint(event.get("messages", []))
     if fp is None:
@@ -1594,8 +1626,14 @@ REDACTED_USER_TURN_MARKER = (
 )
 
 
-def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> list:
+def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, preserve_trailing_assistant: bool = False) -> list:
     """Return a messages copy with cancelled user turns removed.
+
+    ``preserve_trailing_assistant`` keeps the LAST assistant message out of the
+    redaction. On a proactive turn that message is lanlan's own utterance being
+    analyzed (no next-user boundary follows it), so it must survive even when it
+    trails a cancelled user — otherwise the proactive intent is stripped before
+    ``_format_messages`` and the turn spends a budget slot without dispatching.
 
     Rule: a user message matches the cancel set (its sig is in
     `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
@@ -1657,6 +1695,15 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
     if not redact_indices:
         return messages
 
+    # Index of the last assistant message — preserved from redaction when
+    # ``preserve_trailing_assistant`` is set (the proactive utterance).
+    keep_assistant_idx = -1
+    if preserve_trailing_assistant:
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                keep_assistant_idx = i
+                break
+
     redacted: list = []
     drop_until_next_user = False
     for idx, m in enumerate(messages):
@@ -1672,6 +1719,10 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
             # 只吞掉被取消任务产出的 assistant/tool 段；夹在中间的 system
             # 消息（session callback、context 注入等）跟取消请求无关，保留。
             if isinstance(m, dict) and m.get("role") in {"assistant", "tool"}:
+                # 主动搭话轮：那条被分析的主动台词（最后一条 assistant）必须留下，
+                # 否则下游 _format_messages 取不到主动意图、白白消耗一个预算名额。
+                if idx == keep_assistant_idx:
+                    redacted.append(m)
                 continue
         redacted.append(m)
     return redacted
@@ -1782,6 +1833,48 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
+def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id) -> None:
+    """Throttled proactive-analyze path (opt-in via AGENT_PROACTIVE_ANALYZE_ENABLED).
+
+    A proactive turn has no new user input, so the ordinary user-turn dedupe
+    would drop it. Instead we let lanlan's self-initiated utterance trigger one
+    analyzer pass, bounded by three gates so it can never fire frequently:
+      * the master enable switch (off → never run);
+      * an assistant-text fingerprint (dedupe identical proactive utterances —
+        a re-sent proactive turn must not re-analyze);
+      * a per-session count cap (AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION), reset
+        on greeting_check. This is the anti-cheap-layer / cost ceiling: it counts
+        analyzer RUNS (incl. ones that dispatch no tool), so a session can spend
+        at most N proactive analyzer calls regardless of how chatty lanlan is.
+    """
+    if not bool(AGENT_PROACTIVE_ANALYZE_ENABLED):
+        logger.info("[AgentAnalyze] skip proactive: disabled (lanlan=%s)", lanlan_name)
+        return
+    # fp is None ⟺ no assistant utterance to analyze (the executor pulls the
+    # actual proactive intent text from the same assistant turn downstream).
+    fp = _build_assistant_turn_fingerprint(messages)
+    if fp is None:
+        logger.info("[AgentAnalyze] skip proactive: no assistant utterance (lanlan=%s)", lanlan_name)
+        return
+    if Modules.last_proactive_assistant_fingerprint.get(lanlan_key) == fp:
+        logger.info("[AgentAnalyze] skip proactive: duplicate proactive utterance (lanlan=%s)", lanlan_name)
+        return
+    cap = max(0, int(AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION))
+    used = int(Modules.proactive_analyze_count.get(lanlan_key, 0))
+    if used >= cap:
+        logger.info("[AgentAnalyze] skip proactive: per-session cap reached (%d/%d, lanlan=%s)", used, cap, lanlan_name)
+        return
+    # Reserve the slot + dedupe fp BEFORE dispatch so concurrent proactive events
+    # can't both pass the cap check.
+    Modules.proactive_analyze_count[lanlan_key] = used + 1
+    Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
+    logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
+    _create_tracked_task(_background_analyze_and_plan(
+        messages, lanlan_name, conversation_id=conversation_id,
+        external_intent=None, proactive=True,
+    ))
+
+
 async def _on_session_event(event: Dict[str, Any]) -> None:
     event_type = (event or {}).get("event_type")
     if event_type == "agent_intent_restore_signal":
@@ -1792,6 +1885,19 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # and plugin lifecycle startup during the cold-start window
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
+        # Reset the per-session proactive-analyze budget ONLY on a genuine new
+        # session (character switch or a real gap) — never on a refresh/reconnect
+        # or a concurrent second window, which also fire greeting_check. Otherwise
+        # a user could refresh/parallel-open to farm a fresh cap mid-conversation,
+        # defeating the per-session bound. ``new_session`` is decided by
+        # websocket_router (is_switch or >15s gap, AND sole active connection).
+        # Done BEFORE the restore await so a restore failure can't leave a genuine
+        # new session stuck on the old cap / fingerprint.
+        if (event or {}).get("new_session"):
+            _key = _normalize_lanlan_key((event or {}).get("lanlan_name"))
+            if _key:
+                Modules.proactive_analyze_count.pop(_key, None)
+                Modules.last_proactive_assistant_fingerprint.pop(_key, None)
         await _maybe_restore_agent_intent()
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
@@ -1808,8 +1914,17 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
             return
         if isinstance(messages, list) and messages:
-            # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
+            conversation_id = event.get("conversation_id")
+            # Proactive (self-initiated, no fresh user input) turn: opt-in,
+            # separate throttled path. The ordinary user-turn dedupe below would
+            # always drop these (the latest user message is a stale prior turn,
+            # so its fingerprint matches), so proactive routing is mandatory, not
+            # an optimization.
+            if event.get("proactive"):
+                _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id)
+                return
+            # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             fp = _build_analyze_event_fingerprint(event)
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
@@ -1823,7 +1938,6 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # - Cancelled tasks not emitting task_result callbacks
             # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
-            conversation_id = event.get("conversation_id")
             # Cheap pre-gate hint from the input-time master-emotion call (rides
             # the analyze_request payload). Absent → None → the gate fails open.
             external_intent = event.get("external_intent")
@@ -2137,7 +2251,7 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
     """
     [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
     
@@ -2163,10 +2277,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -2176,12 +2290,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
         # 在 inject 之前先把已被用户 UI 取消的 user turn 整段 redact，让 analyzer
         # 完全看不到那条请求；inject 阶段也会跳过 cancelled 任务的所有 record。
-        redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name)
+        redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name, preserve_trailing_assistant=proactive)
         # 单条 user 消息签名：派单时塞到 task info 里。取自 redacted_messages
         # 而非 raw —— analyzer 实际看到的最新 user 才是该任务的真触发者；
         # 正常场景下 raw-latest 是 first-time bypass、没被 redact，两个签名
         # 一致，区别仅在 raw-latest 已经被 redact 的边界 case。
-        trigger_user_msg_sig = _last_user_message_signature(redacted_messages)
+        # 主动搭话轮没有触发它的 user 消息：绝不把它绑到窗口里那条陈旧 user 签名上，
+        # 否则用户取消这条主动任务会误把那条旧 user turn 标记为 cancelled、下一轮被
+        # redact 掉。proactive → 不绑 user 触发签名。
+        trigger_user_msg_sig = None if proactive else _last_user_message_signature(redacted_messages)
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行
@@ -2191,6 +2308,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
             external_intent=external_intent,
+            proactive=proactive,
         )
 
         if result is None:
@@ -5666,6 +5784,8 @@ async def admin_control(payload: Dict[str, Any]):
 
         Modules.task_registry.clear()
         Modules.last_user_turn_fingerprint.clear()
+        Modules.proactive_analyze_count.clear()
+        Modules.last_proactive_assistant_fingerprint.clear()
         # Clear scheduling state
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
