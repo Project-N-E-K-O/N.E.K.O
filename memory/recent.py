@@ -523,23 +523,23 @@ class CompressedRecentHistoryManager:
                         raw_summary if isinstance(raw_summary, str)
                         else json.dumps(raw_summary, ensure_ascii=False)
                     )
-                    logger.info("💗摘要结果：len=%s", len(summary))
+                    print(f"💗摘要结果：{summary}")
                     return summary
                 else:
-                    logger.warning("💥 摘要failed: len=%s", len(response_content))
+                    print('💥 摘要failed: ', response_content)
                     retries += 1
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    logger.error(f'❌ 摘要模型失败，已达到最大重试次数: {e}')
+                    print(f'❌ 摘要模型失败，已达到最大重试次数: {e}')
                     break
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                logger.warning(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
             except Exception as e:
-                logger.error(f'❌ 摘要模型失败：{e}')
+                print(f'❌ 摘要模型失败：{e}')
                 # 如果解析失败，重试
                 retries += 1
         return None
@@ -874,23 +874,23 @@ class CompressedRecentHistoryManager:
                     sane = truncate_to_last_sentence_end(summary_text)
                     if not sane:
                         sane = summary_text
-                    logger.info("💗第二轮摘要结果：len=%s", len(sane))
+                    print(f"💗第二轮摘要结果：{sane}")
                     return sane
                 else:
-                    logger.warning("💥 第二轮摘要failed: len=%s", len(response_content))
+                    print('💥 第二轮摘要failed: ', response_content)
                     retries += 1
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    logger.error(f'❌ 第二轮摘要模型失败，已达到最大重试次数: {e}')
+                    print(f'❌ 第二轮摘要模型失败，已达到最大重试次数: {e}')
                     return None
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                logger.warning(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
             except Exception as e:
-                logger.error(f'❌ 第二轮摘要模型失败：{e}')
+                print(f'❌ 第二轮摘要模型失败：{e}')
                 retries += 1
         return None
 
@@ -971,7 +971,7 @@ class CompressedRecentHistoryManager:
         """
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
-            logger.info(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
+            print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
             return ('failed', None)
 
         # snapshot 由 caller 提供（spawn 时拍下）；为兼容老调用兜底从磁盘读
@@ -979,7 +979,7 @@ class CompressedRecentHistoryManager:
             snapshot = await self.aget_recent_history(lanlan_name)
 
         if not snapshot:
-            logger.info(f"{lanlan_name} 的历史记录为空，无需审阅")
+            print(f"{lanlan_name} 的历史记录为空，无需审阅")
             return ('failed', None)
 
         # 将 snapshot 转为可读文本格式（喂 LLM）
@@ -1007,7 +1007,7 @@ class CompressedRecentHistoryManager:
 
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
-            logger.info(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
+            print(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
             return ('failed', None)
 
         retries = 0
@@ -1033,7 +1033,7 @@ class CompressedRecentHistoryManager:
 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
-                    logger.info(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
+                    print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
                 # 确保response_content是字符串
@@ -1052,10 +1052,10 @@ class CompressedRecentHistoryManager:
                     and 'explanation' in review_result
                     and isinstance(review_result.get('corrected_dialogue'), list)
                 ):
-                    logger.warning("❌ 审阅响应格式错误：len=%s", len(response_content))
+                    print(f"❌ 审阅响应格式错误：{response_content}")
                     return ('failed', None)
 
-                logger.info("记忆整理结果：len=%s", len(str(review_result['explanation'])))
+                print(f"记忆整理结果：{review_result['explanation']}")
 
                 # 将修正后的对话转换回消息格式。SystemMessage 类型由 compress
                 # 产生（summary 备忘录），review 不应该输出，丢弃以保护压缩边界。
@@ -1142,7 +1142,7 @@ class CompressedRecentHistoryManager:
 
                 if cutoff_idx is None:
                     # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
-                    logger.info(f"⚠️ {lanlan_name} review 完成但 cutoff 失配（白 review，丢弃）")
+                    print(f"⚠️ {lanlan_name} review 完成但 cutoff 失配（白 review，丢弃）")
                     return ('white', None)
 
                 take_count = min(capacity, len(corrected_messages))
@@ -1150,7 +1150,7 @@ class CompressedRecentHistoryManager:
                     # corrected 为空（罕见：LLM 返回空 corrected_dialogue），等价于
                     # 整段删除 review 范围。视为白 review 让下轮重建锚点；不去
                     # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
-                    logger.info(f"⚠️ {lanlan_name} review 输出为空，按白 review 处理")
+                    print(f"⚠️ {lanlan_name} review 输出为空，按白 review 处理")
                     return ('white', None)
 
                 # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
@@ -1188,7 +1188,7 @@ class CompressedRecentHistoryManager:
                 fp_messages = new_history[fp_start:patched_end + 1]
                 new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
 
-                logger.info(
+                print(
                     f"✅ {lanlan_name} 的记忆已修正：cutoff_idx={cutoff_idx}, "
                     f"capacity={capacity}, corrected={len(corrected_messages)}, "
                     f"take={take_count}, history {len(current)}→{len(new_history)}"
@@ -1199,20 +1199,20 @@ class CompressedRecentHistoryManager:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    logger.error(f'❌ 记忆整理失败，已达到最大重试次数: {e}')
+                    print(f'❌ 记忆整理失败，已达到最大重试次数: {e}')
                     return ('failed', None)
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                logger.warning(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
                 # 检查是否被取消
                 if cancel_event and cancel_event.is_set():
-                    logger.info(f"⚠️ {lanlan_name} 的记忆整理在重试等待期间被取消")
+                    print(f"⚠️ {lanlan_name} 的记忆整理在重试等待期间被取消")
                     return ('failed', None)
             except Exception as e:
                 logger.error(f"❌ 历史记录审阅失败：{e}")
                 return ('failed', None)
 
         # 如果所有重试都失败
-        logger.error(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
+        print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
         return ('failed', None)
