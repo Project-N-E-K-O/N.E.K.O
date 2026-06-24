@@ -514,12 +514,14 @@
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
         var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
+        var deferRevealPrepared = !!reloadOptions.deferRevealPrepared;
         var throwOnError = !!reloadOptions.throwOnError;
         var reloadKey = JSON.stringify({
             lanlan_name: targetLanlanName,
             temporaryConfig: temporaryConfig || null,
             skipIdleRestore: skipIdleRestore,
-            skipPersistentExpressions: skipPersistentExpressions
+            skipPersistentExpressions: skipPersistentExpressions,
+            deferRevealPrepared: deferRevealPrepared
         });
 
         if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
@@ -1169,13 +1171,17 @@
                                 live2dContainer2.classList.remove('hidden');
                                 live2dContainer2.style.display = 'block';
                                 live2dContainer2.style.visibility = 'visible';
-                                live2dContainer2.style.removeProperty('opacity');
+                                if (!deferRevealPrepared) {
+                                    live2dContainer2.style.removeProperty('opacity');
+                                }
                                 live2dContainer2.style.removeProperty('pointer-events');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
                                 live2dCanvas2.style.visibility = 'visible';
-                                live2dCanvas2.style.removeProperty('opacity');
+                                if (!deferRevealPrepared) {
+                                    live2dCanvas2.style.removeProperty('opacity');
+                                }
                                 live2dCanvas2.style.pointerEvents = 'auto';
                             }
                             if (window.lanlan_config) {

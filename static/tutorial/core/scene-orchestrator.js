@@ -240,7 +240,7 @@
             };
         }
 
-        async playScene(scene, day, index, total) {
+        async playScene(scene, day, index, total, roundContext = {}) {
             const director = this.director;
             if (
                 director.scenePausedForResistance
@@ -294,7 +294,8 @@
                     previousSceneId,
                     isFirstDailyScene,
                     preserveExternalizedChatGuideTarget,
-                    preserveIntroExternalizedChatGuideTarget
+                    preserveIntroExternalizedChatGuideTarget,
+                    revealPrepared: roundContext.revealPrepared
                 });
             }
 
@@ -318,7 +319,8 @@
                 previousSceneId,
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
-                preserveIntroExternalizedChatGuideTarget
+                preserveIntroExternalizedChatGuideTarget,
+                revealPrepared: roundContext.revealPrepared
             });
         }
 
@@ -916,7 +918,8 @@
                             config.scenes[index],
                             roundNumber,
                             index,
-                            config.scenes.length
+                            config.scenes.length,
+                            options || {}
                         );
                         if (!keepGoing) {
                             return false;
