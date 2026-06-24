@@ -1700,7 +1700,8 @@ def test_badminton_speak_line_guards_non_chinese_from_chinese_fallback_text():
     assert "if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;" in html
     assert "if (primary === 'ja' && !isKnownChineseFallbackLine(text)) return text;" in html
     assert "if (!isLikelyChineseFallbackLine(text)) return text;" in html
-    assert "var fallback = pickLine(fallbackKey, primary);" in html
+    assert "var fallback = pickLine(fallbackKey, primary, { skipGenerated: true });" in html
+    assert "if (!(options && options.skipGenerated) && generated.length)" in html
     assert "return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');" in html
 
     speak_start = html.index("function speakLine(line, control, event) {")

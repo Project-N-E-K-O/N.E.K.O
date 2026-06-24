@@ -2376,12 +2376,12 @@
     if (primary === 'ja' && !isKnownChineseFallbackLine(text)) return text;
     if (!isLikelyChineseFallbackLine(text)) return text;
     var fallbackKey = getFallbackLineKey(event || {});
-    var fallback = pickLine(fallbackKey, primary);
+    var fallback = pickLine(fallbackKey, primary, { skipGenerated: true });
     return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');
   }
-  function pickLocalizedLine(scope, key, fallback, primary) {
+  function pickLocalizedLine(scope, key, fallback, primary, options) {
     var generated = generatedQuickLines[key] || [];
-    if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
+    if (!(options && options.skipGenerated) && generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
     primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
     var defaultFallback = getDefaultQuickLineFallback(primary);
     var lines = _i18nArray('lines.' + scope + '.' + key, fallback || []);
@@ -2389,13 +2389,13 @@
     if (!lines.length) lines = _i18nArray('lines.fallback', primary === 'zh' ? ['再来一次喵'] : ['One more rally.']);
     return lines[Math.floor(Math.random() * lines.length)] || '';
   }
-  function pickLine(key, primary) {
+  function pickLine(key, primary, options) {
     primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
     var source = getQuickLineFallbackSource(primary);
     var defaultFallback = getDefaultQuickLineFallback(primary);
     var scope = 'duel';
     var fallback = source[key] || defaultFallback[key] || source.game_over || defaultFallback.game_over || ['One more rally.'];
-    return moodStyleLine(pickLocalizedLine(scope, key, fallback, primary), currentMood);
+    return moodStyleLine(pickLocalizedLine(scope, key, fallback, primary, options), currentMood);
   }
   function getRequestLanguage() {
     var candidates = [];
