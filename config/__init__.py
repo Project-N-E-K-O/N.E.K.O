@@ -1366,6 +1366,22 @@ DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 - 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
   主对话流式路径的统一来源。"""
 
+FOCUS_THINKING_EXTRA_TOKENS = 800
+"""凝神（focus / thinking-on）轮次额外放宽的 max_completion_tokens。
+- 背景：thinking 模型（Qwen enable_thinking / GLM·Kimi·Doubao thinking.type /
+  OpenRouter reasoning.effort）的 reasoning token 与正式回复共享同一个
+  max_completion_tokens 预算池（见 docs/design/llm-prompt-budget.md §0），
+  凝神轮一开思考就会从回复额度里扣，把正式回复挤短。
+- 作用：仅在 thinking_on 的那一轮，把 API 端 max_completion_tokens 临时
+  抬高本值，给推理链单独留头寸，不动 Python-side 长度 guard（回复可见
+  长度仍按 max_response_length 收口）。
+- 路由：作为 per-call override 经 _focus_stream_overrides → astream →
+  ChatOpenAI._params 透传，不改 self.llm 实例属性（与 extra_body 同一条
+  per-call 路径，并发安全、下一轮自动复位）。
+- 适用面：Claude 凝神保持 thinking-off（config/providers.py），本加值对其
+  天然 no-op；Gemini thinking_budget 是独立字段（800），本余量也足够覆盖。
+- 取值：扁平 800，不按 provider 分叉——只在真正开思考的轮次生效。"""
+
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
 # REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
@@ -2443,6 +2459,7 @@ __all__ = [
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',

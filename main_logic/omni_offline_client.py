@@ -33,7 +33,11 @@ from utils.llm_client import (
 from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
-from config import OMNI_RECENT_RESPONSES_MAX, DIALOG_LLM_STREAM_TIMEOUT_SECONDS
+from config import (
+    OMNI_RECENT_RESPONSES_MAX,
+    DIALOG_LLM_STREAM_TIMEOUT_SECONDS,
+    FOCUS_THINKING_EXTRA_TOKENS,
+)
 from main_logic.tool_calling import (
     OnToolCallCallback,
     ToolCall,
@@ -1868,7 +1872,9 @@ class OmniOfflineClient:
         return summary
 
     @staticmethod
-    def _focus_stream_overrides(thinking_on: bool, model: str) -> dict:
+    def _focus_stream_overrides(
+        thinking_on: bool, model: str, base_max_tokens: int | None = None,
+    ) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
         When thinking-on, override extra_body with ``focus_extra_body(model)`` —
@@ -1876,6 +1882,17 @@ class OmniOfflineClient:
         dialect) while PRESERVING non-thinking provider extras (e.g. step-2-mini's
         built-in web_search), which a blunt ``extra_body=None`` would drop.
         Returns ``{}`` (instance default, thinking off) otherwise.
+
+        Also bumps ``max_completion_tokens`` by ``FOCUS_THINKING_EXTRA_TOKENS``
+        on a thinking-on turn: thinking models (Qwen / GLM / Kimi / Doubao /
+        OpenRouter) bill reasoning tokens against the SAME budget as the visible
+        reply, so without headroom the chain-of-thought squeezes the answer
+        short. The bump is layered on ``base_max_tokens`` (the live instance
+        ceiling, already reflecting summary-mode lift / vision-model switch),
+        so it composes with both. ``base_max_tokens=None`` (unlimited budget)
+        omits the field — the request stays uncapped. The Python-side length
+        guard still caps the visible reply at ``max_response_length``; this only
+        gives reasoning its own slack on the API side.
 
         Vision-model turns are included: Focus runs thinking-on regardless of
         whether the turn carries images. The inline streaming timeout
@@ -1886,7 +1903,10 @@ class OmniOfflineClient:
         if not thinking_on:
             return {}
         from config.providers import focus_extra_body
-        return {"extra_body": focus_extra_body(model)}
+        overrides: dict = {"extra_body": focus_extra_body(model)}
+        if base_max_tokens is not None:
+            overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
+        return overrides
 
     async def stream_text(
         self,
@@ -2155,8 +2175,15 @@ class OmniOfflineClient:
                         # instance's thinking-off extra_body applies. Routed
                         # through the visible (tool-leak-filtered) variant,
                         # which forwards **overrides to ``_astream_with_tools``.
+                        # Also threads a ``max_completion_tokens`` bump
+                        # (+FOCUS_THINKING_EXTRA_TOKENS) so reasoning gets its
+                        # own headroom instead of eating the reply's budget;
+                        # base is the live instance ceiling (already reflects
+                        # summary-mode lift / vision switch), ``None`` stays
+                        # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self.model,
+                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in

@@ -476,6 +476,20 @@ def test_focus_stream_overrides_decision():
     # thinking off → no override (vision no longer gates thinking)
     assert _C._focus_stream_overrides(False, "step-2-mini") == {}
 
+    # ── max_completion_tokens bump (reasoning headroom) ──
+    from config import FOCUS_THINKING_EXTRA_TOKENS
+    # thinking-on WITH a base ceiling → bump layered on top, extra_body untouched
+    assert _C._focus_stream_overrides(True, "qwen-flash", base_max_tokens=500) == {
+        "extra_body": {"enable_thinking": True},
+        "max_completion_tokens": 500 + FOCUS_THINKING_EXTRA_TOKENS,
+    }
+    # base None (unlimited budget) → field omitted, request stays uncapped
+    assert "max_completion_tokens" not in _C._focus_stream_overrides(
+        True, "qwen-flash", base_max_tokens=None,
+    )
+    # thinking off → base ignored, no bump (and no extra_body)
+    assert _C._focus_stream_overrides(False, "qwen-flash", base_max_tokens=500) == {}
+
 
 def test_focus_extra_body_provider_dialects():
     """focus_extra_body flips each provider's thinking knob to its ENABLED form
@@ -560,6 +574,14 @@ async def test_focus_override_threads_through_visible_stream():
     c2 = _make_client()
     await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, c2.model)))
     assert "extra_body" not in captured[-1]
+
+    # focus turn with a base ceiling: the max_completion_tokens bump must reach
+    # astream too (same per-call path as extra_body)
+    from config import FOCUS_THINKING_EXTRA_TOKENS
+    c3 = _make_client()
+    overrides3 = OmniOfflineClient._focus_stream_overrides(True, c3.model, base_max_tokens=500)
+    await _drain(c3._astream_visible_with_tools(["m"], **overrides3))
+    assert captured[-1]["max_completion_tokens"] == 500 + FOCUS_THINKING_EXTRA_TOKENS
 
 
 # ── 6. caller-level Focus gates: charge hygiene + privacy-independence ─────

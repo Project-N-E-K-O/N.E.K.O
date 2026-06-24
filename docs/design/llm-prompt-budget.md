@@ -244,8 +244,11 @@ callback（`enqueue_agent_callback`）会经 `_build_callback_instruction`（文
 | 翻译输出 | `TRANSLATION_OUTPUT_MAX_TOKENS` | 1000 |
 | ComputerUse 主调用 | `COMPUTER_USE_MAX_TOKENS` | 6000 |
 | 变长输出 runaway guard | `LLM_OUTPUT_GUARD_MAX_TOKENS` | 4096 |
+| 凝神 thinking 额外头寸（叠加，非上限） | `FOCUS_THINKING_EXTRA_TOKENS` | 800 |
 
 > 注：变长结构化 JSON 输出（memory reflection/recall/persona/facts/refine、deduper、card-assist 等）没有紧的 task-specific budget，统一用 `LLM_OUTPUT_GUARD_MAX_TOKENS`（generous runaway guard，不会误截）作上限。见 §0。
+
+> 注：`FOCUS_THINKING_EXTRA_TOKENS` 不是一个独立 cap，而是**叠加值**——仅在凝神（thinking-on）轮次，把主对话当前的 `max_completion_tokens`（`max_response_length + slack`，含 summary-mode 抬升）再 +800，给 reasoning 链单独留头寸。thinking 模型（Qwen / GLM / Kimi / Doubao / OpenRouter）的 reasoning token 与正式回复共用同一预算池（见 §0），不留头寸会把回复挤短。作为 per-call override 经 `_focus_stream_overrides` → `astream` → `_params` 透传（与 `extra_body` 同一条路），不改 `self.llm` 实例属性；base 为 `None`（无限制预算）时省略字段。Python-side 长度 guard 仍按 `max_response_length` 收口可见回复。Claude 凝神保持 thinking-off 故对其 no-op；Gemini `thinking_budget` 是独立字段（800），本余量也覆盖。
 
 **timeout 索引（部分）**：
 
