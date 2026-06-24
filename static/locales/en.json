@@ -4670,6 +4670,9 @@
                      "That ink tactic worked pretty well."
                  ]
              },
+             "playerIceScore": [
+                 "Mmph, that does not count. Do it over!"
+             ],
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",
                  "xmas": "The bells are up and you still want to rally?",
