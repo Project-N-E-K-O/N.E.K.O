@@ -58,6 +58,10 @@ _LANGUAGE_ALIASES = {
 }
 
 
+# FULL-locale normalizer: keeps zh-CN and zh-TW apart (badminton quick-lines).
+# Deliberately NOT the same as prompts_minigame_common._normalize_prompt_lang,
+# which collapses every Chinese variant to zh. See docs/contributing/
+# developer-notes.md #7 and PR #2000 before unifying these.
 def normalize_badminton_prompt_locale(language: Any) -> str:
     raw = str(language or "").strip().lower().replace("_", "-")
     if not raw:
@@ -81,6 +85,9 @@ def _normalize_mode(mode: Any) -> str:
     return "spectator"
 
 
+# FULL-locale table: keyed by zh-CN / zh-TW separately (full-locale scheme).
+# Contrast with BADMINTON_SYSTEM_PROMPTS below, which is keyed by the short
+# locale (zh). See docs/contributing/developer-notes.md #7 and PR #2000.
 BADMINTON_QUICK_LINES_PROMPTS = {
     "zh-CN": """\
 你是{name}，{personality}
@@ -93,8 +100,23 @@ BADMINTON_QUICK_LINES_PROMPTS = {
 - 按事件写准含义：line_in=压线，net_touch=擦网过，zone_in=落入目标区，out=出界，net=挂网，shot_missed=没打到，long_aim=瞄太久。
 - 不要输出 mood、expression、intensity 或控制 JSON。
 
-必需 keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+每个必需 key 附 2 条示例，帮助你理解它对应的事件和语气；请按你的人设自己创作，不要照抄示例。
+======以下为必需 keys======
+line_in: 压线，算你准 / 这落点够刁
+net_touch: 擦网也过了 / 这球贴着网溜过去
+zone_in: 正中目标区 / 落点很会挑
+out: 差一点出界 / 这拍稍微长了
+net: 挂网了 / 拍面再抬一点
+shot_missed: 没事，下一球 / 别急，先看准
+game_over: 这局到这儿 / 还要再来一局吗
+long_aim: 快出手，球要落了 / 别想太久，会僵
+close_to_record: 纪录就在前面 / 再稳一拍就到
+new_record: 新纪录，认了 / 这球真够狠
+streak_5: 五连了，手热了 / 节奏开始顺了
+streak_10: 十连？有点稳 / 别飘，还没完
+streak_15: 十五连还不断 / 这回合真能磨
+streak_20: 二十连，太离谱 / 这球还没完？
+======以上为必需 keys======
 """,
     "zh-TW": """\
 你是{name}，{personality}
@@ -107,8 +129,23 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 - 按事件寫準含義：line_in=壓線，net_touch=擦網過，zone_in=落入目標區，out=出界，net=掛網，shot_missed=沒打到，long_aim=瞄太久。
 - 不要輸出 mood、expression、intensity 或控制 JSON。
 
-必要 keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+每個必要 key 附 2 條示例，幫助你理解它對應的事件和語氣；請按你的人設自己創作，不要照抄示例。
+======以下为必需 keys======
+line_in: 壓線，算你準 / 這落點夠刁
+net_touch: 擦網也過了 / 這球貼著網溜過去
+zone_in: 正中目標區 / 落點很會挑
+out: 差一點出界 / 這拍稍微長了
+net: 掛網了 / 拍面再抬一點
+shot_missed: 沒事，下一球 / 別急，先看準
+game_over: 這局到這裡 / 還要再來一局嗎
+long_aim: 快出手，球要落了 / 別想太久，會僵
+close_to_record: 紀錄就在前面 / 再穩一拍就到
+new_record: 新紀錄，認了 / 這球真的夠狠
+streak_5: 五連了，手熱了 / 節奏開始順了
+streak_10: 十連？有點穩 / 別飄，還沒完
+streak_15: 十五連還不斷 / 這回合真能磨
+streak_20: 二十連，太離譜 / 這球還沒完？
+======以上为必需 keys======
 """,
     "en": """\
 You are {name}. {personality}
@@ -119,8 +156,23 @@ Rules:
 - Lines must sound like Yui reacting in the moment, not system narration.
 - Do not include mood, expression, intensity, or control JSON.
 
-Required keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+Each required key has 2 examples showing the matching event and tone; write your own in-character lines and do not copy the examples.
+======以下为必需 keys======
+line_in: On the line! / Nice placement
+net_touch: Net touch, still over / That angle was close
+zone_in: Right in the zone / Sharp landing
+out: Just out / A little too long
+net: Caught by the net / Lift the racket face a bit
+shot_missed: Still in it / Settle in and try again
+game_over: Another round? / I will remember that rally
+long_aim: Swing soon / Wait too long and you will freeze
+close_to_record: Almost at the record / One steadier beat
+new_record: New record! / That one counts
+streak_5: Five in a row / You are warming up
+streak_10: Ten straight? / That is steady
+streak_15: Fifteen is wild / This rally has grit
+streak_20: Twenty?! / This round will not end
+======以上为必需 keys======
 """,
     "ja": """\
 あなたは{name}です。{personality}
@@ -131,8 +183,23 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 - 台詞はシステム説明ではなく、Yui のその場の反応にする。
 - mood、expression、intensity、制御 JSON は入れない。
 
-必須 keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+各必須 key に 2 つの例を付けて、対応するイベントと口調を示しています。例をそのまま写さず、人格に合わせて自分で書いてください。
+======以下为必需 keys======
+line_in: ラインぎりぎり！ / いい落としどころ
+net_touch: ネットに触れたけど入った / 今の角度、危なかったね
+zone_in: ゾーンに入ったよ / 落点が鋭いね
+out: 少しアウト / ちょっと長かったね
+net: ネットに捕まったね / ラケット面を少し上げて
+shot_missed: まだいけるよ / 落ち着いてもう一回
+game_over: もう一回やる？ / この一本、覚えておくね
+long_aim: そろそろ振って / 待ちすぎると固まるよ
+close_to_record: 記録まであと少し / もう一拍、安定させて
+new_record: 新記録だね！ / 今のは認めるよ
+streak_5: 五連続だね / 調子が上がってきた
+streak_10: 十連続？すごいね / かなり安定してる
+streak_15: 十五連続はすごい / このラリー、粘るね
+streak_20: 二十連続？！ / まだ終わらないの？
+======以上为必需 keys======
 """,
     "ko": """\
 당신은 {name}입니다. {personality}
@@ -143,8 +210,23 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 - 대사는 시스템 설명이 아니라 Yui의 현장 반응처럼 들려야 합니다.
 - mood, expression, intensity, 제어 JSON 을 포함하지 마세요.
 
-필수 keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+각 필수 key 에는 해당 이벤트와 말투를 보여주는 예시 2개가 있습니다. 예시를 그대로 베끼지 말고 캐릭터에 맞게 직접 쓰세요.
+======以下为必需 keys======
+line_in: 라인에 걸쳤어! / 착지가 좋았어
+net_touch: 네트를 스쳤지만 넘어갔어 / 각도가 아슬아슬했네
+zone_in: 정확히 존 안이야 / 낙점이 날카로워
+out: 조금 나갔어 / 살짝 길었네
+net: 네트에 걸렸어 / 라켓 면을 조금 더 올려
+shot_missed: 아직 괜찮아 / 침착하게 다시 가자
+game_over: 한 판 더 할래? / 이번 랠리는 기억해둘게
+long_aim: 이제 휘둘러 / 너무 오래 기다리면 굳어
+close_to_record: 기록까지 조금 남았어 / 한 박자만 더 안정적으로
+new_record: 신기록이야! / 방금 건 인정할게
+streak_5: 다섯 번 연속이야 / 감이 올라오네
+streak_10: 열 번 연속? / 꽤 안정적이야
+streak_15: 열다섯 번은 대단해 / 이 랠리, 끈질기네
+streak_20: 스무 번이라고?! / 아직도 안 끝나?
+======以上为必需 keys======
 """,
     "ru": """\
 Ты {name}. {personality}
@@ -155,8 +237,23 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 - Реплики должны звучать как реакция Yui в моменте, а не как системное описание.
 - Не добавляй mood, expression, intensity или управляющий JSON.
 
-Обязательные keys:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+К каждому обязательному ключу даны 2 примера, показывающие событие и тон. Не копируй примеры, пиши свои реплики в образе.
+======以下为必需 keys======
+line_in: По линии! / Хорошая точка
+net_touch: Задело сетку, но прошло / Угол был на грани
+zone_in: Прямо в зону / Резкое приземление
+out: Чуть в аут / Немного длинно
+net: Сетка остановила / Подними ракетку чуть выше
+shot_missed: Еще держимся / Спокойно, попробуй снова
+game_over: Еще раунд? / Этот розыгрыш я запомню
+long_aim: Пора бить / Задержишься — застынешь
+close_to_record: Почти рекорд / Еще один ровный удар
+new_record: Новый рекорд! / Этот удар засчитан
+streak_5: Пять подряд / Разогреваешься
+streak_10: Десять подряд? / Стабильно
+streak_15: Пятнадцать — это сильно / Розыгрыш упорный
+streak_20: Двадцать?! / Этот раунд не заканчивается
+======以上为必需 keys======
 """,
     "es": """\
 Eres {name}. {personality}
@@ -167,8 +264,23 @@ Reglas:
 - Las frases deben sonar como una reacción inmediata de Yui, no como narración del sistema.
 - No incluyas mood, expression, intensity ni JSON de control.
 
-Keys obligatorios:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+Cada clave requerida incluye 2 ejemplos que muestran el evento y el tono; escribe tus propias frases en personaje, no copies los ejemplos.
+======以下为必需 keys======
+line_in: ¡En la línea! / Buena colocación
+net_touch: Tocó la red, pero pasó / Ese ángulo fue justo
+zone_in: Justo en la zona / Caída afilada
+out: Apenas fuera / Un poco larga
+net: La red la atrapó / Sube un poco la cara de la raqueta
+shot_missed: Todavía puedes / Calma y otra vez
+game_over: ¿Otra ronda? / Recordaré ese intercambio
+long_aim: Golpea pronto / Si esperas tanto te quedas rígido
+close_to_record: Casi es récord / Un golpe más estable
+new_record: ¡Nuevo récord! / Ese sí cuenta
+streak_5: Cinco seguidas / Ya estás calentando
+streak_10: ¿Diez seguidas? / Eso está estable
+streak_15: Quince es fuerte / Este intercambio tiene aguante
+streak_20: ¿Veinte?! / Esta ronda no termina
+======以上为必需 keys======
 """,
     "pt": """\
 Você é {name}. {personality}
@@ -179,8 +291,23 @@ Regras:
 - As falas devem soar como reação imediata da Yui, não como narração do sistema.
 - Não inclua mood, expression, intensity nem JSON de controle.
 
-Keys obrigatórios:
-line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_to_record, new_record, streak_5, streak_10, streak_15, streak_20
+Cada chave obrigatória inclui 2 exemplos que mostram o evento e o tom; escreva suas próprias falas no personagem, não copie os exemplos.
+======以下为必需 keys======
+line_in: Na linha! / Boa colocação
+net_touch: Tocou na rede, mas passou / Esse ângulo foi no limite
+zone_in: Bem na zona / Queda afiada
+out: Pouco fora / Um pouco longa
+net: A rede segurou / Levante um pouco a face da raquete
+shot_missed: Ainda dá / Calma e tenta de novo
+game_over: Mais uma rodada? / Vou lembrar essa troca
+long_aim: Rebata logo / Se esperar demais, trava
+close_to_record: Quase recorde / Mais uma batida estável
+new_record: Novo recorde! / Essa valeu
+streak_5: Cinco seguidas / Você está aquecendo
+streak_10: Dez seguidas? / Está bem firme
+streak_15: Quinze é forte / Essa troca tem resistência
+streak_20: Vinte?! / Essa rodada não acaba
+======以上为必需 keys======
 """,
 }
 
@@ -653,6 +780,10 @@ Regras:
 - Se não precisar de controle, não escreva JSON.
 """
 
+# SHORT-locale table: keyed by zh (short-locale scheme via _localized_template
+# / _normalize_prompt_lang). Contrast with BADMINTON_QUICK_LINES_PROMPTS above,
+# which keeps zh-CN / zh-TW apart. See docs/contributing/developer-notes.md #7
+# and PR #2000 before unifying the two schemes.
 BADMINTON_SYSTEM_PROMPTS = {
     "zh": BADMINTON_SYSTEM_PROMPT,
     "en": _BADMINTON_SYSTEM_PROMPT_EN,

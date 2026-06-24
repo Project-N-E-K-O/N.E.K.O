@@ -87,6 +87,15 @@ Concretely:
 
 If you find code that disables an understanding feature based on privacy mode, it is a bug — remove the gate.
 
+### 7. Minigame prompts keep two locale schemes on purpose
+
+`config/prompts` deliberately runs **two different locale normalizers** for minigame prompts, and they must not be unified:
+
+- **Badminton quick-lines** use `normalize_badminton_prompt_locale` (in `prompts_badminton.py`), a **full-locale** scheme that keeps `zh-CN` and `zh-TW` apart. The tables `BADMINTON_QUICK_LINES_PROMPTS` / `BADMINTON_QUICK_LINES_FALLBACKS` are keyed by full locale so the Traditional-Chinese fallback lines survive.
+- **Everything else** (soccer, plus every system / pregame prompt, including `BADMINTON_SYSTEM_PROMPTS`) uses `_normalize_prompt_lang` (in `prompts_minigame_common.py`), a **short-locale** scheme that collapses every Chinese variant down to `zh`.
+
+Collapsing the badminton quick-lines onto the short scheme would fold `zh-TW` back into `zh-CN` and regress the Traditional-Chinese fallback fix from PR #2000. Each normalizer owns its own tables; do not "tidy up" by merging them.
+
 ## Frontend gotchas
 
 ### i18n kills HTML icons

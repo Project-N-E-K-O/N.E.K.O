@@ -22,11 +22,17 @@ system/pregame prompt. Badminton quick-lines instead use the FULL-locale
 normalizer (``normalize_badminton_prompt_locale`` in prompts_badminton), which
 keeps ``zh-CN`` and ``zh-TW`` apart. Do not merge the two schemes: collapsing
 full locales back to short would regress the Traditional Chinese fallbacks.
+
+See docs/contributing/developer-notes.md #7 and PR #2000.
 """
 
 from config.prompts.prompts_sys import _loc
 
 
+# SHORT-locale normalizer: collapses every Chinese variant to zh (soccer + all
+# system/pregame prompts). Deliberately NOT the same as prompts_badminton.
+# normalize_badminton_prompt_locale, which keeps zh-CN and zh-TW apart for the
+# badminton quick-lines. See docs/contributing/developer-notes.md #7 and PR #2000.
 def _normalize_prompt_lang(lang: str | None) -> str:
     value = str(lang or "").strip().lower().replace("_", "-")
     if not value:

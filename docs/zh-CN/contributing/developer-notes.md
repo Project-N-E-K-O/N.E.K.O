@@ -61,6 +61,15 @@ await window.unlockAchievement('ACH_NAME');
 window.getAchievementStats();
 ```
 
+### 6. 小游戏 prompt 有意保留两套 locale 归一
+
+`config/prompts` 对小游戏 prompt **有意并存两套不同的 locale 归一**，不要统一：
+
+- **羽毛球快路径台词**用 `normalize_badminton_prompt_locale`（`prompts_badminton.py`），是**全 locale**方案，区分 `zh-CN` 与 `zh-TW`。表 `BADMINTON_QUICK_LINES_PROMPTS` / `BADMINTON_QUICK_LINES_FALLBACKS` 按全 locale 作 key，繁体中文回退台词才能保留。
+- **其余全部**（足球，以及所有 system / pregame prompt，包括 `BADMINTON_SYSTEM_PROMPTS`）用 `_normalize_prompt_lang`（`prompts_minigame_common.py`），是**短 locale**方案，把所有中文变体塌成 `zh`。
+
+把羽毛球快路径台词塌进短方案，会让 `zh-TW` 退回 `zh-CN`，回归 PR #2000 修的繁体中文回退 bug。两套归一各自管辖自己的表；不要为了“理顺”而合并。
+
 ## 前端注意事项
 
 ### 国际化会破坏 HTML 图标
