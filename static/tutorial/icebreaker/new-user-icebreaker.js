@@ -478,6 +478,74 @@
         return contextAppendPromise;
     }
 
+    // 把用户在破冰里点的「有效选项」追加进后端持久化选项池（/api/icebreaker/choice）。
+    // 这条独立于 appendLlmContext：后者写的是临时会话上下文，这里写的是跨会话留存、
+    // 当前不喂模型也不进记忆的独立信号，纯 fire-and-forget，失败只告警不阻断教程流。
+    function recordChoiceToPool(meta) {
+        var info = meta && typeof meta === 'object' ? meta : {};
+        var nodeId = String(info.nodeId || '').trim();
+        var choice = String(info.choice || '').trim();
+        if (!nodeId || !choice) return Promise.resolve(false);
+        // 用 session 起始钉死的角色快照，而非点击时现取 resolveLanlanName()：若中途换了
+        // 当前角色，选项仍归属到 /route/start 激活的那个角色，避免把后半段路径写到错角色
+        // 名下（正是这个 per-角色池要避免的串味）。同步取值，防 activeSession 在 await 中被清。
+        var lanlanName = String((activeSession && activeSession.lanlanName) || resolveLanlanName() || '');
+        var body = {
+            lanlan_name: lanlanName,
+            session_id: String(info.sessionId || (activeSession && activeSession.sessionId) || ''),
+            day: String(info.day || (activeSession && activeSession.day) || ''),
+            node_id: nodeId,
+            choice: choice,
+            label: String(info.label || ''),
+            handoff: info.handoff === true,
+            completed: info.completed === true,
+            seq: Number(info.seq) || 0
+        };
+
+        function parseChoiceResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        // 与 /context 同款：缓存的 local-mutation token 过期（如后端重启而页面常驻）时，
+        // 403 csrf_validation_failed 不当普通失败丢弃，刷新 token 后重试一次，避免静默漏记。
+        function postChoiceWithHeaders(headers, allowRetry) {
+            return fetch(ICEBREAKER_API_BASE + '/choice', {
+                method: 'POST',
+                headers: headers,
+                credentials: 'same-origin',
+                // keepalive：让本请求挺过页面卸载（reload/close），与 endIcebreakerRouteOnPageExit
+                // 用 beacon/keepalive 发 /route/end 对称，避免点完即关页时浏览器取消普通 fetch 致丢记。
+                // body 仅 ~200 字节，远低于 keepalive 的 64KB 上限。
+                keepalive: true,
+                body: JSON.stringify(body)
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postChoiceWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseChoiceResponse(response);
+                    });
+                }
+                return parseChoiceResponse(response);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return postChoiceWithHeaders(headers, true);
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
+            return false;
+        });
+    }
+
     function finalizeIcebreakerAssistantSubtitle(text) {
         var line = String(text || '').trim();
         if (!line) return;
@@ -751,7 +819,14 @@
                 sessionId: sessionId,
                 nodeId: nodeId
             });
-            return endIcebreakerRoute(session, 'icebreaker_handoff');
+            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
+            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
+            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
+                return Promise.resolve(p).catch(function () {});
+            });
+            return Promise.all(pendingWrites).then(function () {
+                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            });
         }).then(function () {
             if (activeSession === session) {
                 activeSession = null;
@@ -775,6 +850,10 @@
         session.choiceInFlight = true;
         clearChoicePrompt();
         var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
+        // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
+        var isHandoffChoice = !!option.handoffKey;
+        // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
+        var choiceNodeId = session.nodeId;
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
@@ -790,6 +869,25 @@
             if (activeSession !== session) {
                 return null;
             }
+            // 仅在用户消息被接受后才写池：appendChatMessage 返回 null（host 渲染超时）会回滚到
+            // 原节点，此刻不能留下一条用户可能改选的幻影选项（handoff 还会误标 completed）。
+            // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget 写入
+            // 到达顺序被网络打乱的影响。
+            var choiceWritePromise = recordChoiceToPool({
+                day: session.day,
+                sessionId: session.sessionId,
+                nodeId: choiceNodeId,
+                choice: choice,
+                label: label,
+                handoff: isHandoffChoice,
+                completed: isHandoffChoice,
+                seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            });
+            // 收集本 session 每一条写入 promise（中间+收尾）。收尾选择会结束 route，而严格后端
+            // route 一关就拒收 /choice，故 completeWithHandoff 在 endIcebreakerRoute 前 await 全部
+            // 未决写入，确保任何仍在途的选择都在 route 仍 active 时到达服务端、不被拒掉丢失
+            // （recordChoiceToPool 内部已 catch、永不 reject，await 不会挂）。
+            (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
             if (option.next) {
                 return deliverNode(option.next);
             }
@@ -950,6 +1048,8 @@
                 localeData: localeData || {},
                 nodeId: dayConfig.root,
                 offTopicCount: 0,
+                // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
+                lanlanName: resolveLanlanName(),
                 sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
             };
             return startIcebreakerRoute(nextSession).then(function (started) {

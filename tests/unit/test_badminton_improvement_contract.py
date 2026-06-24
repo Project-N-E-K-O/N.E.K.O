@@ -11,6 +11,7 @@ from main_routers import game_router, pages_router
 ROOT = Path(__file__).resolve().parents[2]
 BADMINTON_TEMPLATE = ROOT / "templates" / "badminton_demo.html"
 BADMINTON_RACKET_SPRITE = ROOT / "static" / "game" / "games" / "badminton" / "images" / "badminton-racket-sprite.svg"
+BADMINTON_INK_OVERLAY = ROOT / "static" / "game" / "games" / "badminton" / "images" / "yui-octopus-ink-overlay.png"
 BADMINTON_EMOTES_DIR = ROOT / "static" / "game" / "games" / "badminton" / "images" / "emotes"
 LOCALES_DIR = ROOT / "static" / "locales"
 
@@ -67,7 +68,7 @@ def test_badminton_improvement_static_contract():
         'id="game-bgm-volume"',
         'id="game-sfx-volume"',
         'function _i18n(',
-        "window.addEventListener('localechange'",
+        "addBadmintonEventListener(window, 'localechange'",
         'id="bd-debug-panel"',
         "data-debug-distance",
         "data-debug-event",
@@ -215,14 +216,36 @@ def test_badminton_hidden_tab_keeps_route_alive():
     html = _badminton_html()
 
     beforeunload_start = html.index("window.addEventListener('beforeunload', function () {")
-    beforeunload_section = html[beforeunload_start:html.index("window.addEventListener('localechange'", beforeunload_start)]
+    beforeunload_section = html[beforeunload_start:html.index("addBadmintonEventListener(window, 'localechange'", beforeunload_start)]
     assert "closeSpeechPlaybackStateBridge();" not in beforeunload_section
-    assert "endRoute(true);" in beforeunload_section
+    assert "disposeBadmintonGame('beforeunload');" in beforeunload_section
     assert "var pageVisible = !document.hidden;" in html
     assert "visible: pageVisible" in html
     assert "pageVisible: pageVisible" in html
     assert "visibilityState: document.visibilityState || (pageVisible ? 'visible' : 'hidden')" in html
     assert "if (document.hidden) endRoute(true);" not in html
+
+
+@pytest.mark.unit
+def test_badminton_pagehide_and_exit_share_dispose_lifecycle():
+    html = _badminton_html()
+
+    assert "var badmintonGameDisposed = false;" in html
+    assert "function disposeBadmintonGame(reason) {" in html
+    assert "var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {" in html
+    assert "Promise.resolve(routeEndAfterStart).catch(function () {});" in html
+    assert "cancelAnimationFrame(badmintonFrameRequestId);" in html
+    assert "clearTimeout(badmintonHiddenFrameTimer);" in html
+    assert "badmintonGameAudio.destroy();" in html
+    assert "window.addEventListener('pagehide', function () {" in html
+
+    close_start = html.index("function closeBadmintonWindow() {")
+    close_section = html[close_start:html.index("function formatLeaderboardDate", close_start)]
+    assert "disposeBadmintonGame('exit_button');" in close_section
+
+    pagehide_start = html.index("window.addEventListener('pagehide', function () {")
+    pagehide_section = html[pagehide_start:html.index("addBadmintonEventListener(window, 'localechange'", pagehide_start)]
+    assert "disposeBadmintonGame('pagehide');" in pagehide_section
 
 
 @pytest.mark.unit
@@ -854,13 +877,14 @@ def test_badminton_demo_exposes_electron_exit_button():
     assert "if (!window.closed) window.location.assign('/');" in html
     assert "}, 150);" in html
     assert "function closeBadmintonWindow() {" in html
+    assert "disposeBadmintonGame('exit_button');" in html
     assert "var host = window.nekoHost;" in html
     assert "Promise.resolve(host.closeWindow())" in html
     assert ".then(function (result) {" in html
     assert "if (result && result.ok === false) {" in html
     assert "closeBadmintonBrowserFallback();" in html
     assert ".catch(function () {" in html
-    assert "badmintonExitButton.addEventListener('click', closeBadmintonWindow);" in html
+    assert "addBadmintonEventListener(badmintonExitButton, 'click', closeBadmintonWindow);" in html
 
 
 @pytest.mark.unit
@@ -1021,7 +1045,7 @@ def test_badminton_low_risk_resize_is_coalesced_with_animation_frame():
     assert "badmintonResizeFrame = requestAnimationFrame(function () {" in html
     assert "badmintonResizeFrame = 0;" in html
     assert "resize();" in html
-    assert "window.addEventListener('resize', scheduleBadmintonResize);" in html
+    assert "addBadmintonEventListener(window, 'resize', scheduleBadmintonResize);" in html
     assert "window.addEventListener('resize', resize);" not in html
 
 
@@ -1155,6 +1179,37 @@ def test_badminton_low_risk_net_contact_effects_reuse_frame_time():
     assert "netContactEffects = netContactEffects.filter" not in effects_section
     assert "var age = clamp((t - effect.startAt) / effect.duration, 0, 1);" in effects_section
     assert "performance.now()" not in effects_section
+
+
+@pytest.mark.unit
+def test_badminton_net_contact_effects_are_lightweight_on_electron_or_high_dpr():
+    html = _badminton_html()
+
+    assert "var NET_CONTACT_EFFECT_LIGHT_DURATION_MS = 360;" in html
+    assert "var NET_CONTACT_EFFECT_LIGHT_MAX = 3;" in html
+    assert "var NET_CONTACT_EFFECT_LIGHT_DPR = 1.5;" in html
+    assert "function isElectronBadmintonRuntime() {" in html
+    assert "window.nekoHost || (navigator.userAgent && /Electron/i.test(navigator.userAgent))" in html
+    assert "function shouldUseLightweightNetContactEffects() {" in html
+    assert "return isElectronBadmintonRuntime() || dpr >= NET_CONTACT_EFFECT_LIGHT_DPR;" in html
+
+    spawn_start = html.index("function spawnNetContactEffect(ball, crossing) {")
+    spawn_end = html.index("function resetGame()", spawn_start)
+    spawn_section = html[spawn_start:spawn_end]
+    assert "var lightweight = shouldUseLightweightNetContactEffects();" in spawn_section
+    assert "var maxEffects = lightweight ? NET_CONTACT_EFFECT_LIGHT_MAX : NET_CONTACT_EFFECT_MAX;" in spawn_section
+    assert "duration: lightweight ? NET_CONTACT_EFFECT_LIGHT_DURATION_MS : NET_CONTACT_EFFECT_DURATION_MS," in spawn_section
+    assert "netContactEffects = netContactEffects.slice(netContactEffects.length - maxEffects);" in spawn_section
+    assert "lightweight: lightweight," in spawn_section
+
+    effects_start = html.index("function drawNetContactEffects(now) {")
+    effects_end = html.index("function drawNetCord()", effects_start)
+    effects_section = html[effects_start:effects_end]
+    assert "var lightweight = shouldUseLightweightNetContactEffects();" in effects_section
+    assert "ctx.globalCompositeOperation = lightweight ? 'source-over' : 'lighter';" in effects_section
+    assert "if (!lightweight) {" in effects_section
+    assert "ctx.shadowBlur = lightweight ? 0 : 3 + 6 * alpha;" in effects_section
+    assert "var sparkCount = lightweight ? 2 : 4;" in effects_section
 
 
 @pytest.mark.unit
@@ -1523,7 +1578,9 @@ def test_badminton_scoring_waits_for_route_end_and_records_run_max():
     assert "session_id: completedSessionId," in html
     assert "lanlan_name: scoreLanlanName," in html
     assert "var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
-    assert "routeEndPromise = fetch(url, { method: 'POST'" in html
+    assert "keepalive: true" in html
+    assert "var routeEndRequest = fetch(url, { method: 'POST'" in html
+    assert "routeEndPromise = routeEndRequest;" in html
     assert "return res.json().catch(function () { return { ok: res.ok }; });" in html
 
     session_capture_index = html.index("var completedSessionId = sessionId;")
@@ -1542,14 +1599,62 @@ def test_badminton_reset_abandons_active_route_before_rotating_session():
     end_route_start = html.index("function endRoute(")
     end_route_section = html[end_route_start:html.index("function cycleTheme()", end_route_start)]
 
-    assert "var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;" in reset_section
-    assert "if (!endedRoute) endRoute(false);" in reset_section
+    assert "var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;" in reset_section
+    assert "var routeSessionToEnd = sessionId;" in reset_section
+    assert "var routeWasEnded = endedRoute;" in reset_section
+    assert "var pendingRouteStart = routeStartPromise;" in reset_section
+    assert "var pendingRouteEnd = routeEndPromise;" in reset_section
     assert "sessionId = createBadmintonSessionId();" in reset_section
+    assert "var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();" in reset_section
+    assert "var restartAfterRouteEnd = routeReadyForEnd.then(function () {" in reset_section
+    assert "if (routeWasEnded) return pendingRouteEnd || Promise.resolve();" in reset_section
+    assert "return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });" in reset_section
+    assert "Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {" in reset_section
+    assert "badmintonGameDisposed" in reset_section
     assert "startRoute();" in reset_section
-    assert reset_section.index("if (!endedRoute) endRoute(false);") < reset_section.index("sessionId = createBadmintonSessionId();")
-    assert "routeActive = false;" in end_route_section
-    assert "var routeEndSessionId = sessionId;" in end_route_section
-    assert "if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);" in end_route_section
+    assert reset_section.index("var routeSessionToEnd = sessionId;") < reset_section.index("sessionId = createBadmintonSessionId();")
+    assert reset_section.index("var routeWasEnded = endedRoute;") < reset_section.index("endedRoute = false;")
+    assert reset_section.index("var pendingRouteEnd = routeEndPromise;") < reset_section.index("routeEndPromise = null;")
+    assert reset_section.index("sessionId = createBadmintonSessionId();") < reset_section.index("return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });")
+    assert "var detached = options && options.detached;" in end_route_section
+    assert "var routeEndSessionId = (options && options.sessionId) || sessionId;" in end_route_section
+    assert "if (!detached) routeActive = false;" in end_route_section
+    assert "heartbeatTimer = 0;" in end_route_section
+    assert "drainTimer = 0;" in end_route_section
+    assert "if (!detached && res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);" in end_route_section
+
+
+@pytest.mark.unit
+def test_badminton_route_start_pending_close_is_cancelled_by_dispose():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    start_route = html[html.index("function startRoute() {"):html.index("function startRouteAfterCharacterReady()", html.index("function startRoute() {"))]
+    dispose_section = html[html.index("function disposeBadmintonGame(reason) {"):html.index("function cycleTheme()", html.index("function disposeBadmintonGame(reason) {"))]
+
+    assert "var routeStartPromise = null;" in html
+    assert "routeStartPromise = post('/route/start'" in start_route
+    assert "if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over')" in start_route
+    assert "if (badmintonGameDisposed) return Promise.resolve({ ok: false, reason: 'disposed' });" in start_route
+    assert "if (badmintonGameDisposed) return res;" in start_route
+    assert "endRoute(true, { force: true })" not in start_route
+    assert "var pendingRouteStart = routeStartPromise;" in dispose_section
+    assert "var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {" in dispose_section
+    assert "if (res && res.ok) return endRoute(true, { force: true });" in dispose_section
+    assert "return endRoute(true);" in dispose_section
+    assert "Promise.resolve(routeEndAfterStart).catch(function () {});" in dispose_section
+    assert "badmintonGameDisposed = true;" in dispose_section
+
+
+@pytest.mark.unit
+def test_badminton_frame_loop_is_cancellable_on_dispose():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    frame_section = html[html.index("function loop(ts) {"):html.index("function getRouteLanlanName()", html.index("function loop(ts) {"))]
+
+    assert "var badmintonFrameRequestId = 0;" in html
+    assert "var badmintonHiddenFrameTimer = 0;" in html
+    assert "if (badmintonGameDisposed) return;" in frame_section
+    assert "badmintonHiddenFrameTimer = setTimeout(function () {" in frame_section
+    assert "badmintonFrameRequestId = requestAnimationFrame(loop);" in frame_section
+    assert "requestAnimationFrame(loop);" not in frame_section.replace("badmintonFrameRequestId = requestAnimationFrame(loop);", "")
 
 
 @pytest.mark.unit
@@ -1646,7 +1751,7 @@ def test_badminton_duel_player_shots_update_recorded_stats():
     assert "if (game.shotTypeCount[shotType] != null) game.shotTypeCount[shotType] += 1;" in finish_duel
     assert "newRecord = previousDistance > game.recordDistance;" in finish_duel
     assert "game.recordDistance = previousDistance;" in finish_duel
-    assert "localStorage.setItem('bd_record_distance', String(Math.round(game.recordDistance)));" in finish_duel
+    assert "writeBadmintonStorage('bd_record_distance', String(Math.round(game.recordDistance)));" in finish_duel
     assert "kind: newRecord ? 'new_record' : (scored ? 'shot_result' : 'shot_missed')," in finish_duel
     assert "is_new_record: newRecord," in finish_duel
     assert "game.streak = 0;" in finish_duel
@@ -1860,7 +1965,7 @@ def test_badminton_starts_route_after_character_resolution_before_avatar_loading
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
-    assert "if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;" in html
+    assert "if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over') {" in html
     assert "applyRouteIdentity(res.state);" in html
     assert "function startBadmintonFromStartScreen(options) {" in html
     assert "badmintonRouteStartPromise = startRouteAfterCharacterReady();" in html
@@ -2464,21 +2569,21 @@ def test_badminton_mouse_input_is_gated_to_player_controlled_shots():
 
     mousedown = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
-        html.index("window.addEventListener('mouseup'")
+        html.index("addBadmintonEventListener(window, 'mouseup'")
     ]
     assert "if (isBadmintonLoadingActive()) return;" in mousedown
-    assert "canvas.addEventListener('mousemove', handleBadmintonPointerMove);" in mousedown
-    assert "canvas.addEventListener('mousedown', handleBadmintonPointerDown);" in mousedown
-    assert "window.addEventListener('mousemove', function (ev) {" in mousedown
-    assert "window.addEventListener('mousedown', function (ev) {" in mousedown
+    assert "addBadmintonEventListener(canvas, 'mousemove', handleBadmintonPointerMove);" in mousedown
+    assert "addBadmintonEventListener(canvas, 'mousedown', handleBadmintonPointerDown);" in mousedown
+    assert "addBadmintonEventListener(window, 'mousemove', function (ev) {" in mousedown
+    assert "addBadmintonEventListener(window, 'mousedown', function (ev) {" in mousedown
     assert "handleBadmintonPointerDown(ev);" in mousedown
     assert "if (!canPlayerChargeShot()) return;" in mousedown
     assert "if (game.state !== 'ready') return;" not in mousedown
     assert "if (!isPlayerTurn()) return;" not in mousedown
 
     mouseup = html[
-        html.index("window.addEventListener('mouseup'"):
-        html.index("window.addEventListener('keydown'")
+        html.index("addBadmintonEventListener(window, 'mouseup'"):
+        html.index("addBadmintonEventListener(window, 'keydown'")
     ]
     assert "if (isBadmintonLoadingActive()) return;" in mouseup
     assert "if (game.charging && returnIncomingPlayerShuttle()) return;" in mouseup
@@ -2495,8 +2600,8 @@ def test_badminton_removed_stale_assist_hud_and_hotkeys():
     assert "G{{guide}} / S{{sweet}} / M{{music}}" not in html
     assert "G {{guide}} / S {{sweet}} / M {{music}}" not in html
     keydown = html[
-        html.index("window.addEventListener('keydown'"):
-        html.index("if (bgmVolumeInput)", html.index("window.addEventListener('keydown'"))
+        html.index("addBadmintonEventListener(window, 'keydown'"):
+        html.index("if (bgmVolumeInput)", html.index("addBadmintonEventListener(window, 'keydown'"))
     ]
     assert "key === 'g'" not in keydown
     assert "key === 's'" not in keydown
@@ -2733,18 +2838,56 @@ def test_badminton_duel_scores_on_valid_landings_inside_lines():
 def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
+    assert BADMINTON_INK_OVERLAY.exists()
+    assert BADMINTON_INK_OVERLAY.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    from PIL import Image
+    with Image.open(BADMINTON_INK_OVERLAY) as ink_overlay:
+        assert ink_overlay.size == (900, 500)
+        alpha = ink_overlay.getchannel("A")
+        assert alpha.getpixel((450, 240)) == 255
+        assert alpha.getpixel((80, 80)) == 0
+        assert alpha.getpixel((850, 450)) == 0
+        screen_splatter_points = [
+            (150, 250),
+            (760, 250),
+            (250, 105),
+            (690, 125),
+            (240, 340),
+            (700, 335),
+            (450, 380),
+            (300, 410),
+        ]
+        assert sum(1 for point in screen_splatter_points if alpha.getpixel(point) >= 90) >= 7
     assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
     assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
+    assert '<html lang="zh-CN" data-static-asset-version="{{ static_asset_version }}">' in html
+    assert '<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v={{ static_asset_version }}">' in html
+    assert "function badmintonAssetUrl(path) {" in html
+    assert "var YUI_CHEAT_INK_OVERLAY_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-octopus-ink-overlay.png');" in html
+    assert "var yuiInkOverlayImage = null;" in html
+    assert "function preloadYuiInkOverlayImage() {" in html
+    assert "function isYuiInkOverlayImageReady() {" in html
+    assert "try { preloadYuiInkOverlayImage(); } catch (_) { yuiInkOverlayImage = null; }" in html
     assert "function ensureYuiInkOverlayCache() {" in html
     assert "function drawYuiInkArcRings(ink, t) {" in html
     assert "var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48" in html
-    assert "centralInk.addColorStop(0, 'rgba(0,0,0,.96)');" in html
+    assert "centralInk.addColorStop(0, 'rgba(0,0,0,1)');" in html
+    assert "centralInk.addColorStop(0.30, 'rgba(0,0,0,.99)');" in html
+    assert "centralInk.addColorStop(0.58, 'rgba(0,2,7,.90)');" in html
+    assert "function drawKartInkSplat(cx, cy, rx, ry, rot, alpha) {" in html
+    assert "drawKartInkSplat(BASE_W * 0.50, BASE_H * 0.49" in html
+    assert "inkCtx.fillStyle = 'rgba(0,0,0,.97)';" in html
     assert "function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {" in html
     assert "var centerSplashes = [" in html
     assert "for (var drip = 0; drip < 8; drip++) {" in html
     assert "for (var speck = 0; speck < 22; speck++) {" in html
     assert "inkCtx.bezierCurveTo(" in html
-    assert "aimingCtx.drawImage(inkCanvas," in html
+    assert "var inkOverlay = isYuiInkOverlayImageReady() ? yuiInkOverlayImage : ensureYuiInkOverlayCache();" in html
+    assert "if (!inkOverlay) return;" in html
+    assert "aimingCtx.drawImage(inkOverlay," in html
+    assert "aimingCtx.globalAlpha = Math.min(0.42, ink.alpha * 0.46);" in html
+    assert "aimingCtx.fillStyle = 'rgba(0,0,0,.78)';" in html
+    assert "aimingCtx.globalAlpha = Math.min(1, ink.alpha * 1.12);" in html
     assert "drawYuiInkArcRings(ink, t);" in html
     assert "if (!ink || ink.alpha <= 0.58) return;" in html
     cache_start = html.index("function ensureYuiInkOverlayCache() {")
@@ -3096,7 +3239,7 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
 
     pointer_down = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
-        html.index("canvas.addEventListener('mousemove'", html.index("function handleBadmintonPointerDown(ev) {"))
+        html.index("addBadmintonEventListener(canvas, 'mousemove'", html.index("function handleBadmintonPointerDown(ev) {"))
     ]
     assert "if (returnIncomingPlayerShuttle()) return;" not in pointer_down
     assert "if (!canPlayerChargeShot()) return;" in pointer_down
@@ -3104,13 +3247,13 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
 
     mousedown = html[
         html.index("function handleBadmintonPointerDown(ev) {"):
-        html.index("window.addEventListener('mouseup'")
+        html.index("addBadmintonEventListener(window, 'mouseup'")
     ]
     assert "game.power = 56;" not in mousedown
     assert "if (!canPlayerChargeShot()) return;" in mousedown
     assert "canPrechargePlayerReturn" not in mousedown
     assert mousedown.index("if (!canPlayerChargeShot()) return;") < mousedown.index("game.charging = true;")
-    mouseup = html[html.index("window.addEventListener('mouseup'"):html.index("window.addEventListener('keydown'")]
+    mouseup = html[html.index("addBadmintonEventListener(window, 'mouseup'"):html.index("addBadmintonEventListener(window, 'keydown'")]
     assert "if (game.charging && returnIncomingPlayerShuttle()) return;" in mouseup
 
 
@@ -3202,8 +3345,8 @@ def test_badminton_space_jump_enables_air_smash():
     assert "shuttle.smashQuality = impulse.smashQuality || 0;" in launch_section
 
     keydown = html[
-        html.index("window.addEventListener('keydown'"):
-        html.index("if (bgmVolumeInput)", html.index("window.addEventListener('keydown'"))
+        html.index("addBadmintonEventListener(window, 'keydown'"):
+        html.index("if (bgmVolumeInput)", html.index("addBadmintonEventListener(window, 'keydown'"))
     ]
     assert "key === ' ' || ev.code === 'Space'" in keydown
     assert "if (!ev.repeat) startPlayerJump();" in keydown
@@ -3218,6 +3361,52 @@ def test_badminton_unload_can_retry_pending_route_end_with_beacon():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert "var routeEndFetchPending = false;" in html
-    assert "if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;" in html
+    assert "if (!detached && endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });" in html
     assert "routeEndFetchPending = true;" in html
     assert "routeEndBeaconDelivered = true;" in html
+
+
+@pytest.mark.unit
+def test_badminton_leaderboard_mode_and_post_errors_are_explicit():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    mode_section = html[html.index("function formatLeaderboardMode(value) {"):html.index("function pickLocalizedLine", html.index("function formatLeaderboardMode(value) {"))]
+    post_section = html[html.index("function post(path, body, timeoutMs) {"):html.index("function _isBadmintonGameMemoryEnabled", html.index("function post(path, body, timeoutMs) {"))]
+
+    assert "if (mode === 'duel') return _i18n('leaderboard.mode.duel', " in mode_section
+    assert "if (mode === 'shooter') return _i18n('leaderboard.mode.shooter', " in mode_section
+    assert "if (mode === 'practice') return _i18n('leaderboard.mode.practice', " in mode_section
+    assert "return mode || _i18n('leaderboard.mode.duel', " in mode_section
+    assert "if (!r.ok) {" in post_section
+    assert "return r.text().then(function (text) {" in post_section
+    assert "reason: 'http_error'" in post_section
+    assert "return r.json().catch(function () { return { ok: r.ok }; });" in post_section
+
+
+@pytest.mark.unit
+def test_badminton_game_storage_is_scoped_per_lanlan_with_legacy_fallback():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "function encodeBadmintonStorageScopeName(value) {" in html
+    assert "encodeURIComponent(raw.toLowerCase())" in html
+    assert ".replace(/%/g, '~')" in html
+    assert "function getBadmintonStorageScope() {" in html
+    assert "function badmintonStorageKey(key) {" in html
+    assert "return 'bd:' + scope + ':' + key;" in html
+    assert "replace(/[^a-z0-9_-]+/g, '_')" not in html
+    assert "function readBadmintonStorage(key) {" in html
+    assert "var scopedKey = badmintonStorageKey(key);" in html
+    assert "if (scopedValue != null) return scopedValue;" in html
+    assert "if (scopedKey !== key) return localStorage.getItem(key);" in html
+    assert "function writeBadmintonStorage(key, value) {" in html
+    assert "localStorage.setItem(badmintonStorageKey(key), value);" in html
+    assert "function removeBadmintonStorage(key) {" in html
+    assert "var scopedKey = badmintonStorageKey(key);" in html
+    assert "localStorage.removeItem(scopedKey);" in html
+    assert "if (scopedKey !== key) localStorage.removeItem(key);" in html
+
+    assert "var raw = readBadmintonStorage(key);" in html
+    assert "writeBadmintonStorage(key, JSON.stringify(value));" in html
+    assert "readBadmintonStorage('bd_record_distance')" in html
+    assert "writeBadmintonStorage('bd_record_distance', String(Math.round(game.recordDistance)))" in html
+    assert "localStorage.getItem('bd_record_distance')" not in html
+    assert "localStorage.setItem('bd_record_distance'" not in html

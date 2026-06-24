@@ -2282,6 +2282,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userModelList = document.getElementById('user-model-list');
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
+    let lastVrmAnimationSelection = '_no_motion_';
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
     let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
@@ -5341,12 +5342,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             vrmAnimations = (data.success && data.animations) ? data.animations : [];
 
             if (vrmAnimationSelect) {
-                // 始终保留"无动作"选项，让用户能清空已保存的动作配置
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
+                const previousValue = vrmAnimationSelect.value;
+                vrmAnimationSelect.innerHTML = '';
                 const noMotionOption = document.createElement('option');
                 noMotionOption.value = '_no_motion_';
                 noMotionOption.textContent = t('live2d.noMotion', '无动作');
                 vrmAnimationSelect.appendChild(noMotionOption);
+
+                const addAnimationOption = document.createElement('option');
+                addAnimationOption.value = '';
+                addAnimationOption.textContent = t('live2d.vrmAnimation.addAnimation', '添加动作');
+                vrmAnimationSelect.appendChild(addAnimationOption);
 
                 if (vrmAnimations.length > 0) {
                     vrmAnimations.forEach(anim => {
@@ -5369,6 +5375,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
+                const hasPreviousValue = previousValue && Array.from(vrmAnimationSelect.options)
+                    .some(option => option.value === previousValue);
+                vrmAnimationSelect.value = hasPreviousValue ? previousValue : '_no_motion_';
+                lastVrmAnimationSelection = vrmAnimationSelect.value || '_no_motion_';
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
                     vrmAnimationSelectBtn.disabled = false;
@@ -5441,20 +5451,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmAnimationSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
+            // 如果选择的是"添加动作"入口，触发文件选择器
             if (selectedValue === '') {
                 const vrmAnimationFileUpload = document.getElementById('vrm-animation-file-upload');
                 if (vrmAnimationFileUpload) {
                     vrmAnimationFileUpload.click();
                 }
-                // 重置选择器到第一个选项（保持显示"选择动作"）
-                e.target.value = '';
-                updateVRMAnimationSelectButtonText(); // 更新按钮文字为"选择动作"
+                const restoreValue = Array.from(vrmAnimationSelect.options)
+                    .some(option => option.value === lastVrmAnimationSelection)
+                    ? lastVrmAnimationSelection
+                    : '_no_motion_';
+                e.target.value = restoreValue;
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
             // 无动作选项：停止当前播放的 VRM 动作
             if (selectedValue === '_no_motion_') {
+                lastVrmAnimationSelection = '_no_motion_';
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -5463,9 +5477,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
                 stopIdleRotation('vrm');
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
+            lastVrmAnimationSelection = selectedValue;
             updateVRMAnimationSelectButtonText();
             const animationPath = e.target.value;
             if (animationPath && playVrmAnimationBtn) {
@@ -5528,7 +5544,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 播放/暂停 VRM 动作（切换功能）
     if (playVrmAnimationBtn) {
         playVrmAnimationBtn.addEventListener('click', async () => {
-            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value) {
+            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value || vrmAnimationSelect.value === '_no_motion_') {
                 showStatus(t('live2d.vrmAnimation.selectAnimationFirst', '请先选择动作'), 2000);
                 return;
             }
@@ -6472,7 +6488,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const expressions = vrmManager.expression.getExpressionList();
 
-        vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.selectExpression', '选择表情')}</option>`;
+        vrmExpressionSelect.innerHTML = '';
         const noExpressionOption = document.createElement('option');
         noExpressionOption.value = '_no_expression_';
         noExpressionOption.textContent = t('live2d.noExpression', '无表情');
@@ -6491,6 +6507,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 播放按钮保持禁用，直到用户选择一个表情
             if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
+            vrmExpressionSelect.value = '_no_expression_';
             updateVRMExpressionDropdown();
             updateVRMExpressionSelectButtonText();
         } else {
@@ -6543,12 +6560,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmExpressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"选择表情"），显示提示（VRM表情通常是内置的）
+            // 空值仅作为无可用表情/异常状态兜底；正常列表不再提供"选择表情"选项。
             if (selectedValue === '') {
                 showStatus(t('live2d.vrmExpression.builtInOnly', 'VRM表情通常是模型内置的，无法单独上传'), 3000);
-                // 重置选择器到第一个选项（保持显示"选择表情"）
-                e.target.value = '';
-                updateVRMExpressionSelectButtonText(); // 更新按钮文字为"选择表情"
+                e.target.value = '_no_expression_';
+                updateVRMExpressionSelectButtonText();
                 // 禁用播放按钮
                 if (triggerVrmExpressionBtn) {
                     triggerVrmExpressionBtn.disabled = true;
@@ -6615,7 +6631,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (triggerVrmExpressionBtn) {
         triggerVrmExpressionBtn.addEventListener('click', () => {
             const name = vrmExpressionSelect.value;
-            if (!name) {
+            if (!name || name === '_no_expression_') {
                 showStatus(t('live2d.vrmExpression.selectFirst', '请先选择一个表情'));
                 return;
             }

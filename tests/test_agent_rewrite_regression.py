@@ -872,9 +872,11 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
 
 def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
     director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "runIntroGreetingHugPerformance" in director_source
-    assert "playIntroGreetingHug" in director_source
+    assert "playAvatarMotion" in director_source
+    assert "playIntroGreetingHug" in avatar_source
     assert "runIntroGiftHeartPerformance" in director_source
     assert "playIntroGiftHeart" in director_source
     assert "showIntroGiftHeart" in director_source
@@ -1309,7 +1311,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
     director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
 
-    begin_start = avatar_reload_source.index("beginOverride()")
+    begin_start = avatar_reload_source.index("beginOverride(")
     restore_start = avatar_reload_source.index("restoreOverride()")
     restore_end = avatar_reload_source.index("window.TutorialAvatarReloadController", restore_start)
     begin_block = avatar_reload_source[begin_start:restore_start]
@@ -1317,15 +1319,16 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
 
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
-    assert "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });" in begin_block
+    assert "await this.reloadModel(currentName, tutorialModelPayload," in begin_block
+    assert "temporary: true" in begin_block
+    assert "deferRevealPrepared" in begin_block
     assert "this.setPreparing(true);" in begin_block
     assert begin_block.count("this.setPreparing(true);") == 2
+    reload_call_index = begin_block.index("await this.reloadModel(currentName, tutorialModelPayload,")
     assert begin_block.index("this.setPreparing(true);") < begin_block.index(
-        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
+        "await this.reloadModel(currentName, tutorialModelPayload,"
     )
-    assert begin_block.rindex("this.setPreparing(true);") > begin_block.index(
-        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
-    )
+    assert begin_block.rindex("this.setPreparing(true);") > reload_call_index
     assert begin_block.rindex("this.setPreparing(true);") < begin_block.index(
         "this.applyIdentityOverride({"
     )
@@ -1382,11 +1385,12 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);" in reload_tutorial_block
     assert "reloadOptions.skipIdleRestore = true;" in reload_tutorial_block
     assert "reloadOptions.skipPersistentExpressions = true;" in reload_tutorial_block
+    assert "reloadOptions.deferRevealPrepared = deferRevealPrepared;" in reload_tutorial_block
     assert "await window.handleModelReload(lanlanName, reloadOptions);" in reload_tutorial_block
     assert "临时模型热切换失败，改用直接 Live2D 加载" in reload_tutorial_block
     assert "if (!useTemporaryConfig)" in reload_tutorial_block
     assert "throw error;" in reload_tutorial_block
-    assert "await this.loadTemporaryTutorialLive2dModel(payload);" in reload_tutorial_block
+    assert "await this.loadTemporaryTutorialLive2dModel(payload, {" in reload_tutorial_block
     assert "waitForLive2dModelLoadIdle(maxWaitTime = 30000)" in tutorial_source
     assert "waitForLive2dModelLoadIdleOrThrow(reason = '', maxWaitTime = 30000)" in tutorial_source
     assert "manager._isLoadingModel === true" in tutorial_source
@@ -1470,6 +1474,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "var frozenScreenPoint = freezePoint ? yuiGuideChatCursorFrozenScreenPoints[freezeKey] : null;" in interpage_source
     assert "if (!targetPoint && !frozenScreenPoint) return false;" in interpage_source
     assert "if (event.origin !== window.location.origin) return;" in interpage_source
+    assert "if (!deferRevealPrepared) {" in interpage_source
     assert "live2dContainer2.style.removeProperty('opacity');" in interpage_source
     assert "live2dCanvas2.style.removeProperty('opacity');" in interpage_source
     assert "typeof window.showLive2d === 'function'" in interpage_source
@@ -1499,6 +1504,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
         "function activateLive2DRenderForDisplay(reason)",
         1,
     )[0]
+    assert "shouldPreserveYuiGuideLive2DPreparing()" in app_ui_source
+    assert "if (!preserveYuiGuidePreparing) {" in restore_live2d_surface_block
     assert "document.body.classList.remove('yui-guide-live2d-preparing');" in restore_live2d_surface_block
     assert "document.body.classList.remove('yui-guide-return-petal-fade');" in restore_live2d_surface_block
     assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in restore_live2d_surface_block
@@ -1547,7 +1554,8 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;" in round_prelude_source
     assert "if (!deferRevealPrepared) {" in round_prelude_source
     assert "this.ensureVisible(sceneId, {" in round_prelude_source
-    assert "deferRevealPrepared: Number(round) === 1" in tutorial_source
+    assert "deferRevealPrepared: true" in tutorial_source
+    assert "revealPrepared: () => this.revealTutorialLive2dPrepared()" in tutorial_source
     ensure_visible_block = tutorial_source.split(
         "async ensureTutorialYuiLive2dVisible(reason = '', options = {}) {",
         1,
@@ -1603,7 +1611,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "document.body.classList.remove('yui-guide-return-petal-fade');" in tutorial_source
     assert "document.body.style.removeProperty('--yui-guide-return-avatar-opacity');" in tutorial_source
     assert "_tutorialLive2dRenderActivationToken" in tutorial_source
-    assert "this.ensureTutorialLive2dRenderActive('load-temporary-tutorial-model');" in tutorial_source
+    assert "this.ensureTutorialLive2dRenderActive('load-temporary-tutorial-model', {" in tutorial_source
     assert "this.ensureTutorialLive2dRenderActive('ensure-visible-active-yui', {" in tutorial_source
     assert "this.ensureTutorialLive2dRenderActive('ensure-visible-after-direct-load', {" in tutorial_source
     assert "options.scheduleDelayed !== false" in tutorial_source
@@ -1702,7 +1710,7 @@ def test_tutorial_lifecycle_modules_export_reusable_controllers():
     for expected in (
         "class TutorialAvatarReloadController",
         "window.TutorialAvatarReloadController = {",
-        "beginOverride()",
+        "beginOverride(options)",
         "restoreOverride()",
         "hasActiveOverride()",
         "getPendingPromise()",

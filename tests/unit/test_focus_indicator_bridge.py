@@ -53,6 +53,14 @@ def _stub(mode=CognitionMode.REGULAR):
     stub._push_focus_thinking = LLMSessionManager._push_focus_thinking.__get__(
         stub, LLMSessionManager
     )
+    # _reconcile also calls _maybe_purge_focus_artifacts (history cleanup on a
+    # silent Focus exit). Not armed here → it's a no-op, but must resolve on the
+    # bare stub. session absent → the no-op returns before touching it.
+    stub._focus_artifacts_pending = False
+    stub.session = None
+    stub._maybe_purge_focus_artifacts = (
+        LLMSessionManager._maybe_purge_focus_artifacts.__get__(stub, LLMSessionManager)
+    )
     return stub
 
 
@@ -140,6 +148,61 @@ def test_thinking_message_shape_only_type_and_active():
     msg = _pushed_thinking(stub)[0]
     assert set(msg.keys()) == {"type", "active"}
     assert msg["active"] is True
+
+
+def test_handle_thinking_active_pulses_bubble_on():
+    # handle_thinking_active is the session callback fired when the model emits a
+    # reasoning chunk on ANY turn (Focus or not). It pulses the bubble True via the
+    # idempotent _push_focus_thinking — decoupled from the Focus inline decision.
+    stub = _stub()
+    stub.handle_thinking_active = _bind(stub, "handle_thinking_active")
+    asyncio.run(stub.handle_thinking_active())
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+
+def test_handle_thinking_active_is_idempotent_within_turn():
+    # Multiple reasoning chunks in one turn must not spam the bubble — the cached
+    # state in _push_focus_thinking collapses repeated True pulses to one push.
+    stub = _stub()
+    handler = _bind(stub, "handle_thinking_active")
+    asyncio.run(handler())
+    asyncio.run(handler())
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+
+def test_thinking_callback_scoped_to_live_session():
+    # _make_thinking_active_callback binds the pulse to ONE session so a stale /
+    # pending OmniOfflineClient can't drive the current window's bubble: only the
+    # client that is self.session forwards to _push_focus_thinking (CodeRabbit).
+    stub = _stub()
+    stub.handle_thinking_active = _bind(stub, "handle_thinking_active")
+    make_cb = _bind(stub, "_make_thinking_active_callback")
+
+    live = object()
+    stale = object()
+    stub.session = live
+
+    # Callback bound to the live session forwards.
+    asyncio.run(make_cb(live)(True))
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+    # Callback bound to a non-current session is a silent no-op (no extra push).
+    asyncio.run(make_cb(stale)(False))
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+
+def test_handle_thinking_active_false_clears_bubble():
+    # The same callback clears the bubble (active=False) — this is the end-of-stream
+    # clear prompt_ephemeral fires when a proactive/greeting turn reasons but commits
+    # no visible text, so the bubble can't get stuck on (Codex P2).
+    stub = _stub()
+    handler = _bind(stub, "handle_thinking_active")
+    asyncio.run(handler(True))
+    asyncio.run(handler(False))
+    assert _pushed_thinking(stub) == [
+        {"type": "focus_thinking", "active": True},
+        {"type": "focus_thinking", "active": False},
+    ]
 
 
 def test_thinking_force_re_pushes_for_new_window():

@@ -58,6 +58,10 @@ def _allow_local_mutation(request, payload=None, **kwargs):
     return None
 
 
+async def _fake_cache_memory(**kwargs):
+    return True, ""
+
+
 @pytest.mark.asyncio
 async def test_icebreaker_route_start_does_not_activate_game_route(monkeypatch):
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {})
@@ -102,8 +106,15 @@ async def test_icebreaker_route_start_requires_local_mutation_csrf(monkeypatch):
 @pytest.mark.asyncio
 async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
     mgr = _FakeAppendContextManager()
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
 
     result = await icebreaker_router.icebreaker_context(
@@ -131,6 +142,109 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
             "session_id": "icebreaker-day1-test",
         },
     }]
+    assert memory_cache_calls == [{
+        "lanlan_name": "Lan",
+        "role": "assistant",
+        "text": "教程看完啦？",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "user",
+            "text": "可以，多陪一会儿",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "choice-1",
+        })
+    )
+
+    assert result["ok"] is True
+    assert result["memory_cached"] is True
+    assert memory_cache_calls == [{
+        "lanlan_name": "Lan",
+        "role": "user",
+        "text": "可以，多陪一会儿",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch, caplog):
+    mgr = _FakeAppendContextManager()
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return False, "timeout"
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "line-1",
+        })
+    )
+
+    assert result["ok"] is True
+    assert result["memory_cached"] is False
+    assert mgr.calls[0]["text"] == "教程看完啦？"
+    assert memory_cache_calls == [{
+        "lanlan_name": "Lan",
+        "role": "assistant",
+        "text": "教程看完啦？",
+    }]
+    assert "icebreaker memory cache failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_deduped_response_keeps_memory_cached_field(monkeypatch):
+    mgr = _FakeAppendContextManager(result=SimpleNamespace(appended=False, deduped=True, reason="duplicate"))
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "line-1",
+        })
+    )
+
+    assert result["ok"] is True
+    assert result["deduped"] is True
+    assert result["memory_cached"] is False
+    assert memory_cache_calls == []
 
 
 @pytest.mark.asyncio
@@ -138,6 +252,7 @@ async def test_icebreaker_context_falls_back_to_active_session_id(monkeypatch):
     mgr = _FakeAppendContextManager()
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", _fake_cache_memory)
     icebreaker_route_state.activate_icebreaker_route("Lan", "active-session")
 
     result = await icebreaker_router.icebreaker_context(
@@ -152,6 +267,42 @@ async def test_icebreaker_context_falls_back_to_active_session_id(monkeypatch):
     assert result["session_id"] == "active-session"
     assert mgr.calls[0]["ordering_key"] == "active-session"
     assert mgr.calls[0]["metadata"]["session_id"] == "active-session"
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monkeypatch):
+    calls = []
+
+    async def fake_post_memory_server(endpoint, lanlan_name, payload, *, timeout_s):
+        calls.append({
+            "endpoint": endpoint,
+            "lanlan_name": lanlan_name,
+            "payload": payload,
+            "timeout_s": timeout_s,
+        })
+        return True, "", {"status": "cached", "count": 1}
+
+    import main_logic.cross_server as cross_server
+
+    monkeypatch.setattr(cross_server, "_post_memory_server", fake_post_memory_server)
+
+    ok, err = await icebreaker_router._cache_icebreaker_context_memory(
+        lanlan_name="Lan",
+        role="user",
+        text="可以，多陪一会儿",
+    )
+
+    assert ok is True
+    assert err == ""
+    assert calls == [{
+        "endpoint": "cache",
+        "lanlan_name": "Lan",
+        "payload": [{
+            "role": "user",
+            "content": [{"type": "text", "text": "可以，多陪一会儿"}],
+        }],
+        "timeout_s": icebreaker_router.ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+    }]
 
 
 @pytest.mark.asyncio

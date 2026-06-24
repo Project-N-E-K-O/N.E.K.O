@@ -20,7 +20,15 @@ delivers the product thesis's 10% "神明降临" moment (see
 ``docs/design/focus-truename-mode.md``). One of its cheapest Layer-1
 signals is a substring scan of the user's message for **emotional
 vulnerability** cues — fatigue, loneliness, feeling overwhelmed, the urge
-to give up.
+to give up, and the anger/profanity venting that often rides alongside
+them (swearing is a strong, language-universal distress tell).
+
+Profanity is intentionally limited to phrases that are long enough to not
+embed in ordinary words under the case-insensitive substring match — e.g.
+``asshole`` (not bare ``ass``, which matches *class* / *pass*), ``操你``
+(not bare ``操``, which matches 操作 / 操场), ``幹你娘`` (not bare ``幹``).
+Over-triggering is acceptable here (see below) but matching every other
+sentence is not.
 
 Distinct from ``prompts_directives.NEGATIVE_KEYWORDS_I18N``
 --------------------------------------------------------
@@ -82,6 +90,12 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "要崩溃", "崩溃", "没希望", "好无助", "无助", "活不下去", "撑不住了",
             # 求安慰 / 渴望被安抚
             "安慰",
+            # 脏话 / 情绪爆粗（只收真带攻击性/愤怒宣泄的；卧槽/我擦/特么/该死/放屁
+            # 这类已口头禅化的轻感叹不收，含台湾常用语，zh 共享 zh-CN/zh-TW）。
+            # 不收 "tmd"（撞 tmdb 影视库）/"垃圾"（撞 垃圾桶/垃圾分类）等高频中性子串。
+            "草泥马", "操你", "妈的", "他妈的", "傻逼", "煞笔", "二逼", "傻屌",
+            "滚蛋", "滚开", "去死", "狗屁", "靠北", "靠杯", "干你娘", "幹你娘",
+            "机掰", "機掰",
         ]
     ),
     "en": frozenset(
@@ -120,6 +134,12 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "hurts so much", "heartbroken", "in so much pain", "so upset",
             # Seeking comfort
             "comfort me", "need comfort",
+            # Profanity / venting — only the genuinely aggressive ones; mild
+            # interjections that have become filler (wtf / damn / screw this) are
+            # out. A base form covers inflections via substring ("fuck" →
+            # fucking/motherfucker, "shit" → bullshit/shitty).
+            "fuck", "shit", "bitch", "bastard", "asshole", "dumbass",
+            "piss off", "goddammit",
         ]
     ),
     "ja": frozenset(
@@ -150,6 +170,10 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "胸が痛い", "心が痛い", "苦しい", "苦しすぎ", "せつない", "胸が苦しい",
             # 慰めてほしい
             "慰めて",
+            # 暴言 / 悪態（攻撃性のある罵倒のみ。馬鹿/あほ/きもい のような日常的な
+            # 軽口は外す。"くそ" は くそったれ 等を部分一致で内包）
+            "くそ", "クソ", "畜生", "ちくしょう", "ふざけんな", "ふざけるな",
+            "死ね", "くたばれ",
         ]
     ),
     "ko": frozenset(
@@ -181,6 +205,9 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "가슴이 미어",
             # 위로받고 싶다
             "위로해", "위로받고 싶",
+            # 욕설 / 분풀이（공격성 있는 욕설만. 존나(=매우, 강조)/젠장 같은
+            # 일상 감탄·강조는 제외）
+            "씨발", "시발", "개새끼", "병신", "지랄", "꺼져", "닥쳐", "좆같",
         ]
     ),
     "ru": frozenset(
@@ -215,6 +242,11 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "так больно", "сердце болит", "душа болит", "невыносимо больно",
             # Хочется утешения
             "утешь меня", "нужно утешение",
+            # Мат / ругань (только агрессивная брань; хрень/охренел и прочие
+            # бытовые восклицания не берём; "заебал" покрывает заебала/заебало).
+            # Голый "хуй" не берём: подстрокой ловит застрахуй/страхуй.
+            "блять", "блядь", "сука", "хуйня", "нахуй", "похуй",
+            "пиздец", "говно", "мудак", "заебал",
         ]
     ),
     "es": frozenset(
@@ -253,6 +285,10 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "me duele el alma",
             # Busco consuelo
             "consuélame", "necesito consuelo",
+            # Palabrotas / desahogo (solo las agresivas; "hostia" y otras
+            # muletillas suaves fuera; evito "puta" suelto: matchea reputación/disputa)
+            "joder", "mierda", "coño", "cabrón", "gilipollas",
+            "carajo", "pendejo", "hijo de puta", "me cago en",
         ]
     ),
     "pt": frozenset(
@@ -291,6 +327,10 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "dói demais",
             # Em busca de conforto
             "me consola", "preciso de consolo",
+            # Palavrões / desabafo (só os agressivos; "cacete" e outras
+            # muletas leves fora; evito "puta" solto: matcha reputação/disputa)
+            "merda", "porra", "caralho", "foda-se", "desgraça",
+            "bosta", "filho da puta", "vai tomar no", "puta que pariu",
         ]
     ),
 }

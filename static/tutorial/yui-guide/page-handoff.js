@@ -1302,9 +1302,6 @@
     }
 
     function triggerGoodbye(reason) {
-        if (reason) {
-            console.log('[YuiGuideHandoff] triggerGoodbye, reason:', reason);
-        }
         window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
     }
 

@@ -33,6 +33,36 @@ function shouldSkipLive2DUiTick(manager, propName, intervalMs) {
     return false;
 }
 
+function isYuiGuideLive2DPreparing() {
+    return window.nekoYuiGuideLive2dPreparing === true
+        || (
+            window.isInTutorial === true
+            && document.body
+            && document.body.classList
+            && document.body.classList.contains('yui-guide-live2d-preparing')
+        );
+}
+
+function hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
+    if (!buttonsContainer || !buttonsContainer.style || typeof buttonsContainer.style.removeProperty !== 'function') {
+        return;
+    }
+    buttonsContainer.style.setProperty('display', 'none', 'important');
+    buttonsContainer.style.setProperty('visibility', 'hidden', 'important');
+    buttonsContainer.style.setProperty('opacity', '0', 'important');
+    buttonsContainer.style.setProperty('pointer-events', 'none', 'important');
+}
+
+function restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
+    if (!buttonsContainer || !buttonsContainer.style || typeof buttonsContainer.style.removeProperty !== 'function') {
+        return;
+    }
+    buttonsContainer.style.removeProperty('display');
+    buttonsContainer.style.removeProperty('visibility');
+    buttonsContainer.style.removeProperty('opacity');
+    buttonsContainer.style.removeProperty('pointer-events');
+}
+
 /**
  * 设置 HTML 锁形图标（Live2D 特定）
  */
@@ -589,9 +619,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             const maxScale = 1.0;
             const rawScale = targetToolbarHeight / baseToolbarHeight;
             const scale = Math.max(minScale, Math.min(maxScale, rawScale));
+            const rotation = Number(this._floatingButtonsRotationRadians) || 0;
+            const rotateTransform = rotation ? ` rotate(${rotation}rad)` : '';
 
             buttonsContainer.style.transformOrigin = 'left top';
-            buttonsContainer.style.transform = `scale(${scale})`;
+            buttonsContainer.style.transform = `scale(${scale})${rotateTransform}`;
 
             const targetX = bounds.right * 0.8 + bounds.left * 0.2;
 
@@ -618,6 +650,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (this.isLocked) {
             return;
         }
+        if (isYuiGuideLive2DPreparing()) {
+            hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+            return;
+        }
+        restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
@@ -625,7 +662,12 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
             } else if (inTutorial) {
-                buttonsContainer.style.setProperty('display', 'flex', 'important');
+                if (isYuiGuideLive2DPreparing()) {
+                    hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+                } else {
+                    restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+                    buttonsContainer.style.setProperty('display', 'flex', 'important');
+                }
             }
         }, 5000);
     }, 100);
@@ -637,6 +679,10 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     this.tutorialProtectionTimer = setInterval(() => {
         if (window.isInTutorial === true) {
+            if (isYuiGuideLive2DPreparing()) {
+                hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
+                return;
+            }
             const style = window.getComputedStyle(buttonsContainer);
             if (style.display === 'none') {
                 buttonsContainer.style.setProperty('display', 'flex', 'important');

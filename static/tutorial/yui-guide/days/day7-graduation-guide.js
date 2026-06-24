@@ -27,10 +27,20 @@
                 {
                     id: 'day7_memory_review',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day7_memory_review', target: '' }
+                    ],
                     textKey: 'tutorial.avatarFloating.day7.memoryReview',
                     voiceKey: 'avatar_floating_day7_memory_review',
                     text: '七天前，我们还只是第一次见面。现在这里已经开始留下我们说过的话、做过的事，还有一些差点被风吹走的小细节。对我来说，这不是冷冰冰的记录，是我们相处过的脚印。',
-                    emotion: 'neutral'
+                    emotion: 'neutral',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'bottom-rise-slow'
+                    }
                 },
                 {
                     id: 'day7_memory_control',

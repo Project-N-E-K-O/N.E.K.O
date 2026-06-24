@@ -630,7 +630,8 @@ def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_sc
 
     assert "this._tutorialModelPrefix = 'live2d';" in start_block
     assert "await this.playAvatarFloatingRoundPrelude(round, source, director);" in start_block
-    assert "this.beginAvatarOverride()" in prelude_source
+    assert "this.beginAvatarOverride({" in prelude_source
+    assert "deferRevealPrepared" in prelude_source
     assert "this.ensureVisible(sceneId, {" in prelude_source
     assert "deferRevealPrepared" in prelude_source
     assert "director.playAvatarFloatingRound(round" in start_block
@@ -653,7 +654,7 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
     assert prelude_source.index("this.ensureVisible(sceneId, {") < prelude_source.index(
         "await toPromise(() => this.sleep(delayMs));"
     )
-    assert "deferRevealPrepared: Number(round) === 1" in source
+    assert "deferRevealPrepared: true" in source
     assert start_block.index("this.playAvatarFloatingRoundPrelude(round, source, director)") < start_block.index(
         "director.playAvatarFloatingRound(round"
     )
@@ -673,14 +674,15 @@ def test_avatar_floating_round_does_not_preheat_surface_before_playback():
 
 def test_tutorial_avatar_override_does_not_capture_avatar_preview():
     source = (ROOT / "static" / "tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
-    begin_block = source.split("beginOverride()", 1)[1].split("restoreOverride()", 1)[0]
+    begin_block = source.split("beginOverride(", 1)[1].split("restoreOverride()", 1)[0]
 
     assert "this.sleep(350)" not in begin_block
     assert "captureAvatarPreview" not in source
     assert "startIdentityOverrideCapture" not in source
     assert "this.applyIdentityOverride({" in begin_block
+    assert "deferRevealPrepared" in begin_block
     assert begin_block.index("this.applyIdentityOverride({") > begin_block.index(
-        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
+        "await this.reloadModel(currentName, tutorialModelPayload,"
     )
 
 
@@ -727,7 +729,7 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "id: 'day1_intro_greeting'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
     assert "cursorAction: 'wobble'" not in greeting_scene_block
-    assert "timelinePlayback: true" not in greeting_scene_block
+    assert "timelinePlayback: true" in greeting_scene_block
     assert "day1-intro-greeting-flow" not in greeting_scene_block
     assert "target: 'chat-input'" in greeting_scene_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
@@ -841,22 +843,187 @@ def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
     assert "cursorAction: 'move'" in greeting_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_block
     assert "day1-intro-greeting-flow" not in greeting_block
-    assert "timelinePlayback: true" not in greeting_block
+    assert "timelinePlayback: true" in greeting_block
     assert "cursorAction: 'wobble'" not in greeting_block
 
 
 def test_day1_intro_greeting_performance_operation_does_not_play_narration():
     source = (ROOT / "static" / "tutorial/core/operation-registry.js").read_text(encoding="utf-8")
-    operation_block = source.split("async runDay1IntroGreetingPerformance()", 1)[1].split(
+    operation_block = source.split("async runDay1IntroGreetingPerformance(context)", 1)[1].split(
         "async runDay1IntroBasicVoiceShowcase",
         1,
     )[0]
 
-    assert "runIntroGreetingHugPerformance" in operation_block
+    assert "runDailyIntroAvatarPerformance" in operation_block
+    assert "preset: 'wave-zoom'" in operation_block
     assert "runIntroGiftHeartPerformance" in operation_block
     assert "speakGuideLine" not in operation_block
     assert "appendGuideChatMessage" not in operation_block
     assert "setExternalizedChatCursor" not in operation_block
+
+
+def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
+    guide_specs = [
+        (DAY2_GUIDE_PATH, "day2_intro_context", "day2_personalization_space", "bottom-rise", None),
+        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools", "corner-peek", "bottom-left"),
+        (DAY4_GUIDE_PATH, "day4_intro_companion", "day4_chat_settings", "soft-approach", None),
+        (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master", "corner-peek", "bottom-right"),
+        (DAY7_GUIDE_PATH, "day7_memory_review", "day7_memory_control", "bottom-rise-slow", None),
+    ]
+
+    day1_source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
+    day1_block = day1_source.split("id: 'day1_intro_greeting'", 1)[1].split(
+        "id: 'day1_capsule_drag_hint'",
+        1,
+    )[0]
+    assert "operation: 'day1-intro-greeting-performance'" in day1_block
+    assert "introAvatarPerformance:" in day1_block
+    assert "preset: 'wave-zoom'" in day1_block
+    assert "timelinePlayback: true" in day1_block
+    assert "{ at: 0, command: 'operation.run', operation: 'day1-intro-greeting-performance', blocking: false }" in day1_block
+    assert "{ at: 0, command: 'chat.message' }" in day1_block
+    assert day1_block.index("day1-intro-greeting-performance") < day1_block.index("chat.message")
+
+    for guide_path, first_scene_id, next_scene_id, preset, position in guide_specs:
+        source = guide_path.read_text(encoding="utf-8")
+        scene_block = source.split(f"id: '{first_scene_id}'", 1)[1].split(
+            f"id: '{next_scene_id}'",
+            1,
+        )[0]
+        assert "timelinePlayback: true" in scene_block
+        assert "introAvatarPerformance:" in scene_block
+        assert f"preset: '{preset}'" in scene_block
+        if position:
+            assert f"position: '{position}'" in scene_block
+        assert "operation: 'daily-intro-avatar-performance'" in scene_block
+        assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
+
+
+def test_day2_intro_bottom_rise_uses_slow_half_body_motion():
+    source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
+    scene_block = source.split("id: 'day2_intro_context'", 1)[1].split(
+        "id: 'day2_personalization_space'",
+        1,
+    )[0]
+
+    assert "preset: 'bottom-rise'" in scene_block
+    assert "approachMs: 1500" in scene_block
+    assert "restore: 'half-body'" in scene_block
+
+
+def test_day5_first_scene_runs_fixed_intro_avatar_motion_without_blocking_settings_tour():
+    source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
+    scene_block = source.split("id: 'day5_character_settings'", 1)[1].split(
+        "id: 'day5_character_panic'",
+        1,
+    )[0]
+
+    assert "introAvatarPerformance:" in scene_block
+    assert "preset: 'top-peek'" in scene_block
+    assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
+    assert "{ at: 0, command: 'settingsTour.play', blocking: true }" in scene_block
+    assert scene_block.index("daily-intro-avatar-performance") < scene_block.index("settingsTour.play")
+
+
+def test_peek_intro_avatar_motions_explicitly_restore_to_half_body():
+    guide_specs = [
+        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools"),
+        (DAY5_GUIDE_PATH, "day5_character_settings", "day5_character_panic"),
+        (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master"),
+    ]
+
+    for guide_path, first_scene_id, next_scene_id in guide_specs:
+        source = guide_path.read_text(encoding="utf-8")
+        scene_block = source.split(f"id: '{first_scene_id}'", 1)[1].split(
+            f"id: '{next_scene_id}'",
+            1,
+        )[0]
+        assert "restore: 'half-body'" in scene_block
+
+
+def test_peek_intro_avatar_motions_keep_floating_buttons_attached_only_for_intro():
+    guide_specs = [
+        (DAY3_GUIDE_PATH, "day3_tool_toggle_intro", "day3_avatar_tools"),
+        (DAY5_GUIDE_PATH, "day5_character_settings", "day5_character_panic"),
+        (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master"),
+    ]
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+
+    for guide_path, first_scene_id, next_scene_id in guide_specs:
+        source = guide_path.read_text(encoding="utf-8")
+        scene_block = source.split(f"id: '{first_scene_id}'", 1)[1].split(
+            f"id: '{next_scene_id}'",
+            1,
+        )[0]
+        assert "freezeFloatingButtons: false" in scene_block
+
+    assert "freezeFloatingButtons: performance.freezeFloatingButtons === false ? false : undefined" in director_source
+
+
+def test_corner_intro_avatar_motions_rotate_floating_buttons_with_model_when_model_rotates():
+    day3_source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    day5_source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
+    day6_source = DAY6_GUIDE_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+
+    day3_block = day3_source.split("id: 'day3_tool_toggle_intro'", 1)[1].split(
+        "id: 'day3_avatar_tools'",
+        1,
+    )[0]
+    day6_block = day6_source.split("id: 'day6_intro_agent'", 1)[1].split(
+        "id: 'day6_agent_status_master'",
+        1,
+    )[0]
+    assert "rotateFloatingButtons: true" in day3_block
+    assert "rotateFloatingButtons: true" in day6_block
+
+    assert "rotateFloatingButtons: true" not in day5_source
+    assert "rotateFloatingButtons: performance.rotateFloatingButtons === true" in director_source
+
+
+def test_peek_intro_half_body_fade_in_restores_full_opacity_after_fadeout():
+    source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
+    corner_block = source.split("async function playTimedAvatarCornerPeek(options, position)", 1)[1].split(
+        "async function playFrameAvatarMotion",
+        1,
+    )[0]
+    fade_in_block = source.split("async function fadeInAvatarMotionHalfBodyPlacement(options)", 1)[1].split(
+        "async function playTimedAvatarCornerPeek",
+        1,
+    )[0]
+
+    assert "const targetAlpha = 1;" in fade_in_block
+    assert "const targetDisplayAlpha = 1;" in fade_in_block
+    assert "readModelAlpha(context.model)" not in fade_in_block
+    assert "captureAvatarMotionHalfBodyFadeTarget" not in source
+    assert "await fadeOutAvatarMotionVisibleLayer(normalizedOptions);" in corner_block
+    assert "await fadeInAvatarMotionHalfBodyPlacement(normalizedOptions);" in corner_block
+
+
+def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
+    manager_source = MANAGER_PATH.read_text(encoding="utf-8")
+    orchestrator_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+
+    prelude_block = manager_source.split("async playAvatarFloatingRoundPrelude(round, source, director)", 1)[1].split(
+        "async waitForTutorialTeardownSettled",
+        1,
+    )[0]
+    assert "deferRevealPrepared: true" in prelude_block
+    assert "Number(round) === 1" not in prelude_block
+
+    round_block = manager_source.split("const completed = await director.playAvatarFloatingRound(round,", 1)[1].split(
+        "});",
+        1,
+    )[0]
+    assert "revealPrepared: () => this.revealTutorialLive2dPrepared()" in round_block
+
+    assert "async playScene(scene, day, index, total, roundContext = {})" in orchestrator_source
+    assert "revealPrepared: roundContext.revealPrepared" in orchestrator_source
+    assert "config.scenes.length,\n                            options || {}" in orchestrator_source
+
+    assert "async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext)" in director_source
+    assert "this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext)" in director_source
 
 
 def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():

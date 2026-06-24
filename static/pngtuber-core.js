@@ -56,6 +56,14 @@
             || document.getElementById('vrm-model-select') !== null;
     }
 
+    function isPngtuberMobileWebPage() {
+        if (isModelManagerPage()) return false;
+        if (document.body?.classList.contains('electron-chat-window')) return false;
+        if (window.__LANLAN_IS_ELECTRON_PET__) return false;
+        if (typeof window.isMobileWidth === 'function') return window.isMobileWidth();
+        return window.innerWidth <= 768;
+    }
+
     function canInteractWithAvatar() {
         if (isModelManagerPage()) return true;
         return (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
@@ -72,9 +80,11 @@
         normalized.drag_image = normalized.drag_image || normalized.idle_image;
         normalized.click_image = normalized.click_image || normalized.talking_image;
         normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);
-        const centerPreview = isModelManagerPage() && !source.preserve_model_manager_position;
-        normalized.offset_x = centerPreview ? 0 : (Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0);
-        normalized.offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0);
+        normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;
+        normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;
+        normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));
+        normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;
+        normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
         normalized.mirror = !!source.mirror;
         normalized.adapter = sanitizePath(source.adapter);
         const layeredMetadata = normalizeAssetPath(source.layered_metadata || source.metadata);
@@ -722,11 +732,16 @@
         applyTransform() {
             if (!this.image) return;
             const bounce = this.currentSpeakingBounceTransform();
-            const scaleX = this.config.mirror ? -this.config.scale : this.config.scale;
+            const placement = this.getActivePlacement();
+            const renderPlacement = this.getRenderPlacement(placement);
+            const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
             const finalScaleX = scaleX * bounce.scaleX;
-            const finalScaleY = this.config.scale * bounce.scaleY;
+            const finalScaleY = renderPlacement.scale * bounce.scaleY;
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
+            if (this.container) {
+                this.container.style.pointerEvents = 'none';
+            }
             if (modelManagerPage) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -744,12 +759,55 @@
             const anchorTranslate = modelManagerPage
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
-            this.image.style.transform = `${anchorTranslate} translate(${this.config.offset_x}px, ${this.config.offset_y + bounce.y}px) scale(${finalScaleX}, ${finalScaleY})`;
+            this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX}px, ${renderPlacement.offsetY + bounce.y}px) scale(${finalScaleX}, ${finalScaleY})`;
+        }
+
+        getActiveLayoutFields() {
+            return isPngtuberMobileWebPage()
+                ? { scale: 'mobile_scale', offsetX: 'mobile_offset_x', offsetY: 'mobile_offset_y' }
+                : { scale: 'scale', offsetX: 'offset_x', offsetY: 'offset_y' };
+        }
+
+        readConfigNumber(key, fallback) {
+            const value = Number(this.config[key]);
+            return Number.isFinite(value) ? value : fallback;
+        }
+
+        getActivePlacement() {
+            const fields = this.getActiveLayoutFields();
+            const desktopScale = this.readConfigNumber('scale', 1);
+            const scaleFallback = fields.scale === 'mobile_scale' ? Math.min(desktopScale, 1) : 1;
+            return {
+                fields,
+                scale: clampNumber(this.config[fields.scale], SCALE_MIN, SCALE_MAX, scaleFallback),
+                offsetX: this.readConfigNumber(fields.offsetX, 0),
+                offsetY: this.readConfigNumber(fields.offsetY, 0)
+            };
+        }
+
+        getRenderPlacement(placement) {
+            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+                return Object.assign({}, placement, {
+                    offsetX: 0,
+                    offsetY: 0
+                });
+            }
+            return placement;
+        }
+
+        setActiveScale(nextScale) {
+            const placement = this.getActivePlacement();
+            this.config[placement.fields.scale] = clampNumber(nextScale, SCALE_MIN, SCALE_MAX, placement.scale);
+        }
+
+        setActiveOffsets(offsetX, offsetY) {
+            const fields = this.getActiveLayoutFields();
+            this.config[fields.offsetX] = Math.max(-5000, Math.min(5000, offsetX));
+            this.config[fields.offsetY] = Math.max(-5000, Math.min(5000, offsetY));
         }
 
         applyScale(nextScale) {
-            const previousScale = Number(this.config.scale) || 1;
-            this.config.scale = clampNumber(nextScale, SCALE_MIN, SCALE_MAX, previousScale);
+            this.setActiveScale(nextScale);
             this.applyTransform();
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
@@ -800,12 +858,13 @@
             if (event.target && event.target.closest && event.target.closest('[id$="-floating-buttons"], [id$="-lock-icon"], [id$="-return-button-container"]')) return;
             event.preventDefault();
             event.stopPropagation();
+            const placement = this.getActivePlacement();
             this._dragState = {
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
-                startOffsetX: Number(this.config.offset_x) || 0,
-                startOffsetY: Number(this.config.offset_y) || 0,
+                startOffsetX: placement.offsetX,
+                startOffsetY: placement.offsetY,
                 moved: false
             };
             if (this.image && typeof this.image.setPointerCapture === 'function') {
@@ -825,8 +884,7 @@
                 state.moved = true;
                 this.showDragImage();
             }
-            this.config.offset_x = Math.max(-5000, Math.min(5000, state.startOffsetX + dx));
-            this.config.offset_y = Math.max(-5000, Math.min(5000, state.startOffsetY + dy));
+            this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
@@ -884,7 +942,7 @@
             const absDelta = Math.abs(event.deltaY);
             const zoomStep = Math.min(absDelta / 1000, 0.08);
             const scaleFactor = 1 + zoomStep;
-            const currentScale = Number(this.config.scale) || 1;
+            const currentScale = this.getActivePlacement().scale;
             const nextScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
             this.applyScale(nextScale);
             this.scheduleSaveCurrentConfig();
@@ -910,14 +968,15 @@
             event.preventDefault();
             event.stopPropagation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
+            const placement = this.getActivePlacement();
             this._dragState = null;
             this._touchZoomState = {
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),
-                initialScale: Number(this.config.scale) || 1,
+                initialScale: placement.scale,
                 startCenterX: center.x,
                 startCenterY: center.y,
-                startOffsetX: Number(this.config.offset_x) || 0,
-                startOffsetY: Number(this.config.offset_y) || 0,
+                startOffsetX: placement.offsetX,
+                startOffsetY: placement.offsetY,
                 changed: false
             };
             document.body.classList.add('neko-model-dragging');
@@ -936,8 +995,7 @@
             const dx = center.x - state.startCenterX;
             const dy = center.y - state.startCenterY;
             state.changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
-            this.config.offset_x = Math.max(-5000, Math.min(5000, state.startOffsetX + dx));
-            this.config.offset_y = Math.max(-5000, Math.min(5000, state.startOffsetY + dy));
+            this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
         }
 
@@ -1099,7 +1157,15 @@
             if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                 return false;
             }
-            const saveKey = `${this.config.offset_x}:${this.config.offset_y}:${this.config.scale}:${this.config.mirror}`;
+            const saveKey = [
+                this.config.offset_x,
+                this.config.offset_y,
+                this.config.scale,
+                this.config.mobile_offset_x,
+                this.config.mobile_offset_y,
+                this.config.mobile_scale,
+                this.config.mirror
+            ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
             const runSave = async () => {
                 const name = await this.resolveCurrentLanlanName();
@@ -1427,6 +1493,12 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
+            this.container.style.pointerEvents = 'none';
+            if (this.image) {
+                this.image.style.visibility = 'visible';
+                this.image.style.pointerEvents = this.isLocked ? 'none' : 'auto';
+                this.applyTransform();
+            }
             if (this.isLayeredActive()) {
                 this.drawLayeredState();
                 if (!this.layeredBlinkTimer && !this.layeredBlinkEndTimer) {
@@ -1698,6 +1770,7 @@
             this.createReturnButton();
 
             const scheduleLayout = () => requestAnimationFrame(() => {
+                this.applyTransform();
                 applyResponsiveFloatingLayout();
                 this.updateLockIconPosition();
             });

@@ -11,6 +11,11 @@ from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
 
 
+def _single_saved_catgirl(saved):
+    catgirl_group = next(value for value in saved.values() if isinstance(value, dict) and value)
+    return next(iter(catgirl_group.values()))
+
+
 class DummyRequest:
     def __init__(self, payload):
         self._payload = payload
@@ -106,6 +111,63 @@ async def _call_update(monkeypatch, payload, characters=None):
     )
     body = json.loads(response.body)
     return response, body, config_manager.saved_characters
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_save_preserves_and_bounds_mobile_layout_fields(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+                'talking_image': '/static/pngtuber/default/talking.png',
+                'scale': 1.4,
+                'offset_x': -42,
+                'offset_y': 84,
+                'mobile_scale': 9,
+                'mobile_offset_x': -7000,
+                'mobile_offset_y': 7000,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert pngtuber['scale'] == 1.4
+    assert pngtuber['offset_x'] == -42
+    assert pngtuber['offset_y'] == 84
+    assert pngtuber['mobile_scale'] == 5
+    assert pngtuber['mobile_offset_x'] == -5000
+    assert pngtuber['mobile_offset_y'] == 5000
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_save_defaults_missing_mobile_layout_fields(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+                'scale': 2,
+                'offset_x': 12,
+                'offset_y': -34,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert pngtuber['mobile_scale'] == 1
+    assert pngtuber['mobile_offset_x'] == 0
+    assert pngtuber['mobile_offset_y'] == 0
 
 
 @pytest.mark.asyncio

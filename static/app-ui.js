@@ -1164,10 +1164,60 @@
 
     mod.hideLive2d = hideLive2d;
 
+    function shouldPreserveYuiGuideLive2DPreparing() {
+        return window.nekoYuiGuideLive2dPreparing === true
+            || (
+                window.isInTutorial === true
+                && typeof document !== 'undefined'
+                && document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            );
+    }
+
+    function hideYuiGuideLive2DPreparingControls() {
+        [
+            'live2d-floating-buttons',
+            'live2d-lock-icon',
+            'live2d-return-button-container'
+        ].forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
+                return;
+            }
+            element.style.setProperty('display', 'none', 'important');
+            element.style.setProperty('visibility', 'hidden', 'important');
+            element.style.setProperty('opacity', '0', 'important');
+            element.style.setProperty('pointer-events', 'none', 'important');
+        });
+    }
+
+    function restoreYuiGuideLive2DPreparingControls() {
+        [
+            'live2d-floating-buttons',
+            'live2d-lock-icon'
+        ].forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
+                return;
+            }
+            element.style.removeProperty('display');
+            element.style.removeProperty('visibility');
+            element.style.removeProperty('opacity');
+            element.style.removeProperty('pointer-events');
+        });
+    }
+
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
+        const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
+        if (!preserveYuiGuidePreparing) {
+            restoreYuiGuideLive2DPreparingControls();
+        }
         if (document.body && document.body.classList) {
-            document.body.classList.remove('yui-guide-live2d-preparing');
+            if (!preserveYuiGuidePreparing) {
+                document.body.classList.remove('yui-guide-live2d-preparing');
+            }
             document.body.classList.remove('yui-guide-return-petal-fade');
         }
         if (document.body && document.body.style && typeof document.body.style.removeProperty === 'function') {
@@ -1182,7 +1232,9 @@
             live2dContainer.style.display = 'block';
             live2dContainer.style.visibility = 'visible';
             live2dContainer.style.removeProperty('transition');
-            if (!preserveAvatarCornerPeekOpacity) {
+            if (preserveYuiGuidePreparing) {
+                // 新手教程开场演出会在首句动作起点统一 reveal。
+            } else if (!preserveAvatarCornerPeekOpacity) {
                 live2dContainer.style.removeProperty('opacity');
             }
             live2dContainer.style.removeProperty('pointer-events');
@@ -1193,11 +1245,13 @@
             live2dCanvas.classList.remove('minimized');
             live2dCanvas.style.display = 'block';
             live2dCanvas.style.removeProperty('transition');
-            if (!preserveAvatarCornerPeekOpacity) {
+            if (preserveYuiGuidePreparing) {
+                live2dCanvas.style.removeProperty('pointer-events');
+            } else if (!preserveAvatarCornerPeekOpacity) {
                 live2dCanvas.style.setProperty('opacity', '1', 'important');
+                live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
             }
             live2dCanvas.style.setProperty('visibility', 'visible', 'important');
-            live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
         }
     }
 
@@ -1298,6 +1352,10 @@
 
         const container = document.getElementById('live2d-container');
         console.log('[App] showLive2d调用前，容器类列表:', container.classList.toString());
+        const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
+        if (preserveYuiGuidePreparing) {
+            hideYuiGuideLive2DPreparingControls();
+        }
 
         // 检测模型是否已经可见（避免不必要的淡入动画导致闪烁）
         const isAlreadyVisible = container &&
@@ -1326,17 +1384,21 @@
         }
 
         // 确保浮动按钮显示
-        if (floatingButtons) {
+        if (!preserveYuiGuidePreparing && floatingButtons) {
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
+            floatingButtons.style.setProperty('pointer-events', 'auto', 'important');
         }
 
         const lockIcon = document.getElementById('live2d-lock-icon');
-        if (lockIcon) {
+        if (!preserveYuiGuidePreparing && lockIcon) {
             lockIcon.style.removeProperty('display');
             lockIcon.style.removeProperty('visibility');
             lockIcon.style.removeProperty('opacity');
+            lockIcon.style.removeProperty('pointer-events');
+        } else if (preserveYuiGuidePreparing) {
+            hideYuiGuideLive2DPreparingControls();
         }
 
         // 原生按钮和status栏应该永不出现，保持隐藏状态
@@ -2053,7 +2115,7 @@
 
                 if (pngtuberContainer) {
                     prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');
+                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
                     const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
                     if (pngtuberImage) {
                         pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');

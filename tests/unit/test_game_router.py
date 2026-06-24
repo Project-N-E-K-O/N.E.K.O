@@ -1243,7 +1243,7 @@ def test_badminton_template_contract():
     assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
     assert "function drawCourt()" in html
     assert "function drawNet()" in html
-    assert "function drawAiming()" in html
+    assert "function drawAiming(" in html
     assert "drawDistanceMarkers" in html
     assert "drawFreeThrowLine" not in html
     assert "drawThreePointLine" not in html
@@ -1253,8 +1253,8 @@ def test_badminton_template_contract():
     assert ".innerHTML" not in html
     assert "ctx.lineTo(px + Math.cos(radians) * 54, py - Math.sin(radians) * 54);" not in html
     keydown = html[
-        html.index("window.addEventListener('keydown'"):
-        html.index("if (bgmVolumeInput)", html.index("window.addEventListener('keydown'"))
+        html.index("addBadmintonEventListener(window, 'keydown'"):
+        html.index("if (bgmVolumeInput)", html.index("addBadmintonEventListener(window, 'keydown'"))
     ]
     assert "key === 'g'" not in keydown
     assert "key === 's'" not in keydown
@@ -1320,7 +1320,7 @@ def test_badminton_template_contract():
     assert "lanlan_name: lanlanName, source: 'badminton_demo'" not in html
     assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
     assert "var badmintonCharacterPromise = null;" in html
-    assert "loadBadmintonCharacter().finally(function () { startRoute(); });" in html
+    assert "loadBadmintonCharacter().finally(function () { return startRoute(); });" in html
     startup = html[html.rindex("startRouteAfterCharacterReady();"):]
     assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
     assert "voiceArbiter" in html

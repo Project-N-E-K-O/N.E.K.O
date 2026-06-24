@@ -803,6 +803,60 @@ class ContextAppendResult:
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
+def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
+    """Remove every CLOSED tool-call pair from the conversation history: an
+    assistant message (role=assistant, carrying tool_calls) plus the tool-result
+    messages immediately following it whose tool_call_id matches. Any
+    reasoning_content (the thinking model's chain, parked on that assistant
+    message for provider replay) is dropped together with it — deleting the
+    whole pair, NOT just the field, since a thinking endpoint rejects a
+    tool_calls turn whose reasoning_content went missing on replay.
+
+    Only assistant messages at index >= ``start`` are considered, so a Focus
+    exit scopes the purge to the episode's history suffix (recorded when Focus
+    was entered) and leaves closed tool calls from regular turns BEFORE Focus
+    began intact. ``start`` is clamped to [0, len].
+
+    "Closed" = every tool_call id on the assistant message is answered by a
+    following contiguous tool message. Unclosed calls (a call with no result —
+    an interrupted / in-flight turn) are kept so live state is never corrupted.
+    Plain Human / AI / System (BaseMessage) entries are never touched. Returns
+    the number of messages deleted.
+    """
+    if not history:
+        return 0
+    n = len(history)
+    start = max(0, min(int(start or 0), n))
+    remove: set[int] = set()
+    for i in range(start, n):
+        msg = history[i]
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
+            continue
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            continue
+        call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+        if not call_ids:
+            continue
+        # execute 路径原子追加 assistant + 紧随其后的各 tool result，所以闭合的
+        # 结果消息是「连续」的；遇到非 tool 消息即停止该 assistant 的结果收集。
+        result_idx: list[int] = []
+        covered: set = set()
+        for j in range(i + 1, n):
+            rj = history[j]
+            if isinstance(rj, dict) and rj.get("role") == "tool":
+                result_idx.append(j)
+                covered.add(rj.get("tool_call_id"))
+            else:
+                break
+        if call_ids <= covered:  # 每个 call 都有结果 → 已闭合，整对删
+            remove.add(i)
+            remove.update(result_idx)
+    for idx in sorted(remove, reverse=True):
+        del history[idx]
+    return len(remove)
+
+
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
         self.websocket = None
@@ -1073,6 +1127,11 @@ class LLMSessionManager:
         # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
         # proactive）共用同一个 scorer，保证行为不分裂。
         self._focus_scorer = FocusScorer(lanlan_name)
+        # 凝神退出时清理历史 thinking/已闭合 tool call 残留的边沿标志：进入 FOCUS
+        # 时 arm，退出并清理后 disarm（见 _maybe_purge_focus_artifacts）。
+        self._focus_artifacts_pending = False
+        # 进入 FOCUS 那刻的历史长度；退出只清这之后（episode 期间）的闭合 tool call。
+        self._focus_artifacts_history_start: int | None = None
 
         # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
         # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
@@ -2416,6 +2475,18 @@ class LLMSessionManager:
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
             )
+            if mode is CognitionMode.FOCUS:
+                if not self._focus_artifacts_pending:
+                    # 首次进入本 episode：记下历史长度，退出时只清这之后（episode
+                    # 期间）产生的闭合 tool call，不动 Focus 之前的普通工具调用。
+                    hist = getattr(
+                        getattr(self, "session", None), "_conversation_history", None
+                    )
+                    self._focus_artifacts_history_start = (
+                        len(hist) if isinstance(hist, list) else None
+                    )
+                # arm：本 episode 的 thinking/tool 残留，退出时要清（见下）。
+                self._focus_artifacts_pending = True
             # Log every turn (incl. REGULAR) so tuning can watch the charge
             # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
             logger.info(
@@ -2425,6 +2496,10 @@ class LLMSessionManager:
             )
             # Stream the post-turn charge for the frontend edge glow.
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 退出边沿同步清理（此刻在 stream_text 之前、无并发）：inline 自然退出
+            # （decayed / hard_cap / topic_switch）都在此命中并清；FOCUS 维持时是
+            # no-op（仍在 episode 内）。silent early-return 路径由 reconcile 兜底。
+            await self._maybe_purge_focus_artifacts()
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -2466,17 +2541,66 @@ class LLMSessionManager:
 
     async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
         """SM subscriber for FOCUS_ENTER / FOCUS_EXIT — immediate badge update on
-        the normal hysteresis path. Delegates to the idempotent push."""
+        the normal hysteresis path. Delegates to the idempotent push.
+
+        NB: history artifact arm/purge is deliberately NOT done here.
+        ``_dispatch_subscribers`` fires async callbacks fire-and-forget
+        (``ensure_future``), so a FOCUS_EXIT-driven purge could race the reply
+        stream. Arming + purging happen SYNCHRONOUSLY on the inline decision path
+        and the per-turn reconcile instead (see ``_maybe_purge_focus_artifacts``)."""
         await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
+
+    async def _maybe_purge_focus_artifacts(self) -> None:
+        """On the edge where Focus mode turns OFF, wipe the thinking + closed
+        tool-call traces the just-ended episode left in history, so they can't
+        bias the REGULAR reply that follows (or a fresh session).
+
+        Called SYNCHRONOUSLY from two places (NOT the async FOCUS_EXIT event,
+        which fires fire-and-forget and could race the stream):
+          - the inline decision, right after update_focus and BEFORE stream_text
+            — catches inline exits (decayed / hard_cap / topic_switch);
+          - the per-turn _reconcile_focus_indicator — catches the silent exits
+            (master switch / per-user setting / privacy self-clear / clear_focus)
+            and a proactive-cooldown exit on the next inline turn.
+
+        Idempotent: runs once per episode, only when Focus was actually entered
+        (``_focus_artifacts_pending``) AND the mode has dropped back to REGULAR.
+        All call sites sit OUTSIDE the stream boundary, so there is no concurrent
+        history mutation. Only text sessions (OmniOfflineClient) keep history.
+        """
+        if not self._focus_artifacts_pending:
+            return
+        if self.state.mode is CognitionMode.FOCUS:
+            return  # 仍在 focus，残留还在用，不能清
+        self._focus_artifacts_pending = False
+        start = self._focus_artifacts_history_start or 0
+        self._focus_artifacts_history_start = None
+        sess = getattr(self, "session", None)
+        if not isinstance(sess, OmniOfflineClient):
+            return
+        history = getattr(sess, "_conversation_history", None)
+        if not history:
+            return
+        try:
+            removed = _purge_closed_tool_calls(history, start=start)
+            if removed:
+                logger.info(
+                    "[%s] 凝神退出：从历史清除 thinking/已闭合 tool call 残留 %d 条",
+                    self.lanlan_name, removed,
+                )
+        except Exception as e:
+            logger.warning("[%s] 凝神退出历史清理失败(忽略): %s", self.lanlan_name, e)
 
     async def _reconcile_focus_indicator(self) -> None:
         """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
         history-wipe, master-switch / privacy self-clear in update_focus) so the
         badge AND the charge glow can't get stuck on. Called once per turn. The
         charge push reads the (now-cleared → 0) snapshot, so a silent exit that
-        only reconciles the binary state still tells the glow to fade out."""
+        only reconciles the binary state still tells the glow to fade out. Also
+        the catch-all purge point for silent Focus exits (no FOCUS_EXIT event)."""
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
         await self._push_focus_charge()
+        await self._maybe_purge_focus_artifacts()
 
     async def resync_focus_for_new_window(self) -> None:
         """Re-emit ALL focus signals to a freshly-connected window (greeting_check):
@@ -2595,6 +2719,35 @@ class LLMSessionManager:
                     await ws.send_json(msg)
         except Exception as e:
             logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
+
+    async def handle_thinking_active(self, active: bool = True) -> None:
+        """Session callback: the model started (active=True) or finished
+        (active=False) emitting reasoning/thinking chunks for the current stream
+        (the text is filtered out upstream; only this boolean pulse reaches us).
+        Drives the chat thinking-dots bubble for ANY reasoning turn — decoupled
+        from the Focus inline decision. A Focus turn pre-pulses the bubble before
+        streaming (still works, idempotent); a non-Focus turn whose provider
+        reasons internally pulses here on its first reasoning chunk. The bubble
+        is cleared on the first visible token (send_lanlan_response), when the
+        text turn ends (the unconditional finally in the text path), or — for a
+        proactive/greeting/avatar turn that reasons but commits no visible text —
+        by the active=False clear from prompt_ephemeral's finally. Best-effort —
+        idempotent via ``_push_focus_thinking``'s cached state."""
+        await self._push_focus_thinking(active)
+
+    def _make_thinking_active_callback(self, session_ref):
+        """Bind ``handle_thinking_active`` to ONE specific OmniOfflineClient so a
+        reasoning pulse only drives the bubble while that client is the live
+        session. The thinking bubble is a single per-window surface; a pulse from
+        a NON-current client — a pending hot-swap session, or a just-demoted old
+        session still draining a stream after the swap — must not light or clear
+        the current window (CodeRabbit). The live session always matches, so its
+        pulses/clears pass through unchanged; everything else is a silent no-op.
+        getattr default tolerates call-time teardown where self.session is None."""
+        async def _on_thinking_active(active: bool) -> None:
+            if session_ref is getattr(self, "session", None):
+                await self.handle_thinking_active(active)
+        return _on_thinking_active
 
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
@@ -2722,6 +2875,11 @@ class LLMSessionManager:
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 若这次 cooldown 把 Focus 衰减出去(→REGULAR)，立即清 episode 残留：
+            # proactive/greeting 的 prompt_ephemeral 会在下个 inline turn 之前就从
+            # _conversation_history 构建、且不走 reconcile，必须赶在它前面清掉，否则
+            # 会把刚结束的 Focus tool-call/reasoning 残留带进随后的 REGULAR 轮。
+            await self._maybe_purge_focus_artifacts()
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)
@@ -6036,6 +6194,8 @@ class LLMSessionManager:
                         provider_type=conversation_config.get('provider_type'),
                         vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
+                        # on_thinking_active bound below via a session-scoped
+                        # closure so only the LIVE session drives the bubble.
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -6061,6 +6221,7 @@ class LLMSessionManager:
                         ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
+                    new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
                 else:
                     realtime_config = self._config_manager.get_model_api_config('realtime')
                     new_session = OmniRealtimeClient(
@@ -6521,6 +6682,9 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
+                    # on_thinking_active bound below via a session-scoped closure:
+                    # the pending session must NOT light the current window's
+                    # bubble while it warms up / before the hot-swap promotes it.
                     on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -6543,6 +6707,7 @@ class LLMSessionManager:
                     ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
+                self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -9401,16 +9566,24 @@ class LLMSessionManager:
                     if memory_text:
                         stream_text_kwargs["history_replacement_text"] = memory_text
                     if _focus_thinking:
-                        # 凝神 turn runs thinking-on: pulse the frontend so the chat
-                        # history shows a thinking-dots bubble until the first visible
-                        # token lands (cleared in send_lanlan_response) or the turn
-                        # ends (the finally below covers tool-only / empty / error turns).
+                        # 凝神 turn runs thinking-on: pre-pulse the frontend so the
+                        # bubble shows up the instant the turn starts (immediate
+                        # feedback), before any reasoning chunk arrives. Idempotent
+                        # and harmless — a non-Focus turn instead pulses lazily from
+                        # OmniOfflineClient.on_thinking_active on its first reasoning
+                        # chunk (handle_thinking_active). Either way the bubble clears
+                        # on the first visible token (send_lanlan_response) or in the
+                        # unconditional finally below.
                         await self._push_focus_thinking(True)
                     try:
                         await self.session.stream_text(data, **stream_text_kwargs)
                     finally:
-                        if _focus_thinking:
-                            await self._push_focus_thinking(False)
+                        # Clear unconditionally: a non-Focus turn may have pulsed the
+                        # bubble True via the reasoning callback, so gating the clear
+                        # on _focus_thinking would leave it stuck on tool-only / empty
+                        # / error turns. _push_focus_thinking is idempotent, so a no-op
+                        # clear when nothing pulsed costs nothing.
+                        await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

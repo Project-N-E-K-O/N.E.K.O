@@ -31,12 +31,27 @@
                 {
                     id: 'day3_tool_toggle_intro',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day3_tool_toggle_intro', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
+                    ],
                     textKey: 'tutorial.avatarFloating.day3.intro',
                     voiceKey: 'avatar_floating_day3_intro',
                     text: '嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！',
                     emotion: 'happy',
                     target: 'chat-capsule-input',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'corner-peek',
+                        position: 'bottom-left',
+                        restore: 'half-body',
+                        freezeFloatingButtons: false,
+                        rotateFloatingButtons: true
+                    }
                 },
                 {
                     id: 'day3_avatar_tools',
