@@ -50,17 +50,17 @@ def _reset_state():
     a.Modules.last_proactive_assistant_fingerprint.clear()
 
 
-# ── fingerprint / intent helpers ─────────────────────────────────────
-def test_assistant_fingerprint_and_latest_text():
+# ── assistant-turn fingerprint ───────────────────────────────────────
+def test_assistant_fingerprint():
     m1 = _proactive_msgs("我帮你查下天气")
     m2 = _proactive_msgs("我帮你查下天气")
     m3 = _proactive_msgs("我给你推首歌")
     assert a._build_assistant_turn_fingerprint(m1) == a._build_assistant_turn_fingerprint(m2)
     assert a._build_assistant_turn_fingerprint(m1) != a._build_assistant_turn_fingerprint(m3)
-    # no assistant text → None
+    # no assistant text → None (also the "no assistant utterance" skip signal)
     assert a._build_assistant_turn_fingerprint([{"role": "user", "content": "x"}]) is None
-    assert a._latest_assistant_text(m1) == "我帮你查下天气"
-    assert a._latest_assistant_text([{"role": "user", "content": "x"}]) == ""
+    # role match is case-insensitive (consistent with the executor's intent extractor)
+    assert a._build_assistant_turn_fingerprint([{"role": "Assistant", "content": "hi"}]) is not None
 
 
 # ── _handle_proactive_analyze gating ─────────────────────────────────

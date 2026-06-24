@@ -1574,7 +1574,7 @@ def _build_assistant_turn_fingerprint(messages: Any) -> Optional[str]:
         return None
     parts: list[str] = []
     for m in messages:
-        if not isinstance(m, dict) or m.get("role") != "assistant":
+        if not isinstance(m, dict) or str(m.get("role") or "").lower() != "assistant":
             continue
         text = str(m.get("text") or m.get("content") or "").strip()
         if text:
@@ -1583,18 +1583,6 @@ def _build_assistant_turn_fingerprint(messages: Any) -> Optional[str]:
         return None
     payload_bytes = "\n".join(parts).encode("utf-8", errors="ignore")
     return hashlib.sha256(payload_bytes).hexdigest()
-
-
-def _latest_assistant_text(messages: Any) -> str:
-    """The most recent assistant utterance in the window (proactive intent), or ""."""
-    if not isinstance(messages, list):
-        return ""
-    for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "assistant":
-            text = str(m.get("text") or m.get("content") or "").strip()
-            if text:
-                return text
-    return ""
 
 
 def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:
@@ -1843,12 +1831,13 @@ def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversa
     if not bool(AGENT_PROACTIVE_ANALYZE_ENABLED):
         logger.info("[AgentAnalyze] skip proactive: disabled (lanlan=%s)", lanlan_name)
         return
-    intent = _latest_assistant_text(messages)
-    if not intent:
+    # fp is None ⟺ no assistant utterance to analyze (the executor pulls the
+    # actual proactive intent text from the same assistant turn downstream).
+    fp = _build_assistant_turn_fingerprint(messages)
+    if fp is None:
         logger.info("[AgentAnalyze] skip proactive: no assistant utterance (lanlan=%s)", lanlan_name)
         return
-    fp = _build_assistant_turn_fingerprint(messages)
-    if fp is not None and Modules.last_proactive_assistant_fingerprint.get(lanlan_key) == fp:
+    if Modules.last_proactive_assistant_fingerprint.get(lanlan_key) == fp:
         logger.info("[AgentAnalyze] skip proactive: duplicate proactive utterance (lanlan=%s)", lanlan_name)
         return
     cap = max(0, int(AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION))
@@ -1859,8 +1848,7 @@ def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversa
     # Reserve the slot + dedupe fp BEFORE dispatch so concurrent proactive events
     # can't both pass the cap check.
     Modules.proactive_analyze_count[lanlan_key] = used + 1
-    if fp is not None:
-        Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
+    Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
     logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
