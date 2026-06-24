@@ -59,6 +59,8 @@ from config import (
     TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
     USER_NOTIFICATION_REASON_MAX_CHARS,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
+    AGENT_PROACTIVE_ANALYZE_ENABLED,
+    AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
 )
 from utils.config_manager import get_config_manager
 from utils.tokenize import truncate_to_tokens as _tt
@@ -1838,8 +1840,7 @@ def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversa
         analyzer RUNS (incl. ones that dispatch no tool), so a session can spend
         at most N proactive analyzer calls regardless of how chatty lanlan is.
     """
-    import config
-    if not bool(getattr(config, "AGENT_PROACTIVE_ANALYZE_ENABLED", False)):
+    if not bool(AGENT_PROACTIVE_ANALYZE_ENABLED):
         logger.info("[AgentAnalyze] skip proactive: disabled (lanlan=%s)", lanlan_name)
         return
     intent = _latest_assistant_text(messages)
@@ -1850,7 +1851,7 @@ def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversa
     if fp is not None and Modules.last_proactive_assistant_fingerprint.get(lanlan_key) == fp:
         logger.info("[AgentAnalyze] skip proactive: duplicate proactive utterance (lanlan=%s)", lanlan_name)
         return
-    cap = max(0, int(getattr(config, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 2)))
+    cap = max(0, int(AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION))
     used = int(Modules.proactive_analyze_count.get(lanlan_key, 0))
     if used >= cap:
         logger.info("[AgentAnalyze] skip proactive: per-session cap reached (%d/%d, lanlan=%s)", used, cap, lanlan_name)
