@@ -419,7 +419,7 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 **经过 safety_guard 吗 / 失败如何降级**：中枢只站在 pipeline **前面**做「选谁」，胜者照走完整 pipeline——`before_event`（连接/暂停/队列）、`before_output`（限流）、安全门必经，四条不变量（唯一出口 / 唯一档案写 / 唯一审计 / 安全门）原样保持。`get_score()` 抛错 → 该候选记 0 分（`_safe_score`）；窗口 flush 抛错 → 记 `live_event_flush_failed` 并复位窗口；`handle_live_payload` 抛错 → 记 `live_event_roast_failed`，不影响后续窗口。断开直播间时 `runtime.disconnect_live_room` 调 `live_events.reset()` 取消待触发窗口，避免迟到的择优在断开后误投（即便误投，pipeline 也会因 `live_enabled=False` 被 `permission_gate` 拦下）。
 
-**触碰的契约 / store / UI / action**：不碰契约（胜者复用 `bili_live_ingest.normalize` 既有 payload 形状，无新增 `ViewerEvent` 字段）。不直接写 store、不直接 `push_message`。新增 audit op：`live_event_selected`（含 `candidates` 候选数、`score`、`guard_level`、`event_type`、`selected` 脱敏摘要、`dropped_candidates` 脱敏摘要 + `skip_reason`）、`live_event_flush_failed`、`live_event_roast_failed`。无新增 UI action / context（`live_events` 出现在 `dashboard_state.modules` 快照里，`status()` 暴露 `buffered` / `window_open`）。
+**触碰的契约 / store / UI / action**：胜者仍复用 `bili_live_ingest.normalize` 既有 pipeline 输入形状，不新增专属 Gift / SC / Guard handler，不直接写 store、不直接 `push_message`。`ViewerEvent.to_dict()` 会公开轻量 `event_type`（来自 raw payload）供 dashboard / monitor 标记 `gift_signal`、`super_chat_signal`、`danmaku_signal`，但不暴露完整 raw payload。新增 audit op：`live_event_selected`（含 `candidates` 候选数、`score`、`guard_level`、`event_type`、`selected` 脱敏摘要、`dropped_candidates` 脱敏摘要 + `skip_reason`）、`live_event_flush_failed`、`live_event_roast_failed`。无新增 UI action / context（`live_events` 出现在 `dashboard_state.modules` 快照里，`status()` 暴露 `buffered` / `window_open`）。
 
 **读写了哪些用户数据**：中枢本身不落任何用户数据——只在内存里短暂持有「当前分最高的一条候选」，投递后即清。头像不经中枢（弹幕不含头像，由下游 `bili_identity` 按 UID 抓）。档案 / 审计 / 总结的写入仍由既有边界负责。
 
