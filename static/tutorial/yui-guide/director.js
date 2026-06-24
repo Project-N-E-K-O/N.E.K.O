@@ -11252,12 +11252,19 @@
                         resolveRevealReady(false);
                     }, revealReadyFallbackMs);
                 }
-                motionPromise.catch((error) => {
-                    console.warn('[YuiGuide] 每日开场模型演出失败:', error);
-                    resolveRevealReady(false);
-                }).then(() => {
-                    resolveRevealReady(true);
-                });
+                motionPromise.then(
+                    () => {
+                        resolveRevealReady(true);
+                    },
+                    (error) => {
+                        console.warn('[YuiGuide] 每日开场模型演出失败:', error);
+                        if (revealPrepared) {
+                            revealPrepared('daily-intro-avatar-motion-failed');
+                            return;
+                        }
+                        resolveRevealReady(false);
+                    }
+                );
                 return revealReadyPromise;
             }
             return motionPromise;

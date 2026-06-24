@@ -186,11 +186,20 @@ test('TimelineEngine dispatches zero-time prelude commands before starting audio
 test('TimelineEngine starts explicit non-blocking zero-time commands without delaying audio', async () => {
     let currentTime = 0;
     let resolveMotion;
+    let resolveMotionStarted;
+    let resolveAudioEnded;
+    const motionStartedPromise = new Promise((resolve) => {
+        resolveMotionStarted = resolve;
+    });
+    const audioEndedPromise = new Promise((resolve) => {
+        resolveAudioEnded = resolve;
+    });
     const calls = [];
     const registry = new CommandRegistry({
         handlers: {
             'operation.run': async () => {
                 calls.push(['motion.start', currentTime]);
+                resolveMotionStarted();
                 await new Promise((resolve) => {
                     resolveMotion = resolve;
                 });
@@ -209,6 +218,7 @@ test('TimelineEngine starts explicit non-blocking zero-time commands without del
             },
             waitForEnd() {
                 calls.push(['audio.end', currentTime]);
+                resolveAudioEnded();
             }
         },
         now: () => currentTime,
@@ -226,9 +236,8 @@ test('TimelineEngine starts explicit non-blocking zero-time commands without del
         ]
     });
 
-    for (let index = 0; index < 4; index += 1) {
-        await Promise.resolve();
-    }
+    await motionStartedPromise;
+    await audioEndedPromise;
     assert.deepEqual(calls.map((entry) => entry.slice()), [
         ['motion.start', 0],
         ['chat.message', 0],

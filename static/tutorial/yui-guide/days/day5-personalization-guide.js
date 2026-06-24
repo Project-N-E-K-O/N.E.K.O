@@ -30,7 +30,7 @@
                     timelinePlayback: true,
                     timelineAudio: false,
                     timeline: [
-                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true },
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'settingsTour.play', blocking: true }
                     ],
                     afterSceneDelayMs: 0,

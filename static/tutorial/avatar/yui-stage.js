@@ -1898,7 +1898,10 @@
                 return;
             }
             if (!this.frameId) {
-                this.frameId = window.requestAnimationFrame(this.tick);
+                this.frameId = window.requestAnimationFrame(() => {
+                    this.frameId = 0;
+                    this.tick();
+                });
             }
         }
 
@@ -6063,6 +6066,26 @@
         });
     }
 
+    function showAvatarMotionFloatingButtons(options) {
+        const normalizedOptions = options || {};
+        if (normalizedOptions.freezeFloatingButtons !== false) {
+            return false;
+        }
+        const doc = normalizedOptions.document || document;
+        let element = null;
+        try {
+            element = doc.getElementById('live2d-floating-buttons');
+        } catch (_) {}
+        if (!element || !element.style) {
+            return false;
+        }
+        element.style.setProperty('display', 'flex', 'important');
+        element.style.setProperty('visibility', 'visible', 'important');
+        element.style.setProperty('opacity', '1', 'important');
+        element.style.setProperty('pointer-events', 'auto', 'important');
+        return true;
+    }
+
     async function animateAvatarMotionVisibleOpacity(options) {
         const normalizedOptions = options || {};
         const context = normalizedOptions.context || getLive2DContext();
@@ -6098,28 +6121,8 @@
         if (normalizedOptions.reducedMotion || durationMs <= 0) {
             writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
             restoreTransitions();
-        return true;
-    }
-
-    function showAvatarMotionFloatingButtons(options) {
-        const normalizedOptions = options || {};
-        if (normalizedOptions.freezeFloatingButtons !== false) {
-            return false;
+            return true;
         }
-        const doc = normalizedOptions.document || document;
-        let element = null;
-        try {
-            element = doc.getElementById('live2d-floating-buttons');
-        } catch (_) {}
-        if (!element || !element.style) {
-            return false;
-        }
-        element.style.setProperty('display', 'flex', 'important');
-        element.style.setProperty('visibility', 'visible', 'important');
-        element.style.setProperty('opacity', '1', 'important');
-        element.style.setProperty('pointer-events', 'auto', 'important');
-        return true;
-    }
         return new Promise((resolve) => {
             const startedAt = performance.now();
             const tick = () => {

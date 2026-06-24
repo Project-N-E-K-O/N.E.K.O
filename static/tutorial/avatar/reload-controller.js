@@ -129,7 +129,7 @@
 
             if (this.overridePromise) {
                 if (this.override && (this.override.restoring || this.override.restoreRequested)) {
-                    return this.overridePromise.then(() => this.beginOverride());
+                    return this.overridePromise.then(() => this.beginOverride(options));
                 }
                 return this.overridePromise;
             }

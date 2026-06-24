@@ -53,6 +53,16 @@ function hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
     buttonsContainer.style.setProperty('pointer-events', 'none', 'important');
 }
 
+function restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
+    if (!buttonsContainer || !buttonsContainer.style || typeof buttonsContainer.style.removeProperty !== 'function') {
+        return;
+    }
+    buttonsContainer.style.removeProperty('display');
+    buttonsContainer.style.removeProperty('visibility');
+    buttonsContainer.style.removeProperty('opacity');
+    buttonsContainer.style.removeProperty('pointer-events');
+}
+
 /**
  * 设置 HTML 锁形图标（Live2D 特定）
  */
@@ -644,6 +654,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             return;
         }
+        restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
@@ -654,6 +665,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 if (isYuiGuideLive2DPreparing()) {
                     hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
                 } else {
+                    restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
                     buttonsContainer.style.setProperty('display', 'flex', 'important');
                 }
             }

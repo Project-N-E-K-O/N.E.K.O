@@ -32,7 +32,7 @@
                     id: 'day3_tool_toggle_intro',
                     timelinePlayback: true,
                     timeline: [
-                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true },
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'chat.message' },
                         { at: 0, command: 'emotion.set' },
                         { at: 0, command: 'spotlight.show', key: 'day3_tool_toggle_intro', target: 'chat-capsule-input' },

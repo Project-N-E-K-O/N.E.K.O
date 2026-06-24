@@ -28,7 +28,7 @@
                     id: 'day7_memory_review',
                     timelinePlayback: true,
                     timeline: [
-                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true },
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'chat.message' },
                         { at: 0, command: 'emotion.set' },
                         { at: 0, command: 'spotlight.show', key: 'day7_memory_review', target: '' }

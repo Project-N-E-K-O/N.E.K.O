@@ -33,7 +33,7 @@
                     id: 'day4_intro_companion',
                     timelinePlayback: true,
                     timeline: [
-                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true },
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
                         { at: 0, command: 'chat.message' },
                         { at: 0, command: 'emotion.set' },
                         { at: 0, command: 'spotlight.show', key: 'day4_intro_companion', target: 'chat-capsule-input' },

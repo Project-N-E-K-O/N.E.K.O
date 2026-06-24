@@ -1192,9 +1192,29 @@
         });
     }
 
+    function restoreYuiGuideLive2DPreparingControls() {
+        [
+            'live2d-floating-buttons',
+            'live2d-lock-icon',
+            'live2d-return-button-container'
+        ].forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
+                return;
+            }
+            element.style.removeProperty('display');
+            element.style.removeProperty('visibility');
+            element.style.removeProperty('opacity');
+            element.style.removeProperty('pointer-events');
+        });
+    }
+
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
+        if (!preserveYuiGuidePreparing) {
+            restoreYuiGuideLive2DPreparingControls();
+        }
         if (document.body && document.body.classList) {
             if (!preserveYuiGuidePreparing) {
                 document.body.classList.remove('yui-guide-live2d-preparing');
@@ -1369,6 +1389,7 @@
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
+            floatingButtons.style.setProperty('pointer-events', 'auto', 'important');
         }
 
         const lockIcon = document.getElementById('live2d-lock-icon');
@@ -1376,6 +1397,7 @@
             lockIcon.style.removeProperty('display');
             lockIcon.style.removeProperty('visibility');
             lockIcon.style.removeProperty('opacity');
+            lockIcon.style.removeProperty('pointer-events');
         } else if (preserveYuiGuidePreparing) {
             hideYuiGuideLive2DPreparingControls();
         }

@@ -729,7 +729,7 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "id: 'day1_intro_greeting'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
     assert "cursorAction: 'wobble'" not in greeting_scene_block
-    assert "timelinePlayback: true" not in greeting_scene_block
+    assert "timelinePlayback: true" in greeting_scene_block
     assert "day1-intro-greeting-flow" not in greeting_scene_block
     assert "target: 'chat-input'" in greeting_scene_block
     assert "cursorTarget: 'chat-capsule-input'" in greeting_scene_block
@@ -843,7 +843,7 @@ def test_day1_intro_greeting_highlights_capsule_input_without_cursor_wobble():
     assert "cursorAction: 'move'" in greeting_block
     assert "operation: 'day1-intro-greeting-performance'" in greeting_block
     assert "day1-intro-greeting-flow" not in greeting_block
-    assert "timelinePlayback: true" not in greeting_block
+    assert "timelinePlayback: true" in greeting_block
     assert "cursorAction: 'wobble'" not in greeting_block
 
 
@@ -896,7 +896,7 @@ def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
         if position:
             assert f"position: '{position}'" in scene_block
         assert "operation: 'daily-intro-avatar-performance'" in scene_block
-        assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true }" in scene_block
+        assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
 
 
 def test_day2_intro_bottom_rise_uses_slow_half_body_motion():
@@ -920,7 +920,7 @@ def test_day5_first_scene_runs_fixed_intro_avatar_motion_without_blocking_settin
 
     assert "introAvatarPerformance:" in scene_block
     assert "preset: 'top-peek'" in scene_block
-    assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: true }" in scene_block
+    assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
     assert "{ at: 0, command: 'settingsTour.play', blocking: true }" in scene_block
     assert scene_block.index("daily-intro-avatar-performance") < scene_block.index("settingsTour.play")
 

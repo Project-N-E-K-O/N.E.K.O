@@ -2076,6 +2076,13 @@ class UniversalTutorialManager {
             if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
                 return;
             }
+            if (
+                id === 'live2d-floating-buttons'
+                || id === 'live2d-lock-icon'
+                || id === 'live2d-return-button-container'
+            ) {
+                element.style.removeProperty('display');
+            }
             element.style.removeProperty('opacity');
             element.style.removeProperty('transition');
             element.style.removeProperty('visibility');
