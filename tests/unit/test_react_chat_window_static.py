@@ -634,6 +634,8 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-preview-region-height: min(" in anchor_block
     assert "max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height))" in anchor_block
     assert "var(--compact-export-preview-max-height)" in anchor_block
+    assert "max-height: var(--compact-export-preview-max-height);" in anchor_block
+    assert "\n  max-height: 78vh;" not in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
     assert "--compact-export-preview-max-height: min(" in desktop_history_block
