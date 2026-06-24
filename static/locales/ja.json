@@ -4339,8 +4339,8 @@
              "recent": "最近 {{count}} 試合",
              "loading": "読み込み中...",
              "mode": {
-                 "duel": "対戦",
-                 "spectator": "観戦"
+                 "spectator": "観戦",
+                 "duel": "対戦"
              }
          },
          "debug": {

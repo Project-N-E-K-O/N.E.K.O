@@ -4339,8 +4339,8 @@
              "recent": "最近 {{count}} 局",
              "loading": "載入中...",
              "mode": {
-                 "duel": "對戰",
-                 "spectator": "觀戰"
+                 "spectator": "觀戰",
+                 "duel": "對戰"
              }
          },
          "debug": {

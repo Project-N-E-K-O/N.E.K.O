@@ -4339,8 +4339,8 @@
              "recent": "Últimas {{count}} partidas",
              "loading": "Cargando...",
              "mode": {
-                 "spectator": "Espectador",
-                 "duel": "Duelo"
+                 "duel": "Duelo",
+                 "spectator": "Espectador"
              }
          },
          "debug": {

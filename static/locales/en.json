@@ -4339,8 +4339,8 @@
              "recent": "Recent {{count}} games",
              "loading": "Loading...",
              "mode": {
-                 "duel": "Duel",
-                 "spectator": "Spectator"
+                 "spectator": "Spectator",
+                 "duel": "Duel"
              }
          },
          "debug": {

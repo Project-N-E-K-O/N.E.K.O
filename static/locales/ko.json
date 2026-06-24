@@ -4339,8 +4339,8 @@
              "recent": "최근 {{count}}경기",
              "loading": "로딩 중...",
              "mode": {
-                 "duel": "대결",
-                 "spectator": "관전"
+                 "spectator": "관전",
+                 "duel": "대결"
              }
          },
          "debug": {
