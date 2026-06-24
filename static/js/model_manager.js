@@ -2783,7 +2783,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         pngtuberTalkPreviewBtn.setAttribute('data-i18n-aria', 'live2d.pngtuberTalkPreview');
         pngtuberTalkPreviewBtn.title = label;
         pngtuberTalkPreviewBtn.setAttribute('aria-label', label);
-        const textSpan = pngtuberTalkPreviewBtn.querySelector('[data-i18n="live2d.pngtuberTalkPreview"], span');
+        const textSpan = pngtuberTalkPreviewBtn.querySelector('[data-i18n="live2d.pngtuberTalkPreview"]')
+            || pngtuberTalkPreviewBtn.querySelector('span');
         if (textSpan) {
             textSpan.setAttribute('data-i18n', 'live2d.pngtuberTalkPreview');
             textSpan.textContent = label;

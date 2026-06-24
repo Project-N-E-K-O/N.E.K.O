@@ -82,6 +82,9 @@ def test_model_manager_pngtuber_talk_preview_keeps_i18n_after_early_load():
     assert "t('live2d.pngtuberTalkPreview', '测试说话')" in update_block
     assert "setAttribute('data-i18n-title', 'live2d.pngtuberTalkPreview')" in update_block
     assert "setAttribute('data-i18n-aria', 'live2d.pngtuberTalkPreview')" in update_block
+    assert "querySelector('[data-i18n=\"live2d.pngtuberTalkPreview\"]')" in update_block
+    assert "|| pngtuberTalkPreviewBtn.querySelector('span')" in update_block
+    assert "querySelector('[data-i18n=\"live2d.pngtuberTalkPreview\"], span')" not in update_block
     assert "textSpan.setAttribute('data-i18n', 'live2d.pngtuberTalkPreview')" in update_block
     assert "updatePNGTuberTalkPreviewButtonText();" in refresh_block
     assert controls_block.count("updatePNGTuberTalkPreviewButtonText();") >= 1
