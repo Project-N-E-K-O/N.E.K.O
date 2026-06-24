@@ -240,6 +240,10 @@ _GIBBERISH_PS_RATIO_CEIL = 0.25    # > 25% punct/symbol → emoji/mark spam
 _MAX_TOKENS_SLACK = 20
 _UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
 
+# 主动搭话遗留截图的存活上限：暂存后超过这个时长就视为过期、不再注入用户回复
+# （屏幕早变了，旧图反而误导模型）。在注入点惰性判定，无需后台定时器。
+_PROACTIVE_SCREENSHOT_TTL_SECONDS = 120.0
+
 
 def _budget_to_max_tokens(budget: int, summary_mode: bool = False) -> int | None:
     """Convert ``max_response_length`` budget into the LLM API's
@@ -701,8 +705,10 @@ class OmniOfflineClient:
         # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
         # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
         # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
-        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费。
+        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费、带 TTL
+        # （_proactive_image_staged_at = 暂存时刻的 monotonic 秒，0.0 = 无暂存）。
         self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
 
         # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
         # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
@@ -1955,7 +1961,17 @@ class OmniOfflineClient:
         # Check if we need to switch to vision model. A staged proactive-vision
         # screenshot (the screen she just commented on) counts as an image too,
         # so a text-only user reply still goes multi-modal and the model sees it.
+        # TTL: a screenshot older than the 2-min cap is dropped (the screen has
+        # moved on — a stale frame would mislead more than help).
         proactive_image = self._proactive_image_to_inject
+        if proactive_image and (
+            time.monotonic() - self._proactive_image_staged_at
+            > _PROACTIVE_SCREENSHOT_TTL_SECONDS
+        ):
+            logger.info("Proactive screenshot expired (>%.0fs), dropping", _PROACTIVE_SCREENSHOT_TTL_SECONDS)
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
+            proactive_image = None
         has_images = bool(proactive_image) or len(self._pending_images) > 0
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
@@ -2014,6 +2030,7 @@ class OmniOfflineClient:
             # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
             self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
             user_message = HumanMessage(content=_user_text_with_prefix)
@@ -3118,11 +3135,17 @@ class OmniOfflineClient:
         SEPARATE single-slot field: sharing ``_pending_images`` would steal the
         user's next frame (see core.py proactive media note / Codex P2).
 
-        Pass ``None`` (e.g. a non-vision proactive round) to clear, so the slot
-        always reflects the most recent committed proactive round's screen and a
-        stale screenshot never trails a later screen-unrelated talk.
+        Pass ``None`` (e.g. a proactive round that obtained no screenshot) to
+        clear, so the slot always reflects the most recent proactive round and a
+        stale screenshot never trails a later talk. The stage timestamp arms the
+        TTL (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) checked lazily at injection.
         """
-        self._proactive_image_to_inject = image_b64 or None
+        if image_b64:
+            self._proactive_image_to_inject = image_b64
+            self._proactive_image_staged_at = time.monotonic()
+        else:
+            self._proactive_image_to_inject = None
+            self._proactive_image_staged_at = 0.0
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
@@ -3585,6 +3608,7 @@ class OmniOfflineClient:
         self._conversation_history = []
         self._pending_images.clear()
         self._proactive_image_to_inject = None
+        self._proactive_image_staged_at = 0.0
         if self.llm:
             try:
                 await self.llm.aclose()

@@ -7606,19 +7606,14 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
-        # 本轮是否「以屏幕为素材」投递：必须本轮真的把截图喂给了 vision 模型
-        # (phase2_use_vision) 且最终投递通道就是屏幕/纯聊（primary_channel in
-        # ('chat','vision')）。注意 vision-only 轮没有副作用通道、走 _of_none
-        # 无 tag 模式，source_tag 兜底成 CHAT → primary_channel 是 'chat' 而非
-        # 'vision'（'vision' 只在 MEME 回退那一支出现），所以不能只认 'vision'。
-        # 投递落到 music/web/meme 时屏幕只是顺带喂进去、并非话题，不暂存。
-        # 截图在 finish_proactive_delivery 内 commit 成功后才真正落到 session；
-        # 传 None 会清掉上一轮可能遗留的截图。
-        _stage_vision_screenshot = (
-            screenshot_b64_for_phase2
-            if (phase2_use_vision and primary_channel in ('chat', 'vision'))
-            else None
-        )
+        # 只要本轮后端拿到了截图、且有可用 vision 模型（phase2_use_vision 同时
+        # 蕴含 screenshot_b64_for_phase2 非空），就缓存最后这张主动搭话截图，等
+        # 用户下一条 text 回复时注入——不按最终投递通道筛（哪怕这轮文案落到了
+        # music/web，屏幕仍是这轮看过的画面，留着供用户追问）。截图在
+        # finish_proactive_delivery 内 commit 成功后才真正落 session：新一轮主动
+        # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
+        # 分钟 TTL 兜底过期。
+        _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(

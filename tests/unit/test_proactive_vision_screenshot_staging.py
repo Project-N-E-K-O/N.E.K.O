@@ -1,27 +1,38 @@
-"""主动搭话「以屏幕为素材」截图暂存 + 用户回复前注入 测试。
+"""Proactive-vision screenshot staging + inject-before-user-reply tests.
 
-原本：主动搭话用 vision 模型看屏幕生成台词后，``finish_proactive_delivery``
-只把纯文本 AIMessage 写进历史，那张截图当场丢弃——用户回复时对话模型完全
-不知道刚才评论的屏幕长什么样。
+Before: a proactive round used the vision model to look at the screen, but
+``finish_proactive_delivery`` committed only the text AIMessage and dropped the
+screenshot — so when the user replied, the conversation model had no idea what
+was on screen.
 
-本特性：把那张截图暂存到一个**独立单槽** ``_proactive_image_to_inject``，
-下一条用户 text 回复经 ``stream_text`` 时作为*前导* image_url 折叠进该用户
-HumanMessage（"用户说话前加入对话上下文"）。
+Now: that screenshot is stashed in a dedicated single slot
+``_proactive_image_to_inject`` and the next user text reply folds it in via
+``stream_text`` as the LEADING image of that user HumanMessage.
 
-三层契约：
-1. ``OmniOfflineClient.set_proactive_screenshot``：写/清独立单槽，绝不碰用户
-   自己的 ``_pending_images``（共用会偷走用户下一帧，Codex P2）。
-2. ``OmniOfflineClient.stream_text``：暂存截图排在用户自己的帧*之前*（时间序），
-   消费后一次性清空；无暂存时行为与原来完全一致（纯文本消息）。
-3. ``LLMSessionManager.finish_proactive_delivery(vision_screenshot_b64=...)``：
-   仅在 commit 成功（sid 未被用户抢占）时才暂存；传 ``None`` 清掉旧截图；
-   sid 不匹配（用户接管）时整轮短路，绝不为未投递的轮次暂存截图。
+Caching policy (latest spec): cache the last screenshot whenever the backend
+obtained one AND a vision model is available; a new proactive round overwrites /
+clears the prior cache; the cache has a 2-minute TTL and expired frames are not
+injected.
+
+Contracts under test:
+1. ``OmniOfflineClient.set_proactive_screenshot``: write/clear the isolated slot
+   + timestamp; never touch the user's own ``_pending_images`` (sharing it would
+   steal the user's next frame — Codex P2).
+2. ``OmniOfflineClient.stream_text``: the staged screenshot leads the user's own
+   frame(s) (temporal order) and is consumed one-shot; with nothing staged the
+   behavior is byte-for-byte the old text-only path.
+3. TTL: a screenshot older than ``_PROACTIVE_SCREENSHOT_TTL_SECONDS`` (120s) is
+   dropped lazily at injection.
+4. ``LLMSessionManager.finish_proactive_delivery(vision_screenshot_b64=...)``:
+   stage only on a genuine commit (sid not preempted); ``None`` clears the prior
+   cache; a sid mismatch (user took over) short-circuits and never stages a
+   screenshot for an undelivered turn.
 """
 import asyncio
 import os
 import sys
+import time
 from queue import Queue
-from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -35,14 +46,15 @@ from main_logic.session_state import SessionStateMachine
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. set_proactive_screenshot —— 独立单槽语义 + 与 _pending_images 隔离
+# 1. set_proactive_screenshot —— isolated single slot + 与 _pending_images 隔离
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _bare_offline() -> OmniOfflineClient:
-    """__new__ 绕过 __init__，仅装上槽相关字段。"""
+    """__new__ past __init__; wire up only the slot-related fields."""
     c = OmniOfflineClient.__new__(OmniOfflineClient)
     c._pending_images = []
     c._proactive_image_to_inject = None
+    c._proactive_image_staged_at = 0.0
     return c
 
 
@@ -50,6 +62,8 @@ def test_set_proactive_screenshot_stores_in_isolated_slot():
     c = _bare_offline()
     c.set_proactive_screenshot("SHOT_B64")
     assert c._proactive_image_to_inject == "SHOT_B64"
+    # 暂存即打上时间戳，给 TTL 用。
+    assert c._proactive_image_staged_at > 0.0
     # 关键隔离：绝不污染用户自己的待发帧队列（守住 Codex P2 约束）。
     assert c._pending_images == []
 
@@ -57,8 +71,10 @@ def test_set_proactive_screenshot_stores_in_isolated_slot():
 def test_set_proactive_screenshot_none_and_empty_clear_slot():
     c = _bare_offline()
     c._proactive_image_to_inject = "OLD"
+    c._proactive_image_staged_at = 123.0
     c.set_proactive_screenshot(None)
     assert c._proactive_image_to_inject is None
+    assert c._proactive_image_staged_at == 0.0  # 时间戳一并清
     # 空串也按"清空"处理（image_b64 or None），不会把空字符串当成一张图。
     c._proactive_image_to_inject = "OLD"
     c.set_proactive_screenshot("")
@@ -66,34 +82,38 @@ def test_set_proactive_screenshot_none_and_empty_clear_slot():
 
 
 def test_close_clears_proactive_slot():
-    """close() 必须把槽与 _pending_images 一并清掉，不跨实例泄漏。"""
+    """close() must clear slot + timestamp + _pending_images (no cross-instance leak)."""
     c = _bare_offline()
     c._conversation_history = []
     c._is_responding = False
     c._proactive_image_to_inject = "SHOT"
+    c._proactive_image_staged_at = 123.0
     c.llm = None
     c._genai_client = None
 
     asyncio.run(OmniOfflineClient.close(c))
     assert c._proactive_image_to_inject is None
+    assert c._proactive_image_staged_at == 0.0
     assert c._pending_images == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. stream_text —— 暂存截图作为前导 image 注入用户回复
+# 2. stream_text —— stage the screenshot as the leading image of the user reply
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineClient, list]:
-    """装一个能跑到 stream_text 消息构建 + 首次 astream 调用的最小 client。
+    """Minimal client that reaches stream_text's message build + first astream call.
 
-    ``_astream_visible_with_tools`` 被替换成一个捕获 messages 后立刻 raise 的
-    桩——构建好的用户 HumanMessage 在 raise 前已 append 进历史并作为第一个参数
-    传给它，所以能拿到它做断言；raise 走通用 except 直接 break（不重试、不 sleep）。
+    ``_astream_visible_with_tools`` is replaced by a stub that captures the
+    messages and immediately raises — the built user HumanMessage is appended to
+    history and passed to it before the raise, so we can assert on it; the raise
+    hits the generic except → break (no retry, no sleep).
     """
     c = OmniOfflineClient.__new__(OmniOfflineClient)
     c._conversation_history = [SystemMessage(content="sys")]
     c._pending_images = []
     c._proactive_image_to_inject = None
+    c._proactive_image_staged_at = 0.0
     c.model = "m"
     c.vision_model = vision_model
     c.max_response_rerolls = 0
@@ -120,7 +140,7 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
 
 
 def _last_user_message(captured: list) -> HumanMessage:
-    assert captured, "astream 从未被调用——消息没构建到位"
+    assert captured, "astream never called — message did not get built"
     msg = captured[0][-1]
     assert isinstance(msg, HumanMessage)
     return msg
@@ -154,8 +174,9 @@ def test_stream_text_injects_proactive_screenshot_before_user_text():
 
 
 def test_stream_text_orders_proactive_before_user_frame():
-    """暂存截图（她评论过的屏幕）排在用户自己的帧之前——时间序，避免模型把
-    旧屏当成用户刚拍的。两者消费后都清空。"""
+    """Staged screenshot (the screen she commented on) leads the user's own
+    frame — temporal order, so the model doesn't read the earlier screen as the
+    user's just-captured frame. Both cleared after consume."""
     c, captured = _make_offline_for_stream()
     c._pending_images = ["USER_FRAME_B64"]
     c.set_proactive_screenshot("PROACTIVE_B64")
@@ -173,7 +194,8 @@ def test_stream_text_orders_proactive_before_user_frame():
 
 
 def test_stream_text_without_staging_is_text_only():
-    """无暂存截图、无用户帧 → 纯文本消息，行为与改动前完全一致（无回归）。"""
+    """Nothing staged, no user frame → plain-text message, identical to the
+    pre-change path (no regression)."""
     c, captured = _make_offline_for_stream()
 
     asyncio.run(c.stream_text("普通一句话"))
@@ -183,12 +205,42 @@ def test_stream_text_without_staging_is_text_only():
     c.switch_model.assert_not_awaited()
 
 
+def test_stream_text_drops_expired_screenshot():
+    """Staged > 2-min TTL → not injected, plain-text reply, expired slot cleared."""
+    from main_logic.omni_offline_client import _PROACTIVE_SCREENSHOT_TTL_SECONDS
+
+    c, captured = _make_offline_for_stream()
+    c.set_proactive_screenshot("STALE_B64")
+    # 把暂存时刻倒拨到 TTL 之外，模拟用户隔了很久才回。
+    c._proactive_image_staged_at = time.monotonic() - (_PROACTIVE_SCREENSHOT_TTL_SECONDS + 5)
+
+    asyncio.run(c.stream_text("现在才回你"))
+
+    msg = _last_user_message(captured)
+    assert msg.content == "现在才回你"  # 过期 → 纯文本，无图
+    assert c._proactive_image_to_inject is None
+    assert c._proactive_image_staged_at == 0.0
+    c.switch_model.assert_not_awaited()
+
+
+def test_stream_text_injects_within_ttl():
+    """Within TTL (just staged) → injected. Dual of the expiry case, pinning both
+    sides of the TTL boundary."""
+    c, captured = _make_offline_for_stream()
+    c.set_proactive_screenshot("FRESH_B64")  # staged_at = now
+
+    asyncio.run(c.stream_text("马上回你"))
+
+    msg = _last_user_message(captured)
+    assert _image_urls(msg.content) == ["data:image/jpeg;base64,FRESH_B64"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. finish_proactive_delivery(vision_screenshot_b64=...) —— commit 成功才暂存
+# 3. finish_proactive_delivery(vision_screenshot_b64=...) —— stage only on commit
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_mgr() -> LLMSessionManager:
-    """复用 test_proactive_action_note.py 的最小 manager 装配。"""
+    """Minimal manager assembly reused from test_proactive_action_note.py."""
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.use_tts = True
     mgr.tts_cache_lock = asyncio.Lock()
@@ -217,18 +269,20 @@ def _make_mgr() -> LLMSessionManager:
 
 
 def _real_session() -> OmniOfflineClient:
-    """真实 OmniOfflineClient（__new__）当 session：用真的 set_proactive_screenshot
-    + 真的 _proactive_image_to_inject 槽，断言才有意义。"""
+    """Real OmniOfflineClient (__new__) as the session, so the assertions exercise
+    the real set_proactive_screenshot + _proactive_image_to_inject slot."""
     sess = OmniOfflineClient.__new__(OmniOfflineClient)
     sess._conversation_history = []
     sess._pending_images = []
     sess._proactive_image_to_inject = None
+    sess._proactive_image_staged_at = 0.0
     return sess
 
 
 @pytest.mark.asyncio
 async def test_finish_stages_vision_screenshot_on_commit():
-    """本轮以屏幕为素材投递 + commit 成功 → 截图落到独立槽，等下一条用户回复注入。"""
+    """Screenshot obtained + commit succeeds → it lands in the isolated slot,
+    ready for the next user reply to inject."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s"
     mgr.session = _real_session()
@@ -248,8 +302,8 @@ async def test_finish_stages_vision_screenshot_on_commit():
 
 @pytest.mark.asyncio
 async def test_finish_clears_stale_screenshot_when_none():
-    """非 vision 轮（传 None）→ 清掉上一轮可能遗留的截图，避免与屏幕无关的
-    搭话拖着一张陈旧图。"""
+    """A round with no screenshot (passes None) discards any prior cache, so a
+    later screen-unrelated talk never trails a stale image."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s"
     mgr.session = _real_session()
@@ -265,8 +319,9 @@ async def test_finish_clears_stale_screenshot_when_none():
 
 @pytest.mark.asyncio
 async def test_finish_does_not_stage_on_sid_mismatch():
-    """sid 不匹配（用户已接管本轮）→ finish 短路返回 False，截图绝不暂存，
-    旧槽值也不被这条未投递的孤儿轮次篡改。"""
+    """sid mismatch (user already took over this turn) → finish short-circuits
+    and returns False; the screenshot is never staged and the prior slot value is
+    not mutated by this orphan undelivered turn."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s_user"
     mgr.session = _real_session()

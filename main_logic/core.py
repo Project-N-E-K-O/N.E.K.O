@@ -7053,15 +7053,18 @@ class LLMSessionManager:
         it did. Construction logic in
         ``config.prompts.prompts_proactive.build_proactive_action_note``.
 
-        vision_screenshot_b64: optional; the screen the AI just commented on when
-        this round used the screen as its material. Staged onto the session (NOT
-        committed into history as an image) only on a genuine commit, so the
-        user's NEXT text reply folds it in as leading visual context — the
-        conversation model otherwise sees only the proactive text and can't tell
-        what was on screen. Passing None clears any previously staged screenshot,
-        so a screen-unrelated proactive round never leaves a stale image behind.
-        Staging happens inside the sid-guard below, so a user takeover (sid
-        change → early return) never stages a screenshot for an undelivered turn.
+        vision_screenshot_b64: optional; the screen this proactive round obtained
+        when a vision model was available (the caller passes it whenever a
+        screenshot was captured, regardless of which channel the talk landed on).
+        Staged onto the session (NOT committed into history as an image) only on a
+        genuine commit, so the user's NEXT text reply folds it in as leading
+        visual context — the conversation model otherwise sees only the proactive
+        text and can't tell what was on screen. Passing None clears any previously
+        staged screenshot, so a new proactive round always discards the prior
+        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
+        staged screenshot at injection time. Staging happens inside the sid-guard
+        below, so a user takeover (sid change → early return) never stages a
+        screenshot for an undelivered turn.
 
         Returns True when genuinely persisted, False when skipped due to a sid
         change. The caller uses this to short-circuit downstream side effects
@@ -7104,12 +7107,13 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
-                # 本轮以「屏幕」为素材投递时，把那张截图暂存到 session（仅暂存，
-                # 不作为图片写进历史），下一条用户 text 回复经 stream_text 时会把
-                # 它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复时
-                # 完全不知道刚才评论的屏幕长什么样。非 vision 轮传 None 会清掉旧
-                # 截图，避免与屏幕无关的搭话遗留一张陈旧图。set_* 在 sid 校验之后，
-                # 用户接管（sid 变→早 return）时绝不会为未投递的轮次暂存截图。
+                # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
+                # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
+                # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
+                # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
+                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
