@@ -5,14 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
-SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 35 Chinese characters or 18 English words."
+SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 24 Chinese characters or 12 English words."
 
 
 def short_reply_rules() -> list[str]:
     return [
         SHORT_REPLY_CONTRACT,
         "If the viewer's danmaku is short, answer even shorter.",
+        "For one-word or very short danmaku, answer with a tiny reaction.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
+        "No explanation, no setup, no second sentence.",
     ]
 
 
@@ -37,6 +39,8 @@ def recent_context_block(ctx: Any, *, limit: int = 3) -> str:
         + "\n\n"
         + "Continuity rule: Use recent context only to avoid repetition.\n"
         + "Do not continue the previous reply, inherit the previous topic, or reuse the same opening, punchline shape, or host beat.\n"
+        + "Do not inherit the previous answer's topic, rhythm, or sentence length.\n"
         + "Do not reuse the same opening, punchline shape, or host beat from the recent context.\n"
+        + "Current danmaku wins over recent context.\n"
         + "The current danmaku is always the primary target. Short danmaku should receive a short reply.\n"
     )

@@ -118,14 +118,43 @@ def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
 
     assert "only on-stage host" in solo.prompt_text
     assert "low-interrupt partner" in co_stream.prompt_text
+    assert "solo_stream response contract" in solo.prompt_text
+    assert "carry the room alone" in solo.prompt_text
+    assert "co_stream response contract" in co_stream.prompt_text
+    assert "do not take over the host role" in co_stream.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in solo.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in co_stream.prompt_text
+
+
+def test_danmaku_response_prompt_blocks_previous_reply_pollution():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [
+            "danmaku_response / live_danmaku from viewer: 上一条很长很长的接话",
+        ],
+    )
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="哦",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+
+    request = module.build_request(event, identity, profile)
+
+    assert "Do not inherit the previous answer's topic, rhythm, or sentence length." in request.prompt_text
+    assert "Current danmaku wins over recent context." in request.prompt_text
+    assert "For one-word or very short danmaku, answer with a tiny reaction." in request.prompt_text
 
 
 def test_live_interaction_prompts_share_short_reply_contract():
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
-    short_contract = "Hard length limit: one sentence, no paragraph, at most 35 Chinese characters or 18 English words."
+    short_contract = "Hard length limit: one sentence, no paragraph, at most 24 Chinese characters or 12 English words."
 
     danmaku = DanmakuResponseModule()
     danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
@@ -167,18 +196,32 @@ def test_live_interaction_prompts_share_short_reply_contract():
     for request in [danmaku_request, avatar_request, idle_request, warmup_request, active_request]:
         assert short_contract in request.prompt_text
         assert "If the viewer's danmaku is short, answer even shorter." in request.prompt_text
+        assert "No explanation, no setup, no second sentence." in request.prompt_text
 
 
-def test_avatar_roast_prompt_does_not_hard_code_streamer_relationship_labels():
+def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
-    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="solo_stream")
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer")
 
-    request = module.build_request(event, identity, profile)
+    solo = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="solo_stream"),
+        identity,
+        profile,
+    )
+    co_stream = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="co_stream"),
+        identity,
+        profile,
+    )
 
-    assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
+    assert "solo_stream first-appearance contract" in solo.prompt_text
+    assert "NEKO is carrying the room alone" in solo.prompt_text
+    assert "co_stream first-appearance contract" in co_stream.prompt_text
+    assert "do not steal the human streamer's host role" in co_stream.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in solo.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in co_stream.prompt_text
 
 
 def test_idle_hosting_prompt_includes_recent_interaction_context_without_metrics():
@@ -269,6 +312,33 @@ def test_viewer_identity_public_dict_does_not_expose_email():
     public = ViewerIdentity(uid="1", nickname="tester", email="private@example.test").to_public_dict()
 
     assert "email" not in public
+
+
+def test_interaction_result_public_dict_does_not_expose_prompt_text():
+    event = ViewerEvent(uid="1", nickname="tester", danmaku_text="private danmaku")
+    identity = ViewerIdentity(uid="1", nickname="tester")
+    profile = ViewerProfile(uid="1", nickname="tester")
+    request = InteractionRequest(
+        event=event,
+        identity=identity,
+        profile=profile,
+        prompt_text="internal prompt with private danmaku and persona rules",
+        live_mode="solo_stream",
+        strength="sharp",
+    )
+    result = InteractionResult(
+        accepted=True,
+        status="dry_run",
+        event=event,
+        identity=identity,
+        profile=profile,
+        request=request,
+    )
+
+    public_request = result.to_public_dict()["request"]
+
+    assert public_request is not None
+    assert "prompt_text" not in public_request
 
 
 def test_interaction_result_public_dict_exposes_response_latency_ms():

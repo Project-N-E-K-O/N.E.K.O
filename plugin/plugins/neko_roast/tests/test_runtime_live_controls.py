@@ -90,6 +90,14 @@ def runtime(tmp_path: Path) -> RoastRuntime:
     return rt
 
 
+def test_dashboard_actions_include_manual_hosting_actions(runtime: RoastRuntime) -> None:
+    action_ids = {action["id"] for action in runtime.dashboard_actions()}
+
+    assert "trigger_idle_hosting" in action_ids
+    assert "trigger_warmup_hosting" in action_ids
+    assert "trigger_active_engagement" in action_ids
+
+
 @pytest.mark.asyncio
 async def test_update_config_restarts_listener_when_room_changes(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100

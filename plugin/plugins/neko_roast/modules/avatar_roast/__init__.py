@@ -106,6 +106,7 @@ class AvatarRoastModule(BaseModule):
         nickname = identity.nickname or identity.uid or "这位观众"
         danmaku = (event.danmaku_text or "").strip()
         avatar_line, avatar_rule = self._avatar_guidance(identity)
+        mode_contract = self._mode_contract(event.live_mode)
         pace = (
             "你在独播、由你撑全场，可以更主动鲜活，别冷场"
             if event.live_mode == "solo_stream"
@@ -114,6 +115,7 @@ class AvatarRoastModule(BaseModule):
         strength_zh = {"gentle": "轻一点、偏宠溺", "sharp": "可以犀利", "normal": "适中"}.get(strength, "适中")
 
         facts = [f"观众昵称：{nickname}（UID {identity.uid}）"]
+        facts.append(f"mode_contract: {mode_contract}")
         if danmaku:
             facts.append(f"刚发的弹幕：{danmaku}")
         facts.append(f"头像：{avatar_line}")
@@ -126,6 +128,7 @@ class AvatarRoastModule(BaseModule):
             avatar_rule,
             *short_reply_rules(),
             "别和你最近几条锐评用同样的开头和句式。",
+            "Current danmaku wins over any previous reply.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             f"一句话，短、有包袱、能直接 TTS 播出；强度{strength_zh}；{pace}。",
             "只输出这一句锐评本身，不要解释、不要加前后缀、不要复述这些规则。",
@@ -135,6 +138,18 @@ class AvatarRoastModule(BaseModule):
             + "\n".join(facts)
             + "\n\n要求：\n"
             + "\n".join(f"- {r}" for r in rules)
+        )
+
+    @staticmethod
+    def _mode_contract(live_mode: str) -> str:
+        if live_mode == "solo_stream":
+            return (
+                "solo_stream first-appearance contract - NEKO is carrying the room alone; "
+                "make one compact host reaction, then stop."
+            )
+        return (
+            "co_stream first-appearance contract - NEKO is a low-interrupt partner; "
+            "do not steal the human streamer's host role."
         )
 
     @staticmethod

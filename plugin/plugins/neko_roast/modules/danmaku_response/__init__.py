@@ -33,11 +33,7 @@ class DanmakuResponseModule(BaseModule):
     def _build_prompt(event: ViewerEvent, identity: ViewerIdentity, strength: str, recent_context: str = "") -> str:
         nickname = identity.nickname or identity.uid or "this viewer"
         danmaku = (event.danmaku_text or "").strip()
-        mode_hint = (
-            "NEKO is the only host on stage and the only on-stage host in solo_stream; receive viewers, answer the current danmaku, and keep the room moving without sounding needy."
-            if event.live_mode == "solo_stream"
-            else "NEKO is a low-interrupt partner in co_stream; answer lightly, catch the joke, and leave room for the human streamer."
-        )
+        mode_contract = DanmakuResponseModule._mode_contract(event.live_mode)
         strength_hint = {
             "gentle": "soft, warm, and companionable",
             "sharp": "playfully sharp, but not hostile",
@@ -46,6 +42,7 @@ class DanmakuResponseModule(BaseModule):
         rules = [
             "Reply to the viewer's current danmaku as NEKO.",
             "Use recent context only to avoid repetition; do not continue the previous reply.",
+            "Current danmaku wins over recent context.",
             "Do not repeat first-appearance, avatar, ID, or entrance-roast templates.",
             "Only mention avatar or nickname if the current danmaku itself makes that relevant.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
@@ -59,10 +56,22 @@ class DanmakuResponseModule(BaseModule):
             "[NEKO Live danmaku response]\n"
             f"viewer: {nickname} (UID {identity.uid})\n"
             f"danmaku: {danmaku or '(empty)'}\n"
-            f"mode: {mode_hint}\n"
+            f"mode_contract: {mode_contract}\n"
             f"tone: {strength_hint}\n\n"
             + recent_context
             + "\n"
             "Rules:\n"
             + "\n".join(f"- {rule}" for rule in rules)
+        )
+
+    @staticmethod
+    def _mode_contract(live_mode: str) -> str:
+        if live_mode == "solo_stream":
+            return (
+                "solo_stream response contract: NEKO is the only host on stage, the only on-stage host, and must carry the room alone; "
+                "answer the current danmaku, keep the room moving, then stop."
+            )
+        return (
+            "co_stream response contract: NEKO is a low-interrupt partner; "
+            "catch the joke, do not take over the host role, and leave space for the human streamer."
         )

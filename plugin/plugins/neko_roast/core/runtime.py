@@ -1388,6 +1388,8 @@ class RoastRuntime:
             "resume_roast",
             "clear_queue",
             "trigger_idle_hosting",
+            "trigger_warmup_hosting",
+            "trigger_active_engagement",
             "submit_viewer_event",
             "clear_sandbox_data",
             "bili_login",

@@ -267,7 +267,6 @@ class InteractionRequest:
             "event": self.event.to_dict(),
             "identity": self.identity.to_public_dict(),
             "profile": self.profile.to_dict(),
-            "prompt_text": self.prompt_text,
             "live_mode": self.live_mode,
             "strength": self.strength,
             "should_push": self.should_push,
