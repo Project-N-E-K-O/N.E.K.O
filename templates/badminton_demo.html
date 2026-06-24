@@ -1430,7 +1430,11 @@
     try { localStorage.setItem(badmintonStorageKey(key), value); } catch (_) {}
   }
   function removeBadmintonStorage(key) {
-    try { localStorage.removeItem(badmintonStorageKey(key)); } catch (_) {}
+    try {
+      var scopedKey = badmintonStorageKey(key);
+      localStorage.removeItem(scopedKey);
+      if (scopedKey !== key) localStorage.removeItem(key);
+    } catch (_) {}
   }
   function readJson(key, fallback) {
     try {
@@ -8923,7 +8927,7 @@
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _badmintonGameMemoryPolicyPayload()), 22000).then(function (res) {
       if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over') {
-        if (badmintonGameDisposed && res && res.ok) endRoute(true, { force: true });
+        if (badmintonGameDisposed && res && res.ok) Promise.resolve(endRoute(true, { force: true })).catch(function () {});
         return res;
       }
       if (!res || !res.ok) {
@@ -9088,7 +9092,7 @@
   function disposeBadmintonGame(reason) {
     if (badmintonGameDisposed) return;
     badmintonGameDisposed = true;
-    try { endRoute(true); } catch (_) {}
+    try { Promise.resolve(endRoute(true)).catch(function () {}); } catch (_) {}
     if (badmintonFrameRequestId) {
       cancelAnimationFrame(badmintonFrameRequestId);
       badmintonFrameRequestId = 0;

@@ -232,7 +232,7 @@ def test_badminton_pagehide_and_exit_share_dispose_lifecycle():
 
     assert "var badmintonGameDisposed = false;" in html
     assert "function disposeBadmintonGame(reason) {" in html
-    assert "endRoute(true);" in html
+    assert "Promise.resolve(endRoute(true)).catch(function () {});" in html
     assert "cancelAnimationFrame(badmintonFrameRequestId);" in html
     assert "clearTimeout(badmintonHiddenFrameTimer);" in html
     assert "badmintonGameAudio.destroy();" in html
@@ -1627,7 +1627,7 @@ def test_badminton_route_start_pending_close_is_cancelled_by_dispose():
     assert "if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over')" in start_route
     assert "if (badmintonGameDisposed) return Promise.resolve({ ok: false, reason: 'disposed' });" in start_route
     assert "if (badmintonGameDisposed) return res;" in start_route
-    assert "endRoute(true);" in dispose_section
+    assert "Promise.resolve(endRoute(true)).catch(function () {});" in dispose_section
     assert "badmintonGameDisposed = true;" in dispose_section
 
 
@@ -3386,6 +3386,9 @@ def test_badminton_game_storage_is_scoped_per_lanlan_with_legacy_fallback():
     assert "function writeBadmintonStorage(key, value) {" in html
     assert "localStorage.setItem(badmintonStorageKey(key), value);" in html
     assert "function removeBadmintonStorage(key) {" in html
+    assert "var scopedKey = badmintonStorageKey(key);" in html
+    assert "localStorage.removeItem(scopedKey);" in html
+    assert "if (scopedKey !== key) localStorage.removeItem(key);" in html
 
     assert "var raw = readBadmintonStorage(key);" in html
     assert "writeBadmintonStorage(key, JSON.stringify(value));" in html
