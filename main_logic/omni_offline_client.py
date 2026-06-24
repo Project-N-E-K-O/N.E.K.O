@@ -707,8 +707,13 @@ class OmniOfflineClient:
         # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
         # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费、带 TTL
         # （_proactive_image_staged_at = 暂存时刻的 monotonic 秒，0.0 = 无暂存）。
+        # _proactive_image_history_len = 暂存那一刻的历史长度：截图只对「紧接它的
+        # 下一条用户回复」有效，若中途又来了别的 AI 轮（greeting / agent 回调走
+        # prompt_ephemeral，不过 finish_proactive_delivery）使历史变长，这张就过时
+        # 了、注入时丢弃——把截图钉死在「最后一条 AI 轮」上（Codex P2）。
         self._proactive_image_to_inject = None
         self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
 
         # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
         # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
@@ -1961,17 +1966,30 @@ class OmniOfflineClient:
         # Check if we need to switch to vision model. A staged proactive-vision
         # screenshot (the screen she just commented on) counts as an image too,
         # so a text-only user reply still goes multi-modal and the model sees it.
-        # TTL: a screenshot older than the 2-min cap is dropped (the screen has
-        # moved on — a stale frame would mislead more than help).
+        # The staged screenshot is dropped (not injected) when either:
+        #  - TTL: older than the 2-min cap (the screen has moved on — a stale
+        #    frame would mislead more than help); or
+        #  - superseded: a later AI turn was appended after staging (e.g. a
+        #    greeting / agent callback via prompt_ephemeral), so this reply isn't
+        #    answering the screen-based talk anymore. History only grows by
+        #    appends between staging and this read (the user hasn't been appended
+        #    yet), so a length change means an intervening AI turn (Codex P2).
         proactive_image = self._proactive_image_to_inject
-        if proactive_image and (
-            time.monotonic() - self._proactive_image_staged_at
-            > _PROACTIVE_SCREENSHOT_TTL_SECONDS
-        ):
-            logger.info("Proactive screenshot expired (>%.0fs), dropping", _PROACTIVE_SCREENSHOT_TTL_SECONDS)
-            self._proactive_image_to_inject = None
-            self._proactive_image_staged_at = 0.0
-            proactive_image = None
+        if proactive_image:
+            _expired = (
+                time.monotonic() - self._proactive_image_staged_at
+                > _PROACTIVE_SCREENSHOT_TTL_SECONDS
+            )
+            _superseded = len(self._conversation_history) != self._proactive_image_history_len
+            if _expired or _superseded:
+                logger.info(
+                    "Proactive screenshot dropped (expired=%s superseded=%s)",
+                    _expired, _superseded,
+                )
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
+                proactive_image = None
         has_images = bool(proactive_image) or len(self._pending_images) > 0
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
@@ -2031,6 +2049,7 @@ class OmniOfflineClient:
             self._pending_images.clear()
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
             user_message = HumanMessage(content=_user_text_with_prefix)
@@ -3138,14 +3157,19 @@ class OmniOfflineClient:
         Pass ``None`` (e.g. a proactive round that obtained no screenshot) to
         clear, so the slot always reflects the most recent proactive round and a
         stale screenshot never trails a later talk. The stage timestamp arms the
-        TTL (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) checked lazily at injection.
+        TTL (``_PROACTIVE_SCREENSHOT_TTL_SECONDS``) checked lazily at injection;
+        the history-length marker pins the screenshot to the AI turn it was staged
+        on, so a later proactive talk delivered through another path (greeting /
+        agent callback via ``prompt_ephemeral``) supersedes it.
         """
         if image_b64:
             self._proactive_image_to_inject = image_b64
             self._proactive_image_staged_at = time.monotonic()
+            self._proactive_image_history_len = len(self._conversation_history)
         else:
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
+            self._proactive_image_history_len = 0
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
@@ -3609,6 +3633,7 @@ class OmniOfflineClient:
         self._pending_images.clear()
         self._proactive_image_to_inject = None
         self._proactive_image_staged_at = 0.0
+        self._proactive_image_history_len = 0
         if self.llm:
             try:
                 await self.llm.aclose()

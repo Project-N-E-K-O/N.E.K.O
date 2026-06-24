@@ -21,8 +21,10 @@ Contracts under test:
 2. ``OmniOfflineClient.stream_text``: the staged screenshot leads the user's own
    frame(s) (temporal order) and is consumed one-shot; with nothing staged the
    behavior is byte-for-byte the old text-only path.
-3. TTL: a screenshot older than ``_PROACTIVE_SCREENSHOT_TTL_SECONDS`` (120s) is
-   dropped lazily at injection.
+3. TTL + supersede: a screenshot older than ``_PROACTIVE_SCREENSHOT_TTL_SECONDS``
+   (120s), OR one whose AI turn was superseded by a later AI message appended
+   through another path (greeting / agent callback via ``prompt_ephemeral``), is
+   dropped lazily at injection (Codex P2).
 4. ``LLMSessionManager.finish_proactive_delivery(vision_screenshot_b64=...)``:
    stage only on a genuine commit (sid not preempted); ``None`` clears the prior
    cache; a sid mismatch (user took over) short-circuits and never stages a
@@ -39,7 +41,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from utils.llm_client import HumanMessage, SystemMessage
+from utils.llm_client import AIMessage, HumanMessage, SystemMessage
 from main_logic.core import LLMSessionManager
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionStateMachine
@@ -52,9 +54,11 @@ from main_logic.session_state import SessionStateMachine
 def _bare_offline() -> OmniOfflineClient:
     """__new__ past __init__; wire up only the slot-related fields."""
     c = OmniOfflineClient.__new__(OmniOfflineClient)
+    c._conversation_history = []
     c._pending_images = []
     c._proactive_image_to_inject = None
     c._proactive_image_staged_at = 0.0
+    c._proactive_image_history_len = 0
     return c
 
 
@@ -82,18 +86,19 @@ def test_set_proactive_screenshot_none_and_empty_clear_slot():
 
 
 def test_close_clears_proactive_slot():
-    """close() must clear slot + timestamp + _pending_images (no cross-instance leak)."""
+    """close() must clear slot + timestamp + marker + _pending_images (no leak)."""
     c = _bare_offline()
-    c._conversation_history = []
     c._is_responding = False
     c._proactive_image_to_inject = "SHOT"
     c._proactive_image_staged_at = 123.0
+    c._proactive_image_history_len = 5
     c.llm = None
     c._genai_client = None
 
     asyncio.run(OmniOfflineClient.close(c))
     assert c._proactive_image_to_inject is None
     assert c._proactive_image_staged_at == 0.0
+    assert c._proactive_image_history_len == 0
     assert c._pending_images == []
 
 
@@ -114,6 +119,7 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
     c._pending_images = []
     c._proactive_image_to_inject = None
     c._proactive_image_staged_at = 0.0
+    c._proactive_image_history_len = 0
     c.model = "m"
     c.vision_model = vision_model
     c.max_response_rerolls = 0
@@ -235,6 +241,26 @@ def test_stream_text_injects_within_ttl():
     assert _image_urls(msg.content) == ["data:image/jpeg;base64,FRESH_B64"]
 
 
+def test_stream_text_drops_screenshot_superseded_by_later_ai_turn():
+    """A later AI turn after staging (e.g. greeting / agent callback via
+    prompt_ephemeral, NOT finish_proactive_delivery) supersedes the screenshot —
+    it's no longer tied to the last AI turn, so injection drops it. Pins Codex P2:
+    another delivery path not clearing the slot still can't leak a stale screen
+    into the user's reply."""
+    c, captured = _make_offline_for_stream()
+    c.set_proactive_screenshot("SCREEN_TALK_B64")  # marker = len([Sys]) = 1
+    # 模拟随后一条 prompt_ephemeral 投递的 AI 轮把历史变长（不经 set_*）。
+    c._conversation_history.append(AIMessage(content="顺便说，记得喝水哦"))
+
+    asyncio.run(c.stream_text("好的"))
+
+    msg = _last_user_message(captured)
+    assert msg.content == "好的"  # 陈旧屏被丢弃 → 纯文本
+    assert c._proactive_image_to_inject is None
+    assert c._proactive_image_history_len == 0
+    c.switch_model.assert_not_awaited()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. finish_proactive_delivery(vision_screenshot_b64=...) —— stage only on commit
 # ─────────────────────────────────────────────────────────────────────────────
@@ -276,6 +302,7 @@ def _real_session() -> OmniOfflineClient:
     sess._pending_images = []
     sess._proactive_image_to_inject = None
     sess._proactive_image_staged_at = 0.0
+    sess._proactive_image_history_len = 0
     return sess
 
 
