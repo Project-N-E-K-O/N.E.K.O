@@ -457,7 +457,7 @@ def test_focus_extra_body_provider_dialects():
     assert focus_extra_body("qwen-flash") == {"enable_thinking": True}
     assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
     assert focus_extra_body("gemini-2.5-flash") == {
-        "extra_body": {"google": {"thinking_config": {"thinking_budget": -1}}}
+        "extra_body": {"google": {"thinking_config": {"thinking_budget": 800}}}
     }
     assert focus_extra_body("gemini-3-flash-preview") == {
         "extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}

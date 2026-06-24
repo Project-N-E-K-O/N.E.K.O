@@ -43,8 +43,8 @@ EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
 
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
-# Gemini 2.5: budget 0 = 关；-1 = 动态思考（模型自行决定预算），是官方表示「开思考」的值。
-EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_budget": -1}}}}
+# Gemini 2.5: budget 0 = 关；凝神给一个低固定预算 800 token（开思考但不深思）。
+EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 800}}}}
 
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 # Gemini 3: 思考档位保持最低(low)，只把思考过程透出(thoughts 走独立字段，不混进 content)。
@@ -54,8 +54,12 @@ EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low（开思考但取最低努力档）。
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
-# MiniMax 的 reasoning_split 在本仓无语义记录，且不像 thinking 的 on/off 开关；凝神
-# 暂不翻它（不收录进下方 _THINKING_ENABLE_FORM 即表示「保持原值」），待其真实语义确认。
+# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M3 始终内部
+# 推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
+# 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
+# 思考本就常开、无需动它；且 True 让 CoT 留在独立字段、不混进 content 被 TTS 当台词
+# 念出（与 leaks_thinking_in_content 防的是同一类问题）。
+# 文档 https://platform.minimax.io/docs/guides/text-m3-function-call
 EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
 # Agent 调用统一开关：是否加载 extra_body。
