@@ -3414,19 +3414,31 @@
         }
     }
 
-    function setGalgameModeTemporarilyDisabled(disabled) {
+    function setGalgameModeTemporarilyDisabled(disabled, options) {
+        var requestOptions = options || {};
         var next = !!disabled;
         var changed = state.galgameTemporarilyDisabled !== next;
         state.galgameTemporarilyDisabled = next;
 
         if (next) {
-            setGalgameModeEnabled(false, { persist: false });
+            setGalgameModeEnabled(false, {
+                persist: false,
+                skipRender: requestOptions.skipRender === true
+            });
         } else if (changed) {
             setGalgameModeEnabled(readGalgameModePreference(), {
                 persist: false,
-                suppressRefetch: true
+                suppressRefetch: true,
+                skipRender: requestOptions.skipRender === true
             });
         }
+    }
+
+    function syncTutorialGalgameSuppression() {
+        setGalgameModeTemporarilyDisabled(
+            state.homeTutorialInputLocked || isHomeTutorialInteractionLocked(),
+            { skipRender: true }
+        );
     }
 
     function setGalgameModeEnabled(enabled, options) {
@@ -3450,7 +3462,9 @@
         if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
             persistGalgameModePreference(next);
         }
-        renderWindow();
+        if (!requestOptions.skipRender) {
+            renderWindow();
+        }
         if (changed) {
             // 派发 effective 值（与 body class 一致）：composer 隐藏期间即使
             // setGalgameModeEnabled(true) 也广播 enabled=false，避免监听器
@@ -4350,6 +4364,7 @@
             compactChatState: getCurrentCompactChatState(),
             composerDisabled: !!next
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
@@ -4367,6 +4382,7 @@
             compactInputLocked: next,
             composerDisabled: !!state.homeTutorialInteractionLocked
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 

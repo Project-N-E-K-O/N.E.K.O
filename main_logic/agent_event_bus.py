@@ -481,12 +481,12 @@ async def publish_analyze_request_reliably(
     ack_timeout_s: float = 0.8,
     retries: int = 1,
     conversation_id: Optional[str] = None,
-    action_intent: Optional[float] = None,
+    external_intent: Optional[float] = None,
     proactive: bool = False,
 ) -> bool:
     """Reliably publish analyze_request: carries event_id + ack, with short retries.
 
-    ``action_intent`` (0..1, or ``None``) is the cheap pre-gate hint produced by
+    ``external_intent`` (0..1, or ``None``) is the cheap pre-gate hint produced by
     the master-emotion call that already ran at input-time. It rides this same
     payload so the agent can cheaply decide whether to skip its expensive
     assessment. ``None`` (reading unavailable / no usable signal) is omitted from
@@ -510,8 +510,8 @@ async def publish_analyze_request_reliably(
         if conversation_id:
             event["conversation_id"] = conversation_id
         # Only an optimization hint; omitted when None so the agent fails open.
-        if action_intent is not None:
-            event["action_intent"] = action_intent
+        if external_intent is not None:
+            event["external_intent"] = external_intent
         # Self-initiated turn marker; omitted for ordinary user turns so the
         # agent's user-turn path is byte-for-byte unchanged when disabled.
         if proactive:

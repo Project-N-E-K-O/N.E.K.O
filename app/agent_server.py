@@ -1833,7 +1833,7 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
-def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversation_id) -> None:
+def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id) -> None:
     """Throttled proactive-analyze path (opt-in via AGENT_PROACTIVE_ANALYZE_ENABLED).
 
     A proactive turn has no new user input, so the ordinary user-turn dedupe
@@ -1871,7 +1871,7 @@ def _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversa
     logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
-        action_intent=None, proactive=True,
+        external_intent=None, proactive=True,
     ))
 
 
@@ -1922,7 +1922,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # so its fingerprint matches), so proactive routing is mandatory, not
             # an optimization.
             if event.get("proactive"):
-                _handle_proactive_analyze(event, messages, lanlan_name, lanlan_key, conversation_id)
+                _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id)
                 return
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             fp = _build_analyze_event_fingerprint(event)
@@ -1940,10 +1940,10 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
             # Cheap pre-gate hint from the input-time master-emotion call (rides
             # the analyze_request payload). Absent → None → the gate fails open.
-            action_intent = event.get("action_intent")
+            external_intent = event.get("external_intent")
             _create_tracked_task(_background_analyze_and_plan(
                 messages, lanlan_name, conversation_id=conversation_id,
-                action_intent=action_intent,
+                external_intent=external_intent,
             ))
 
 
@@ -2251,7 +2251,7 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, action_intent: Optional[float] = None, proactive: bool = False):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
     """
     [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
     
@@ -2277,10 +2277,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, action_intent=action_intent, proactive=proactive)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, action_intent: Optional[float] = None, proactive: bool = False):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -2307,7 +2307,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
-            action_intent=action_intent,
+            external_intent=external_intent,
             proactive=proactive,
         )
 

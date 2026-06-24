@@ -375,6 +375,7 @@ class OpenClawAdapter:
                 max_retries=0,
                 extra_body=None,
                 timeout=10,  # quick magic-intent classification on the user path
+                provider_type=(cfg or {}).get("provider_type"),
             )
             response = await llm.ainvoke(
                 [

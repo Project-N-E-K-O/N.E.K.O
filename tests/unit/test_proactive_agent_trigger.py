@@ -68,7 +68,7 @@ def test_proactive_disabled_does_not_dispatch(monkeypatch):
     _reset_state()
     calls = _patch_dispatch(monkeypatch)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", False)  # default
-    a._handle_proactive_analyze({"proactive": True}, _proactive_msgs("我帮你查天气"), "lan", "lan", "c")
+    a._handle_proactive_analyze(_proactive_msgs("我帮你查天气"), "lan", "lan", "c")
     assert calls == []
     assert a.Modules.proactive_analyze_count.get("lan", 0) == 0
 
@@ -78,11 +78,11 @@ def test_proactive_enabled_dispatches_with_assistant_intent(monkeypatch):
     calls = _patch_dispatch(monkeypatch)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 2)
-    a._handle_proactive_analyze({"proactive": True}, _proactive_msgs("我帮你查天气"), "lan", "lan", "c")
+    a._handle_proactive_analyze(_proactive_msgs("我帮你查天气"), "lan", "lan", "c")
     assert len(calls) == 1
     # dispatched with proactive=True and no gate signal (fails open into assess)
     _, kw = calls[0]
-    assert kw.get("proactive") is True and kw.get("action_intent") is None
+    assert kw.get("proactive") is True and kw.get("external_intent") is None
     assert a.Modules.proactive_analyze_count["lan"] == 1
 
 
@@ -90,7 +90,7 @@ def test_proactive_no_assistant_text_skips(monkeypatch):
     _reset_state()
     calls = _patch_dispatch(monkeypatch)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
-    a._handle_proactive_analyze({"proactive": True}, [{"role": "user", "content": "x"}], "lan", "lan", "c")
+    a._handle_proactive_analyze([{"role": "user", "content": "x"}], "lan", "lan", "c")
     assert calls == []
 
 
@@ -100,8 +100,8 @@ def test_proactive_duplicate_utterance_deduped(monkeypatch):
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 5)
     msgs = _proactive_msgs("我帮你查天气")
-    a._handle_proactive_analyze({"proactive": True}, msgs, "lan", "lan", "c")
-    a._handle_proactive_analyze({"proactive": True}, msgs, "lan", "lan", "c")  # identical → deduped
+    a._handle_proactive_analyze(msgs, "lan", "lan", "c")
+    a._handle_proactive_analyze(msgs, "lan", "lan", "c")  # identical → deduped
     assert len(calls) == 1
     assert a.Modules.proactive_analyze_count["lan"] == 1
 
@@ -113,7 +113,7 @@ def test_proactive_per_session_cap(monkeypatch):
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 2)
     # distinct utterances each time so dedupe never blocks — only the cap does.
     for i in range(4):
-        a._handle_proactive_analyze({"proactive": True}, _proactive_msgs(f"主动台词{i}"), "lan", "lan", "c")
+        a._handle_proactive_analyze(_proactive_msgs(f"主动台词{i}"), "lan", "lan", "c")
     assert len(calls) == 2  # capped at 2
     assert a.Modules.proactive_analyze_count["lan"] == 2
 
@@ -123,8 +123,8 @@ def test_proactive_cap_is_per_lanlan(monkeypatch):
     calls = _patch_dispatch(monkeypatch)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
     monkeypatch.setattr(a, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 1)
-    a._handle_proactive_analyze({"proactive": True}, _proactive_msgs("A"), "lanA", "lanA", "c")
-    a._handle_proactive_analyze({"proactive": True}, _proactive_msgs("B"), "lanB", "lanB", "c")
+    a._handle_proactive_analyze(_proactive_msgs("A"), "lanA", "lanA", "c")
+    a._handle_proactive_analyze(_proactive_msgs("B"), "lanB", "lanB", "c")
     assert len(calls) == 2  # each lanlan has its own budget
     assert a.Modules.proactive_analyze_count["lanA"] == 1
     assert a.Modules.proactive_analyze_count["lanB"] == 1

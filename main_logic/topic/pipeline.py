@@ -441,7 +441,7 @@ class TopicHookPool:
         seen_seq = self._seq.get(name, 0)
         seen_purge_generation = self._purge_generation.get(name, 0)
         if any(item.get("status") == "pending" for item in self._materials.get(name, [])):
-            logger.info("[%s] topic collection deferred: pending material is in delivery phase", name)
+            logger.debug("[%s] topic collection deferred: pending material is in delivery phase", name)
             return
         if not self._signal_store.is_ready(name):
             logger.info(

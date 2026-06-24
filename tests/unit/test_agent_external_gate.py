@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the cheap action-intent pre-gate in DirectTaskExecutor.
+"""Unit tests for the cheap external-intent pre-gate in DirectTaskExecutor.
 
 The gate skips the expensive turn-end assessment when the input-time
-master-emotion call confidently read the turn as NON-action — but only when the
+master-emotion call confidently read the turn as needing NO external capability
+(no outward action AND no external / real-time info need) — but only when the
 zero-LLM deterministic shortcuts (openclaw magic word, plugin keyword) also find
-nothing, and never when action_intent is None (no usable signal).
+nothing, and never when external_intent is None (no usable signal).
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ import asyncio
 import brain.task_executor as te
 
 # Single import style for brain.task_executor: reference both the class
-# (``te.DirectTaskExecutor``) and the gate knobs (``te.AGENT_ACTION_GATE_*``)
+# (``te.DirectTaskExecutor``) and the gate knobs (``te.AGENT_EXTERNAL_GATE_*``)
 # through the module. The knobs are module-level names imported into
 # brain.task_executor (the repo's `from config import (...)` convention), so
 # they are patched on that module here, not on the `config` module.
@@ -108,15 +109,15 @@ def test_det_signal_none_when_no_shortcuts():
 
 # ── the gate control flow inside _analyze_and_execute_inner ──
 def test_gate_brakes_on_confident_chat(monkeypatch):
-    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
-    monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
+    monkeypatch.setattr(te, "AGENT_EXTERNAL_GATE_ENABLED", True)
+    monkeypatch.setattr(te, "AGENT_EXTERNAL_GATE_THRESHOLD", 0.2)
     cu = _SpyCU()
     ex = te.DirectTaskExecutor(computer_use=cu)
     msgs = [{"role": "user", "text": "今天天气真好心情不错"}]
-    # computer_use only, action_intent below the line, no deterministic signal →
+    # computer_use only, external_intent below the line, no deterministic signal →
     # the gate brakes and returns None before any availability check / LLM call.
     res = asyncio.run(ex._analyze_and_execute_inner(
-        messages=msgs, agent_flags={"computer_use_enabled": True}, action_intent=0.05,
+        messages=msgs, agent_flags={"computer_use_enabled": True}, external_intent=0.05,
     ))
     assert res is None
     # Proven to brake AT THE GATE: the availability probe was never reached, so
@@ -125,28 +126,28 @@ def test_gate_brakes_on_confident_chat(monkeypatch):
 
 
 def test_gate_consults_deterministic_only_when_braking(monkeypatch):
-    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", True)
-    monkeypatch.setattr(te, "AGENT_ACTION_GATE_THRESHOLD", 0.2)
+    monkeypatch.setattr(te, "AGENT_EXTERNAL_GATE_ENABLED", True)
+    monkeypatch.setattr(te, "AGENT_EXTERNAL_GATE_THRESHOLD", 0.2)
     ex = _exec()
     calls = []
     monkeypatch.setattr(ex, "_deterministic_action_signal", lambda *a, **k: calls.append(1) or False)
     msgs = [{"role": "user", "text": "随便聊聊"}]
     flags = {"computer_use_enabled": True}
 
-    # low action_intent → gate consults the deterministic shortcuts, then brakes.
-    res = asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, action_intent=0.05))
+    # low external_intent → gate consults the deterministic shortcuts, then brakes.
+    res = asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, external_intent=0.05))
     assert res is None and len(calls) == 1
 
-    # high action_intent (>= threshold) → gate skipped, shortcuts NOT consulted.
+    # high external_intent (>= threshold) → gate skipped, shortcuts NOT consulted.
     calls.clear()
-    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, action_intent=0.9))
+    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, external_intent=0.9))
     assert len(calls) == 0
 
-    # None action_intent (no usable signal) → gate skipped entirely (fail open).
-    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, action_intent=None))
+    # None external_intent (no usable signal) → gate skipped entirely (fail open).
+    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, external_intent=None))
     assert len(calls) == 0
 
-    # gate disabled by config → not consulted even on a low action_intent.
-    monkeypatch.setattr(te, "AGENT_ACTION_GATE_ENABLED", False)
-    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, action_intent=0.05))
+    # gate disabled by config → not consulted even on a low external_intent.
+    monkeypatch.setattr(te, "AGENT_EXTERNAL_GATE_ENABLED", False)
+    asyncio.run(ex._analyze_and_execute_inner(messages=msgs, agent_flags=flags, external_intent=0.05))
     assert len(calls) == 0

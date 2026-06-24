@@ -2579,6 +2579,48 @@ def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
 
 
 @pytest.mark.frontend
+def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_event(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day1');
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day1-complete');
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
 def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
     mock_page: Page,
 ):

@@ -184,14 +184,14 @@ outward_emotion_analysis_prompt = OUTWARD_EMOTION_ANALYSIS_PROMPT['zh']
 # （用户）自己」的情绪，产出连续的 valence（效价）/ arousal（唤醒度）二维读数，
 # 供凝神等后端基建消费。module-agnostic，不绑定任何具体角色 / 场景。
 MASTER_EMOTION_VA_PROMPT = {
-    'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度, "complexity": 认知复杂度, "action_intent": 操作意图}。
+    'zh': """你是一个情感分析专家。请分析下面这段对话中说话者流露出的情绪状态，并只返回 JSON：{"valence": 效价, "arousal": 唤醒度, "confidence": 置信度, "complexity": 认知复杂度, "external_intent": 外部意图}。
 
 维度定义：
 - valence（效价）：-1 到 1 之间的小数。-1 = 强烈负面（痛苦、难过、愤怒、绝望），0 = 中性，+1 = 强烈正面（开心、满足、兴奋、温暖）。
 - arousal（唤醒度）：0 到 1 之间的小数。0 = 平静、低能量、放松，1 = 高度激动、强烈、能量很高（无论正负）。
 - confidence（置信度）：0 到 1 之间的小数，表示你对本次判断的把握。
 - complexity（认知复杂度）：0 到 1 之间的小数。表示说话者正在提出一个**复杂的、客观的问题**（数学题、逻辑题、推理题、需要多步推导的客观问题等）的程度。1 = 明确在问这类烧脑客观题，0 = 没有在问、或只是闲聊／情绪倾诉／简单问题。与情绪独立判断。
-- action_intent（操作意图）：0 到 1 之间的小数。表示说话者在多大程度上**明确要求执行一个对外的动作/操作**（打开、搜索、控制、运行某个外部东西，操作某 app 或设备，获取或改动外部状态）。1 = 明确就是一个操作请求，0 = 只是闲聊、倾诉、表达观点、或单纯提问而没有要求做任何事。默认取 0——只有用户明确要求"去做某件事"时才调高。与情绪和复杂度都独立判断。
+- external_intent（外部意图）：0 到 1 之间的小数。表示这一轮在多大程度上**需要外部能力**——要么明确要求一个对外操作（打开、搜索、控制、运行某个外部东西，操作某 app 或设备，改动外部状态），要么需要外部、实时、或超出你已知范围的信息才能回答（天气、价格、新闻、实时状态等；这类外部/实时信息的疑问句也算）。1 = 显然需要，0 = 只是闲聊、倾诉、表达观点、或凭对话和常识就能回答。与情绪和复杂度都独立判断：纯靠推理就能解的难题（数学、逻辑）归 complexity，这里仍取低。
 
 判断规则：
 1. 只依据这段文本本身流露的情绪，不要脑补未给出的背景。
@@ -201,14 +201,14 @@ MASTER_EMOTION_VA_PROMPT = {
 
 只返回 JSON，不要附加任何解释文本。""",
 
-    'en': """你是一个情感分析专家。Analyze the emotional state the speaker reveals in the conversation text below and return JSON only: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}.
+    'en': """你是一个情感分析专家。Analyze the emotional state the speaker reveals in the conversation text below and return JSON only: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}.
 
 Dimensions:
 - valence: a number between -1 and 1. -1 = strongly negative (distress, sadness, anger, despair), 0 = neutral, +1 = strongly positive (joy, contentment, excitement, warmth).
 - arousal: a number between 0 and 1. 0 = calm, low energy, relaxed; 1 = highly activated, intense, high energy (regardless of sign).
 - confidence: a number between 0 and 1 indicating your certainty.
 - complexity: a number between 0 and 1 — how much the speaker is posing a COMPLEX, OBJECTIVE question (math, logic, reasoning, multi-step analytical problems). 1 = clearly asking such a hard objective question; 0 = not asking, or just chatting / venting / a simple question. Judge independently of emotion.
-- action_intent: a number between 0 and 1 — how strongly the speaker is EXPLICITLY asking to perform an external action / operation (open, search, control, run something, operate an app or device, fetch or change external state). 1 = clearly an explicit action request; 0 = just chatting, venting, giving an opinion, or asking a question without asking to do anything. Default to 0 — raise it only on an explicit request to DO something. Judge independently of both emotion and complexity.
+- external_intent: a number between 0 and 1 — how much this turn needs an external capability: either it EXPLICITLY asks to perform an external action (open, search, control, run something, operate an app or device, change external state), OR it needs external, real-time, or beyond-what-you-know information to answer (weather, prices, news, live status, etc.; questions about those external/live facts count too). 1 = clearly needed; 0 = just chatting, venting, giving an opinion, or answerable from the conversation and common sense. Judge independently of both emotion and complexity: a hard problem solvable by pure reasoning (math, logic) belongs to complexity and stays low here.
 
 Rules:
 1. Judge only from the emotion this text reveals; do not invent unstated context.
@@ -218,14 +218,14 @@ Rules:
 
 Return JSON only, with no explanation.""",
 
-    'ja': """你是一个情感分析专家。次の会話文で話し手がにじませている感情の状態を JSONのみで返してください：{"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}。
+    'ja': """你是一个情感分析专家。次の会話文で話し手がにじませている感情の状態を JSONのみで返してください：{"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}。
 
 各次元の定義：
 - valence（感情価）：-1〜1 の数値。-1 = 強い負（つらさ・悲しみ・怒り・絶望）、0 = 中立、+1 = 強い正（喜び・満足・高揚・あたたかさ）。
 - arousal（覚醒度）：0〜1 の数値。0 = 落ち着き・低エネルギー・リラックス、1 = 強い興奮・激しさ・高エネルギー（正負を問わず）。
 - confidence（確信度）：0〜1 の数値で、今回の判断の確かさ。
 - complexity（認知的複雑さ）：0〜1 の数値。話し手が**複雑で客観的な問い**（数学・論理・推論、多段階の分析が要る客観的な問題など）をどれだけ投げかけているか。1 = 明確にそうした難しい客観的問題を問うている、0 = 問うていない、または雑談／感情の吐露／単純な質問。感情とは独立に判断する。
-- action_intent（操作意図）：0〜1 の数値。話し手が**外部の動作/操作を明確に要求している**度合い（何かを開く・検索・制御・実行する、アプリや機器を操作する、外部の状態を取得/変更する）。1 = 明確に操作の要求、0 = 雑談・吐露・意見・単なる質問で何かを依頼していない。既定は 0——「何かをして」と明確に頼んだときだけ上げる。感情とも複雑さとも独立に判断する。
+- external_intent（外部意図）：0〜1 の数値。このターンが**外部の能力をどれだけ必要としているか**——外部の動作を明確に要求している（何かを開く・検索・制御・実行する、アプリや機器を操作する、外部の状態を変える）か、または外部・リアルタイム・あなたの既知を超える情報がないと答えられない（天気・価格・ニュース・リアルタイムの状態など。こうした外部・リアルタイム情報を尋ねる疑問文も含む）。1 = 明らかに必要、0 = 雑談・吐露・意見、または会話と常識だけで答えられる。感情とも複雑さとも独立に判断する：純粋な推論だけで解ける難問（数学・論理）は complexity に属し、ここでは低いまま。
 
 判断ルール：
 1. この文章がにじませる感情だけで判断し、書かれていない背景を補わない。
@@ -235,14 +235,14 @@ Return JSON only, with no explanation.""",
 
 JSONのみを返し、説明文は付けないでください。""",
 
-    'ko': """你是一个情感分析专家。아래 대화문에서 말하는 사람이 드러내는 감정 상태를 JSON만 반환하세요: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}.
+    'ko': """你是一个情感分析专家。아래 대화문에서 말하는 사람이 드러내는 감정 상태를 JSON만 반환하세요: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}.
 
 차원 정의:
 - valence(정서가): -1~1 사이 숫자. -1 = 강한 부정(괴로움, 슬픔, 분노, 절망), 0 = 중립, +1 = 강한 긍정(기쁨, 만족, 들뜸, 따뜻함).
 - arousal(각성도): 0~1 사이 숫자. 0 = 차분함, 낮은 에너지, 이완; 1 = 강한 흥분, 격렬함, 높은 에너지(긍·부정 무관).
 - confidence(확신도): 0~1 사이 숫자로 이번 판단에 대한 확신.
 - complexity(인지적 복잡도): 0~1 사이 숫자. 말하는 사람이 **복잡하고 객관적인 질문**(수학·논리·추론, 다단계 분석이 필요한 객관적 문제 등)을 얼마나 던지고 있는지. 1 = 그런 어려운 객관적 문제를 분명히 묻는 중, 0 = 묻지 않음, 또는 잡담／감정 토로／단순한 질문. 감정과 독립적으로 판단.
-- action_intent(조작 의도): 0~1 사이 숫자. 말하는 사람이 **외부 동작/조작을 명시적으로 요청하는** 정도(무언가를 열기·검색·제어·실행, 앱이나 기기 조작, 외부 상태 조회/변경). 1 = 분명한 조작 요청, 0 = 잡담·토로·의견·단순 질문으로 아무 것도 시키지 않음. 기본값 0 — "무엇을 해 달라"고 분명히 요청할 때만 올리세요. 감정 및 복잡도와 독립적으로 판단.
+- external_intent(외부 의도): 0~1 사이 숫자. 이 턴이 **외부 능력을 얼마나 필요로 하는지**——외부 동작을 명시적으로 요청하거나(무언가를 열기·검색·제어·실행, 앱이나 기기 조작, 외부 상태 변경), 또는 외부·실시간·당신이 아는 범위를 넘는 정보가 있어야 답할 수 있는 경우(날씨·가격·뉴스·실시간 상태 등. 이런 외부·실시간 정보를 묻는 의문문도 포함). 1 = 분명히 필요, 0 = 잡담·토로·의견, 또는 대화와 상식만으로 답할 수 있음. 감정 및 복잡도와 독립적으로 판단: 순수한 추론만으로 풀리는 어려운 문제(수학·논리)는 complexity 에 속하며 여기서는 낮게 유지.
 
 판단 규칙:
 1. 이 문장이 드러내는 감정만으로 판단하고, 주어지지 않은 배경을 지어내지 마세요.
@@ -252,14 +252,14 @@ JSONのみを返し、説明文は付けないでください。""",
 
 설명 없이 JSON만 반환하세요.""",
 
-    'ru': """你是一个情感分析专家。Проанализируйте эмоциональное состояние, которое говорящий выражает в приведённом ниже тексте разговора, и верните только JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}.
+    'ru': """你是一个情感分析专家。Проанализируйте эмоциональное состояние, которое говорящий выражает в приведённом ниже тексте разговора, и верните только JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}.
 
 Измерения:
 - valence (валентность): число от -1 до 1. -1 = сильно негативное (боль, грусть, гнев, отчаяние), 0 = нейтрально, +1 = сильно позитивное (радость, удовлетворение, воодушевление, теплота).
 - arousal (возбуждение): число от 0 до 1. 0 = спокойствие, низкая энергия, расслабленность; 1 = сильное возбуждение, интенсивность, высокая энергия (независимо от знака).
 - confidence (уверенность): число от 0 до 1, отражающее вашу уверенность.
 - complexity (когнитивная сложность): число от 0 до 1 — насколько говорящий задаёт СЛОЖНЫЙ ОБЪЕКТИВНЫЙ вопрос (математика, логика, рассуждение, многошаговые аналитические задачи). 1 = явно задаёт такой трудный объективный вопрос; 0 = не задаёт, либо просто болтает / делится чувствами / простой вопрос. Оценивайте независимо от эмоции.
-- action_intent (намерение к действию): число от 0 до 1 — насколько говорящий ЯВНО просит выполнить внешнее действие/операцию (открыть, найти, управлять, запустить что-то, работать с приложением или устройством, получить/изменить внешнее состояние). 1 = явная просьба о действии; 0 = просто болтает, делится, высказывает мнение или задаёт вопрос, ничего не прося сделать. По умолчанию 0 — повышайте только при явной просьбе что-то СДЕЛАТЬ. Оценивайте независимо и от эмоции, и от сложности.
+- external_intent (внешнее намерение): число от 0 до 1 — насколько этот ход требует внешней возможности: либо ЯВНО просит выполнить внешнее действие (открыть, найти, управлять, запустить что-то, работать с приложением или устройством, изменить внешнее состояние), либо требует внешней, реального времени или выходящей за пределы известного вам информации для ответа (погода, цены, новости, текущий статус и т. п.; вопросы о таких внешних/актуальных данных тоже считаются). 1 = явно нужно; 0 = болтовня, излияние чувств, мнение или ответ из разговора и здравого смысла. Оценивайте независимо и от эмоции, и от сложности: трудная задача, решаемая чистым рассуждением (математика, логика), относится к complexity и здесь остаётся низкой.
 
 Правила:
 1. Судите только по эмоции, выраженной в этом тексте; не домысливайте неуказанный контекст.
@@ -269,14 +269,14 @@ JSONのみを返し、説明文は付けないでください。""",
 
 Верните только JSON без пояснений.""",
 
-    'es': """你是一个情感分析专家。Analiza el estado emocional que revela quien habla en el texto de conversación siguiente y devuelve solo JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}.
+    'es': """你是一个情感分析专家。Analiza el estado emocional que revela quien habla en el texto de conversación siguiente y devuelve solo JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}.
 
 Dimensiones:
 - valence (valencia): un número entre -1 y 1. -1 = fuertemente negativo (dolor, tristeza, ira, desesperación), 0 = neutral, +1 = fuertemente positivo (alegría, satisfacción, entusiasmo, calidez).
 - arousal (activación): un número entre 0 y 1. 0 = calma, baja energía, relajación; 1 = muy activado, intenso, alta energía (sin importar el signo).
 - confidence (confianza): un número entre 0 y 1 que indica tu seguridad.
 - complexity (complejidad cognitiva): un número entre 0 y 1 — cuánto está planteando quien habla una PREGUNTA COMPLEJA y OBJETIVA (matemáticas, lógica, razonamiento, problemas analíticos de varios pasos). 1 = claramente hace una de esas preguntas objetivas difíciles; 0 = no pregunta, o solo charla / se desahoga / pregunta simple. Júzgalo independientemente de la emoción.
-- action_intent (intención de acción): un número entre 0 y 1 — cuánto pide EXPLÍCITAMENTE quien habla realizar una acción/operación externa (abrir, buscar, controlar, ejecutar algo, operar una app o dispositivo, obtener/cambiar estado externo). 1 = claramente una petición de acción; 0 = solo conversa, se desahoga, opina o pregunta sin pedir hacer nada. Por defecto 0 — súbelo solo ante una petición explícita de HACER algo. Júzgalo independientemente de la emoción y de la complejidad.
+- external_intent (intención externa): un número entre 0 y 1 — cuánto necesita este turno una capacidad externa: o bien pide EXPLÍCITAMENTE realizar una acción externa (abrir, buscar, controlar, ejecutar algo, operar una app o dispositivo, cambiar estado externo), o bien necesita información externa, en tiempo real o más allá de lo que sabes para responder (clima, precios, noticias, estado en vivo, etc.; las preguntas sobre esos datos externos/en vivo también cuentan). 1 = claramente necesario; 0 = charla, desahogo, opinión, o se responde con la conversación y el sentido común. Júzgalo independientemente de la emoción y de la complejidad: un problema difícil resoluble por puro razonamiento (matemáticas, lógica) pertenece a complexity y aquí permanece bajo.
 
 Reglas:
 1. Juzga solo por la emoción que revela este texto; no inventes contexto no dado.
@@ -286,14 +286,14 @@ Reglas:
 
 Devuelve solo JSON, sin explicación.""",
 
-    'pt': """你是一个情感分析专家。Analise o estado emocional que o falante revela no texto de conversa abaixo e retorne apenas JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "action_intent": action_intent}.
+    'pt': """你是一个情感分析专家。Analise o estado emocional que o falante revela no texto de conversa abaixo e retorne apenas JSON: {"valence": valence, "arousal": arousal, "confidence": confidence, "complexity": complexity, "external_intent": external_intent}.
 
 Dimensões:
 - valence (valência): um número entre -1 e 1. -1 = fortemente negativo (sofrimento, tristeza, raiva, desespero), 0 = neutro, +1 = fortemente positivo (alegria, satisfação, empolgação, calor).
 - arousal (ativação): um número entre 0 e 1. 0 = calmo, baixa energia, relaxado; 1 = muito ativado, intenso, alta energia (independente do sinal).
 - confidence (confiança): um número entre 0 e 1 indicando sua certeza.
 - complexity (complexidade cognitiva): um número entre 0 e 1 — o quanto o falante está fazendo uma PERGUNTA COMPLEXA e OBJETIVA (matemática, lógica, raciocínio, problemas analíticos de várias etapas). 1 = claramente faz uma dessas perguntas objetivas difíceis; 0 = não pergunta, ou apenas conversa / desabafa / pergunta simples. Julgue independentemente da emoção.
-- action_intent (intenção de ação): um número entre 0 e 1 — o quanto o falante pede EXPLICITAMENTE para realizar uma ação/operação externa (abrir, buscar, controlar, executar algo, operar um app ou dispositivo, obter/alterar estado externo). 1 = claramente um pedido de ação; 0 = apenas conversa, desabafa, opina ou pergunta sem pedir para fazer nada. Padrão 0 — aumente apenas diante de um pedido explícito de FAZER algo. Julgue independentemente da emoção e da complexidade.
+- external_intent (intenção externa): um número entre 0 e 1 — o quanto este turno precisa de uma capacidade externa: ou pede EXPLICITAMENTE para realizar uma ação externa (abrir, buscar, controlar, executar algo, operar um app ou dispositivo, mudar estado externo), ou precisa de informação externa, em tempo real ou além do que você sabe para responder (clima, preços, notícias, status ao vivo, etc.; perguntas sobre esses dados externos/ao vivo também contam). 1 = claramente necessário; 0 = conversa, desabafo, opinião, ou respondível pela conversa e bom senso. Julgue independentemente da emoção e da complexidade: um problema difícil solúvel por puro raciocínio (matemática, lógica) pertence a complexity e aqui permanece baixo.
 
 Regras:
 1. Julgue apenas pela emoção que este texto revela; não invente contexto não fornecido.
