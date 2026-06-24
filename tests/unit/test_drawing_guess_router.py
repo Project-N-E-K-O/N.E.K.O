@@ -600,6 +600,34 @@ async def test_ai_draw_rejects_concurrent_session_request():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_timeout_rejects_concurrent_session_request():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-timeout-busy",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-timeout-busy"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+    lock = dgr._get_session_lock(session)
+    await lock.acquire()
+    try:
+        result = await dgr.drawing_guess_timeout(_FakeRequest({
+            "lanlan_name": "YUI",
+            "session_id": "dg-timeout-busy",
+            "i18n_language": "en",
+        }))
+    finally:
+        lock.release()
+
+    assert result["ok"] is False
+    assert result["reason"] == "session_busy"
+    assert result["state"]["phase"] == "user_guessing"
+    assert session["phase"] == "user_guessing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ai_draw_and_user_guess_advance_to_word_pick_before_user_drawing():
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
@@ -1694,6 +1722,59 @@ async def test_time_expired_user_drawing_settles_after_first_missed_ai_guess(mon
     assert result["state"]["scores"]["neko"] == 0
     assert result["message"] == "I missed it this time."
     assert result["evaluation"] == "This drawing kept its little secret pretty well."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_timeout_settles_ai_guessing_round(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-guessing-timeout",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-ai-guessing-timeout"]
+    session["phase"] = "ai_guessing"
+    session["user_word_id"] = "banana"
+    session["ai_guess_attempts"] = 1
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "ai_guess_final_miss"
+        assert kwargs["details"]["answer_label"] == "banana"
+        assert kwargs["details"]["attempt"] == 1
+        return "I ran out of guessing time.", "persona_model"
+
+    async def fake_summary_evaluation(**kwargs):
+        assert kwargs["correct"] is False
+        assert kwargs["answer"].id == "banana"
+        assert kwargs["guessed_word"] is None
+        assert kwargs["attempts"] == 1
+        return "The answer stayed hidden this time.", "persona_model"
+
+    async def fake_memory_summary(**kwargs):
+        assert kwargs["correct"] is False
+        assert kwargs["answer"].id == "banana"
+        assert kwargs["guessed_word"] is None
+        assert kwargs["attempts"] == 1
+        return {"ok": True, "stored": False}
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", fake_summary_evaluation)
+    monkeypatch.setattr(dgr, "_maybe_write_drawing_guess_memory_summary", fake_memory_summary)
+
+    result = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-guessing-timeout",
+        "i18n_language": "en",
+    }))
+
+    assert result["ok"] is True
+    assert result["phase"] == "summary"
+    assert result["kind"] == "ai_guess_timeout"
+    assert result["answer"]["id"] == "banana"
+    assert result["memory"] == {"ok": True, "stored": False}
+    assert result["state"]["phase"] == "summary"
+    assert session["phase"] == "summary"
+    assert session["game_chat_history"][-1]["kind"] == "vision_guess"
 
 
 @pytest.mark.unit

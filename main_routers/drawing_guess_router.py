@@ -3132,7 +3132,28 @@ async def drawing_guess_timeout(request: Request):
     if error:
         return {"ok": False, "reason": error}
     locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
-    if session.get("phase") == "user_guessing":
+    lock, busy = await _acquire_session_lock(session, locale)
+    if busy is not None:
+        return busy
+    try:
+        return await _handle_drawing_guess_timeout_payload(
+            data=data,
+            session=session,
+            locale=locale,
+        )
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+async def _handle_drawing_guess_timeout_payload(
+    *,
+    data: dict[str, Any],
+    session: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
+    phase = session.get("phase")
+    if phase == "user_guessing":
         answer = _WORD_BY_ID[str(session["ai_word_id"])]
         session["phase"] = "word_picking"
         line, line_source = await _generate_persona_game_line(
@@ -3157,57 +3178,68 @@ async def drawing_guess_timeout(request: Request):
             "draw_seconds": ROUND_DRAW_SECONDS,
             "state": _public_round_state(session, locale),
         }
-    if session.get("phase") == "user_drawing":
+    if phase == "user_drawing":
         session["phase"] = "ai_guessing"
         return {"ok": True, "phase": session["phase"], "state": _public_round_state(session, locale)}
-    if session.get("phase") == "ai_guess_feedback":
-        answer = _WORD_BY_ID[str(session["user_word_id"])]
-        session["phase"] = "summary"
-        line, line_source = await _generate_persona_game_line(
-            session=session,
-            locale=locale,
-            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
-            event="ai_guess_final_miss",
-            fallback=_localized_line(locale, "ai_wrong"),
-            details={
-                "answer_label": _word_public(answer, locale)["label"],
-                "allow_answer_reveal": True,
-                "attempt": int(session.get("ai_guess_attempts") or 0),
-                "max_attempts": MAX_AI_GUESS_ATTEMPTS,
-            },
-        )
-        evaluation, evaluation_source = await _generate_summary_evaluation(
-            session=session,
-            locale=locale,
-            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
-            correct=False,
-            answer=answer,
-            guessed_word=None,
-            attempts=int(session.get("ai_guess_attempts") or 0),
-        )
-        memory_result = await _maybe_write_drawing_guess_memory_summary(
-            session=session,
-            locale=locale,
-            lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
-            correct=False,
-            answer=answer,
-            guessed_word=None,
-            attempts=int(session.get("ai_guess_attempts") or 0),
-        )
-        _append_game_chat(session, "assistant", line, kind="vision_guess")
-        return {
-            "ok": True,
-            "phase": session["phase"],
-            "kind": "ai_guess_timeout",
-            "message": line,
-            "evaluation": evaluation,
-            "message_source": line_source,
-            "evaluation_source": evaluation_source,
-            "answer": _word_public(answer, locale),
-            "memory": memory_result,
-            "state": _public_round_state(session, locale),
-        }
+    if phase in {"ai_guessing", "ai_guess_feedback"}:
+        return await _settle_drawing_guess_ai_timeout(data=data, session=session, locale=locale)
     return {"ok": True, "phase": session.get("phase"), "state": _public_round_state(session, locale)}
+
+
+async def _settle_drawing_guess_ai_timeout(
+    *,
+    data: dict[str, Any],
+    session: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
+    answer = _WORD_BY_ID[str(session["user_word_id"])]
+    session["phase"] = "summary"
+    attempts = int(session.get("ai_guess_attempts") or 0)
+    lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
+    line, line_source = await _generate_persona_game_line(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        event="ai_guess_final_miss",
+        fallback=_localized_line(locale, "ai_wrong"),
+        details={
+            "answer_label": _word_public(answer, locale)["label"],
+            "allow_answer_reveal": True,
+            "attempt": attempts,
+            "max_attempts": MAX_AI_GUESS_ATTEMPTS,
+        },
+    )
+    evaluation, evaluation_source = await _generate_summary_evaluation(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        correct=False,
+        answer=answer,
+        guessed_word=None,
+        attempts=attempts,
+    )
+    memory_result = await _maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        correct=False,
+        answer=answer,
+        guessed_word=None,
+        attempts=attempts,
+    )
+    _append_game_chat(session, "assistant", line, kind="vision_guess")
+    return {
+        "ok": True,
+        "phase": session["phase"],
+        "kind": "ai_guess_timeout",
+        "message": line,
+        "evaluation": evaluation,
+        "message_source": line_source,
+        "evaluation_source": evaluation_source,
+        "answer": _word_public(answer, locale),
+        "memory": memory_result,
+        "state": _public_round_state(session, locale),
+    }
 
 
 async def _run_drawing_guess_vision_turn(

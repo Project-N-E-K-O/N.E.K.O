@@ -73,6 +73,7 @@ _TRUSTED_MULTIPART_UPLOAD_EXACT_PATHS = frozenset(
         "/api/model/pngtuber/upload_model",
         "/api/model/vrm/upload",
         "/api/model/vrm/upload_animation",
+        "/api/steam/workshop/upload-reference-audio",
     }
 )
 _TRUSTED_MULTIPART_UPLOAD_PREFIXES = (

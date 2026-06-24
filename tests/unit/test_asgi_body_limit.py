@@ -108,6 +108,20 @@ def test_trusted_multipart_upload_uses_larger_cap():
     assert sent[0]["status"] == 200
 
 
+def test_workshop_reference_audio_upload_uses_larger_multipart_cap():
+    mw = _make(max_bytes=64)
+    scope = _http_scope(
+        [
+            (b"content-length", b"100000000"),
+            (b"content-type", b"multipart/form-data; boundary=----abc"),
+        ],
+        path="/api/steam/workshop/upload-reference-audio",
+    )
+    hit, sent = _run(_drive(mw, scope))
+    assert hit is True
+    assert sent[0]["status"] == 200
+
+
 def test_multipart_content_type_is_case_insensitive():
     mw = _make(max_bytes=64)
     scope = _http_scope(
