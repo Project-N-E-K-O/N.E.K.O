@@ -309,7 +309,7 @@
   "panel.interaction.currentDecision.skipReason": "跳过原因",
   "panel.interaction.currentDecision.noResult": "暂无直播结果",
   "panel.eventSignal.danmaku_signal": "普通弹幕",
-  "panel.eventSignal.gift_signal": "礼物/粉丝牌信号",
+  "panel.eventSignal.gift_signal": "礼物/粉丝牌/上舰信号",
   "panel.eventSignal.super_chat_signal": "SC 信号",
   "panel.eventSignal.unknown": "未知信号",
   "panel.liveDirector.nextAutoAction": "下一次自动开口",

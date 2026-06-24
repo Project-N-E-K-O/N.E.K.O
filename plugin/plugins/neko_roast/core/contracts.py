@@ -150,6 +150,10 @@ class ViewerEvent:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("raw", None)
+        if isinstance(self.raw, dict):
+            event_type = str(self.raw.get("event_type") or "").strip()
+            if event_type:
+                data["event_type"] = event_type
         return data
 
 

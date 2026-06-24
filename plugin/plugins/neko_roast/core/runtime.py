@@ -1198,6 +1198,11 @@ class RoastRuntime:
         source = str(event.get("source") or "")
         if source != "live_danmaku":
             return source or "unknown"
+        event_type = str(event.get("event_type") or "").strip().lower()
+        if event_type in {"gift", "guard"}:
+            return "gift_signal"
+        if event_type in {"super_chat", "sc"}:
+            return "super_chat_signal"
         text = str(event.get("danmaku_text") or "").strip().lower()
         if any(token in text for token in ("粉丝团灯牌", "赠送", "送出", "礼物", "gift")):
             return "gift_signal"

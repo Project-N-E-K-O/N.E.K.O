@@ -429,6 +429,41 @@ def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRun
     assert latest["event_signal"] == "gift_signal"
 
 
+@pytest.mark.parametrize(
+    ("event_type", "expected_signal"),
+    [
+        ("gift", "gift_signal"),
+        ("guard", "gift_signal"),
+        ("super_chat", "super_chat_signal"),
+    ],
+)
+def test_record_result_uses_live_event_type_for_signal_observation(
+    runtime: RoastRuntime,
+    event_type: str,
+    expected_signal: str,
+) -> None:
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="谢谢猫猫",
+        source="live_danmaku",
+        raw={"event_type": event_type},
+    )
+
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+    assert latest["event"]["event_type"] == event_type
+    assert latest["event_signal"] == expected_signal
+
+
 @pytest.mark.asyncio
 async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
