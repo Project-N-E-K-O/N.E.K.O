@@ -807,6 +807,55 @@ async def test_badminton_quick_lines_fallback_supports_japanese_request_language
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_badminton_quick_lines_fallback_preserves_traditional_chinese_request_language(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "Tsundere but focused.",
+        "user_language": "zh",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "fake",
+    })
+
+    async def fail_llm_async(*_args, **_kwargs):
+        raise RuntimeError("llm unavailable")
+
+    import utils.llm_client as llm_client
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
+
+    result = await game_router.game_quick_lines(
+        "badminton",
+        _FakeRequest({"lanlan_name": "Lan", "session_id": "bd-zh-tw-1", "i18n_language": "zh-TW"}),
+    )
+
+    assert result["ok"] is True
+    assert result["fallback"] is True
+    assert result["lines"]["line_in"][0] == "壓線了，算你準"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("language", "expected_line"),
+    (
+        ("zh-CN", "贴线了，算你准"),
+        ("zh-TW", "壓線了，算你準"),
+        ("en", "On the line!"),
+        ("ja", "ラインぎりぎり！"),
+        ("ko", "라인에 걸쳤어!"),
+        ("ru", "По линии!"),
+        ("es", "¡En la línea!"),
+        ("pt", "Na linha!"),
+    ),
+)
+def test_badminton_quick_lines_fallback_supports_neko_core_languages(language, expected_line):
+    lines = game_router._get_badminton_quick_lines_fallback(language)
+
+    assert lines["line_in"][0] == expected_line
+    assert set(lines) == game_router._BADMINTON_QUICK_LINE_KEYS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_badminton_quick_lines_uses_requested_character(monkeypatch):
     game_router._badminton_quick_lines_cache.clear()
     captured = {}

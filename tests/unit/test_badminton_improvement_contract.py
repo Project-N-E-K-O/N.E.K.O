@@ -1250,6 +1250,37 @@ def test_badminton_quick_lines_mode_prompts_are_distinct_and_localized(lang):
 
 
 @pytest.mark.unit
+def test_badminton_quick_lines_uses_dedicated_prompt_module_for_neko_core_locales():
+    from config.prompts import prompts_badminton
+
+    assert prompts_badminton.NEKO_CORE_LOCALES == (
+        "zh-CN",
+        "zh-TW",
+        "en",
+        "ja",
+        "ko",
+        "ru",
+        "es",
+        "pt",
+    )
+    router_source = (ROOT / "main_routers" / "game_router.py").read_text(encoding="utf-8")
+    assert "_BADMINTON_QUICK_LINES_FALLBACK" not in router_source
+
+    english_prompt = prompts_badminton.get_badminton_quick_lines_prompt("en", mode="duel")
+    simplified_prompt = prompts_badminton.get_badminton_quick_lines_prompt("zh-CN", mode="duel")
+    traditional_prompt = prompts_badminton.get_badminton_quick_lines_prompt("zh-TW", mode="duel")
+    assert simplified_prompt != english_prompt
+    assert traditional_prompt != simplified_prompt
+    assert "duel" in english_prompt
+    assert "對拉" in traditional_prompt
+
+    for locale in prompts_badminton.NEKO_CORE_LOCALES:
+        fallback = prompts_badminton.get_badminton_quick_lines_fallback(locale)
+        assert set(fallback) == prompts_badminton.BADMINTON_QUICK_LINE_KEYS
+        assert all(fallback[key] for key in prompts_badminton.BADMINTON_QUICK_LINE_KEYS)
+
+
+@pytest.mark.unit
 def test_badminton_english_quick_lines_do_not_mix_mode_suffixes():
     timed = prompts_game.get_badminton_quick_lines_prompt("en", mode="timed")
     horse = prompts_game.get_badminton_quick_lines_prompt("en", mode="horse")
