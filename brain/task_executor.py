@@ -1985,9 +1985,16 @@ class DirectTaskExecutor:
                 logger.warning("[TaskExecutor] Failed to check QwenPaw: %s", e)
 
         # ── 魔法命令前置拦截（仅对 openclaw/qwenpaw）──────────────────────
-        user_intent, user_attachments = self._extract_latest_user_payload(messages)
-        if not user_intent:
-            user_intent = self._extract_latest_user_intent(conversation)
+        if proactive:
+            # 主动搭话轮：意图是猫娘自己最近这句主动台词（已写进 latest_user_request /
+            # conversation 的 LATEST_USER_REQUEST），无 user 附件。绝不拿窗口里那条陈旧
+            # user 消息去 classify_magic_intent——否则旧 user 的魔法命令会被重放，或
+            # OpenClaw 派单成旧 user 文本而非主动意图。
+            user_intent, user_attachments = latest_user_request, []
+        else:
+            user_intent, user_attachments = self._extract_latest_user_payload(messages)
+            if not user_intent:
+                user_intent = self._extract_latest_user_intent(conversation)
         if qwenpaw_available and self.openclaw and user_intent and not user_attachments:
             try:
                 magic_intent = await self.openclaw.classify_magic_intent(user_intent)
