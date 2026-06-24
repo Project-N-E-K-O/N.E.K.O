@@ -142,7 +142,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "cat-idle-cat-move-4.gif" in cat3_drag_pool
 
 
-def test_cat1_question_mark_triggers_from_drag_direction_sequence():
+def test_cat1_question_mark_keyboard_trigger_replaces_drag_sequence():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     pages_router_paths = {str(path.relative_to(PROJECT_ROOT)) for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS}
 
@@ -150,152 +150,355 @@ def test_cat1_question_mark_triggers_from_drag_direction_sequence():
     assert "static/assets/neko-idle/cat1-question-mark.png" in pages_router_paths
     assert "_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL = '/static/assets/neko-idle/cat1-question-mark.png'" in source
     assert "_NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS = 10 * 1000" in source
-    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE = Object.freeze(['up', 'up', 'down', 'down', 'left', 'left', 'right', 'right'])" in source
-    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX" in source
-    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" in source
-    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
-    assert "neko:cat1-question-mark" not in source
-    assert "function _resetNekoIdleCat1QuestionMarkSequence(button)" in source
-    assert "function _getNekoIdleQuestionMarkAxisValue(vector, direction)" in source
-    assert "function _isNekoIdleQuestionMarkAxisDominant(vector, direction)" in source
-    assert "function _isNekoIdleQuestionMarkCenterOverlap(vector)" in source
-    assert "function _isNekoIdleQuestionMarkExpectedDirection(vector, expected)" in source
-    assert "function _isNekoIdleQuestionMarkExpectedZone(vector, expected)" in source
-    assert "function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail)" in source
+    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_KEY_SEQUENCE = Object.freeze([" in source
+    assert "'ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown'," in source
+    assert "'ArrowLeft', 'ArrowLeft', 'ArrowRight', 'ArrowRight'," in source
+    assert "'KeyB', 'KeyA', 'KeyB', 'KeyA'" in source
+    assert "document.addEventListener('keydown', _handleNekoIdleCat1QuestionMarkKeyboardEvent, true);" in source
+    assert "function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail)" not in source
     assert "function _showNekoIdleCat1QuestionMark(button)" in source
     assert "function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason)" in source
     assert "function _getNekoIdleCat1QuestionMarkLayerAssetUrl()" in source
-    assert "function _clearNekoIdleCat1QuestionMark(button)" in source
-    assert "function _positionNekoIdleCat1QuestionMark(mark, button)" in source
+    assert "function _getNekoIdleCat1QuestionMarkScreenRect(mark)" in source
+    assert "function _handleNekoIdleCat1QuestionMarkClick(button, event)" in source
     assert "'neko:idle-cat1-question-mark-layer'" in source
+    assert "'neko:idle-cat1-playground-entry-request'" in source
+    assert "questionMarkSequence" not in source
 
-    _assert_source_order(
+    keyboard_handler_block = _source_slice_between(
         source,
-        "cat1 question mark drag sequence",
-        "return-ball-drag-active",
-        "_startNekoIdleReturnDragActionForContainer(detail.container);",
-        "return-ball-drag-motion",
-        "_handleNekoIdleCat1QuestionMarkDragSequenceForContainer(detail.container, detail);",
-        "_handleNekoIdleCat1RapidDragMotionForContainer(detail.container, detail);",
+        "function _handleNekoIdleCat1QuestionMarkKeyboardEvent(event)",
+        "function _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button)",
+        "cat1 question mark keyboard handler",
     )
+    assert "preventDefault" not in keyboard_handler_block
+    assert "stopPropagation" not in keyboard_handler_block
+    assert "_showNekoIdleCat1QuestionMark(state.button)" in keyboard_handler_block
+    assert "_isNekoIdleCat1QuestionMarkKeyboardEditableTarget(event && event.target)" in keyboard_handler_block
+
+    layer_block = _source_slice_between(
+        source,
+        "function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason)",
+        "function _dispatchNekoIdleCat1PlaygroundEntryRequest(button, source)",
+        "cat1 question mark layer dispatch",
+    )
+    assert "assetUrl: _getNekoIdleCat1QuestionMarkLayerAssetUrl()" in layer_block
+    assert "screenRect: active ? _getNekoIdleCat1QuestionMarkScreenRect(mark) : null" in layer_block
+    assert "visibleMs: _NEKO_IDLE_CAT1_QUESTION_MARK_VISIBLE_MS" in layer_block
+
+
+def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)" in source
+    assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)" in source
+    assert "function _isNekoIdleCat1PlaygroundDropActive(button)" in source
+    assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button)" in source
+    assert "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in source
+    assert "function _handleNekoIdleCat1PlaygroundEntryRequest(event)" in source
+    assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
+    assert "button.__nekoIdleCat1PlaygroundDropState" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-2.gif'" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png'" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3" in source
+    assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
+    assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
+    assert "disabledCapabilities: new Set(" in source
+    assert "'question-mark-keyboard'" in source
+    assert "'random-actions'" in source
+
+    acquire_block = _source_slice_between(
+        source,
+        "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)",
+        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)",
+        "cat1 playground lifecycle acquire",
+    )
+    assert "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });" in acquire_block
+    assert "_cancelNekoIdleCat1EatAction(button, { restoreArt: false });" in acquire_block
+    assert "_cancelNekoIdleCat1PlayAction(button, { restoreArt: false });" in acquire_block
+    assert "_finishNekoIdleReturnDragAction(button, { restoreArt: false });" in acquire_block
+    assert "_setNekoIdleCat1QuestionMarkKeyboardTarget(null);" in acquire_block
+    assert "_dispatchNekoIdleCat1PlaygroundState(button, true, 'acquire');" in acquire_block
+
+    register_block = _source_slice_between(
+        source,
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
+        "cat1 playground register physics bodies",
+    )
+    assert "id: 'cat'" in register_block
+    assert "id: 'yarn'" in register_block
+    assert "id: 'desktop-chat'" in register_block
+    assert "const mirror = _createNekoIdleCat1PlaygroundDesktopYarnMirror(target.rect);" in register_block
+    assert "state.targetElement = mirror;" in register_block
+    assert "desktop: true" in register_block
+    assert "mirror.parentNode.removeChild(mirror)" in register_block
+
+    assert "function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect)" in source
+    desktop_mirror_block = _source_slice_between(
+        source,
+        "function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect)",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "cat1 playground desktop yarn mirror",
+    )
+    assert "document.createElement('button')" in desktop_mirror_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL" in desktop_mirror_block
+    assert "position: 'fixed'" in desktop_mirror_block
+
+    physics_block = _source_slice_between(
+        source,
+        "function _stepNekoIdleCat1PlaygroundPhysics(button, now)",
+        "function _startNekoIdleCat1PlaygroundPhysics(button)",
+        "cat1 playground physics tick",
+    )
+    assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
+    assert "body.vx = 0;" in physics_block
+    assert "body.y = body.floorY;" in physics_block
+    assert "_getNekoIdleCat1PlaygroundBodyMinY" not in source
+    assert "_dispatchNekoIdleDesktopChatPairMoveBounds" in source
+    set_position_block = _source_slice_between(
+        source,
+        "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
+        "function _updateNekoIdleCat1PlaygroundBodyBounds(body)",
+        "cat1 playground body position",
+    )
+    assert "if (body.element) {" in set_position_block
+    assert "_setNekoIdleCat1PairMoveChatPosition(body.element, body.x, body.y);" in set_position_block
+
+    release_block = _source_slice_between(
+        source,
+        "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)",
+        "function _isNekoIdleCat1PlaygroundDropActive(button)",
+        "cat1 playground lifecycle release",
+    )
+    assert "_stopNekoIdleCat1PlaygroundPhysics(button);" in release_block
+    assert "_clearNekoIdleCat1PlaygroundPointerListeners(button);" in release_block
+    assert "_syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);" in release_block
+    assert "if (state.released) return false;" in release_block
+    assert "const cleanups = state.cleanups.splice(0);" in release_block
+    assert "cleanups.forEach((cleanup) => {" in release_block
+    assert "_dispatchNekoIdleCat1PlaygroundState(button, false, reason || 'release');" in release_block
+
+    assert "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason)" in source
+    playground_state_block = _source_slice_between(
+        source,
+        "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason)",
+        "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)",
+        "cat1 playground desktop shell state dispatch",
+    )
+    assert "new CustomEvent('neko:idle-cat1-playground-state'" in playground_state_block
+    assert "active: !!active" in playground_state_block
+    assert "reason: reason || (active ? 'active' : 'inactive')" in playground_state_block
+
+    assert "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)" in source
+    page_release_block = _source_slice_between(
+        source,
+        "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)",
+        "function _isNekoIdleCat1PlaygroundDropActive(button)",
+        "cat1 playground page lifecycle release",
+    )
+    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason || 'page-destroy');" in page_release_block
+    assert "window.addEventListener('pagehide', () => {" in source
+    assert "_releaseAllNekoIdleCat1PlaygroundDropLifecycles('pagehide');" in source
+    assert "window.addEventListener('beforeunload', () => {" in source
+    assert "_releaseAllNekoIdleCat1PlaygroundDropLifecycles('beforeunload');" in source
+
+
+def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function _getNekoIdleCat1PlaygroundPointerVelocity(samples)" in source
+    assert "function _handleNekoIdleCat1PlaygroundCatClick(button, event)" in source
+    assert "function _handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, event)" in source
+    assert "function _handleNekoIdleCat1PlaygroundDesktopPointerEvent(event)" in source
+    assert "window.addEventListener('neko:idle-cat1-playground-desktop-pointer', _handleNekoIdleCat1PlaygroundDesktopPointerEvent);" in source
+
+    pointer_down_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, event)",
+        "function _handleNekoIdleCat1PlaygroundPointerMove(button, event)",
+        "cat1 playground pointer down for body",
+    )
+    assert "state.pointerBodyId = body.id;" in pointer_down_block
+    assert "state.draggingBodyId = body.id;" not in pointer_down_block
+    assert "event.preventDefault()" not in pointer_down_block
+
+    desktop_pointer_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundDesktopPointerEvent(event)",
+        "function _handleNekoIdleCat1PlaygroundCatClick(button, event)",
+        "cat1 playground desktop pointer event",
+    )
+    assert "body.desktop" in desktop_pointer_block
+    assert "clientX: Number(detail.screenX) - (Number(window.screenX) || 0)" in desktop_pointer_block
+    assert "clientY: Number(detail.screenY) - (Number(window.screenY) || 0)" in desktop_pointer_block
+    assert "_handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, pointerEvent)" in desktop_pointer_block
+    assert "_handleNekoIdleCat1PlaygroundPointerMove(button, pointerEvent)" in desktop_pointer_block
+    assert "_handleNekoIdleCat1PlaygroundPointerUp(button, pointerEvent)" in desktop_pointer_block
+
+    pointer_move_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundPointerMove(button, event)",
+        "function _handleNekoIdleCat1PlaygroundPointerUp(button, event)",
+        "cat1 playground pointer move",
+    )
+    assert "const pointer = _resolveNekoIdleCat1PlaygroundPointerClient(state, body, event);" in pointer_move_block
+    assert "if (!state.draggingBodyId) {" in pointer_move_block
+    assert "<= _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX" in pointer_move_block
+    assert "_stopNekoIdleCat1PlaygroundPhysics(button);" not in pointer_move_block
+    assert "_startNekoIdleCat1PlaygroundPhysics(button);" in pointer_move_block
+    assert "state.draggingBodyId = body.id;" in pointer_move_block
+    assert "pointer.x - state.pointerOffsetX" in pointer_move_block
+    assert "pointer.y - state.pointerOffsetY" in pointer_move_block
+    assert "const clampedX = Math.max(body.wallLeft, Math.min(nextX, body.wallRight));" in pointer_move_block
+    assert "const clampedY = Math.min(nextY, body.floorY);" in pointer_move_block
+    assert "x: clampedX + state.pointerOffsetX" in pointer_move_block
+    assert "y: clampedY + state.pointerOffsetY" in pointer_move_block
+
+    pointer_up_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundPointerUp(button, event)",
+        "function _clearNekoIdleCat1PlaygroundPointerListeners(button)",
+        "cat1 playground pointer up",
+    )
+    assert "if (!state.draggingBodyId) {" in pointer_up_block
+    assert "state.pointerBodyId = '';" in pointer_up_block
+    assert "state.phase = 'ballistic';" in pointer_up_block
+
+    click_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundCatClick(button, event)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "cat1 playground cat click",
+    )
+    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'cat-click');" in click_block
+    assert "_dispatchNekoIdleReturnClickFromButton(button);" in click_block
+
+    assert "function _suppressNekoIdleCat1PlaygroundNonCatNativeEvent(event)" in source
+    assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
+
+    body_input_block = _source_slice_between(
+        source,
+        "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)",
+        "function _installNekoIdleCat1PlaygroundPointerListeners(button)",
+        "cat1 playground body input binding",
+    )
+    assert "bind(body.element, 'pointerdown', (event) => {" in body_input_block
+    assert "if (body.id === 'cat') {" in body_input_block
+    assert "_handleNekoIdleCat1PlaygroundCatClick(button, event);" in body_input_block
+    assert "bind(body.element, 'click', _suppressNekoIdleCat1PlaygroundNonCatNativeEvent, true);" in body_input_block
+
+    mouse_down_block = _source_slice_between(
+        source,
+        "container.addEventListener('mousedown', (e) => {",
+        "this._returnButtonDragHandlers = {",
+        "return button mousedown handler",
+    )
+    mouse_down_left_click_path = mouse_down_block[mouse_down_block.index(
+        "const button = _getNekoIdleReturnButtonFromContainer(container);"
+    ):]
+    _assert_source_order(
+        mouse_down_left_click_path,
+        "ordinary mousedown leaves playground click alone before preventDefault",
+        "const button = _getNekoIdleReturnButtonFromContainer(container);",
+        "if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;",
+        "handleStart(e.clientX, e.clientY);",
+    )
+
+    touch_start_block = _source_slice_between(
+        source,
+        "container.addEventListener('touchstart', (e) => {",
+        "document.addEventListener('touchmove'",
+        "return button touchstart handler",
+    )
+    _assert_source_order(
+        touch_start_block,
+        "ordinary touchstart leaves playground click alone before preventDefault",
+        "const button = _getNekoIdleReturnButtonFromContainer(container);",
+        "if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;",
+        "handleStart(e.touches[0].clientX, e.touches[0].clientY, 'touch');",
+    )
+
+
+def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    app_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)" in source
+    assert "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in source
+    assert "function _isNekoIdleCat1PlaygroundEntryPending(button)" in source
+    assert "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS" in source
+
+    entry_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundEntryRequest(event)",
+        "if (typeof window !== 'undefined')",
+        "cat1 playground entry request",
+    )
+    assert "_startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, event && event.detail ? event.detail : null)" in entry_block
+    assert "_startNekoIdleCat1PlaygroundDrop(button," not in entry_block
+
+    request_block = _source_slice_between(
+        source,
+        "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)",
+        "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)",
+        "cat1 playground yarn target request",
+    )
+    assert "_getNekoIdleCat1PairMoveChatTarget()" in request_block
+    assert "new CustomEvent('neko:idle-cat1-playground-yarn-request'" in request_block
+    assert "action: 'idle_cat1_playground_yarn_request'" in request_block
+    assert "channel.postMessage" in request_block
+    assert "reason: 'cat1-playground-entry'" in request_block
+    assert "source: detail && detail.source ? detail.source : 'cat1-playground'" in request_block
+
+    assert "case 'idle_cat1_playground_yarn_request':" in interpage_source
+    assert "function dispatchIdleCat1PlaygroundYarnRequest(detail)" in interpage_source
+    interpage_yarn_block = _source_slice_between(
+        interpage_source,
+        "function dispatchIdleCat1PlaygroundYarnRequest(detail)",
+        "function dispatchIdleChatPairMoveBounds(detail)",
+        "cat1 playground yarn request interpage dispatch",
+    )
+    assert "new CustomEvent('neko:idle-cat1-playground-yarn-request'" in interpage_yarn_block
+    assert "reason: 'cat1-playground-entry'" in interpage_yarn_block
+    assert "via: 'broadcast-channel'" in interpage_yarn_block
+
+    wait_block = _source_slice_between(
+        source,
+        "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "cat1 playground yarn wait before drop",
+    )
+    assert "_requestNekoIdleCat1PlaygroundYarnTarget(detail);" in wait_block
+    assert "_setNekoIdleCat1QuestionMarkKeyboardTarget(null);" in wait_block
+    assert "_getNekoIdleCat1PairMoveChatTarget()" in wait_block
+    assert "_startNekoIdleCat1PlaygroundDrop(button, detail);" in wait_block
+    assert "window.requestAnimationFrame(poll);" in wait_block
+    assert "Date.now() - startedAt >= _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS" in wait_block
+
     independent_action_block = _source_slice_between(
         source,
         "function _isNekoIdleCat1IndependentActionActive(button)",
         "function _isAnyNekoIdleCat1IndependentActionActive()",
-        "cat1 independent action gate",
+        "cat1 independent action active",
     )
-    any_independent_action_block = _source_slice_between(
-        source,
-        "function _isAnyNekoIdleCat1IndependentActionActive()",
-        "function _clearNekoIdleCat1PlayActionTimers(state)",
-        "cat1 any independent action gate",
+    assert "_isNekoIdleCat1PlaygroundEntryOrDropActive(button)" in independent_action_block
+
+    assert "function _handleIdleCat1PlaygroundYarnRequest(event)" in app_source
+    assert "window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);" in app_source
+    app_block = _source_slice_between(
+        app_source,
+        "function _handleIdleCat1PlaygroundYarnRequest(event)",
+        "function cycleChatSurfaceMode()",
+        "cat1 playground yarn request handler",
     )
-    show_block = _source_slice_between(
-        source,
-        "function _showNekoIdleCat1QuestionMark(button)",
-        "function _getNekoIdleCat1EatActionState(button)",
-        "cat1 question mark show",
-    )
-    clear_block = _source_slice_between(
-        source,
-        "function _clearNekoIdleCat1QuestionMark(button)",
-        "function _showNekoIdleCat1QuestionMark(button)",
-        "cat1 question mark clear",
-    )
-    drag_state_block = _source_slice_between(
-        source,
-        "function _getNekoIdleReturnDragActionState(button)",
-        "function _isNekoIdleReturnDragActionActive(button)",
-        "return drag action state",
-    )
-    drag_start_block = _source_slice_between(
-        source,
-        "function _startNekoIdleReturnDragActionForContainer(container)",
-        "function _finishNekoIdleReturnDragAction(button, options = {})",
-        "return drag action start",
-    )
-    drag_finish_block = _source_slice_between(
-        source,
-        "function _finishNekoIdleReturnDragAction(button, options = {})",
-        "function _finishNekoIdleReturnDragActionForContainer(container, options = {})",
-        "return drag action finish",
-    )
-    sequence_handler_block = _source_slice_between(
-        source,
-        "function _handleNekoIdleCat1QuestionMarkDragSequenceForContainer(container, detail)",
-        "function _setNekoIdleReturnDragActionClasses(button, active)",
-        "cat1 question mark sequence handler",
-    )
-    assert "_isNekoIdleCat1QuestionMarkActive" not in independent_action_block
-    assert "_isAnyNekoIdleCat1QuestionMarkActive" not in any_independent_action_block
-    assert "cat1-question-mark-trace" not in source
-    assert "nekoIdleCat1QuestionMarkDragTrace" not in source
-    assert "questionMarkTrace" not in source
-    assert "_cancelNekoIdleCat1Journey" not in show_block
-    assert "_scheduleNekoIdleCat1JourneySync" not in clear_block
-    assert "if (!window.__NEKO_MULTI_WINDOW__) {" in show_block
-    assert "_dispatchNekoIdleCat1QuestionMarkLayer(button, true, 'show');" in show_block
-    assert "_dispatchNekoIdleCat1QuestionMarkLayer(button, false, 'clear');" in clear_block
-    assert "new URL(_getNekoIdleCat1QuestionMarkAssetUrl(), window.location.href).href" in source
-    assert "assetUrl: _getNekoIdleCat1QuestionMarkLayerAssetUrl()" in source
-    assert "screenRect: {" in source
-    screen_rect_block = _source_slice_between(
-        source,
-        "function _getNekoIdleCat1QuestionMarkScreenRect(mark)",
-        "function _dispatchNekoIdleCat1QuestionMarkLayer(button, active, reason)",
-        "cat1 question mark screen rect",
-    )
-    assert "parseFloat(mark.style.left)" in screen_rect_block
-    assert "parseFloat(mark.style.top)" in screen_rect_block
-    assert "parseFloat(mark.style.width)" in screen_rect_block
-    assert "parseFloat(mark.style.height)" in screen_rect_block
-    assert "rect.width <= 0 || rect.height <= 0" not in screen_rect_block
-    assert "questionMarkSequence: null" in drag_state_block
-    assert "_resetNekoIdleCat1QuestionMarkSequence(button);" in drag_start_block
-    assert "_resetNekoIdleCat1QuestionMarkSequence(button);" in drag_finish_block
-    assert "originX: null" in source
-    assert "originY: null" in source
-    assert "lastAcceptedDeltaX: 0" in source
-    assert "lastAcceptedDeltaY: 0" in source
-    assert "phaseOriginDeltaX: 0" in source
-    assert "phaseOriginDeltaY: 0" in source
-    assert "state.active" in sequence_handler_block
-    assert "_NEKO_IDLE_TIER_CAT1" in sequence_handler_block
-    assert "Number(detail && detail.deltaX)" in sequence_handler_block
-    assert "Number(detail && detail.deltaY)" in sequence_handler_block
-    assert "dx - sequence.phaseOriginDeltaX" in sequence_handler_block
-    assert "dy - sequence.phaseOriginDeltaY" in sequence_handler_block
-    assert "dx - sequence.lastAcceptedDeltaX" in sequence_handler_block
-    assert "dy - sequence.lastAcceptedDeltaY" in sequence_handler_block
-    assert "if (sequence.progress % 2 === 0)" in sequence_handler_block
-    assert "sequence.phaseOriginDeltaX = dx;" in sequence_handler_block
-    assert "sequence.phaseOriginDeltaY = dy;" in sequence_handler_block
-    assert "_NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE[sequence.progress]" in sequence_handler_block
-    assert "_isNekoIdleQuestionMarkExpectedZone(zoneVector, expected)" in sequence_handler_block
-    assert "_isNekoIdleQuestionMarkExpectedDirection(stepVector, expected)" in sequence_handler_block
-    assert "const zoneMatches = _isNekoIdleQuestionMarkExpectedZone(zoneVector, expected);" in sequence_handler_block
-    assert "const stepMatches = _isNekoIdleQuestionMarkExpectedDirection(stepVector, expected);" in sequence_handler_block
-    assert "if (!zoneMatches || !stepMatches)" in sequence_handler_block
-    assert "return false;" in sequence_handler_block
-    assert "if (shown)" in sequence_handler_block
-    assert "_showNekoIdleCat1QuestionMark(button)" in sequence_handler_block
-    assert "if (reset)" not in sequence_handler_block
-    assert "sequence.progress = direction === _NEKO_IDLE_CAT1_QUESTION_MARK_SEQUENCE[0] ? 1 : 0;" not in sequence_handler_block
-    assert "_isNekoIdleQuestionMarkAxisDominant(vector, expected)" in source
-    assert "_isNekoIdleQuestionMarkCenterOverlap(vector)" in source
-    assert "crossAxis <= axis * _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" in source
-    assert "axis >= crossAxis * _NEKO_IDLE_CAT1_QUESTION_MARK_AXIS_TOLERANCE_RATIO" not in source
-    assert "Math.abs(vector.dx) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
-    assert "Math.abs(vector.dy) <= _NEKO_IDLE_CAT1_QUESTION_MARK_CENTER_OVERLAP_PX" in source
-    assert "case 'up': return vector.dy <= -_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
-    assert "case 'down': return vector.dy >= _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
-    assert "case 'left': return vector.dx <= -_NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
-    assert "case 'right': return vector.dx >= _NEKO_IDLE_CAT1_QUESTION_MARK_MIN_STEP_PX;" not in source
-    assert "document.body.appendChild(mark)" in source
-    assert "position: 'fixed'" in source
-    assert "button.getBoundingClientRect()" in source
-    assert "button.appendChild(mark)" not in source
-    assert "is-cat1-question-mark-active" not in source
+    assert "setChatSurfaceMode('minimized')" in app_block
+    assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
 
 
 def test_model_cat_transition_contract_is_present():
@@ -2221,6 +2424,13 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_clampNekoIdleCat1MoveVector' in source
     assert '_dispatchNekoIdleDesktopChatPairMoveBounds' in source
     assert "action: 'idle_chat_pair_move_bounds'" in source
+    desktop_dispatch_block = source[
+        source.index('function _dispatchNekoIdleDesktopChatPairMoveBounds'):
+        source.index('function _getNekoIdleCat1PairMoveChatTarget')
+    ]
+    assert "const force = !!(options && options.force);" in desktop_dispatch_block
+    assert "if (_isNekoDesktopLinuxRuntime() && !force) return false;" in desktop_dispatch_block
+    assert "new CustomEvent('neko:idle-chat-pair-move-bounds'" in desktop_dispatch_block
     assert "chatMode: chatTarget ? chatTarget.mode : 'solo'" in source
     assert "dy: moveVector.dy" in source
     assert '_setNekoIdleCat1PairMoveChatPosition' in source

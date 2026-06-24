@@ -3119,9 +3119,19 @@
         };
     }
 
+    function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge() {
+        const buttons = document.querySelectorAll('.neko-idle-return-btn');
+        for (let i = 0; i < buttons.length; i += 1) {
+            const state = buttons[i].__nekoIdleCat1PlaygroundDropState;
+            if (state && state.active && !state.released) return true;
+        }
+        return false;
+    }
+
     function canPostIdleReturnBallDesktopState() {
         const body = document.body;
-        return !(body && body.classList && body.classList.contains('electron-chat-window'));
+        return !(body && body.classList && body.classList.contains('electron-chat-window')) &&
+            !isIdleCat1PlaygroundActiveForReturnBallDesktopBridge();
     }
 
     function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
@@ -3793,6 +3803,7 @@
         }
 
         function beginDrag(screenX, screenY, event) {
+            if (isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;
             clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;

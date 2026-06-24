@@ -5534,6 +5534,13 @@
         return normalized;
     }
 
+    function _handleIdleCat1PlaygroundYarnRequest(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (detail && detail.reason && detail.reason !== 'cat1-playground-entry') return;
+        if (getCurrentChatSurfaceMode() === 'minimized') return;
+        setChatSurfaceMode('minimized');
+    }
+
     function cycleChatSurfaceMode() {
         return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
     }
@@ -6803,6 +6810,7 @@
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);
+        window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);
         window.addEventListener('live2d-goodbye-click', function () {
             setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });

@@ -41,6 +41,9 @@ def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
 
     assert "action: 'idle_return_ball_state'" in source
     assert "function canPostIdleReturnBallDesktopState()" in source
+    assert "function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()" in source
+    assert "__nekoIdleCat1PlaygroundDropState" in source
+    assert "if (isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;" in source
     assert "electron-chat-window" in source
     assert "function getReturnBallDragScreenRect(" in source
     assert "'return-ball-dragging'" in source
