@@ -612,20 +612,24 @@ class OmniOfflineClient:
         # _notify_reasoning_done). Drives the chat thinking-dots bubble for ANY
         # turn that actually reasons, decoupled from Focus mode.
         self.on_thinking_active = on_thinking_active
-        # Per-stream guard so the three reasoning-filter points (openai loop,
-        # forced-finalize, genai) pulse at most once per stream, and so the
-        # end-of-stream clear only fires when this stream actually pulsed.
-        # Re-armed at the top of BOTH stream entry points (stream_text and
-        # prompt_ephemeral) via _begin_reasoning_stream().
-        self._reasoning_pulsed_this_stream = False
-        # Stream-ownership token: a proactive prompt_ephemeral turn can interleave
-        # with a user stream_text on this same client (core drops stale proactive
-        # chunks rather than awaiting the prompt). Each stream entry bumps the seq;
-        # a pulse stamps the pulsing seq; the prompt_ephemeral clear only fires for
-        # ITS OWN seq, so a backgrounded stream's finally can't clear the bubble a
-        # newer foreground stream just pulsed (Codex P2).
+        # Reasoning-pulse ownership. A proactive prompt_ephemeral turn can
+        # interleave with a user stream_text on this SAME client (core drops stale
+        # proactive chunks via the expected-sid guard rather than awaiting the
+        # prompt). Ownership is tracked by a single source of truth — NOT a shared
+        # boolean, which _begin_reasoning_stream would reset out from under an
+        # older still-running stream (Codex P2):
+        #   _reasoning_stream_seq      — monotonic counter, bumped per stream entry
+        #                                (stream_text / prompt_ephemeral) so each
+        #                                stream has a distinct token.
+        #   _reasoning_active_pulse_seq — the seq that currently owns an un-cleared
+        #                                True pulse (None = bubble not lit by us).
+        #                                A pulse stamps it; a clear only fires for
+        #                                the owning seq. Because it is NOT reset on
+        #                                stream entry, a preempted proactive turn
+        #                                still clears its OWN pulse, yet cannot
+        #                                clear a newer stream that already re-pulsed.
         self._reasoning_stream_seq = 0
-        self._reasoning_pulsed_seq: Optional[int] = None
+        self._reasoning_active_pulse_seq: Optional[int] = None
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
@@ -849,20 +853,19 @@ class OmniOfflineClient:
             })
 
     async def _notify_reasoning_active(self) -> None:
-        """Tell the host (once per stream) that the model is emitting reasoning /
-        thinking chunks, so the chat can show a thinking-dots bubble even on a
-        non-Focus turn whose provider reasons internally. The reasoning TEXT is
-        still filtered out at the call site — only this boolean pulse escapes.
-        Idempotent on ``_reasoning_pulsed_this_stream`` so the three filter
-        points can call it blindly. Best-effort: a callback failure must never
-        disturb the stream.
+        """Tell the host that the model is emitting reasoning / thinking chunks, so
+        the chat can show a thinking-dots bubble even on a non-Focus turn whose
+        provider reasons internally. The reasoning TEXT is still filtered out at the
+        call site — only this boolean pulse escapes. Pulses once per stream: it
+        records the current stream's seq as the pulse owner and no-ops while that
+        same seq still owns the pulse, so the three filter points can call it
+        blindly. Best-effort: a callback failure must never disturb the stream.
 
-        getattr default guards ``__new__`` test stubs that bypass ``__init__``
-        (and never set the per-stream guard / callback attributes)."""
-        if getattr(self, "_reasoning_pulsed_this_stream", False):
-            return
-        self._reasoning_pulsed_this_stream = True
-        self._reasoning_pulsed_seq = getattr(self, "_reasoning_stream_seq", 0)
+        getattr defaults guard ``__new__`` test stubs that bypass ``__init__``."""
+        cur = getattr(self, "_reasoning_stream_seq", 0)
+        if getattr(self, "_reasoning_active_pulse_seq", None) == cur:
+            return  # already pulsed for THIS stream
+        self._reasoning_active_pulse_seq = cur
         cb = getattr(self, "on_thinking_active", None)
         if cb is None:
             return
@@ -873,37 +876,40 @@ class OmniOfflineClient:
 
     def _begin_reasoning_stream(self) -> int:
         """Open a new reasoning-pulse scope for one stream and return its ownership
-        token. Bumps the seq (so an older interleaving stream's clear can't fire
-        for this scope) and re-arms the per-stream pulse guard. Called at the top
-        of both stream entry points (stream_text and prompt_ephemeral)."""
+        token. Bumps the seq so this stream's first reasoning chunk re-pulses and
+        so an older interleaving stream's clear can't fire for this scope. Crucially
+        does NOT touch ``_reasoning_active_pulse_seq`` — that single source of truth
+        stays owned by whoever last lit the bubble, so a preempted older stream can
+        still clear its own pulse (Codex P2). Called at the top of both stream entry
+        points (stream_text and prompt_ephemeral)."""
         self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
-        self._reasoning_pulsed_this_stream = False
         return self._reasoning_stream_seq
 
     async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
-        """Symmetric clear for ``_notify_reasoning_active``: if THIS stream pulsed
-        the thinking bubble True, push it back to False. Required for callers
-        without an external unconditional clear — ``prompt_ephemeral``'s
-        proactive / greeting / avatar turns clear the bubble only when a visible
-        token reaches ``send_lanlan_response``; a turn that reasons but commits no
-        text (safety / empty / tool-only) would otherwise leave the bubble stuck
-        on until a later turn (Codex P2). ``stream_text``'s Focus path is cleared
-        by core's own unconditional finally instead (it must also clear the Focus
-        pre-pulse, which fires with no reasoning chunk), so this is wired into
-        ``prompt_ephemeral``'s finally only.
+        """Symmetric clear for ``_notify_reasoning_active``: push the bubble back to
+        False when THIS stream still owns the active pulse. Required for callers
+        without an external unconditional clear — ``prompt_ephemeral``'s proactive /
+        greeting / avatar turns clear the bubble only when a visible token reaches
+        ``send_lanlan_response``; a turn that reasons but commits no text (safety /
+        empty / tool-only) would otherwise leave the bubble stuck on (Codex P2).
+        ``stream_text``'s Focus path is cleared by core's own unconditional finally
+        instead (it must also clear the Focus pre-pulse, which fires with no
+        reasoning chunk), so this is wired into ``prompt_ephemeral``'s finally only.
 
-        ``owner_seq`` is the token from this stream's ``_begin_reasoning_stream``:
-        the clear is suppressed when a NEWER interleaving stream has since pulsed
-        (its seq differs), so a backgrounded proactive turn can't clear the bubble
-        a foreground user turn is still reasoning under (Codex P2). Resets the
-        guard so it is idempotent. Best-effort; getattr defaults guard ``__new__``
-        test stubs that bypass ``__init__``."""
-        if not getattr(self, "_reasoning_pulsed_this_stream", False):
+        ``owner_seq`` is the token from this stream's ``_begin_reasoning_stream``.
+        The clear fires only when ``_reasoning_active_pulse_seq`` still equals it:
+          - a NEWER stream that already re-pulsed took ownership (seq differs) → we
+            must NOT clear the bubble it is reasoning under;
+          - but if the newer stream merely STARTED (bumped seq) without pulsing yet,
+            ownership is still ours, so we correctly clear our own pulse rather than
+            leaking it (the bug a shared per-stream boolean would have caused).
+        Idempotent; getattr defaults guard ``__new__`` test stubs."""
+        active = getattr(self, "_reasoning_active_pulse_seq", None)
+        if active is None:
             return
-        if owner_seq is not None and getattr(self, "_reasoning_pulsed_seq", None) != owner_seq:
-            # A newer stream owns the current pulse — don't clear its bubble.
+        if owner_seq is not None and active != owner_seq:
             return
-        self._reasoning_pulsed_this_stream = False
+        self._reasoning_active_pulse_seq = None
         cb = getattr(self, "on_thinking_active", None)
         if cb is None:
             return
@@ -1935,8 +1941,10 @@ class OmniOfflineClient:
             else:
                 return
 
-        # Fresh stream: open a new reasoning-pulse scope (re-arm guard + bump the
-        # ownership seq) so this turn's first reasoning chunk re-pulses the bubble.
+        # Fresh stream: open a new reasoning-pulse scope (bump the ownership seq)
+        # so this turn's first reasoning chunk re-pulses the bubble. stream_text
+        # does not clear via _notify_reasoning_done — core's inline finally clears
+        # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
 
         # Check if we need to switch to vision model

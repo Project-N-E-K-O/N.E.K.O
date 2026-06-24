@@ -566,8 +566,10 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
     client._use_genai_sdk = False
     client._genai_tools_unsupported = False
     client.on_tool_call = None
-    # _astream_with_tools doesn't reset the guard (stream_text does) — arm it here.
-    client._reasoning_pulsed_this_stream = False
+    # _astream_with_tools doesn't open a stream scope (stream_text does) — seed
+    # the pulse-ownership state here so a fresh stream starts un-pulsed.
+    client._reasoning_stream_seq = 0
+    client._reasoning_active_pulse_seq = None
 
     pulses = []
 
@@ -604,7 +606,7 @@ async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
     client._use_genai_sdk = False
     client._genai_tools_unsupported = False
     client.on_tool_call = None
-    client._reasoning_pulsed_this_stream = False
+    client._reasoning_active_pulse_seq = None
 
     pulses = []
 
@@ -628,7 +630,7 @@ async def test_notify_reasoning_done_clears_only_after_a_pulse():
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
-    client._reasoning_pulsed_this_stream = False
+    client._reasoning_active_pulse_seq = None
     pulses = []
 
     async def on_thinking_active(active):
@@ -657,7 +659,7 @@ async def test_notify_reasoning_done_owner_seq_guards_cross_stream_clear():
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client._reasoning_stream_seq = 0
-    client._reasoning_pulsed_this_stream = False
+    client._reasoning_active_pulse_seq = None
     pulses = []
 
     async def on_thinking_active(active):
@@ -681,6 +683,35 @@ async def test_notify_reasoning_done_owner_seq_guards_cross_stream_clear():
 
 
 @pytest.mark.asyncio
+async def test_notify_reasoning_done_clears_own_pulse_after_preemption_without_new_pulse():
+    """A proactive turn that pulsed, then got preempted by a user stream that only
+    STARTED (bumped seq) without pulsing yet, must still clear ITS OWN bubble in
+    finally. The ownership seq is NOT reset by _begin_reasoning_stream, so the
+    older owner stays valid — a shared per-stream boolean would have been reset
+    here, leaking the bubble (Codex P2)."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._reasoning_stream_seq = 0
+    client._reasoning_active_pulse_seq = None
+    pulses = []
+
+    async def on_thinking_active(active):
+        pulses.append(active)
+
+    client.on_thinking_active = on_thinking_active
+
+    s1 = client._begin_reasoning_stream()       # proactive scope
+    await client._notify_reasoning_active()      # proactive pulses → bubble on
+    client._begin_reasoning_stream()             # user stream starts, NO pulse yet
+    assert pulses == [True]
+
+    # Proactive finally: user hasn't pulsed, proactive still owns → clears its own.
+    await client._notify_reasoning_done(s1)
+    assert pulses == [True, False], "被抢占但新流未 pulse 时，旧流必须清掉自己的气泡"
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_pulses_when_reasoning_bundled_with_other_signal():
     """A thinking provider can pack reasoning_content onto the SAME delta as a
     visible token / finish_reason (or a tool_call_delta). The pulse must still
@@ -700,7 +731,7 @@ async def test_offline_openai_path_pulses_when_reasoning_bundled_with_other_sign
     client._genai_tools_unsupported = False
     client.on_tool_call = None
     client._reasoning_stream_seq = 0
-    client._reasoning_pulsed_this_stream = False
+    client._reasoning_active_pulse_seq = None
 
     pulses = []
 

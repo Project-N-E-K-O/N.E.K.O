@@ -2734,6 +2734,20 @@ class LLMSessionManager:
         idempotent via ``_push_focus_thinking``'s cached state."""
         await self._push_focus_thinking(active)
 
+    def _make_thinking_active_callback(self, session_ref):
+        """Bind ``handle_thinking_active`` to ONE specific OmniOfflineClient so a
+        reasoning pulse only drives the bubble while that client is the live
+        session. The thinking bubble is a single per-window surface; a pulse from
+        a NON-current client — a pending hot-swap session, or a just-demoted old
+        session still draining a stream after the swap — must not light or clear
+        the current window (CodeRabbit). The live session always matches, so its
+        pulses/clears pass through unchanged; everything else is a silent no-op.
+        getattr default tolerates call-time teardown where self.session is None."""
+        async def _on_thinking_active(active: bool) -> None:
+            if session_ref is getattr(self, "session", None):
+                await self.handle_thinking_active(active)
+        return _on_thinking_active
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -6179,7 +6193,8 @@ class LLMSessionManager:
                         provider_type=conversation_config.get('provider_type'),
                         vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
-                        on_thinking_active=self.handle_thinking_active,
+                        # on_thinking_active bound below via a session-scoped
+                        # closure so only the LIVE session drives the bubble.
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -6205,6 +6220,7 @@ class LLMSessionManager:
                         ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
+                    new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
                 else:
                     realtime_config = self._config_manager.get_model_api_config('realtime')
                     new_session = OmniRealtimeClient(
@@ -6665,7 +6681,9 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
-                    on_thinking_active=self.handle_thinking_active,
+                    # on_thinking_active bound below via a session-scoped closure:
+                    # the pending session must NOT light the current window's
+                    # bubble while it warms up / before the hot-swap promotes it.
                     on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -6688,6 +6706,7 @@ class LLMSessionManager:
                     ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
+                self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
