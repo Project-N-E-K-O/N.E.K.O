@@ -28,6 +28,7 @@ import CompactExportHistoryPanel, {
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
+import { useFocusGlow } from './useFocusGlow';
 import {
   type ChatMessage,
   type MessageAction,
@@ -208,6 +209,27 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
     return screenX;
   }
   return event.clientX;
+}
+
+type AvatarToolPointerPosition = {
+  x: number;
+  y: number;
+  screenX?: number;
+  screenY?: number;
+};
+
+function getAvatarToolPointerPosition(event: Pick<PointerEvent | ReactMouseEvent<HTMLElement>, 'clientX' | 'clientY' | 'screenX' | 'screenY'>): AvatarToolPointerPosition {
+  const next: AvatarToolPointerPosition = {
+    x: Number(event.clientX) || 0,
+    y: Number(event.clientY) || 0,
+  };
+  const screenX = Number(event.screenX);
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+    next.screenX = screenX;
+    next.screenY = screenY;
+  }
+  return next;
 }
 
 function isDesktopCompactSurfaceLayoutActive(): boolean {
@@ -1251,7 +1273,7 @@ export default function FullChatSurface({
   const floatingFistDropIdRef = useRef(0);
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
-  const latestPointerPositionRef = useRef({ x: 0, y: 0 });
+  const latestPointerPositionRef = useRef<AvatarToolPointerPosition>({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
@@ -1287,6 +1309,15 @@ export default function FullChatSurface({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
+  // Focus 凝神: this frozen legacy full surface is rendered via App's early
+  // return (App.tsx), BEFORE the compact `focusActive` state exists — so it
+  // never receives that prop and must self-subscribe to the same backend
+  // `focus_state` signal. Self-contained on purpose (legacy isolation): it only
+  // reads the flag and reuses the shared `data-focus-active`/.chat-window glow
+  // CSS, touching no other legacy logic.
+  const [focusActive, setFocusActive] = useState(false);
+  // 凝神 thinking-dots pulse — mirrors the compact surface (App.tsx).
+  const [focusThinking, setFocusThinking] = useState(false);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
@@ -2042,6 +2073,42 @@ export default function FullChatSurface({
       speechPlaybackChannel?.close();
     };
   }, []);
+
+  // Focus 凝神 indicator: reflect backend enter/exit. Mirrors the compact
+  // surface's subscription (App.tsx) — app-websocket.js translates the
+  // `focus_state` ws message into this `neko-focus-state` event.
+  useEffect(() => {
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusActive(Boolean(detail && detail.active));
+    };
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // 凝神 thinking-dots: show a "…" bubble at the tail of the history while a
+  // Focus turn is thinking-on but hasn't emitted visible content yet.
+  useEffect(() => {
+    const handleThinking = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusThinking(Boolean(detail && detail.active));
+    };
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      if (!(detail && detail.active)) setFocusThinking(false);
+    };
+    window.addEventListener('neko-focus-thinking', handleThinking);
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-thinking', handleThinking);
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
 
   useEffect(() => {
     const textNode = compactPreviewTextRef.current;
@@ -2907,6 +2974,9 @@ export default function FullChatSurface({
       ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
       : 'primary';
     const textContext = sanitizeInteractionTextContext(draft);
+    const latestPointerPosition = latestPointerPositionRef.current;
+    const hasCursorScreenPoint = Number.isFinite(latestPointerPosition.screenX)
+      && Number.isFinite(latestPointerPosition.screenY);
 
     onAvatarToolStateChange({
       active: !!activeToolItem,
@@ -2918,6 +2988,12 @@ export default function FullChatSurface({
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
+      cursorClientX: latestPointerPosition.x,
+      cursorClientY: latestPointerPosition.y,
+      ...(hasCursorScreenPoint ? {
+        cursorScreenX: latestPointerPosition.screenX,
+        cursorScreenY: latestPointerPosition.screenY,
+      } : {}),
       tool: activeToolItem
         ? {
           id: activeToolItem.id,
@@ -3022,7 +3098,6 @@ export default function FullChatSurface({
   }
 
   function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
     if (!overlayNode || !hammerToolItem) return;
     const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
@@ -3030,7 +3105,6 @@ export default function FullChatSurface({
   }
 
   function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = avatarCursorOverlayRef.current;
     if (!overlayNode || !activeToolItem) return;
     const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
@@ -3214,6 +3288,8 @@ export default function FullChatSurface({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
+      latestPointerTargetRef.current = event.target;
       const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
       setIsCursorOverCompactCursorZone(previousValue => (
         previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
@@ -3402,7 +3478,7 @@ export default function FullChatSurface({
 
     const handlePointerMove = (event: PointerEvent) => {
       setIsCursorInsideHostWindow(true);
-      latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
       latestPointerTargetRef.current = event.target;
       if (activeCursorToolId === 'hammer') {
         updateHammerCursorOverlayPosition(event.clientX, event.clientY);
@@ -3690,7 +3766,7 @@ export default function FullChatSurface({
             setToolMenuOpen(false);
           }}
         >
-          <span aria-hidden="true">×</span>
+          <span className="composer-tool-clear-icon" aria-hidden="true" />
         </button>
       ) : null}
       {toolMenuOpen ? (
@@ -3716,10 +3792,7 @@ export default function FullChatSurface({
               title={itemLabel}
               disabled={composerInteractionsDisabled}
               onClick={(event) => {
-                latestPointerPositionRef.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                };
+                latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
@@ -4159,7 +4232,7 @@ export default function FullChatSurface({
               closeCompactInputToolFanFromUserClick();
             }}
           >
-            <span aria-hidden="true">×</span>
+            <span className="composer-tool-clear-icon" aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -4191,10 +4264,7 @@ export default function FullChatSurface({
                   event.stopPropagation();
                   return;
                 }
-                latestPointerPositionRef.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                };
+                latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
@@ -4421,6 +4491,7 @@ export default function FullChatSurface({
       messages={messages}
       ariaLabel={messageListAriaLabel}
       failedStatusLabel={failedStatusLabel}
+      thinking={focusThinking}
       onAction={onMessageAction}
     />
   );
@@ -4490,7 +4561,21 @@ export default function FullChatSurface({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {focusActive ? (
+        <div
+          className="chat-surface-focus-indicator"
+          role="status"
+          aria-live="polite"
+          title={i18n('chat.focusIndicator', '凝神中')}
+        >
+          <span className="chat-surface-focus-indicator-label">
+            {i18n('chat.focusIndicator', '凝神中')}
+          </span>
+        </div>
+      ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (

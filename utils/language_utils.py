@@ -1198,6 +1198,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             # receive long user text, so a small cap would truncate the
             # translation mid-stream and return it as a "success".
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
+            provider_type=emotion_config.get('provider_type'),
         )
 
         instruction = _loc(TRANSLATION_INSTRUCTION, lang).format(
@@ -1304,6 +1305,7 @@ class TranslationService:
                     config['model'], config['base_url'], config['api_key'],
                     max_completion_tokens=TRANSLATION_OUTPUT_MAX_TOKENS,
                     timeout=30.0,
+                    provider_type=config.get('provider_type'),
                 )
 
                 return self._llm_client

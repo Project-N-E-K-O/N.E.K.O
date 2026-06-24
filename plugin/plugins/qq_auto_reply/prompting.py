@@ -219,6 +219,7 @@ class QQAutoReplyPromptingMixin:
                 api_key=api_key,
                 max_completion_tokens=120,
                 timeout=float(self._ai_turn_timeout_seconds or 60.0) + 0.5,
+                provider_type=model_config.get("provider_type"),
             )
             try:
                 set_call_type("agent")

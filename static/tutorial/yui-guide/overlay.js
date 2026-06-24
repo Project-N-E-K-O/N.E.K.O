@@ -427,24 +427,6 @@
                     }
                 }, durationMs + 900);
             },
-            showAvatarStandIn(standIn) {
-                if (!standIn || !standIn.url) {
-                    send({ avatarStandIn: null }, true);
-                    return;
-                }
-                send({
-                    avatarStandIn: {
-                        visible: true,
-                        url: getAssetUrl(standIn.url),
-                        resource: String(standIn.resource || ''),
-                        position: String(standIn.position || ''),
-                        durationMs: Math.max(0, Math.round(Number(standIn.durationMs) || 0))
-                    }
-                }, true);
-            },
-            clearAvatarStandIn() {
-                send({ avatarStandIn: null }, true);
-            },
             clear() {
                 active = false;
                 cleared = true;
@@ -1562,26 +1544,6 @@
             this.previewList.innerHTML = '';
         }
 
-        showAvatarStandIn(standIn) {
-            const normalized = standIn || {};
-            const resource = String(normalized.resource || '');
-            const url = normalized.url
-                || (window.YuiGuideAvatarStandIn && typeof window.YuiGuideAvatarStandIn.getResourcePath === 'function'
-                    ? window.YuiGuideAvatarStandIn.getResourcePath(resource)
-                    : '');
-            const payload = {
-                url,
-                resource,
-                position: String(normalized.position || ''),
-                durationMs: Math.max(0, Math.round(Number(normalized.durationMs) || 0))
-            };
-            this.overlayRenderer.showAvatarStandIn(payload);
-        }
-
-        clearAvatarStandIn() {
-            this.overlayRenderer.clearAvatarStandIn();
-        }
-
         setSpotlightSuppressed(active) {
             this.spotlightState.setSuppressed(active);
             if (!this.spotlightsSuppressed) {
@@ -2010,7 +1972,6 @@
         }
 
         destroy() {
-            this.clearAvatarStandIn();
             this.overlayRenderer.clear();
             this.document.body.classList.remove('yui-taking-over');
             this.document.body.classList.remove('yui-guide-input-shield-active');

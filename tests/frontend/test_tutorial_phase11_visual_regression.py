@@ -141,7 +141,6 @@ def _bootstrap_visual_harness(page: Page, *, pc_overlay: bool = False) -> None:
             """
         )
     page.add_script_tag(path=str(PROJECT_ROOT / "static" / "tutorial/visual/overlay-renderer.js"))
-    page.add_script_tag(path=str(PROJECT_ROOT / "static" / "tutorial/avatar/yui-standin.js"))
     page.add_script_tag(path=str(PROJECT_ROOT / "static" / "tutorial/yui-guide/overlay.js"))
 
 
@@ -292,11 +291,6 @@ def test_phase11_pc_overlay_payload_covers_cursor_visuals_and_cleanup(mock_page:
             overlay.showCursorAt(220, 180);
             await overlay.moveCursorTo(360, 224, { durationMs: 180 });
             overlay.clickCursor(360);
-            overlay.showAvatarStandIn({
-                resource: 'peek-left-border',
-                position: 'left-bottom',
-                durationMs: 400,
-            });
             overlay.playPetalTransition({ x: 320, y: 240 }, { durationMs: 520, finalOpacity: 0.7 });
             await new Promise((resolve) => setTimeout(resolve, 40));
             const beforeDestroy = window.__pcOverlayUpdates.map((entry) => entry.payload);
@@ -324,7 +318,6 @@ def test_phase11_pc_overlay_payload_covers_cursor_visuals_and_cleanup(mock_page:
     assert any(payload.get("cursor", {}).get("visible") is True for payload in payloads)
     assert any(payload.get("cursor", {}).get("effect") == "click" for payload in payloads)
     assert any(len(payload.get("spotlights", [])) == 3 for payload in payloads)
-    assert any(payload.get("avatarStandIn", {}).get("resource") == "peek-left-border" for payload in payloads)
     assert any(payload.get("petal", {}).get("durationMs") == 520 for payload in payloads)
 
 

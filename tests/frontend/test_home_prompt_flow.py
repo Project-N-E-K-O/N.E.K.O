@@ -22,6 +22,7 @@ _YUI_DIRECTOR_DEPENDENCIES = (
     "tutorial/visual/overlay-renderer.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/core/interaction-takeover.js",
+    "tutorial/avatar/yui-standin.js",
     "tutorial/avatar/standin-controller.js",
     "tutorial/visual/spotlight-controller.js",
     "tutorial/visual/ghost-cursor-controller.js",
@@ -2568,6 +2569,48 @@ def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
             window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
                 detail: { page: 'home', reason: 'page-changed' },
             }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
+def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_event(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day1');
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day1-complete');
         }
         """
     )
@@ -6029,7 +6072,7 @@ def test_home_spotlight_refresh_does_not_replay_stale_cursor_while_externalized_
 
 
 @pytest.mark.frontend
-def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_externalized_chat_owns_cursor(
+def test_home_petal_update_does_not_replay_stale_cursor_while_externalized_chat_owns_cursor(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -6063,12 +6106,7 @@ def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_external
             director.cursor.showAt(680, 100);
             await new Promise((resolve) => setTimeout(resolve, 0));
             director.overlay.setPcCursorOutputSuppressed(true);
-            director.overlay.showAvatarStandIn({
-                url: '/static/assets/tutorial/avatar-standins/peek-head.png',
-                resource: 'peek-head',
-                position: 'bottom-right',
-                durationMs: 5000,
-            });
+            director.overlay.playPetalTransition({ x: 320, y: 240 }, { durationMs: 500 });
             await new Promise((resolve) => setTimeout(resolve, 0));
             return window.__pcOverlayUpdates.map((update) => update.payload);
         }
@@ -6078,7 +6116,7 @@ def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_external
     assert result[0]["cursor"]["visible"] is True
     assert result[0]["cursor"]["x"] == 780
     assert result[0]["cursor"]["y"] == 150
-    assert result[-1]["avatarStandIn"]["resource"] == "peek-head"
+    assert result[-1]["petal"]["durationMs"] == 500
     assert "cursor" not in result[-1]
 
 

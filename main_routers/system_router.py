@@ -55,7 +55,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, ThinkingStreamStripper, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    create_chat_llm_async,
+)
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -73,6 +79,14 @@ from PIL import Image
 #     that's a few milliseconds saved per turn, but more importantly avoids
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
+
+_PROACTIVE_LLM_RETRY_ERROR_TYPES = (
+    asyncio.TimeoutError,
+    APIConnectionError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -1256,6 +1270,9 @@ async def get_changelog(since: str = "", lang: str = ""):
     entries: list[dict] = []
     since_ver = _parse_ver(since) if since else (0,)
 
+    # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
+    # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
+    lang = _safe_locale(lang)
     # 确定 fallback 链：用户语言 -> en -> 中文原文
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
@@ -1293,6 +1310,175 @@ async def get_changelog(since: str = "", lang: str = ""):
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
+
+
+_LOCALE_RE = re.compile(r'^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*$')
+
+
+def _safe_locale(lang: object) -> str:
+    """Whitelist a client-supplied locale (zh-CN / en / ja / ...) before it touches a filesystem path.
+
+    ``lang`` arrives from the request query string and is joined into changelog /
+    survey file paths; an unfiltered ``../`` or an absolute prefix would let a
+    crafted value escape the content dir (path traversal). Anything not matching the
+    locale shape returns '' (→ caller falls back to the Chinese base / en).
+    """
+    return lang if (isinstance(lang, str) and _LOCALE_RE.match(lang)) else ""
+
+
+def _load_survey_for_version(version: str, lang: str) -> dict | None:
+    """Load config/surveys/<version>.json with a per-locale fallback chain.
+
+    Returns the parsed (localized) survey dict, or None when no survey exists for
+    the version. Fallback: a concrete locale tries its own subdir first (incl.
+    Chinese variants like zh-TW); Chinese variants then fall back to the Simplified
+    base file, non-Chinese fall back to en, and everything finally lands on the
+    base. This loader is independent of ``_load_changelog`` — changing it does not
+    touch changelog's language fallback. The whole file is swapped per locale
+    (question ids must stay identical across locales — answers are reported by id).
+    """
+    surveys_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "surveys")
+    base_file = os.path.join(surveys_dir, f"{version}.json")
+    if not os.path.isfile(base_file):
+        return None
+
+    # 任何具体 locale 先试自己的子目录（含 zh-TW 等中文变体，于是繁体不再被并入
+    # 简体 base）；中文变体回退到简体 base，非中文回退 en，最后都落 base。
+    candidates: list[str] = []
+    if lang:
+        candidates.append(os.path.join(surveys_dir, lang, f"{version}.json"))
+    is_chinese = lang.startswith("zh") if lang else True
+    if not is_chinese:
+        en_path = os.path.join(surveys_dir, "en", f"{version}.json")
+        if en_path not in candidates:
+            candidates.append(en_path)
+    candidates.append(base_file)
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
+            # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
+            data["survey_version"] = version
+            return data
+    return None
+
+
+def _sanitize_survey_answers(answers: object) -> dict:
+    """Whitelist + cap the answer dict before forwarding (abuse / oversized-payload guard).
+
+    Mirrors the remote server's data-minimization contract: at most 50 questions,
+    keys <= 64 chars, string answers <= 2000 chars, list answers <= 50 items of
+    <= 200 chars each. Anything else is dropped.
+    """
+    out: dict = {}
+    if not isinstance(answers, dict):
+        return out
+    for i, (k, v) in enumerate(answers.items()):
+        if i >= 50:
+            break
+        if not isinstance(k, str) or not k:
+            continue
+        key = k[:64]
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:2000]
+        elif isinstance(v, (int, float)):
+            out[key] = v
+        elif isinstance(v, list):
+            out[key] = [str(x)[:200] for x in v[:50] if isinstance(x, (str, int, float, bool))]
+    return out
+
+
+def _resolve_survey_for_request(version: str, lang: str) -> dict | None:
+    """Steam gate + localized survey load (sync; runs in a worker thread).
+
+    Survey is Steam-only: a non-Steam install gets None (-> has_survey:false). The
+    judgment is distribution=='steam' (live Steam64 / workshop subscription /
+    workshop_config.json disk fallback; see survey_client.is_steam_user). On any
+    error in the steam check we fail closed (None) — better to skip the popup than
+    to show it to a possibly-non-Steam user.
+    """
+    try:
+        from utils.survey_client import is_steam_user
+        if not is_steam_user():
+            return None
+    except Exception:
+        return None
+    return _load_survey_for_version(version, lang)
+
+
+@router.get("/survey")
+async def get_survey(lang: str = ""):
+    """Return the survey for the current app version, or {has_survey: false}.
+
+    Two gates before content is served:
+    - DNT: opted-out users (NEKO_DO_NOT_TRACK / DO_NOT_TRACK) get nothing — the same
+      switch governs passive stats and surveys.
+    - Steam-only: non-Steam installs get nothing (judged by the cached Steam64 +
+      distribution==steam fallback).
+    """
+    from config import APP_VERSION
+
+    try:
+        from utils.survey_client import is_reporting_enabled
+        if not is_reporting_enabled():
+            return {"has_survey": False, "survey_version": APP_VERSION}
+    except Exception:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+
+    survey = await asyncio.to_thread(_resolve_survey_for_request, APP_VERSION, _safe_locale(lang))
+    if not survey:
+        return {"has_survey": False, "survey_version": APP_VERSION}
+    return {
+        "has_survey": True,
+        "survey_version": survey.get("survey_version", APP_VERSION),
+        "survey": survey,
+    }
+
+
+@router.post("/survey/submit")
+async def submit_survey(request: Request):
+    """Receive the user's survey answers (or a skip) and forward them, HMAC-signed, to the remote survey server.
+
+    Best-effort: a failed upload still returns ok=True so the frontend records the
+    survey as done and never re-prompts; uploaded reflects whether the remote 200'd.
+    """
+    payload = await _read_json_object(request)
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        return validation_error
+
+    from config import APP_VERSION
+
+    action = payload.get("action")
+    if action not in ("submit", "skip"):
+        action = "submit"
+    # survey_version 用服务端 APP_VERSION 权威值，不信客户端传入——否则恶意请求可写
+    # 任意版本污染远端版本维度。问卷本就只对当前版本下发，没有跨版本提交的合法场景。
+    survey_version = APP_VERSION
+    answers = _sanitize_survey_answers(payload.get("answers"))
+
+    uploaded = False
+    try:
+        from utils.survey_client import report_survey
+        config_dir = None
+        try:
+            config_dir = get_config_manager().config_dir
+        except Exception:
+            config_dir = None
+        uploaded = await asyncio.to_thread(
+            report_survey, survey_version, action, answers, config_dir=config_dir
+        )
+    except Exception as e:
+        logger.warning("survey submit forward failed: %s", e)
+
+    return {"ok": True, "uploaded": bool(uploaded)}
 
 
 # --- 主动搭话近期记录暂存区 ---
@@ -2863,6 +3049,7 @@ async def _deliver_break_reminder_via_llm(
         correction_model = correction_config.get('model')
         correction_base_url = correction_config.get('base_url')
         correction_api_key = correction_config.get('api_key')
+        correction_provider_type = correction_config.get('provider_type')
         if not correction_model or not correction_api_key:
             logger.warning(
                 "[%s] break reminder skipped: correction model misconfigured",
@@ -2910,6 +3097,7 @@ async def _deliver_break_reminder_via_llm(
         async with asyncio.timeout(timeout_seconds):
             async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
+                provider_type=correction_provider_type,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
@@ -3437,6 +3625,7 @@ async def emotion_analysis(request: Request):
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         
         # 优先使用请求参数，其次使用配置
         api_key = api_key or emotion_api_key
@@ -3470,6 +3659,7 @@ async def emotion_analysis(request: Request):
             model,
             emotion_base_url,
             api_key,
+            provider_type=emotion_provider_type,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
@@ -5848,6 +6038,7 @@ async def proactive_chat(request: Request):
             conversation_model = conversation_config.get('model')
             conversation_base_url = conversation_config.get('base_url')
             conversation_api_key = conversation_config.get('api_key')
+            conversation_provider_type = conversation_config.get('provider_type')
 
             if not conversation_model or not conversation_api_key:
                 logger.error("对话模型配置缺失: model或api_key未设置")
@@ -5861,6 +6052,7 @@ async def proactive_chat(request: Request):
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
+            vision_provider_type = vision_config.get('provider_type')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
                 logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
@@ -5883,14 +6075,17 @@ async def proactive_chat(request: Request):
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
+                provider_type = vision_provider_type
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+                provider_type = conversation_provider_type
             from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
+                provider_type=provider_type,
             )
             if not disable_thinking:
                 # Focus thinking-on: strip ONLY the thinking-disable keys from
@@ -5944,7 +6139,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
-                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
+                except _PROACTIVE_LLM_RETRY_ERROR_TYPES as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
@@ -8034,54 +8229,6 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
-# ========== 个性化内容接口 ==========
-
-@router.post('/personal_dynamics')
-async def get_personal_dynamics(request: Request):
-    """
-    Get personalized content data.
-    """
-    validation_error = _validate_local_mutation_request(request)
-    if validation_error is not None:
-        return validation_error
-
-    from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
-    try:
-
-        data = await request.json()
-        limit = data.get('limit', 10)
-
-        # 获取个性化内容
-        personal_content = await fetch_personal_dynamics(limit=limit)
-
-        if not personal_content['success']:
-            return JSONResponse({
-                "success": False,
-                "error": "无法获取个性化内容",
-                "detail": personal_content.get('error', '未知错误')
-            }, status_code=500)
-
-        # 格式化内容用于前端显示
-        formatted_content = format_personal_dynamics(personal_content)
-
-        return JSONResponse({
-            "success": True,
-            "data": {
-                "raw": personal_content,
-                "formatted": formatted_content,
-                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
-            }
-        })
-
-    except Exception as e:
-        logger.error(f"获取个性化内容失败: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
-
 
 # Self-register the mini-game-invite keyword matcher with main_logic's
 # event bus. Same rationale as plugin/core/state.py: ``main_logic.core``

@@ -154,6 +154,31 @@ describe('App', () => {
   ) => render(<App compactChatState="input" {...props} />);
   const queryAvatarCursorOverlay = () => document.body.querySelector<HTMLElement>('.avatar-cursor-overlay');
   const queryHammerCursorCompactImage = () => document.body.querySelector<HTMLImageElement>('.hammer-cursor-overlay-compact-image');
+  const installLive2dBoundsMock = () => {
+    const testWindow = window as Window & { live2dManager?: unknown };
+    const hadLive2dManager = Object.prototype.hasOwnProperty.call(testWindow, 'live2dManager');
+    const previousLive2dManager = testWindow.live2dManager;
+
+    testWindow.live2dManager = {
+      currentModel: {},
+      getModelScreenBounds: () => ({
+        left: 100,
+        right: 200,
+        top: 100,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      }),
+    };
+
+    return () => {
+      if (hadLive2dManager) {
+        testWindow.live2dManager = previousLive2dManager;
+      } else {
+        delete testWindow.live2dManager;
+      }
+    };
+  };
 
   it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
@@ -5233,6 +5258,7 @@ describe('App', () => {
     const fanRectSpy = mockCompactToolFanRect(fan);
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
     expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
+    expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
 
     try {
       fireEvent.pointerDown(fan, { pointerId: 41, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
@@ -5241,18 +5267,14 @@ describe('App', () => {
       expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'true');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
       expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle'))).toBeCloseTo(15, 1);
-      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle'))).toBeGreaterThan(13);
-      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle'))).toBeLessThan(15);
-      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift'))).toBeGreaterThan(3);
-      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift'))).toBeLessThan(5);
+      expect(Number.parseFloat(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle'))).toBeCloseTo(60, 1);
 
       fireEvent.pointerUp(fan, { pointerId: 41, ...compactToolWheelPoint(15 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
       expect(fan).toHaveAttribute('data-compact-tool-wheel-drag-active', 'false');
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
       expect(fan.style.getPropertyValue('--compact-tool-wheel-drag-angle')).toBe('0deg');
-      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-angle')).toBe('0deg');
-      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-pointer-deflection-shift')).toBe('0px');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -5674,6 +5696,7 @@ describe('App', () => {
     const fanRectSpy = mockCompactToolFanRect(fan);
     // The default wheel's slot 0 sits at 45deg on the 80px orbit, initially the screenshot tool.
     const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+    const pointerAtPreviousSlot = compactToolWheelPoint(75.82 * (Math.PI / 180), 80);
 
     try {
       fireEvent.pointerMove(fan, {
@@ -5685,8 +5708,20 @@ describe('App', () => {
 
       const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
       const avatarButton = fan.querySelector('.compact-input-tool-item-avatar');
+      const galgameButton = fan.querySelector('.compact-input-tool-item-galgame');
       expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
+
+      fireEvent.pointerMove(fan, {
+        pointerId: 81,
+        ...pointerAtPreviousSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      expect(galgameButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('75.82deg');
 
       fireEvent.wheel(fan, {
         deltaY: 80,
@@ -5697,6 +5732,7 @@ describe('App', () => {
       expect(screenshotButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
       expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(avatarButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+      expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -6611,6 +6647,195 @@ describe('App', () => {
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
   });
 
+  it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const grabs: Array<Record<string, number>> = [];
+    const moves: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrime = (event: Event) => primes.push((event as CustomEvent).detail);
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    const onMove = (event: Event) => moves.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    window.addEventListener('neko:compact-surface-drag-move', onMove);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 51, clientX: 160, clientY: 46, screenX: 460, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(1);
+      expect(primes[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 51, clientX: 182, clientY: 48, screenX: 482, screenY: 342,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 160,
+        clientY: 46,
+        screenX: 460,
+        screenY: 340,
+        currentClientX: 182,
+        currentClientY: 48,
+      });
+      expect(moves).toHaveLength(0);
+      fireEvent.pointerMove(document, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(moves).toHaveLength(1);
+      expect(moves[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 51, clientX: 202, clientY: 60, screenX: 502, screenY: 354,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toHaveLength(1);
+      expect(primeEnds[0]).toMatchObject({ pointerId: 51 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 51,
+        clientX: 202,
+        clientY: 60,
+        screenX: 502,
+        screenY: 354,
+        reason: 'pointerup',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      window.removeEventListener('neko:compact-surface-drag-move', onMove);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('dispatches compact surface drag cleanup from document pointercancel', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 61, clientX: 120, clientY: 40, screenX: 320, screenY: 240,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerCancel(document, {
+        pointerId: 61, clientX: 150, clientY: 46, screenX: 350, screenY: 246,
+        buttons: 0, pointerType: 'mouse',
+      });
+      expect(primeEnds).toEqual([{ pointerId: 61 }]);
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 61,
+        clientX: 150,
+        clientY: 46,
+        screenX: 350,
+        screenY: 246,
+        reason: 'pointercancel',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
+  it('finishes a replaced compact surface drag before priming the next pointer', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
+    const primes: Array<Record<string, number>> = [];
+    const primeEnds: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const sequence: string[] = [];
+    const onPrime = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primes.push(detail);
+      sequence.push(`prime:${detail.pointerId}`);
+    };
+    const onPrimeEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      primeEnds.push(detail);
+      sequence.push(`prime-end:${detail.pointerId}`);
+    };
+    const onEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      ends.push(detail);
+      sequence.push(`end:${detail.pointerId}:${detail.reason}`);
+    };
+    window.addEventListener('neko:compact-surface-drag-prime', onPrime);
+    window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 71, clientX: 150, clientY: 50, screenX: 450, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 71, clientX: 175, clientY: 58, screenX: 475, screenY: 348,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerDown(minimize, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      expect(primes).toHaveLength(2);
+      expect(primes[0]).toMatchObject({ pointerId: 71 });
+      expect(primes[1]).toMatchObject({ pointerId: 72 });
+      expect(sequence).toEqual([
+        'prime:71',
+        'end:71:replaced',
+        'prime-end:71',
+        'prime:72',
+      ]);
+      expect(primeEnds).toContainEqual({ pointerId: 71 });
+      expect(ends).toHaveLength(1);
+      expect(ends[0]).toMatchObject({
+        pointerId: 71,
+        clientX: 175,
+        clientY: 58,
+        screenX: 475,
+        screenY: 348,
+        reason: 'replaced',
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 72, clientX: 95, clientY: 50, screenX: 395, screenY: 340,
+        buttons: 0, pointerType: 'mouse',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-prime', onPrime);
+      window.removeEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
     render(
       <App
@@ -6628,13 +6853,13 @@ describe('App', () => {
         pointerId: 7, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
         button: 0, buttons: 1, pointerType: 'mouse',
       });
-      fireEvent.pointerMove(toggle, {
+      fireEvent.pointerMove(document, {
         pointerId: 7, clientX: 122, clientY: 108, buttons: 1, pointerType: 'mouse',
       });
       // 拖动超阈值 → 派发一次抓取事件，锚点用按下点（不跳变）。
       expect(grabs).toHaveLength(1);
       expect(grabs[0]).toMatchObject({ clientX: 100, clientY: 100, screenX: 300, screenY: 320 });
-      fireEvent.pointerUp(toggle, {
+      fireEvent.pointerUp(document, {
         pointerId: 7, clientX: 122, clientY: 108, buttons: 0, pointerType: 'mouse',
       });
       // 拖完补发的 click 被吞掉，不应展开轮盘。
@@ -6644,6 +6869,37 @@ describe('App', () => {
     } finally {
       window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
     }
+  });
+
+  it('suppresses the submit default action after dragging the compact submit toggle', () => {
+    const onComposerSubmit = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    fireEvent.change(input, { target: { value: 'hello' } });
+    expect(toggle).toHaveAttribute('type', 'submit');
+
+    fireEvent.pointerDown(toggle, {
+      pointerId: 81, clientX: 120, clientY: 48, screenX: 420, screenY: 338,
+      button: 0, buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 1, pointerType: 'mouse',
+    });
+    fireEvent.pointerUp(document, {
+      pointerId: 81, clientX: 150, clientY: 56, screenX: 450, screenY: 346,
+      buttons: 0, pointerType: 'mouse',
+    });
+    fireEvent.click(toggle);
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
   });
 
   it('keeps origin drag click suppression armed across a slow drag (no timeout clear)', () => {
@@ -7979,13 +8235,22 @@ describe('App', () => {
     onAvatarToolStateChange.mockClear();
     await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+      clientX: 240,
+      clientY: 320,
+      screenX: 640,
+      screenY: 420,
+    });
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: true,
       toolId: 'hammer',
       variant: 'primary',
       imageKind: 'cursor',
+      cursorClientX: 240,
+      cursorClientY: 320,
+      cursorScreenX: 640,
+      cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
         cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
@@ -8030,6 +8295,106 @@ describe('App', () => {
     fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
 
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
+  });
+
+  it('expands the desktop avatar tool overlay when the pointer enters the avatar range', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+    const restoreLive2dManager = installLive2dBoundsMock();
+
+    try {
+      renderInputApp({ onAvatarToolStateChange });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      const overlay = queryAvatarCursorOverlay();
+      expect(overlay).not.toBeNull();
+      expect(overlay).toHaveClass('is-compact');
+      expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1_cursor.png');
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(overlay).not.toHaveClass('is-compact');
+        expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'fist',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
+      });
+    } finally {
+      restoreLive2dManager();
+      live2dContainer.remove();
+    }
+  });
+
+  it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+    const restoreLive2dManager = installLive2dBoundsMock();
+
+    try {
+      renderInputApp({ onAvatarToolStateChange });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      expect(queryHammerCursorCompactImage()).not.toBeNull();
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
+      });
+
+      onAvatarToolStateChange.mockClear();
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: false,
+        }));
+      });
+    } finally {
+      restoreLive2dManager();
+      live2dContainer.remove();
+    }
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {

@@ -630,7 +630,6 @@ _YUI_RUNTIME_SCRIPTS = (
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/steps.js",
-    "tutorial/avatar/yui-standin.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "avatar-performance-stage.js",
@@ -679,7 +678,6 @@ def test_home_template_loads_yui_wakeup_before_director():
     positions = [
         _script_tag_position(source, name)
         for name in (
-            "tutorial/avatar/yui-standin.js",
             "tutorial/yui-guide/overlay.js",
             "tutorial/yui-guide/page-handoff.js",
             "avatar-performance-stage.js",
@@ -912,15 +910,21 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
-    assert "class Live2DPluginDashboardCornerSession" in avatar_source
+    assert "class Live2DAvatarCornerPeekSession" in avatar_source
+    assert "startAvatarCornerPeek: startAvatarCornerPeek" in avatar_source
     assert "startPluginDashboardCornerPeek: startPluginDashboardCornerPeek" in avatar_source
+    assert "Live2DPluginDashboardCornerSession: Live2DAvatarCornerPeekSession" in avatar_source
     assert "YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame'])" in avatar_source
     assert "home-yui-guide-plugin-dashboard-corner" in avatar_source
     assert "readModelAlpha" in avatar_source
     assert "writeModelAlpha" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
+    assert "function resolveAvatarCornerPeekRotationDegrees(position)" in avatar_source
+    assert "return 135;" in avatar_source
+    assert "return -135;" in avatar_source
+    assert "return 45;" in avatar_source
+    assert "return -45;" in avatar_source
+    assert "AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18" in avatar_source
+    assert "AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647'" in avatar_source
     assert "elevateContainerZIndex" in avatar_source
     assert "restoreContainerZIndex" in avatar_source
@@ -931,29 +935,46 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
         avatar_source.index("this.elevateContainerZIndex()", avatar_source.index("this.phase = 'hold'")),
     ]
     assert source_order == sorted(source_order)
-    assert "const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO)" in avatar_source
-    assert "const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO)" in avatar_source
-    assert "modelCenterOffsetX" in avatar_source
-    assert "modelCenterOffsetY" in avatar_source
+    assert "const isLeft = this.targetPosition === 'bottom-left' || this.targetPosition === 'top-left';" in avatar_source
+    assert "const isTop = this.targetPosition === 'top-right' || this.targetPosition === 'top-left';" in avatar_source
+    for position in ("bottom-right", "bottom-left", "top-right", "top-left"):
+        assert position in avatar_source
+    assert "const rotationDelta = resolveAvatarCornerPeekRotationDegrees(this.targetPosition) * Math.PI / 180;" in avatar_source
+    assert "const rotatedPeekRegion = this.resolveRotatedRectOffset(peekRegion, rotationDelta)" in avatar_source
+    assert "x: desiredLeft - rotatedPeekRegion.left" in avatar_source
+    assert "y: desiredTop - rotatedPeekRegion.top" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_BOTTOM_OVERHANG_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_RIGHT_PADDING_PX" not in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_SCALE" not in avatar_source
     assert "cornerScale" not in avatar_source
     assert "scaleX: base.scaleX," in avatar_source
     assert "scaleY: base.scaleY," in avatar_source
-    assert "rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)" in avatar_source
-    assert "this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress)" in avatar_source
-    assert "this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress)" in avatar_source
-    assert "activePluginDashboardCornerSession.stop('replaced')" in avatar_source
+    assert "rotation: base.rotation + rotationDelta" in avatar_source
+    assert "this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress)" in avatar_source
+    assert "this.applyFrame(\n                    this.cornerFrame," in avatar_source
+    assert "this.applyFrame(\n                    this.initialModelFrame," in avatar_source
+    assert "await activeAvatarCornerPeekSession.stop('replaced')" in avatar_source
 
-    assert "pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId)" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed')" in director_source
-    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup')" in director_source
+    assert "await avatarStageApi.startPluginDashboardCornerPeek({" in director_source
+    assert "async startPluginDashboardCornerPeekPerformance" not in director_source
+    assert "async startAvatarCornerPeekPerformance(options)" in director_source
+    assert "return await api.startAvatarCornerPeek({" in director_source
+    assert "position: normalizedOptions.position" in director_source
+    assert "this.startAvatarCornerPeekPerformance({" in director_source
+    assert "position: cue.position" in director_source
+    assert "Number.isFinite(Number(cue.duration))" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup')" in director_source
+    assert "this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy')" in director_source
+    assert "this.takeoverTopPeekHandle = null" in director_source
     assert "async stopPluginDashboardCornerPeekPerformance(handle, reason)" in director_source
+    assert "async stopAvatarCornerPeekPerformance(handle, reason)" in director_source
+    assert "async stopAvatarStandInPerformance(reason)" in director_source
     assert "await handle.stop(reason || 'plugin_dashboard_closed')" in director_source
+    assert "await this.stopAvatarCornerPeekPerformance(handle, reason || 'avatar_standin_clear')" in director_source
     assert "isCancelled: () => runId !== this.sceneRunId || this.isStopping()" in director_source
     assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
 
+    assert "AvatarCornerPeek" not in performance_source
     assert "PluginDashboardCorner" not in performance_source
     assert "plugin-dashboard" not in performance_source
 
@@ -1078,7 +1099,10 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/tutorial/visual/resistance-controllers.js" in tracked_paths
     assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
     assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
+    assert "static/tutorial/avatar/standin-controller.js" in tracked_paths
+    assert "static/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
+    assert "static/live2d-interaction.js" in tracked_paths
 
 
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
@@ -1887,6 +1911,157 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
     plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
     assert plugin is plugins[0]
     assert entry is None
+
+
+def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
+    """_apply_cached_short_descriptions is a pure manifest/cache read (zero LLM):
+    a manifest-provided short_description is used as-is and primes the cache; a
+    cache hit (description unchanged) is applied; missing or stale entries are
+    left empty and returned as background-prewarm candidates — never generated
+    here."""
+    from brain.task_executor import DirectTaskExecutor
+
+    key = DirectTaskExecutor._desc_key
+    executor = object.__new__(DirectTaskExecutor)
+    executor._short_desc_cache = {}
+    # 缓存键是完整 description 的 hash（截断只用于喂 LLM，不当失效 key）
+    executor._short_desc_cache["from_cache"] = (key("full B"), "cached B")
+    executor._short_desc_cache["stale_cache"] = (key("old D"), "cached D")
+
+    plugins = [
+        {"id": "has_manifest", "description": "full A", "short_description": "short A"},
+        {"id": "from_cache", "description": "full B"},
+        {"id": "stale_cache", "description": "new D"},
+        {"id": "missing", "description": "full C"},
+        {"id": "no_desc"},
+        "not_a_dict",
+    ]
+
+    missing = executor._apply_cached_short_descriptions(plugins)
+
+    # (a) manifest 自带 → 直接用，并把它写进缓存供后续 refresh 复用
+    assert plugins[0]["short_description"] == "short A"
+    assert executor._short_desc_cache["has_manifest"] == (key("full A"), "short A")
+    # 缓存命中（desc 未变）→ 应用缓存值
+    assert plugins[1]["short_description"] == "cached B"
+    # 缓存陈旧（desc 变了）→ 不应用，进 missing 候选
+    assert "short_description" not in plugins[2]
+    # 缺失且无缓存 → 不现生成，留空，进 missing 候选
+    assert "short_description" not in plugins[3]
+    # 无 description → 无可摘要内容，不进 missing 也不留空
+    assert "short_description" not in plugins[4]
+
+    assert sorted(p["id"] for p in missing) == ["missing", "stale_cache"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_provider_never_generates_short_description_on_hot_path():
+    """Core acceptance: the analyze hot path (plugin_list_provider) must never
+    generate a short_description inline. Plugins missing one are handed to the
+    background prewarm; the call returns immediately, _get_llm is not invoked
+    synchronously, and analyze safely falls back to the full description."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from brain.task_executor import DirectTaskExecutor
+
+    plugins = [{"id": "no_short", "description": "a plugin without a short description"}]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+    executor._short_desc_prewarm_inflight = set()
+    executor._short_desc_prewarm_tasks = set()
+
+    llm_factory = MagicMock(
+        side_effect=AssertionError("_get_llm must not be called on the analyze hot path")
+    )
+    with patch.object(DirectTaskExecutor, "_get_llm", llm_factory), \
+         patch.object(
+             DirectTaskExecutor, "_prewarm_short_descriptions", new_callable=AsyncMock,
+         ) as mock_prewarm:
+        result = await executor.plugin_list_provider(force_refresh=True)
+
+    # 返回的插件仍缺 short_description（未现生成）→ 分析侧回退到完整 description
+    assert not result[0].get("short_description")
+    # 热路径上 _get_llm 没被同步调用
+    llm_factory.assert_not_called()
+    # 缺失插件被调度进后台预热
+    mock_prewarm.assert_called_once()
+    assert "no_short" in executor._short_desc_prewarm_inflight
+    await asyncio.sleep(0)  # 让后台任务跑掉，避免 "coroutine never awaited" 警告
+
+
+def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
+    """LLM-generated short_descriptions are persisted to disk; a fresh instance
+    (simulating a restart) reuses them with zero LLM. The key is a hash of the
+    full description, so a manifest change invalidates the entry and triggers
+    regeneration."""
+    from types import SimpleNamespace
+    from brain.task_executor import DirectTaskExecutor
+
+    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
+    key = DirectTaskExecutor._desc_key
+
+    # 实例一：把一条生成的缓存落盘（key = 完整 description 的 hash）
+    exec1 = object.__new__(DirectTaskExecutor)
+    exec1._config_manager = cfg
+    exec1._short_desc_cache_filename = "plugin_short_desc_cache.json"
+    exec1._persist_generated_short_descriptions({"genplug": (key("full desc"), "generated short")})
+    assert (tmp_path / "plugin_short_desc_cache.json").exists()
+
+    # 实例二：从盘上加载（模拟重启）
+    exec2 = object.__new__(DirectTaskExecutor)
+    exec2._config_manager = cfg
+    exec2._short_desc_cache_filename = "plugin_short_desc_cache.json"
+    exec2._short_desc_cache = exec2._load_short_desc_cache()
+    assert exec2._short_desc_cache == {"genplug": (key("full desc"), "generated short")}
+
+    # desc 未变 → 命中持久化缓存，零 LLM，不进 missing
+    plugins = [{"id": "genplug", "description": "full desc"}]
+    assert exec2._apply_cached_short_descriptions(plugins) == []
+    assert plugins[0]["short_description"] == "generated short"
+
+    # desc 变了 → hash key 失效，重新作为生成候选
+    changed = [{"id": "genplug", "description": "CHANGED desc"}]
+    missing = exec2._apply_cached_short_descriptions(changed)
+    assert "short_description" not in changed[0]
+    assert [p["id"] for p in missing] == ["genplug"]
+
+
+def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
+    """Regression (Codex P2): the cache key is a hash of the FULL description;
+    truncation is prompt-only. A very long description (far above
+    PLUGIN_INPUT_DESC_MAX_TOKENS) must still hit the cache, rather than missing
+    forever because a truncated key never matches the full description."""
+    from config import PLUGIN_INPUT_DESC_MAX_TOKENS
+    from brain.task_executor import DirectTaskExecutor
+
+    key = DirectTaskExecutor._desc_key
+    long_desc = ("word " * (PLUGIN_INPUT_DESC_MAX_TOKENS * 4)).strip()  # 远超输入截断阈值
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._short_desc_cache = {"big": (key(long_desc), "cached short")}
+
+    plugins = [{"id": "big", "description": long_desc}]
+    assert executor._apply_cached_short_descriptions(plugins) == []
+    assert plugins[0]["short_description"] == "cached short"
+
+
+def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
+    """A missing file or corrupt JSON yields an empty cache safely (no raise)."""
+    from types import SimpleNamespace
+    from brain.task_executor import DirectTaskExecutor
+
+    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
+    executor = object.__new__(DirectTaskExecutor)
+    executor._config_manager = cfg
+    executor._short_desc_cache_filename = "plugin_short_desc_cache.json"
+
+    # 文件不存在
+    assert executor._load_short_desc_cache() == {}
+
+    # 损坏的 JSON
+    (tmp_path / "plugin_short_desc_cache.json").write_text("{not json", encoding="utf-8")
+    assert executor._load_short_desc_cache() == {}
 
 
 @pytest.mark.asyncio

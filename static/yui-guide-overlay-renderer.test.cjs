@@ -55,7 +55,7 @@ test('PC overlay bridge marks itself inactive when clearing the remote tutorial 
         '    const OverlayRendererClass =',
         1
     )[0];
-    const sendBlock = bridgeBlock.split('        const send = (patch, force) => {')[1].split(
+    const sendBlock = bridgeBlock.split('        const send = (patch, force, retried) => {')[1].split(
         '        };',
         1
     )[0];
@@ -115,8 +115,6 @@ test('TutorialOverlayRenderer delegates full-state calls to the bridge', () => {
         hideCursor: () => calls.push(['hideCursor']),
         clearCursorCache: () => calls.push(['clearCursorCache']),
         playPetalTransition: (origin, options) => calls.push(['petal', origin.x, options.durationMs]),
-        showAvatarStandIn: (standIn) => calls.push(['standIn', standIn.resource, standIn.url || '']),
-        clearAvatarStandIn: () => calls.push(['clearStandIn']),
         clear: () => calls.push(['clear'])
     };
     assert.equal(typeof TutorialOverlayRenderer, 'function');
@@ -131,8 +129,6 @@ test('TutorialOverlayRenderer delegates full-state calls to the bridge', () => {
     renderer.hideCursor();
     renderer.clearCursorCache();
     assert.equal(renderer.playPetalTransition({ x: 5, y: 6 }, { durationMs: 700 }), true);
-    renderer.showAvatarStandIn({ resource: 'day5' });
-    renderer.clearAvatarStandIn();
     renderer.clear();
 
     assert.deepEqual(calls, [
@@ -142,8 +138,6 @@ test('TutorialOverlayRenderer delegates full-state calls to the bridge', () => {
         ['hideCursor'],
         ['clearCursorCache'],
         ['petal', 5, 700],
-        ['standIn', 'day5', ''],
-        ['clearStandIn'],
         ['clear']
     ]);
 });
@@ -631,18 +625,9 @@ test('OverlaySpotlightStateStore owns spotlight target state', () => {
 test('PC overlay complete state store composes full visual payloads', () => {
     assert.ok(fs.existsSync(rendererPath), 'tutorial/visual/overlay-renderer.js should exist');
     const { createPcOverlayCompleteStateStore } = require('./tutorial/visual/overlay-renderer.js');
-    const storage = new Map();
     let now = 1000;
     const store = createPcOverlayCompleteStateStore({
-        now: () => now,
-        storage: {
-            setItem(key, value) {
-                storage.set(key, value);
-            },
-            removeItem(key) {
-                storage.delete(key);
-            }
-        }
+        now: () => now
     });
 
     const clickPayload = store.applyPatch({
@@ -653,16 +638,10 @@ test('PC overlay complete state store composes full visual payloads', () => {
             y: 24,
             effect: 'click',
             effectDurationMs: 120
-        },
-        avatarStandIn: {
-            visible: true,
-            resource: 'day5'
         }
     });
     assert.deepEqual(clickPayload.spotlights, [{ id: 'spotlight-a' }]);
     assert.equal(clickPayload.cursor.effect, 'click');
-    assert.equal(clickPayload.avatarStandIn.resource, 'day5');
-    assert.equal(JSON.parse(storage.get('yuiGuidePcOverlayAvatarStandIn')).resource, 'day5');
 
     now = 1050;
     const suppressedPayload = store.applyPatch({
@@ -672,7 +651,6 @@ test('PC overlay complete state store composes full visual payloads', () => {
     assert.deepEqual(suppressedPayload.spotlights, [{ id: 'spotlight-b' }]);
     assert.equal(Object.prototype.hasOwnProperty.call(suppressedPayload, 'cursor'), false);
     assert.equal(suppressedPayload.petal.id, 'petal-a');
-    assert.equal(suppressedPayload.avatarStandIn.resource, 'day5');
 
     now = 1200;
     const resumedPayload = store.applyPatch({
@@ -686,12 +664,9 @@ test('PC overlay complete state store composes full visual payloads', () => {
     assert.equal(store.getPetal().id, 'petal-a');
 
     const clearedPayload = store.applyPatch({
-        petal: null,
-        avatarStandIn: null
+        petal: null
     });
     assert.equal(clearedPayload.petal, null);
-    assert.equal(clearedPayload.avatarStandIn, null);
-    assert.equal(storage.has('yuiGuidePcOverlayAvatarStandIn'), false);
 
     store.reset();
     assert.deepEqual(store.applyPatch({}), {});
@@ -769,20 +744,12 @@ test('overlay visual outputs go through TutorialOverlayRenderer before DOM fallb
         '        updateSpotlightFrame',
         1
     )[0];
-    const clearSpotlightBlock = overlaySource.split('        clearSpotlight() {')[1].split(
+    const clearSpotlightBlock = overlaySource.split('        clearSpotlight(options) {')[1].split(
         '        hasCursorPosition() {',
         1
     )[0];
-    const showStandInBlock = overlaySource.split('        showAvatarStandIn(standIn) {')[1].split(
-        '        clearAvatarStandIn() {',
-        1
-    )[0];
-    const clearStandInBlock = overlaySource.split('        clearAvatarStandIn() {')[1].split(
-        '        setSpotlightSuppressed',
-        1
-    )[0];
     const hideCursorBlock = overlaySource.split('        hideCursor() {')[1].split(
-        '        playPetalTransition',
+        '        clearCursorCache',
         1
     )[0];
     const petalBlock = overlaySource.split('        playPetalTransition(origin, options) {')[1].split(
@@ -816,10 +783,8 @@ test('overlay visual outputs go through TutorialOverlayRenderer before DOM fallb
     assert.ok(pcSpotlightReturnIndex >= 0);
     assert.ok(domSpotlightRenderIndex > pcSpotlightReturnIndex);
     assert.match(clearSpotlightBlock, /this\.overlayRenderer\.setSpotlights\(\[\]\)/);
-    assert.match(showStandInBlock, /this\.overlayRenderer\.showAvatarStandIn\(payload\)/);
-    assert.match(clearStandInBlock, /this\.overlayRenderer\.clearAvatarStandIn\(\)/);
-    assert.doesNotMatch(showStandInBlock, /this\.avatarStandIn/);
-    assert.doesNotMatch(clearStandInBlock, /this\.avatarStandIn/);
+    assert.doesNotMatch(source, /showAvatarStandIn/);
+    assert.doesNotMatch(source, /clearAvatarStandIn/);
     assert.match(hideCursorBlock, /this\.overlayRenderer\.hideCursor\(\)/);
     assert.match(petalBlock, /this\.overlayRenderer\.playPetalTransition\(origin,\s*options \|\| \{\}\)/);
     assert.doesNotMatch(refreshBlock, /this\.pcOverlayBridge\.setSpotlights\(pcRects\)/);

@@ -769,6 +769,7 @@
         "reactWindowLoadFailed": "Failed to load chat window resources",
         "reactWindowAriaLabel": "Neko chat window",
         "focusIndicator": "In focus",
+        "focusThinking": "Thinking",
         "reactWindowInputHint": "Press Enter to send, Shift + Enter for a new line",
         "messageListAriaLabel": "Chat messages",
         "composerToolsAriaLabel": "Composer tools",
@@ -978,6 +979,7 @@
         "openaiAssist": "OpenAI: Strong memory management capability",
         "geminiAssist": "Gemini: Excellent intelligence and value",
         "kimiAssist": "Kimi: Supports long context and vision",
+        "kimiCodeAssist": "Kimi Code: Anthropic Messages compatible, good for coding and long text tasks",
         "assistApiNote": "Note: Only Alibaba supports custom voice functionality. GLM and StepFun are not recommended.",
         "assistApiKeyQwen": "Assist API Key - Alibaba",
         "assistApiKeyOpenai": "Assist API Key - OpenAI",
@@ -986,6 +988,7 @@
         "assistApiKeySilicon": "Assist API Key - SiliconFlow",
         "assistApiKeyGemini": "Assist API Key - Gemini",
         "assistApiKeyKimi": "Assist API Key - Kimi",
+        "assistApiKeyKimiCode": "Assist API Key - Kimi Code",
         "assistApiKeyHint": "(Only required when Assist API is {{provider}})",
         "assistApiKeyPlaceholder": "Auto-fills from Key Book when empty",
         "providerNames": {
@@ -995,6 +998,7 @@
             "step": "StepFun",
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,6 +1020,7 @@
             "silicon": "SiliconFlow (Good Value, Recommended)",
             "gemini": "Gemini (Google, High Intelligence)",
             "kimi": "Kimi (Moonshot, Long Context)",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
@@ -1064,6 +1069,7 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
@@ -1787,6 +1793,8 @@
         "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page.",
         "tutorialHomeDayLabel": "Day {{day}}",
         "tutorialHomeDayColumn": "Home Seven-Day Tutorial",
+        "tutorialHomeAllReset": "Reset All",
+        "tutorialHomeAllResetSuccess": "Home seven-day tutorial has been reset. Reload Neko to start again from Day 1.",
         "refreshed": "Memory updated, new memory will be used in the next conversation",
         "refreshingContext": "Refreshing context...",
         "storageLocation": "Storage Location",
@@ -2534,6 +2542,8 @@
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
             "avatarReactionBubble": "Expression Bubble",
+            "focusCognition": "Focus Mode",
+            "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "proactiveChat": "Proactive Chat",
@@ -3341,7 +3351,7 @@
                 "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
                 "takeoverPluginPreviewHome": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "takeoverPluginPreviewDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "takeoverPluginPreviewDashboard":  "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
                 "pluginDashboardPopupBlocked": "Your browser needs you to click here yourself to open the plugin panel. Click \"Management Panel\" and I'll keep showing you around.",
                 "takeoverSettingsPeekIntro": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
                 "takeoverSettingsPeekDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it. This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
@@ -3351,7 +3361,7 @@
                 "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
                 "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
                 "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
-                "introGreetingReply": "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
+                "introGreetingReply":  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
                 "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
                 "introActivationHint": "Hang on a moment, I'll start talking soon, nyan~!"
             }
@@ -3359,7 +3369,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "Move your mouse right here, hold it down, and you can drag my chat box anywhere you want~ Click it once and you can send me messages anytime!",
-                "historyHandle": "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
+                "historyHandle":  "Poke that little [blue bar] on top of the chat box, and you'll see the topics we talked about recently!",
                 "screenEntry": "When we're on a voice call, light up this little button, and you can share your screen with me!",
                 "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
             },
@@ -3376,16 +3386,16 @@
             "day3": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
                 "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
-                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
-                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro":  "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
                 "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
             },
             "day4": {
-                "intro": "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
+                "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
                 "chatSettings": "Here you can decide how long my replies are, whether I should use cute emojis, or even interrupt me when I'm being too chatty! You can tune it to whatever rhythm feels best for you.",
-                "modelBehavior": "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
+                "modelBehavior":  "If you want to see a more detailed, high-quality me, or want a smoother, ultra-fluid motion experience, you can adjust everything right here! No matter what you choose, I'll always show you my absolute cutest side~",
                 "gazeFollow": "After turning this on, no matter where your mouse moves, my eyes will closely follow you! Hehe, doesn't it feel wonderful to be watched all the time?",
                 "privacyMode": "This is the 'Ultimate Privacy Switch' that controls whether I can look at your screen, meow! If you turn it off, I can see your screen, but if you turn it on, the [Screen Share] from before will be disabled and I won't peek at all~",
                 "modelLock": "Do you always accidentally click me and nudge me out of place? Then quickly lock me down to my current position! Once locked, I won't go anywhere and will stay right here to keep you company~",
@@ -3393,23 +3403,23 @@
                 "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
             },
             "day5": {
-                "characterSettings": "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
+                "characterSettings":  "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
                 "characterPanic": "Huh? Wait, there's actually an option to replace me here?! Hold on a second! Your hands right now... you're not trying to get rid of me, are you?! Ahhh, no way! Close it, close it right now!",
                 "memoryEntry": "If you accidentally forget what I can do for you, just come here anytime and let me teach you again! All the little moments we've shared are quietly saved right here. Don't you dare underestimate our bond, you dummy!",
-                "wrap": "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
+                "wrap":  "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
             },
             "day6": {
                 "intro": "Ta-daaaa! Today I've got to fire myself up and talk to you all about our [Cat Paw]! Although I mentioned it briefly a couple of days ago, it has so many awesome features hidden inside!",
                 "statusMaster": "Come on, confess! Did you click it and give it a try over the last two days?",
                 "pluginSidePanel": "On top of the features I introduced before, there are tons of super fun plugins here too!",
-                "pluginDashboard": "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
+                "pluginDashboard":  "With these, not only can I read Bilibili bullet comments, but I can also help you turn off the lights and switch on the AC... This kitty is the omnipotent Super Cat God! Hmph!",
                 "taskHud": "Look here, look here! When I decide to use the [Cat Paw] to work for you, my progress will show up right here, purr-purr!",
                 "taskHudControl": "If your plans change, you can poke it anytime to make me stop. Hehe, today is another energetic day of working hard to earn tasty fish treats! Let's go!",
                 "wrapCleanup": "Phew... let's pack up these cluttered menus so they won't get in your way.",
                 "wrap": "You can comfortably carry on with your own tasks. Whether you need my little paws to help you out, or just want me to keep you company quietly, I'll always be right here watching over you. Have a super happy day today!"
             },
             "day7": {
-                "memoryReview": "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
+                "memoryReview":  "Seven days ago, it was just our very first meeting. Now, this place is already filling up with the words we've spoken, the things we've done, and those tiny little moments that almost drifted away in the wind. To me, these aren't cold data logs; they are the footprints of our time spent together.",
                 "memoryControl": "These little footprints can be neatly organized by your own hands, too. The ones you want to keep, we can tuck into our album; the ones you want to let go, we can just let them drift away in the wind. The memories you cherish and save are the most precious of all.",
                 "wrap": "The breeze is still at the window, the sunshine is just perfect, and you, who just arrived, have already quietly become a very important part of this place. The novice guide will leave you here for now, but for the rest of our days, let's slowly get to know each other, draw closer, and write a story that belongs only to us. Please take good care of me from now on, meow!"
             }
@@ -4035,6 +4045,12 @@
             "title": "Update Info"
         }
     },
+    "survey": {
+        "title": "Survey",
+        "submit": "Submit",
+        "skip": "Skip",
+        "requiredHint": "Please answer this question first"
+    },
     "proactive": {
         "meme": {
             "title": "Meme",
@@ -4248,9 +4264,24 @@
     },
      "badminton": {
          "title": "Badminton Challenge",
+         "exit": "Exit",
          "loading": {
              "title": "Entering the badminton court",
              "subtitle": "Loading the court, characters, and audio..."
+         },
+         "startScreen": {
+             "readyToStart": "Ready - click to start",
+             "startButton": "Start",
+             "never": "Do not show again"
+         },
+         "startTutorial": {
+             "title": "How to play",
+             "aim": "Move the mouse up and down to aim your racket.",
+             "charge": "Hold left click to charge, then release to swing.",
+             "release": "Line shots, sweet spots, and distance affect scoring.",
+             "jump": "Press Space to jump smash.",
+             "duel": "In duel mode, you and NEKO take turns. First to 11 points wins.",
+             "duel11": "In duel mode, you and NEKO take turns. First to 11 points wins."
          },
          "modeSwitcher": "Badminton mode",
          "mode": {
@@ -4278,7 +4309,7 @@
              "chances": "Chances {{count}}",
              "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
              "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
-             "duelTitle": "Neko Duel: you and Neko take turns hitting shots",
+             "duelTitle": "In duel mode, you and NEKO take turns. First to 11 points wins.",
              "timedTitle": "Time Attack: unlimited shots in 60 seconds",
              "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
@@ -4395,6 +4426,11 @@
          "toast": {
              "difficulty": "Difficulty {{difficulty}}",
              "nekoShoot": "Neko's shot",
+             "nekoSmash": "Yui smash!",
+             "nekoSave": "Yui saves it!",
+             "yuiCheatInk": "Yui tossed ink",
+             "yuiCheatBanana": "Yui tossed a banana peel",
+             "yuiCheatBananaSlip": "You stepped on the banana peel",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
@@ -4431,178 +4467,225 @@
          "lines": {
              "default": {
                  "shot_missed": [
-                     "Still a chance.",
-                     "Steady up."
+                     "Next rally, stay steady.",
+                     "Reset and swing clean."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "This round ends here.",
+                     "Want another one?"
                  ],
                  "long_aim": [
-                     "Take the shot.",
-                     "Still aiming?"
+                     "Swing before it drops.",
+                     "Think too long and you freeze."
                  ],
                  "close_to_record": [
-                     "Almost a record.",
-                     "Just a little more."
+                     "The record is close.",
+                     "One steadier shot gets there."
                  ],
                  "new_record": [
-                     "New record!",
-                     "That was far."
+                     "Fine, new record.",
+                     "That one was clean."
                  ],
                  "streak_5": [
-                     "Five in a row!",
-                     "You are heating up."
+                     "Five rallies linked.",
+                     "Your rhythm is warming up."
                  ],
                  "streak_10": [
-                     "Ten straight?",
-                     "That is wild."
+                     "Ten straight, not bad.",
+                     "Do not get proud yet."
                  ],
                  "streak_15": [
-                     "Fifteen is absurd.",
-                     "You are locked in."
+                     "Fifteen and still going.",
+                     "Now I am watching closely."
                  ],
                  "streak_20": [
-                     "Twenty straight?",
-                     "This round is unreal."
+                     "Twenty is too long.",
+                     "Is this rally still going?"
                  ],
                  "line_in": [
-                     "Caught the line!",
-                     "Clean landing."
+                     "On the line, accurate.",
+                     "That placement was good."
                  ],
                  "net_touch": [
-                     "Net touch counts.",
-                     "Nice angle."
+                     "It slipped over the net.",
+                     "Risky angle, but fine."
                  ],
                  "zone_in": [
-                     "Right in the zone!",
-                     "That landed clean."
+                     "Right in the zone.",
+                     "You picked that spot well."
                  ],
                  "out": [
-                     "Just out.",
-                     "That one sailed long."
+                     "Just a little long.",
+                     "That swing carried too far."
                  ],
                  "net": [
-                     "Caught the net.",
-                     "Open the racket face."
+                     "The net caught it.",
+                     "Lift the racket face."
                  ]
              },
              "shooter": {
                  "shot_missed": [
-                     "Still a chance.",
-                     "Steady up."
+                     "Reset your control.",
+                     "Stay steady. I can follow."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "Your control still needs work.",
+                     "Do not make me run for nothing."
                  ],
                  "long_aim": [
-                     "Take the shot.",
-                     "Still aiming?"
+                     "Hurry up, my hand is stiff.",
+                     "Still choosing the angle?"
                  ],
                  "close_to_record": [
-                     "Almost a record.",
-                     "Just a little more."
+                     "The record is close.",
+                     "Do not shake on this shot."
                  ],
                  "new_record": [
-                     "New record!",
-                     "That was far."
+                     "Fine, new record.",
+                     "That cooperation was decent."
                  ],
                  "streak_5": [
-                     "Five in a row!",
-                     "You are heating up."
+                     "Five in a row. Do not float.",
+                     "This rhythm is stable."
                  ],
                  "streak_10": [
-                     "Ten straight?",
-                     "That is wild."
+                     "Ten straight? Do not brag.",
+                     "Your hand is pretty steady."
                  ],
                  "streak_15": [
-                     "Fifteen is absurd.",
-                     "You are locked in."
+                     "Fifteen? Do not get smug.",
+                     "You really held this one."
                  ],
                  "streak_20": [
-                     "Twenty straight?",
-                     "This round is unreal."
+                     "Twenty? Still going?",
+                     "This round is getting wild."
                  ],
                  "line_in": [
-                     "Caught the line!",
-                     "Clean landing."
+                     "Fine, that was accurate.",
+                     "Racket face was controlled."
                  ],
                  "net_touch": [
-                     "Net touch counts.",
-                     "Nice angle."
+                     "You brushed it over.",
+                     "The risky angle worked."
                  ],
                  "zone_in": [
-                     "Right in the zone!",
-                     "That landed clean."
+                     "Do not grin. Lucky spot.",
+                     "You picked that landing well."
                  ],
                  "out": [
-                     "Just out.",
-                     "That one sailed long."
+                     "A little less force.",
+                     "You rushed that one."
                  ],
                  "net": [
-                     "Caught the net.",
-                     "Open the racket face."
+                     "Where are you steering me?",
+                     "Lift the racket face."
                  ]
              },
              "duel": {
                  "shot_missed": [
                      "Still a chance.",
-                     "Steady up."
+                     "Steady up.",
+                     "You were half a beat late.",
+                     "Do not panic. I am still waiting."
                  ],
                  "game_over": [
-                     "Run it back?",
-                     "I will remember that one."
+                     "This round ends here.",
+                     "Do not run next round.",
+                     "This set stops here.",
+                     "The scoreboard says enough."
                  ],
                  "long_aim": [
                      "Take the shot.",
-                     "Still aiming?"
+                     "Still aiming?",
+                     "Waiting for the wind?",
+                     "Swing soon or I am getting water."
                  ],
                  "close_to_record": [
                      "Almost a record.",
-                     "Just a little more."
+                     "Just a little more.",
+                     "The record is right on your strings.",
+                     "One steady shot and it changes."
                  ],
                  "new_record": [
                      "New record!",
-                     "That was far."
+                     "That was far.",
+                     "Fine, that one was beautiful.",
+                     "New record is yours. Next point is mine."
                  ],
                  "streak_5": [
                      "Five in a row!",
-                     "You are heating up."
+                     "You are heating up.",
+                     "Five connected. Not bad.",
+                     "Your rhythm finally settled."
                  ],
                  "streak_10": [
                      "Ten straight?",
-                     "That is wild."
+                     "That is wild.",
+                     "Ten straight? Now I am watching closely.",
+                     "This rally is getting interesting."
                  ],
                  "streak_15": [
                      "Fifteen is absurd.",
-                     "You are locked in."
+                     "You are locked in.",
+                     "Fifteen and still alive. Stubborn.",
+                     "You cannot stay this steady forever."
                  ],
                  "streak_20": [
                      "Twenty straight?",
-                     "This round is unreal."
+                     "This round is unreal.",
+                     "Twenty straight. The court will remember that.",
+                     "This rally has gone completely wild."
                  ],
                  "clutch": "...This has to go in.",
-                 "excuse": "Ow, my arm is a little tired.",
+                 "excuse": [
+                     "Ow, my arm is a little tired.",
+                     "My touch is off today. Next shot, I get serious.",
+                     "That one does not count. I was checking the wind.",
+                     "My strings are loose. It was not my fault."
+                 ],
+                 "difficultyLv2": [
+                     "Warm-up is over. I am speeding up.",
+                     "Playtime is over.",
+                     "I am starting to receive for real. Do not blink.",
+                     "Next one is faster. Hold steady."
+                 ],
+                 "difficultyMax": [
+                     "Now I am getting serious.",
+                     "From now on, I rule above and below.",
+                     "Now you are the challenger.",
+                     "If the future is yours, prove it!",
+                     "From this shot on, I am not holding back.",
+                     "The court is mine. The score follows skill."
+                 ],
                  "line_in": [
                      "Caught the line!",
-                     "Clean landing."
+                     "Clean landing.",
+                     "Even the sideline is on your side.",
+                     "That clipped the line cleanly."
                  ],
                  "net_touch": [
                      "Net touch counts.",
-                     "Nice angle."
+                     "Nice angle.",
+                     "A net dribble counts. Sneaky.",
+                     "That skimmed a little too close."
                  ],
                  "zone_in": [
                      "Right in the zone!",
-                     "That landed clean."
+                     "That landed clean.",
+                     "That landing was annoyingly sharp.",
+                     "I was a step away from that."
                  ],
                  "out": [
                      "Just out.",
-                     "That one sailed long."
+                     "That one sailed long.",
+                     "That flew farther than my patience.",
+                     "Out. Do not pretend you missed it."
                  ],
                  "net": [
                      "Caught the net.",
-                     "Open the racket face."
+                     "Open the racket face.",
+                     "The net blocked you for me.",
+                     "Too rushed on that swing."
                  ]
              },
              "fallback": [
@@ -4622,8 +4705,39 @@
              "mindGame": [
                  "Your hand is shaking.",
                  "Think first, no rush.",
-                 "This is not a short shot."
+                 "This is not a short shot.",
+                 "You look like you want the sideline.",
+                 "I already read your racket face.",
+                 "Stare too long and your hand locks up."
              ],
+             "yuiCheat": {
+                 "banana": [
+                     "Watch your step, banana peel incoming.",
+                     "Do not step on it. I tossed it over.",
+                     "Better look closely at this step.",
+                     "Jump over it if you can."
+                 ],
+                 "octopus": [
+                     "Ink incoming. Can you still see?",
+                     "Let me borrow your vision for a second.",
+                     "Do not blink. It is already too late.",
+                     "Catch it even if you cannot see."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "That step was slippery. This point is mine.",
+                     "Banana peel assist successful. Hehe.",
+                     "One slip and the score comes to my side.",
+                     "Mind the floor. Yui gets one more point."
+                 ],
+                 "octopus": [
+                     "The ink covered things perfectly. This point is mine.",
+                     "You still have to return it when you cannot see.",
+                     "While your view was blocked, I already scored.",
+                     "That ink tactic worked pretty well."
+                 ]
+             },
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",
                  "xmas": "The bells are up and you still want to rally?",

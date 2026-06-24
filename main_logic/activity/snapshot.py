@@ -48,6 +48,11 @@ ActivityState = Literal[
     'gaming',              # Game window in foreground / known game process
     'focused_work',        # IDE / Office / PDF / etc. + sustained input
     'casual_browsing',     # Entertainment domains/clients dominate
+    'focused_video',       # Sustained immersion in a video/live window
+                           # (entertainment + subcategory video/live, dwell
+                           # past FOCUSED_VIDEO_MIN_DWELL_SECONDS). Keeps the
+                           # screen-snark channel but cuts music/meme/web —
+                           # propensity reuses restricted_screen_only.
     'chatting',            # IM/email/meeting in foreground + active text
     'voice_engaged',       # Voice mode and recent RMS / VAD activity
     'idle',                # At the computer but no clear activity bucket
@@ -346,6 +351,9 @@ _STATE_TO_PROPENSITY: dict[ActivityState, Propensity] = {
     'gaming':           'restricted_screen_only',
     'focused_work':     'restricted_screen_only',
     'casual_browsing':  'open',
+    'focused_video':    'restricted_screen_only',       # Immersed in a video —
+                                                        # keep screen snark, drop
+                                                        # music/meme/web externals
     'chatting':         'open',
     'voice_engaged':    'open',
     'idle':             'open',
@@ -408,7 +416,9 @@ def derive_propensity(
 #         genre=other               → 'mellow'
 #       intensity=casual            → 'playful'
 #       intensity=varied / None     → 'concise' (conservative fallback)
-#   4. state == 'casual_browsing'  → 'witty' (watching anime/video — snark + quality bar)
+#   4. state in {casual_browsing, focused_video} → 'witty' (watching
+#      anime/video — snark + quality bar; focused_video is the sustained-
+#      immersion variant, same delivery voice)
 #   5. state == 'chatting'         → 'warm'
 #   6. state == 'stale_returning'  → 'warm' (greeting moment)
 #   7. state == 'focused_work'     → 'concise'
@@ -442,7 +452,7 @@ def derive_tone(
             return 'playful'
         # game_intensity in {'varied', None}
         return 'concise'
-    if state == 'casual_browsing':
+    if state in ('casual_browsing', 'focused_video'):
         # Watching anime / video / streams. Running snarky commentary is
         # the whole appeal here — but a flat, unfunny line is worse than
         # silence, so ``witty`` is quality-barred (see

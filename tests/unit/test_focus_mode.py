@@ -4,8 +4,8 @@ Coverage:
 1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
    scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
    hard-cap exit / topic-switch exit-and-clear.
-2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, weight
-   renormalisation, cadence baseline roll.
+2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, direct
+   weighted-sum scoring (no denominator), cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    retention override, reset clearing, master-switch-off degradation.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
@@ -39,10 +39,12 @@ from main_logic.session_state import (
 
 
 # ── helpers ─────────────────────────────────────────────────────────
-def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True):
+def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True,
+        cap=1.0, time_decay=0.0, time_decay_activated=0.0):
     return FocusThresholds(
         enabled=enabled, retention=retention, enter=enter, exit=exit,
-        hard_cap_turns=hard_cap_turns,
+        hard_cap_turns=hard_cap_turns, cap=cap, time_decay=time_decay,
+        time_decay_activated=time_decay_activated,
     )
 
 
@@ -78,6 +80,43 @@ def test_decide_charge_capped_at_enter():
                       score=0.9, topic_changed=False, th=_th())
     # 0.9*0.5 + 0.9 = 1.35 → cap 1.0
     assert d.action is _FocusAction.ENTER and d.charge == 1.0
+
+
+def test_decide_charge_climbs_above_enter_to_cap():
+    # Entry no longer caps charge at `enter`: with cap=1.0 > enter=0.6, sustained
+    # strong scores keep climbing toward the cap (drives a brighter/longer glow).
+    th = _th(enter=0.6, cap=1.0)
+    d = _focus_decide(mode=CognitionMode.FOCUS, focus_turn_count=1, charge=0.9,
+                      score=0.9, topic_changed=False, th=th)
+    # 0.9*0.5 + 0.9 = 1.35 → cap 1.0, NOT clamped down to enter 0.6
+    assert d.action is _FocusAction.STAY and d.charge == 1.0
+
+
+def test_decide_negative_score_clamps_charge_at_zero():
+    # A happy turn now yields a NEGATIVE score (emotion votes Focus down); the
+    # accumulator must clamp at 0, not go negative.
+    th = _th(enter=0.6)
+    d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.2,
+                      score=-0.5, topic_changed=False, th=th)
+    # 0.2*0.5 + (-0.5) = -0.4 → clamped to 0.0, stays REGULAR
+    assert d.action is _FocusAction.STAY and d.charge == 0.0
+
+
+def test_time_decay_floors_at_activation():
+    from main_logic.session_state import _decay_charge_over_time
+    th = _th(enter=0.6, time_decay=0.02, time_decay_activated=0.01)
+    # Below enter → fast rate, bleeds toward 0: 0.5 - 0.02*5 = 0.4
+    assert abs(_decay_charge_over_time(0.5, 5.0, th) - 0.4) < 1e-9
+    # At/above enter → slow rate: 0.9 - 0.01*5 = 0.85 (still above the 0.6 floor)
+    assert abs(_decay_charge_over_time(0.9, 5.0, th) - 0.85) < 1e-9
+    # Activated charge can ONLY decay down to enter, never below — dropping out
+    # of 0.6 needs a turn, not silence: 1.0 for 60s → max(0.6, 0.4) = 0.6.
+    assert abs(_decay_charge_over_time(1.0, 60.0, th) - 0.6) < 1e-9
+    # Sitting at the floor stays at the floor no matter how long.
+    assert _decay_charge_over_time(0.6, 10000.0, th) == 0.6
+    # Below enter clamps to zero; no rates configured → no decay.
+    assert _decay_charge_over_time(0.1, 100.0, th) == 0.0
+    assert _decay_charge_over_time(0.5, 100.0, _th(enter=0.6)) == 0.5
 
 
 def test_decide_focus_stays_while_charge_above_exit():
@@ -487,7 +526,15 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
     # to read the screen it would AttributeError. A strongly vulnerable message
     # still enters FOCUS regardless of any privacy state.
-    _patch_charge(monkeypatch, enter=1.0)
+    # A keyword-only message saturates at score = FOCUS_SIGNAL_WEIGHTS["keyword"]
+    # (weighted SUM, no denominator). At the PRODUCTION enter (0.6) that would NOT
+    # enter single-turn — an accepted trade-off (the lexicon is a cheap signal, must
+    # stack with emotion or accumulate). This test only asserts the inline path is
+    # privacy-independent (never reads the screen / AttributeErrors), so it pins
+    # enter just below the keyword saturation — derived from config so a future
+    # weight tweak can't silently break it — to isolate that wiring from the bar.
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
@@ -552,6 +599,59 @@ async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
     charge_now = mgr.state.snapshot()["focus_charge"]
     await mgr._focus_idle_cooldown(replied=True, episode_token="stale-other-episode")
     assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+
+
+# ── 7. per-user master switch (对话设置 → focusCognitionEnabled) ─────────────
+# A new conversation setting gates 凝神 entirely: off ⇒ never enters Focus and any
+# residual charge is cleared, exactly like the global FOCUS_MODE_ENABLED flag.
+# Defaults to on when unset. master emotion read is independent (not gated here).
+def _stub_user_focus_setting(monkeypatch, *, enabled):
+    settings = {} if enabled is None else {"focusCognitionEnabled": enabled}
+
+    async def _aload():
+        return settings
+
+    # String targets so we don't import main_logic.core a second way (the module
+    # is already pulled in via `from main_logic.core import ...` in _bare_mgr).
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", _aload)
+    monkeypatch.setattr("main_logic.core.load_global_conversation_settings", lambda: settings)
+
+
+async def test_inline_gate_user_setting_off_blocks_and_clears(monkeypatch):
+    # Global flag on, but the user turned the per-user 凝神 switch off → a strongly
+    # vulnerable message must NOT enter Focus, and residual charge is cleared.
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=False)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)  # build some charge first
+    assert mgr.state.snapshot()["focus_charge"] > 0
+    assert await mgr._focus_inline_decision("好累，一个人，撑不住了") is False
+    assert mgr.state.mode is CognitionMode.REGULAR
+    assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_inline_gate_user_setting_default_on_allows(monkeypatch):
+    # Setting absent ⇒ defaults to on, so the global flag alone governs entry.
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=None)  # key absent
+    mgr = _bare_mgr()
+    assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
+    assert mgr.state.mode is CognitionMode.FOCUS
+
+
+async def test_idle_thinking_honors_user_setting(monkeypatch):
+    # Even while state.mode is still FOCUS, a proactive turn must not run
+    # thinking-on once the user switched 凝神 off (defense in depth).
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=True)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS
+    assert mgr._focus_idle_thinking() is True
+    _stub_user_focus_setting(monkeypatch, enabled=False)
+    assert mgr._focus_idle_thinking() is False
 
 
 async def test_idle_cooldown_skips_when_no_episode_observed(monkeypatch):

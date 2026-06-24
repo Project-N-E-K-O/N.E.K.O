@@ -190,6 +190,9 @@
 
         // --- UI / 杂项 ---
         focusModeEnabled: false,
+        // 凝神（cognition focus）per-user 总开关，默认开；关掉后端进不了 focus 态。
+        // 注意与上面的 focusModeEnabled（=麦克风静音/允许打断）是两回事。
+        focusCognitionEnabled: true,
         avatarReactionBubbleEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
@@ -281,7 +284,7 @@
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-        'mergeMessagesEnabled', 'focusModeEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];

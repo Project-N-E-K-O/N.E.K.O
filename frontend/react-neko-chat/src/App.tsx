@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import { useFocusGlow } from './useFocusGlow';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -193,10 +194,6 @@ const COMPACT_TOOL_WHEEL_REBOUND_SOUND_MEDIUM_VOLUME = 0.6;
 const COMPACT_TOOL_WHEEL_REBOUND_SOUND_STRONG_VOLUME = 0.85;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_OVERSHOOT_RATIO = 0.18;
 const COMPACT_TOOL_WHEEL_CHARGE_RELEASE_REBOUND_VISUAL_MS = 120;
-const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG = 28;
-const COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX = 8;
-const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO = 1;
-const COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS = 110;
 const COMPACT_TOOL_WHEEL_AUDIO_PRELOAD_RETRY_DELAYS_MS = [120, 300, 700, 1500] as const;
 const COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG = Math.abs(
   compactInputToolWheelDefaultVisibleSlots[2].angleDeg - compactInputToolWheelDefaultVisibleSlots[3].angleDeg,
@@ -522,6 +519,27 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
     return screenX;
   }
   return event.clientX;
+}
+
+type AvatarToolPointerPosition = {
+  x: number;
+  y: number;
+  screenX?: number;
+  screenY?: number;
+};
+
+function getAvatarToolPointerPosition(event: Pick<PointerEvent | ReactMouseEvent<HTMLElement>, 'clientX' | 'clientY' | 'screenX' | 'screenY'>): AvatarToolPointerPosition {
+  const next: AvatarToolPointerPosition = {
+    x: Number(event.clientX) || 0,
+    y: Number(event.clientY) || 0,
+  };
+  const screenX = Number(event.screenX);
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+    next.screenX = screenX;
+    next.screenY = screenY;
+  }
+  return next;
 }
 
 function isDesktopCompactSurfaceLayoutActive(): boolean {
@@ -1634,14 +1652,13 @@ function CompactChatApp({
   const compactInputToolWheelDragGuardTimerRef = useRef<number | null>(null);
   const compactInputToolWheelFastAnimationTimerRef = useRef<number | null>(null);
   const compactInputToolWheelChargeReleaseTimerRef = useRef<number | null>(null);
-  const compactInputToolWheelSelectionPointerKickTimerRef = useRef<number | null>(null);
   const compactInputToolWheelLastRotationAtRef = useRef(0);
   const compactInputToolWheelChargeRef = useRef<CompactToolWheelChargeState>(createCompactToolWheelChargeState());
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolWheelHoverPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const compactInputToolWheelHoveredIndexRef = useRef<number | null>(null);
-  // 工具轮盘原点（toggle / fan 中心）的「按住拖动文本框」手势追踪。与轮盘旋转
+  // compact surface 控件的「按住拖动对话框」手势追踪。与轮盘旋转
   // (compactInputToolWheelPointerRef) 互斥：原点按下时不建立旋转 pointer，旋转路径自然 no-op。
   const compactToolOriginDragRef = useRef<{
     pointerId: number;
@@ -1650,8 +1667,15 @@ function CompactChatApp({
     startScreenX: number;
     startScreenY: number;
     moved: boolean;
+    hostDragEnded?: boolean;
+    primeEnded?: boolean;
+    lastForwardedClientX?: number;
+    lastForwardedClientY?: number;
+    lastForwardedScreenX?: number;
+    lastForwardedScreenY?: number;
     captureTarget: Element | null;
   } | null>(null);
+  const compactToolOriginDocumentCleanupRef = useRef<(() => void) | null>(null);
   // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
   // 因为轮盘关闭 effect 会重置后者，无法跨「关闭轮盘 + 随后 click」存活。
   const compactToolOriginSuppressClickRef = useRef(false);
@@ -1674,7 +1698,7 @@ function CompactChatApp({
   const floatingFistDropIdRef = useRef(0);
   const floatingFistDropTimeoutIdsRef = useRef<number[]>([]);
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
-  const latestPointerPositionRef = useRef({ x: 0, y: 0 });
+  const latestPointerPositionRef = useRef<AvatarToolPointerPosition>({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
@@ -1732,7 +1756,6 @@ function CompactChatApp({
   const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
   const [compactInputToolWheelDragActive, setCompactInputToolWheelDragActive] = useState(false);
   const [compactInputToolWheelDragOffsetRatio, setCompactInputToolWheelDragOffsetRatio] = useState(0);
-  const [compactInputToolWheelSelectionPointerKickRatio, setCompactInputToolWheelSelectionPointerKickRatio] = useState(0);
   const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
   const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
@@ -1743,6 +1766,9 @@ function CompactChatApp({
   // ws message (app-websocket.js → 'neko-focus-state' CustomEvent). Inert by
   // default — the backend only emits it when FOCUS_MODE_ENABLED.
   const [focusActive, setFocusActive] = useState(false);
+  // 凝神 thinking-dots: backend pulses `focus_thinking` (app-websocket.js →
+  // 'neko-focus-thinking') while a Focus turn thinks-on but hasn't spoken yet.
+  const [focusThinking, setFocusThinking] = useState(false);
   const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactHistoryResizeContentLocked, setCompactHistoryResizeContentLocked] = useState(false);
@@ -1901,10 +1927,7 @@ function CompactChatApp({
     item: ToolIconItem,
     event: ReactMouseEvent<HTMLButtonElement>,
   ) => {
-    latestPointerPositionRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-    };
+    latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
     latestPointerTargetRef.current = event.currentTarget;
     setIsCursorInsideHostWindow(true);
     setIsCursorOverCompactCursorZone(true);
@@ -2638,16 +2661,25 @@ function CompactChatApp({
   const avatarCursorOverlayActive = !!activeToolItem
     && activeCursorToolId !== 'hammer'
     && shouldRenderLocalDesktopCursorOverlay;
-  const avatarCursorOverlayCompact = avatarCursorOverlayActive;
   const hammerCursorOverlayActive = activeCursorToolId === 'hammer' && shouldRenderLocalDesktopCursorOverlay;
   const hammerCursorOverlayMotionActive = hammerSwingPhase !== 'idle';
-  const hammerCursorOverlayCompact = hammerCursorOverlayActive && !hammerCursorOverlayMotionActive;
+  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
+    && isCursorOverAvatarRange
+    && !isCursorOverCompactCursorZone;
+  const shouldRenderAvatarRangeOverlay = isCursorWithinAvatarToolRange
+    && activeCursorToolId !== 'lollipop';
+  const avatarCursorOverlayCompact = avatarCursorOverlayActive && !shouldRenderAvatarRangeOverlay;
+  const hammerCursorOverlayCompact = hammerCursorOverlayActive
+    && !shouldRenderAvatarRangeOverlay
+    && !hammerCursorOverlayMotionActive;
   const hammerCompactImagePaths = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, effectiveCursorVariant)
     : null;
   const hammerCursorOverlayUsesCompactImage = hammerCursorOverlayCompact && !hammerCursorOverlayMotionActive;
   const avatarCursorOverlayImagePath = activeToolItem && activeCursorToolId !== 'hammer'
-    ? (activeToolImagePaths?.cursorImagePath ?? '')
+    ? (avatarCursorOverlayCompact
+      ? (activeToolImagePaths?.cursorImagePath ?? '')
+      : (activeToolImagePaths?.iconImagePath ?? ''))
     : '';
   const avatarCursorOverlayScale = activeToolItem
     ? getToolCursorOverlayScale(activeToolItem.id, avatarCursorOverlayCompact)
@@ -2662,9 +2694,11 @@ function CompactChatApp({
   const hammerCursorOverlaySecondaryImagePath = hammerToolItem
     ? resolveToolImagePaths(hammerToolItem, 'secondary').iconImagePath
     : '';
-  const isCursorWithinAvatarToolRange = isCursorInsideHostWindow
-    && isCursorOverAvatarRange
-    && !isCursorOverCompactCursorZone;
+  const shouldReportAvatarRangeImageKind = shouldRenderAvatarRangeOverlay
+    || (activeCursorToolId === 'hammer' && hammerCursorOverlayMotionActive);
+  const avatarToolImageKind = activeToolItem
+    ? (shouldReportAvatarRangeImageKind ? 'icon' : 'cursor')
+    : 'cursor';
 
   useEffect(() => {
     draftRef.current = draft;
@@ -2797,6 +2831,29 @@ function CompactChatApp({
       window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
+
+  // Focus 凝神 thinking-dots: show a "…" bubble at the tail of the history while
+  // a Focus turn is thinking-on but hasn't emitted visible content yet. Cleared
+  // when she starts speaking (backend) or on Focus exit (defensive).
+  useEffect(() => {
+    const handleThinking = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusThinking(Boolean(detail && detail.active));
+    };
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      if (!(detail && detail.active)) setFocusThinking(false);
+    };
+    window.addEventListener('neko-focus-thinking', handleThinking);
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-thinking', handleThinking);
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
+  useFocusGlow(appShellRef);
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
@@ -3860,17 +3917,6 @@ function CompactChatApp({
     compactInputToolWheelFastAnimationTimerRef.current = null;
   }, []);
 
-  const clearCompactInputToolWheelSelectionPointerKickTimer = useCallback(() => {
-    if (compactInputToolWheelSelectionPointerKickTimerRef.current === null) return;
-    window.clearTimeout(compactInputToolWheelSelectionPointerKickTimerRef.current);
-    compactInputToolWheelSelectionPointerKickTimerRef.current = null;
-  }, []);
-
-  const resetCompactInputToolWheelSelectionPointerKick = useCallback(() => {
-    clearCompactInputToolWheelSelectionPointerKickTimer();
-    setCompactInputToolWheelSelectionPointerKickRatio(0);
-  }, [clearCompactInputToolWheelSelectionPointerKickTimer]);
-
   const clearCompactInputToolWheelChargeReleaseTimer = useCallback(() => {
     if (compactInputToolWheelChargeReleaseTimerRef.current !== null) {
       window.clearTimeout(compactInputToolWheelChargeReleaseTimerRef.current);
@@ -4020,7 +4066,6 @@ function CompactChatApp({
     setCompactInputToolWheelDragOffsetRatio(0);
     dispatchCompactToolWheelDragState(false);
     compactInputToolWheelLastRotationAtRef.current = 0;
-    resetCompactInputToolWheelSelectionPointerKick();
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
     setCompactInputToolWheelLayout('default');
@@ -4051,7 +4096,6 @@ function CompactChatApp({
     clearCompactInputToolWheelPointerHover,
     dispatchCompactToolWheelDragState,
     dispatchCompactToolFanOpenState,
-    resetCompactInputToolWheelSelectionPointerKick,
     resetCompactInputToolWheelCharge,
     setCompactInputToolFanInteractiveState,
   ]);
@@ -4260,15 +4304,6 @@ function CompactChatApp({
     ));
   }, []);
 
-  const kickCompactInputToolWheelSelectionPointer = useCallback((direction: 1 | -1) => {
-    clearCompactInputToolWheelSelectionPointerKickTimer();
-    setCompactInputToolWheelSelectionPointerKickRatio(direction * COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_RATIO);
-    compactInputToolWheelSelectionPointerKickTimerRef.current = window.setTimeout(() => {
-      compactInputToolWheelSelectionPointerKickTimerRef.current = null;
-      setCompactInputToolWheelSelectionPointerKickRatio(0);
-    }, COMPACT_TOOL_WHEEL_SELECTION_POINTER_KICK_MS);
-  }, [clearCompactInputToolWheelSelectionPointerKickTimer]);
-
   const markCompactInputToolWheelMotion = useCallback((stepCount: number, options?: { forceFast?: boolean }) => {
     const now = getCompactToolWheelTimestamp();
     const elapsed = compactInputToolWheelLastRotationAtRef.current > 0
@@ -4289,11 +4324,10 @@ function CompactChatApp({
     if (stepCount <= 0) return;
     markCompactInputToolWheelMotion(stepCount, options);
     for (let step = 0; step < stepCount; step += 1) {
-      kickCompactInputToolWheelSelectionPointer(direction);
       rotateCompactInputToolWheel(direction);
       playCompactToolWheelDetentSound();
     }
-  }, [kickCompactInputToolWheelSelectionPointer, markCompactInputToolWheelMotion, rotateCompactInputToolWheel]);
+  }, [markCompactInputToolWheelMotion, rotateCompactInputToolWheel]);
 
   const recordCompactInputToolWheelCharge = useCallback((direction: 1 | -1, stepCount: number): CompactToolWheelChargeState => {
     const previous = compactInputToolWheelChargeRef.current;
@@ -4396,7 +4430,6 @@ function CompactChatApp({
 
       completedSteps += 1;
       markCompactInputToolWheelMotion(1, { forceFast: true });
-      kickCompactInputToolWheelSelectionPointer(direction);
       setCompactInputToolWheelChargeReleaseVisualStepOffset(
         normalizeCompactToolWheelStepOffset(
           direction * completedSteps,
@@ -4420,7 +4453,7 @@ function CompactChatApp({
     };
 
     compactInputToolWheelChargeReleaseTimerRef.current = window.setTimeout(runReleaseStep, 0);
-  }, [clearCompactInputToolWheelChargeReleaseTimer, kickCompactInputToolWheelSelectionPointer, markCompactInputToolWheelMotion]);
+  }, [clearCompactInputToolWheelChargeReleaseTimer, markCompactInputToolWheelMotion]);
 
   const getCompactInputToolWheelNormalizedDelta = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     const rawDelta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
@@ -4567,25 +4600,198 @@ function CompactChatApp({
     closeCompactInputToolFanFromUserClick();
   }, [closeCompactInputToolFanFromUserClick]);
 
-  // ── 工具轮盘原点「按住拖动文本框」手势 ────────────────────────────────────
-  // 在 toggle（轮盘关闭时）或 fan 中心（轮盘展开时，命中原点）按下后移动超阈值 → 把 surface
+  // ── compact surface 控件「按住拖动对话框」手势 ────────────────────────────
+  // 在 toggle / fan 中心 / 毛球 / 胶囊 / textarea 按下后移动超阈值 → 把 surface
   // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
-  // 点按（无移动）语义保持原样：toggle 由自身 onClick 展开/关闭；fan 原点由 onPointerDownCapture
-  // 的 markCompactToolFanOriginClickSuppressed 收起（这条收起+抑制路径不动，保证既有命中测试不回归）。
+  // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
+  // textarea 正常聚焦输入。
   // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
   // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
+  const clearCompactToolOriginDocumentListeners = useCallback(() => {
+    const cleanup = compactToolOriginDocumentCleanupRef.current;
+    compactToolOriginDocumentCleanupRef.current = null;
+    cleanup?.();
+  }, []);
+
+  const dispatchCompactToolOriginDragMove = useCallback((event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || !state.moved || state.hostDragEnded) return false;
+    if (state.lastForwardedClientX === event.clientX && state.lastForwardedClientY === event.clientY) {
+      return false;
+    }
+    state.lastForwardedClientX = event.clientX;
+    state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-move', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      },
+    }));
+    return true;
+  }, []);
+
+  const dispatchCompactToolOriginDragEnd = useCallback((
+    event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>,
+    reason?: string,
+  ) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || !state.moved || state.hostDragEnded) return false;
+    state.hostDragEnded = true;
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-end', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+        reason: reason || 'pointerend',
+      },
+    }));
+    return true;
+  }, []);
+
+  const updateCompactToolOriginDragFromPointer = useCallback((event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'>) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    if (state.moved) {
+      dispatchCompactToolOriginDragMove(event);
+      return;
+    }
+    const dx = event.clientX - state.startClientX;
+    const dy = event.clientY - state.startClientY;
+    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
+    state.moved = true;
+    state.lastForwardedClientX = event.clientX;
+    state.lastForwardedClientY = event.clientY;
+    state.lastForwardedScreenX = event.screenX;
+    state.lastForwardedScreenY = event.screenY;
+    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
+    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
+    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
+    compactToolOriginSuppressClickRef.current = true;
+    // 拖动是「移动对话框」手势而非工具/输入手势，收起轮盘。
+    closeCompactInputToolFan();
+    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），同时带上当前点。
+    // Wayland 下宿主优先用 renderer client delta，避免 screenX/screenY 在合成器下不可靠。
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
+      detail: {
+        pointerId: state.pointerId,
+        clientX: state.startClientX,
+        clientY: state.startClientY,
+        screenX: state.startScreenX,
+        screenY: state.startScreenY,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        currentScreenX: event.screenX,
+        currentScreenY: event.screenY,
+      },
+    }));
+  }, [closeCompactInputToolFan, dispatchCompactToolOriginDragMove]);
+
+  const dispatchCompactToolOriginDragPrime = useCallback((event: ReactPointerEvent) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-prime', {
+      detail: {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        screenX: event.screenX,
+        screenY: event.screenY,
+      },
+    }));
+  }, []);
+
+  const dispatchCompactToolOriginDragPrimeEnd = useCallback((pointerId: number) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-prime-end', {
+      detail: { pointerId },
+    }));
+  }, []);
+
+  const finishCompactToolOriginDragFromPointer = useCallback((
+    event: Pick<PointerEvent, 'pointerId' | 'clientX' | 'clientY' | 'screenX' | 'screenY'> & { type?: string },
+  ) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    dispatchCompactToolOriginDragEnd(event, event.type);
+    if (!state.primeEnded) {
+      state.primeEnded = true;
+      dispatchCompactToolOriginDragPrimeEnd(state.pointerId);
+    }
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    clearCompactToolOriginDocumentListeners();
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
+          captureTarget.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+  }, [
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragEnd,
+    dispatchCompactToolOriginDragPrimeEnd,
+  ]);
+
+  const cancelCompactToolOriginDrag = useCallback((reason: string) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state) {
+      clearCompactToolOriginDocumentListeners();
+      return;
+    }
+    const pointerId = state.pointerId;
+    dispatchCompactToolOriginDragEnd({
+      pointerId,
+      clientX: state.lastForwardedClientX ?? state.startClientX,
+      clientY: state.lastForwardedClientY ?? state.startClientY,
+      screenX: state.lastForwardedScreenX ?? state.startScreenX,
+      screenY: state.lastForwardedScreenY ?? state.startScreenY,
+    }, reason);
+    if (!state.primeEnded) {
+      state.primeEnded = true;
+      dispatchCompactToolOriginDragPrimeEnd(pointerId);
+    }
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    clearCompactToolOriginDocumentListeners();
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(pointerId)) {
+          captureTarget.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
+    }
+  }, [
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragEnd,
+    dispatchCompactToolOriginDragPrimeEnd,
+  ]);
+
   const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const existing = compactToolOriginDragRef.current;
+    if (existing && existing.pointerId === event.pointerId) return;
+    if (existing) {
+      cancelCompactToolOriginDrag('replaced');
+    } else {
+      clearCompactToolOriginDocumentListeners();
+    }
     // 每次新的原点按下都清掉可能残留的抑制标志（上一次拖拽若没补发 click 会留下 true），
     // 保证本次点按/拖拽自洁——抑制只靠「拖动置位 + click 消费 / 下次按下清零」，不再用定时器。
     compactToolOriginSuppressClickRef.current = false;
-    const previous = compactToolOriginDragRef.current;
-    if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
-      // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
-      try { previous.captureTarget.releasePointerCapture(previous.pointerId); } catch (_) {}
-    }
-    const captureTarget = event.currentTarget instanceof Element ? event.currentTarget : null;
+    const captureTarget = event.target instanceof Element
+      ? event.target
+      : (event.currentTarget instanceof Element ? event.currentTarget : null);
+    try {
+      captureTarget?.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+    dispatchCompactToolOriginDragPrime(event);
     compactToolOriginDragRef.current = {
       pointerId: event.pointerId,
       startClientX: event.clientX,
@@ -4595,63 +4801,59 @@ function CompactChatApp({
       moved: false,
       captureTarget,
     };
-    try {
-      captureTarget?.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-  }, []);
+    const pointerId = event.pointerId;
+    const handleDocumentPointerMove = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      updateCompactToolOriginDragFromPointer(nativeEvent);
+    };
+    const handleDocumentPointerEnd = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      finishCompactToolOriginDragFromPointer(nativeEvent);
+    };
+    document.addEventListener('pointermove', handleDocumentPointerMove, true);
+    document.addEventListener('pointerup', handleDocumentPointerEnd, true);
+    document.addEventListener('pointercancel', handleDocumentPointerEnd, true);
+    compactToolOriginDocumentCleanupRef.current = () => {
+      document.removeEventListener('pointermove', handleDocumentPointerMove, true);
+      document.removeEventListener('pointerup', handleDocumentPointerEnd, true);
+      document.removeEventListener('pointercancel', handleDocumentPointerEnd, true);
+    };
+  }, [
+    cancelCompactToolOriginDrag,
+    clearCompactToolOriginDocumentListeners,
+    dispatchCompactToolOriginDragPrime,
+    finishCompactToolOriginDragFromPointer,
+    updateCompactToolOriginDragFromPointer,
+  ]);
 
   const updateCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
-    const state = compactToolOriginDragRef.current;
-    if (!state || state.pointerId !== event.pointerId || state.moved) return;
-    const dx = event.clientX - state.startClientX;
-    const dy = event.clientY - state.startClientY;
-    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
-    state.moved = true;
-    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
-    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
-    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
-    compactToolOriginSuppressClickRef.current = true;
-    // 拖动是「移动文本框」手势而非工具手势，收起轮盘。
-    closeCompactInputToolFan();
-    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），避免 surface 跳变。
-    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
-      detail: {
-        clientX: state.startClientX,
-        clientY: state.startClientY,
-        screenX: state.startScreenX,
-        screenY: state.startScreenY,
-      },
-    }));
-  }, [closeCompactInputToolFan]);
+    updateCompactToolOriginDragFromPointer(event.nativeEvent);
+  }, [updateCompactToolOriginDragFromPointer]);
 
   const endCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
-    const state = compactToolOriginDragRef.current;
-    if (!state || state.pointerId !== event.pointerId) return;
-    const captureTarget = state.captureTarget;
-    compactToolOriginDragRef.current = null;
-    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
-      try {
-        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
-          captureTarget.releasePointerCapture(event.pointerId);
-        }
-      } catch (_) {}
-    }
-    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+    finishCompactToolOriginDragFromPointer(event.nativeEvent);
+  }, [finishCompactToolOriginDragFromPointer]);
+
+  const suppressCompactToolOriginClickAfterDrag = useCallback((event: ReactMouseEvent) => {
+    if (!compactToolOriginSuppressClickRef.current) return;
+    compactToolOriginSuppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   }, []);
 
   useEffect(() => () => {
+    cancelCompactToolOriginDrag('unmount');
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     clearCompactInputToolWheelDragGuardTimer();
     clearCompactInputToolWheelFastAnimationTimer();
-    clearCompactInputToolWheelSelectionPointerKickTimer();
     clearCompactInputToolWheelChargeReleaseTimer();
   }, [
+    cancelCompactToolOriginDrag,
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
     clearCompactInputToolWheelDragGuardTimer,
     clearCompactInputToolWheelFastAnimationTimer,
-    clearCompactInputToolWheelSelectionPointerKickTimer,
     clearCompactInputToolWheelChargeReleaseTimer,
   ]);
 
@@ -5179,6 +5381,9 @@ function CompactChatApp({
       ? (outsideRangeCursorVariants[activeCursorToolId] ?? 'primary')
       : 'primary';
     const textContext = sanitizeInteractionTextContext(draft);
+    const latestPointerPosition = latestPointerPositionRef.current;
+    const hasCursorScreenPoint = Number.isFinite(latestPointerPosition.screenX)
+      && Number.isFinite(latestPointerPosition.screenY);
 
     onAvatarToolStateChange({
       active: !!activeToolItem,
@@ -5186,10 +5391,16 @@ function CompactChatApp({
       variant: effectiveCursorVariant,
       avatarRangeVariant: avatarRangeCursorVariant,
       outsideRangeVariant,
-      imageKind: 'cursor',
+      imageKind: avatarToolImageKind,
       withinAvatarRange: isCursorWithinAvatarToolRange,
       overCompactZone: isCursorOverCompactCursorZone,
       insideHostWindow: isCursorInsideHostWindow,
+      cursorClientX: latestPointerPosition.x,
+      cursorClientY: latestPointerPosition.y,
+      ...(hasCursorScreenPoint ? {
+        cursorScreenX: latestPointerPosition.screenX,
+        cursorScreenY: latestPointerPosition.screenY,
+      } : {}),
       tool: activeToolItem
         ? {
           id: activeToolItem.id,
@@ -5224,6 +5435,7 @@ function CompactChatApp({
     activeCursorToolId,
     activeToolItem,
     avatarRangeCursorVariant,
+    avatarToolImageKind,
     draft,
     effectiveCursorVariant,
     isCursorInsideHostWindow,
@@ -5302,7 +5514,6 @@ function CompactChatApp({
   }
 
   function updateHammerCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = hammerCursorOverlayRef.current;
     if (!overlayNode || !hammerToolItem) return;
     const hotspot = getScaledToolCursorHotspot(hammerToolItem, hammerCursorOverlayScale);
@@ -5310,7 +5521,6 @@ function CompactChatApp({
   }
 
   function updateAvatarCursorOverlayPosition(clientX: number, clientY: number) {
-    latestPointerPositionRef.current = { x: clientX, y: clientY };
     const overlayNode = avatarCursorOverlayRef.current;
     if (!overlayNode || !activeToolItem) return;
     const hotspot = getScaledToolCursorHotspot(activeToolItem, avatarCursorOverlayScale);
@@ -5431,14 +5641,12 @@ function CompactChatApp({
     clearCompactInputToolWheelFastAnimationTimer();
     clearCompactInputToolWheelChargeReleaseTimer();
     resetCompactInputToolWheelCharge();
-    resetCompactInputToolWheelSelectionPointerKick();
     setCompactInputToolWheelFastAnimation(false);
     setCompactInputToolWheelIndex(request.index);
   }, [
     clearCompactInputToolWheelChargeReleaseTimer,
     clearCompactInputToolWheelFastAnimationTimer,
     compactToolWheelIndexRequest,
-    resetCompactInputToolWheelSelectionPointerKick,
     resetCompactInputToolWheelCharge,
   ]);
 
@@ -5463,6 +5671,8 @@ function CompactChatApp({
 
     const toggleCursorVariantOnPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
+      latestPointerTargetRef.current = event.target;
       const isOverCompactCursorZoneAtPointer = isPointWithinCompactCursorZone(event.clientX, event.clientY);
       setIsCursorOverCompactCursorZone(previousValue => (
         previousValue === isOverCompactCursorZoneAtPointer ? previousValue : isOverCompactCursorZoneAtPointer
@@ -5651,7 +5861,7 @@ function CompactChatApp({
 
     const handlePointerMove = (event: PointerEvent) => {
       setIsCursorInsideHostWindow(true);
-      latestPointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      latestPointerPositionRef.current = getAvatarToolPointerPosition(event);
       latestPointerTargetRef.current = event.target;
       if (activeCursorToolId === 'hammer') {
         updateHammerCursorOverlayPosition(event.clientX, event.clientY);
@@ -5949,20 +6159,29 @@ function CompactChatApp({
     ? COMPACT_TOOL_WHEEL_VIEWPORT_DRAG_ANGLE_STEP_DEG
     : COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG;
   const compactInputToolWheelDragAngle = compactInputToolWheelDragOffsetRatio * compactInputToolWheelDragAngleStep;
-  const compactInputToolWheelSelectionPointerDeflectionRatio = clamp(
-    compactInputToolWheelDragOffsetRatio + compactInputToolWheelSelectionPointerKickRatio,
-    -1,
-    1,
+  const compactInputToolWheelVisibleSlots = compactInputToolWheelLayout === 'viewport-fit'
+    ? compactInputToolWheelViewportFitVisibleSlots
+    : compactInputToolWheelDefaultVisibleSlots;
+  const compactInputToolWheelSelectionTargetIndex = compactInputToolWheelHoveredIndex !== null
+    && !isCompactToolWheelActionDisabled(compactInputToolWheelHoveredIndex)
+      ? compactInputToolWheelHoveredIndex
+      : compactInputToolWheelVisualIndex;
+  const compactInputToolWheelSelectionTargetSlot = getCompactToolWheelSlotForIndex(
+    compactInputToolWheelSelectionTargetIndex,
+    compactInputToolWheelVisualIndex,
+    COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
   );
-  const compactInputToolWheelSelectionPointerDeflectionAngle = compactInputToolWheelSelectionPointerDeflectionRatio
-    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_DEFLECTION_DEG;
-  const compactInputToolWheelSelectionPointerDeflectionShift = compactInputToolWheelSelectionPointerDeflectionRatio
-    * COMPACT_TOOL_WHEEL_SELECTION_POINTER_MAX_SHIFT_PX;
+  const compactInputToolWheelSelectionTargetVisual = (
+    compactInputToolWheelSelectionTargetSlot !== null
+      ? compactInputToolWheelVisibleSlots[compactInputToolWheelSelectionTargetSlot + 2]
+      : undefined
+  ) ?? compactInputToolWheelVisibleSlots[2];
+  const compactInputToolWheelSelectionAngle = compactInputToolWheelSelectionTargetVisual.angleDeg
+    + compactInputToolWheelDragAngle;
   const compactInputToolWheelDragStyle = {
     '--compact-tool-wheel-drag-angle': `${compactInputToolWheelDragAngle}deg`,
     '--compact-tool-wheel-drag-counter-angle': `${-compactInputToolWheelDragAngle}deg`,
-    '--compact-tool-wheel-selection-pointer-deflection-angle': `${compactInputToolWheelSelectionPointerDeflectionAngle}deg`,
-    '--compact-tool-wheel-selection-pointer-deflection-shift': `${compactInputToolWheelSelectionPointerDeflectionShift}px`,
+    '--compact-tool-wheel-selection-angle': `${compactInputToolWheelSelectionAngle}deg`,
   } as CSSProperties;
   const syncCompactInputToolWheelPointerHover = useCallback((nextPointer?: { clientX: number; clientY: number }) => {
     const pointer = nextPointer ?? compactInputToolWheelHoverPointerRef.current;
@@ -6772,6 +6991,7 @@ function CompactChatApp({
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
+      thinking={focusThinking}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -6896,6 +7116,7 @@ function CompactChatApp({
           </span>
         </div>
       ) : null}
+      <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
@@ -7030,6 +7251,11 @@ function CompactChatApp({
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                     data-compact-geometry-hit-scope={effectiveCompactChatState === 'input' ? 'children' : undefined}
                     data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
+                    onPointerDown={beginCompactToolOriginDrag}
+                    onPointerMove={updateCompactToolOriginDrag}
+                    onPointerUp={endCompactToolOriginDrag}
+                    onPointerCancel={endCompactToolOriginDrag}
+                    onClickCapture={suppressCompactToolOriginClickAfterDrag}
                   >
                     {effectiveCompactChatState === 'input' ? (
                       <>

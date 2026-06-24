@@ -314,6 +314,15 @@ window.addEventListener('load', async () => {
             const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}&lang=${encodeURIComponent(lang)}`);
             const cdata = await cr.json();
             let entries = cdata.entries || [];
+            // 问卷资格：在 step 1 改写 neko_last_notified_version 之前，把"本次是从旧版
+            // 升上来的老玩家"持久化成独立 marker。不能从 neko_last_notified_version 现推
+            // ——它马上会被改成当前版，一旦 step 1.5 的 /api/survey 这次失败/暂时非 steam
+            // 没弹出，下次启动就分不清是升级老玩家还是首装本版，资格永久丢失。
+            // 排除：全新用户(lastVer 空)、首装本版第二次启动(lastVer === 当前版)。
+            // marker 落了之后只在问卷被真正处理（提交/跳过成功）时清除。
+            if (lastVer && cdata.current_version && lastVer !== cdata.current_version) {
+                localStorage.setItem('neko_survey_eligible_for', cdata.current_version);
+            }
             // 全新用户（无历史记录）跳过版本更新弹窗，直接记录当前版本
             if (!lastVer) {
                 if (cdata.current_version) {
@@ -342,6 +351,60 @@ window.addEventListener('load', async () => {
                 await Promise.all(changelogPromises);
                 if (cdata.current_version) {
                     localStorage.setItem('neko_last_notified_version', cdata.current_version);
+                }
+            }
+        } catch (_) { }
+
+        // 1.5) 版本问卷（changelog 确认后，对老玩家追加）
+        // 仅老玩家、当前版本有问卷、且这一版还没填过/跳过过时弹出。后端 /api/survey
+        // 还会再做一道 DNT 门禁（关了被动统计的用户拿到 has_survey:false）。
+        try {
+            const _surveyEligibleFor = localStorage.getItem('neko_survey_eligible_for') || '';
+            if (_surveyEligibleFor && typeof window.showSurveyModal === 'function') {
+                const surveyLang = (window.i18next && window.i18next.language) || '';
+                const sr = await fetch(`/api/survey?lang=${encodeURIComponent(surveyLang)}`);
+                const sdata = await sr.json();
+                if (sdata && sdata.has_survey && sdata.survey) {
+                    const surveyVer = sdata.survey_version || sdata.survey.survey_version || '';
+                    const doneVer = localStorage.getItem('neko_last_survey_version') || '';
+                    // 资格走持久化 marker（step 1 落的）：本次升级会话就算 /api/survey 失败，
+                    // marker 仍在，下次启动重试，不会因 last_notified 已推进而漏掉老玩家。
+                    if (surveyVer && _surveyEligibleFor === surveyVer && doneVer !== surveyVer) {
+                        const result = await window.showSurveyModal(sdata.survey);
+                        const submitHeaders = { 'Content-Type': 'application/json' };
+                        const sec = window.nekoLocalMutationSecurity;
+                        if (sec && typeof sec.getMutationHeaders === 'function') {
+                            try { Object.assign(submitHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                        }
+                        // 只有后端成功受理（resp.ok）才记本地完成标记；本地 POST 失败
+                        // （CSRF token 没就绪 / 后端错误）时不标记，下次启动重弹一次，
+                        // 避免把用户填好的答卷直接丢掉。后端已是 best-effort（远程上报
+                        // 失败也回 ok:true），所以 resp.ok = 后端已受理即可视为完成。
+                        let submitted = false;
+                        try {
+                            const sresp = await fetch('/api/survey/submit', {
+                                method: 'POST',
+                                headers: submitHeaders,
+                                body: JSON.stringify({
+                                    survey_version: surveyVer,
+                                    action: (result && result.action) || 'skip',
+                                    answers: (result && result.answers) || {},
+                                }),
+                            });
+                            submitted = !!(sresp && sresp.ok);
+                            if (!submitted) {
+                                console.warn('[survey/submit] backend rejected with HTTP '
+                                    + (sresp && sresp.status) + '; will re-prompt next launch');
+                            }
+                        } catch (e) {
+                            console.warn('[survey/submit] request failed:', e);
+                        }
+                        if (submitted) {
+                            localStorage.setItem('neko_last_survey_version', surveyVer);
+                            // 真正处理完才清资格 marker；失败则留着下次重试。
+                            localStorage.removeItem('neko_survey_eligible_for');
+                        }
+                    }
                 }
             }
         } catch (_) { }

@@ -216,6 +216,7 @@ async def analyze_image_with_vision_model(
             max_retries=0,
             max_completion_tokens=max_completion_tokens,
             timeout=30,  # hang-guard for vision/screenshot analysis
+            provider_type=api_config.get('provider_type'),
         )
         messages = [
             {
