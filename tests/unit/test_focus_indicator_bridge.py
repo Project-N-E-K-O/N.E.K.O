@@ -170,6 +170,20 @@ def test_handle_thinking_active_is_idempotent_within_turn():
     assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
 
 
+def test_handle_thinking_active_false_clears_bubble():
+    # The same callback clears the bubble (active=False) — this is the end-of-stream
+    # clear prompt_ephemeral fires when a proactive/greeting turn reasons but commits
+    # no visible text, so the bubble can't get stuck on (Codex P2).
+    stub = _stub()
+    handler = _bind(stub, "handle_thinking_active")
+    asyncio.run(handler(True))
+    asyncio.run(handler(False))
+    assert _pushed_thinking(stub) == [
+        {"type": "focus_thinking", "active": True},
+        {"type": "focus_thinking", "active": False},
+    ]
+
+
 def test_thinking_force_re_pushes_for_new_window():
     # resync_focus_for_new_window replays the thinking pulse with force=True so a
     # window opened mid-thinking lands on the current bubble — the idempotent

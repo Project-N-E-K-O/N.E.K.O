@@ -571,8 +571,8 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
 
     pulses = []
 
-    async def on_thinking_active():
-        pulses.append(True)
+    async def on_thinking_active(active):
+        pulses.append(active)
 
     client.on_thinking_active = on_thinking_active
 
@@ -580,7 +580,7 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
     async for ch in client._astream_with_tools([{"role": "user", "content": "hi"}]):
         out.append(ch)
 
-    assert len(pulses) == 1, "两个 reasoning chunk 只应 pulse 一次（per-stream 幂等）"
+    assert pulses == [True], "两个 reasoning chunk 只应 pulse 一次 True（per-stream 幂等）"
     # 推理文本仍被过滤，不向下游 yield。
     assert not any(
         getattr(ch, "reasoning_content", None) and not getattr(ch, "content", None)
@@ -608,8 +608,8 @@ async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
 
     pulses = []
 
-    async def on_thinking_active():
-        pulses.append(True)
+    async def on_thinking_active(active):
+        pulses.append(active)
 
     client.on_thinking_active = on_thinking_active
 
@@ -617,6 +617,34 @@ async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
         pass
 
     assert pulses == [], "无 reasoning chunk 时不应 pulse 思考气泡"
+
+
+@pytest.mark.asyncio
+async def test_notify_reasoning_done_clears_only_after_a_pulse():
+    """``_notify_reasoning_done`` is the symmetric clear bracketing prompt_ephemeral:
+    it pushes on_thinking_active(False) IFF this stream actually pulsed True, and is
+    idempotent (a second call is a no-op). Guards the stuck-bubble case where a
+    proactive turn reasons but commits no visible text."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._reasoning_pulsed_this_stream = False
+    pulses = []
+
+    async def on_thinking_active(active):
+        pulses.append(active)
+
+    client.on_thinking_active = on_thinking_active
+
+    # Never pulsed → clear is a no-op.
+    await client._notify_reasoning_done()
+    assert pulses == []
+
+    # Pulse True, then the end-of-stream clear emits exactly one False.
+    await client._notify_reasoning_active()
+    await client._notify_reasoning_done()
+    await client._notify_reasoning_done()  # idempotent
+    assert pulses == [True, False]
 
 
 @pytest.mark.asyncio

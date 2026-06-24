@@ -2719,17 +2719,20 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
 
-    async def handle_thinking_active(self) -> None:
-        """Session callback: the model just emitted a reasoning/thinking chunk
+    async def handle_thinking_active(self, active: bool = True) -> None:
+        """Session callback: the model started (active=True) or finished
+        (active=False) emitting reasoning/thinking chunks for the current stream
         (the text is filtered out upstream; only this boolean pulse reaches us).
         Drives the chat thinking-dots bubble for ANY reasoning turn — decoupled
         from the Focus inline decision. A Focus turn pre-pulses the bubble before
         streaming (still works, idempotent); a non-Focus turn whose provider
         reasons internally pulses here on its first reasoning chunk. The bubble
-        is cleared on the first visible token (send_lanlan_response) or when the
-        turn ends (the unconditional finally in the text path). Best-effort —
+        is cleared on the first visible token (send_lanlan_response), when the
+        text turn ends (the unconditional finally in the text path), or — for a
+        proactive/greeting/avatar turn that reasons but commits no visible text —
+        by the active=False clear from prompt_ephemeral's finally. Best-effort —
         idempotent via ``_push_focus_thinking``'s cached state."""
-        await self._push_focus_thinking(True)
+        await self._push_focus_thinking(active)
 
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,

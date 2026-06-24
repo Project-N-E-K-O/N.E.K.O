@@ -574,7 +574,7 @@ class OmniOfflineClient:
         voice: str = "",  # Unused for text mode but kept for compatibility
         turn_detection_mode = None,  # Unused for text mode
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
-        on_thinking_active: Optional[Callable[[], Awaitable[None]]] = None,
+        on_thinking_active: Optional[Callable[[bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,  # Unused
         on_interrupt: Optional[Callable[[], Awaitable[None]]] = None,  # Unused
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -605,13 +605,18 @@ class OmniOfflineClient:
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
-        # Pulsed once per stream the first time the model emits a reasoning /
-        # thinking chunk (filtered out before it reaches text/TTS — only the
-        # "is thinking" boolean is surfaced). Drives the chat thinking-dots
-        # bubble for ANY turn that actually reasons, decoupled from Focus mode.
+        # Called with True the first time a stream emits a reasoning / thinking
+        # chunk (the text itself is filtered out before it reaches text/TTS —
+        # only the "is thinking" boolean is surfaced), and with False to clear
+        # when that stream ends without an external unconditional clear (see
+        # _notify_reasoning_done). Drives the chat thinking-dots bubble for ANY
+        # turn that actually reasons, decoupled from Focus mode.
         self.on_thinking_active = on_thinking_active
         # Per-stream guard so the three reasoning-filter points (openai loop,
-        # forced-finalize, genai) notify the bubble at most once per stream_text.
+        # forced-finalize, genai) pulse at most once per stream, and so the
+        # end-of-stream clear only fires when this stream actually pulsed.
+        # Re-armed at the top of BOTH stream entry points (stream_text and
+        # prompt_ephemeral).
         self._reasoning_pulsed_this_stream = False
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
@@ -853,9 +858,34 @@ class OmniOfflineClient:
         if cb is None:
             return
         try:
-            await cb()
+            await cb(True)
         except Exception as e:
-            logger.debug("on_thinking_active callback failed (ignored): %s", e)
+            logger.debug("on_thinking_active(True) callback failed (ignored): %s", e)
+
+    async def _notify_reasoning_done(self) -> None:
+        """Symmetric clear for ``_notify_reasoning_active``: if THIS stream pulsed
+        the thinking bubble True, push it back to False. Required for callers
+        without an external unconditional clear — ``prompt_ephemeral``'s
+        proactive / greeting / avatar turns clear the bubble only when a visible
+        token reaches ``send_lanlan_response``; a turn that reasons but commits no
+        text (safety / empty / tool-only) would otherwise leave the bubble stuck
+        on until a later turn (Codex P2). ``stream_text``'s Focus path is cleared
+        by core's own unconditional finally instead (it must also clear the Focus
+        pre-pulse, which fires with no reasoning chunk), so this is wired into
+        ``prompt_ephemeral``'s finally only.
+
+        Resets the guard so it is idempotent. Best-effort; getattr default guards
+        ``__new__`` test stubs that bypass ``__init__``."""
+        if not getattr(self, "_reasoning_pulsed_this_stream", False):
+            return
+        self._reasoning_pulsed_this_stream = False
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb(False)
+        except Exception as e:
+            logger.debug("on_thinking_active(False) clear failed (ignored): %s", e)
 
     async def _astream_with_tools(self, messages, **overrides):
         """Polymorphic streaming entry point. Yields ``LLMStreamChunk``
@@ -3220,6 +3250,10 @@ class OmniOfflineClient:
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
+        # Re-arm the thinking-pulse guard like stream_text does: this turn's first
+        # reasoning chunk should re-pulse, and the finally below must only clear if
+        # THIS turn pulsed.
+        self._reasoning_pulsed_this_stream = False
 
         try:
             self._is_responding = True
@@ -3376,6 +3410,12 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
+            # Clear the thinking bubble if this proactive/greeting/avatar turn
+            # pulsed it but committed no visible text — unlike stream_text, there
+            # is no external unconditional clear bracketing this call (Codex P2).
+            # No-op when nothing pulsed or it was already cleared on the first
+            # visible token (idempotent).
+            await self._notify_reasoning_done()
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
