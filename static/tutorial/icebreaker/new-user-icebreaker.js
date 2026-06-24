@@ -791,7 +791,10 @@
                 sessionId: sessionId,
                 nodeId: nodeId
             });
-            return endIcebreakerRoute(session, 'icebreaker_handoff');
+            // 等收尾选择的池写入到达服务端再关 route，否则严格后端会拒掉迟到的它。
+            return Promise.resolve(session.pendingChoiceWrite).catch(function () {}).then(function () {
+                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            });
         }).then(function () {
             if (activeSession === session) {
                 activeSession = null;
@@ -819,7 +822,7 @@
         // 带 next。两种都在这里被点，统一在此落进持久化选项池（session.nodeId 即本次选择
         // 所属节点，deliverNode 之后会被改写，所以现在就记）。
         var isHandoffChoice = !!option.handoffKey;
-        recordChoiceToPool({
+        var choiceWritePromise = recordChoiceToPool({
             day: session.day,
             sessionId: session.sessionId,
             nodeId: session.nodeId,
@@ -828,6 +831,13 @@
             handoff: isHandoffChoice,
             completed: isHandoffChoice
         });
+        if (isHandoffChoice) {
+            // 收尾选择会结束 route，而后端严格模式下 route 一关就拒收 /choice。fire-and-forget
+            // 下这条最重要的选择可能在网络重排中迟到被拒，故把写入 promise 挂到 session，让
+            // completeWithHandoff 在 endIcebreakerRoute 前 await 它（recordChoiceToPool 内部
+            // 已 catch、永不 reject，await 不会挂）。
+            session.pendingChoiceWrite = choiceWritePromise;
+        }
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
