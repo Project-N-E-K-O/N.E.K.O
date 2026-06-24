@@ -99,3 +99,40 @@ def test_format_window_trail_omits_single_and_renders_flow():
     line = fmt(fake, now=t0 + 480)
     assert line == 'VS Code 6min -> Chrome 2min'
     assert 'secret' not in line  # app names only, never titles
+
+
+def test_recent_window_trail_excludes_private_entries():
+    """A 'private' window recorded in history (the loop's private bail is
+    downstream of update_window) must NOT resurface in the trail after the user
+    leaves private mode — even though the observation carries a canonical."""
+    sm = _sm()
+    t0 = 1000.0
+    sm.update_window(_win('VS Code', 'work', 'ide'), now=t0)
+    sm.update_window(
+        WindowObservation(
+            process_name=None, title='secret-bank', category='private',
+            subcategory=None, canonical='[private]', is_browser=False,
+        ),
+        now=t0 + 60,
+    )
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=t0 + 120)
+    assert [n for n, _ in sm.recent_window_trail(now=t0 + 180, limit=5)] == ['VS Code', 'Chrome']
+
+
+def test_recent_window_trail_dwell_not_inflated_by_noncanonical_gap():
+    """A canonical-less window sandwiched between two named ones drops its own
+    time rather than folding it into the previous app's dwell."""
+    sm = _sm()
+    t0 = 1000.0
+    sm.update_window(_win('A', 'work', 'ide'), now=t0)
+    sm.update_window(
+        WindowObservation(
+            process_name='unknown.exe', title='secret-unknown', category='unknown',
+            subcategory=None, canonical=None, is_browser=False,
+        ),
+        now=t0 + 50,
+    )
+    sm.update_window(_win('B', 'communication', 'im'), now=t0 + 100)
+    trail = sm.recent_window_trail(now=t0 + 130, limit=5)
+    assert trail[0] == ('A', 50.0)   # not 100.0 — the gap's 50s is dropped, not added
+    assert trail[1] == ('B', 30.0)
