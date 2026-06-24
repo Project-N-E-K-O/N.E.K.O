@@ -1086,11 +1086,11 @@ async def test_badminton_quick_lines_returns_fallback_on_llm_failure(monkeypatch
         "api_key": "fake",
     })
 
-    def fail_llm(*_args, **_kwargs):
+    async def fail_llm_async(*_args, **_kwargs):
         raise RuntimeError("llm unavailable")
 
     import utils.llm_client as llm_client
-    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
 
     result = await game_router.game_quick_lines(
         "badminton",
@@ -1119,11 +1119,11 @@ async def test_badminton_quick_lines_fallback_uses_request_language(monkeypatch)
         "api_key": "fake",
     })
 
-    def fail_llm(*_args, **_kwargs):
+    async def fail_llm_async(*_args, **_kwargs):
         raise RuntimeError("llm unavailable")
 
     import utils.llm_client as llm_client
-    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
 
     result = await game_router.game_quick_lines(
         "badminton",
@@ -1148,11 +1148,11 @@ async def test_badminton_quick_lines_fallback_supports_japanese_request_language
         "api_key": "fake",
     })
 
-    def fail_llm(*_args, **_kwargs):
+    async def fail_llm_async(*_args, **_kwargs):
         raise RuntimeError("llm unavailable")
 
     import utils.llm_client as llm_client
-    monkeypatch.setattr(llm_client, "create_chat_llm", fail_llm)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fail_llm_async)
 
     result = await game_router.game_quick_lines(
         "badminton",

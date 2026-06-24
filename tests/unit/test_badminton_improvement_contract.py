@@ -1665,6 +1665,7 @@ def test_badminton_generated_quick_lines_override_static_i18n_lines():
     assert "var generated = generatedQuickLines[key] || [];" in html
     assert "if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';" in html
     assert "generatedQuickLines[key] = pool;" in html
+    assert "quickLines[key] = pool;" not in html
 
 
 @pytest.mark.unit
@@ -1674,10 +1675,48 @@ def test_badminton_request_language_ignores_template_default_until_i18n_resolves
     start = html.index("function getRequestLanguage()")
     request_language = html[start:html.index("function api(path)", start)]
 
+    assert "function normalizeRequestLanguagePrimary(value) {" in html
     assert "var hasResolvedI18nLanguage = false;" in request_language
     assert "var documentLangIsTemplateDefault = /^zh(?:-CN)?$/i.test(documentLang) && !hasResolvedI18nLanguage;" in request_language
     assert "if (documentLang && !documentLangIsTemplateDefault) candidates.push(documentLang);" in request_language
-    assert "candidates.push(navigator.language || '')" in request_language
+    assert request_language.index("localStorage.getItem('i18nextLng')") < request_language.index("navigator.language")
+
+
+@pytest.mark.unit
+def test_badminton_non_chinese_static_quick_line_fallbacks_are_not_chinese():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "var quickLinesFallbackEn = {" in html
+    assert "var quickLinesFallbackJa = {" in html
+    assert "var YUI_PASSIVE_LINES_DUEL_EN = {" in html
+    assert "var YUI_PASSIVE_LINES_DUEL_JA = {" in html
+    assert "function getQuickLineFallbackSource() {" in html
+    assert "if (primary === 'zh') return YUI_PASSIVE_LINES_DUEL;" in html
+    assert "if (primary === 'ja') return YUI_PASSIVE_LINES_DUEL_JA;" in html
+    assert "return YUI_PASSIVE_LINES_DUEL_EN;" in html
+    assert "function getDefaultQuickLineFallback() {" in html
+    assert "if (primary === 'zh') return quickLines;" in html
+    assert "if (primary === 'ja') return quickLinesFallbackJa;" in html
+    assert "return quickLinesFallbackEn;" in html
+
+
+@pytest.mark.unit
+def test_badminton_speak_line_guards_non_chinese_from_chinese_fallback_text():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "function isLikelyChineseFallbackLine(line) {" in html
+    assert "function replaceUnexpectedChineseFallbackLine(line, event) {" in html
+    assert "if (primary === 'zh') return text;" in html
+    assert "if (!isLikelyChineseFallbackLine(text)) return text;" in html
+    assert "return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');" in html
+
+    speak_start = html.index("function speakLine(line, control, event) {")
+    speak_section = html[speak_start:html.index("var isUserReply =", speak_start)]
+    assert "line = replaceUnexpectedChineseFallbackLine(line, event);" in speak_section
+    bubble_start = html.index("function showBubble(line, control, event) {")
+    bubble_section = html[bubble_start:html.index("function getBubblePriority(control)", bubble_start)]
+    assert "var text = replaceUnexpectedChineseFallbackLine(line, event);" in bubble_section
+    assert "showBubble(line, control, event);" in html
 
 
 @pytest.mark.unit
@@ -1690,7 +1729,8 @@ def test_badminton_localechange_refreshes_generated_quick_lines():
     assert "generatedQuickLines = {};" in localechange
     assert "if (routeActive) loadGeneratedQuickLines();" in localechange
     assert "var quickLinesRequestLanguage = getRequestLanguage();" in html
-    assert "if (quickLinesRequestLanguage !== getRequestLanguage()) return;" in html
+    assert "var quickLinesRequestPrimary = normalizeRequestLanguagePrimary(quickLinesRequestLanguage);" in html
+    assert "if (quickLinesRequestPrimary !== normalizeRequestLanguagePrimary(getRequestLanguage())) return;" in html
 
 
 @pytest.mark.unit
@@ -1921,7 +1961,7 @@ def test_badminton_voice_selection_reads_only_high_value_yui_lines():
     assert "kind === 'user_reply' || event.isUserReply || event.source === 'user_reply'" in selector_section
     assert "if (!shouldReadBadmintonVoice(event, control)) {" in speak_section
     assert "lastVoiceMutedReason = 'voice_event_not_selected';" in speak_section
-    assert "showBubble(line, control || {});" in speak_section
+    assert "showBubble(line, control || {}, event);" in speak_section
     assert "muted: true" in speak_section
     assert "lastMutedReason: lastVoiceMutedReason" in html
 
@@ -2953,8 +2993,8 @@ def test_badminton_yui_cheat_items_warn_player_with_bubble_lines():
     assert "if (shouldKeepCurrentBubble(emoteControl)) return false;" in html
     assert "bubblePriorityUntil = Date.now() + holdMs;" in html
     assert "var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 3200, bubbleDurationMs: 4200 };" in html
-    assert "showBubble(line, control);" in html
-    assert "speakLine(line, control, {" in html
+    assert "showBubble(line, control, event);" in html
+    assert "speakLine(line, control, event);" in html
     assert "kind: 'yui_cheat_item'," in html
     assert "label: 'yui_cheat_' + kind," in html
     assert "item_kind: kind," in html
