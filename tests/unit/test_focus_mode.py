@@ -415,9 +415,14 @@ def test_focus_stream_overrides_decision():
     thinking knob to its enabled form (per provider dialect) while keeping
     non-thinking extras (e.g. web_search)."""
     from main_logic.omni_offline_client import OmniOfflineClient as _C
-    # thinking.type provider → flipped to enabled (not dropped to None)
-    assert _C._focus_stream_overrides(True, "claude-sonnet-4-6") == {
+    # thinking.type provider (GLM/Kimi/Doubao) → flipped to enabled (not dropped to None)
+    assert _C._focus_stream_overrides(True, "glm-5.2") == {
         "extra_body": {"thinking": {"type": "enabled"}}
+    }
+    # Anthropic claude: enable needs {type:adaptive} via OpenAI-compat; 本 PR 暂不翻 →
+    # 保持 disabled（安全退化，绝不 400），adaptive 接入留 follow-up
+    assert _C._focus_stream_overrides(True, "claude-opus-4-7") == {
+        "extra_body": {"thinking": {"type": "disabled"}}
     }
     # free server (model 名固定 free-model) shares the thinking.type dialect
     assert _C._focus_stream_overrides(True, "free-model") == {
@@ -463,6 +468,9 @@ def test_focus_extra_body_provider_dialects():
     }
     assert focus_extra_body("google/gemini-2.5-flash") == {"reasoning": {"effort": "low"}}
 
+    # Anthropic claude: enable 须 {type:adaptive}(OpenAI-compat)，本 PR 暂不翻 → 凝神保持 disabled
+    assert get_extra_body("claude-opus-4-7") == {"thinking": {"type": "disabled"}}
+    assert focus_extra_body("claude-opus-4-7") == {"thinking": {"type": "disabled"}}
     # MiniMax reasoning_split is not an on/off knob → preserved, not flipped
     assert focus_extra_body("MiniMax-M2.5") == EXTRA_BODY_MINIMAX
     # non-thinking provider extra (step web_search) preserved on a focus turn
@@ -528,6 +536,7 @@ def _bare_mgr():
     mgr.lanlan_name = "x"
     mgr._focus_scorer = FocusScorer("x")
     mgr._focus_artifacts_pending = False
+    mgr._focus_artifacts_history_start = None
     # Deliberately NO _activity_tracker: the inline path must not touch it
     # (Focus scores the message, not the screen — privacy-independent).
     return mgr
@@ -835,6 +844,20 @@ def test_purge_multiple_calls_one_turn():
     assert history == []
 
 
+def test_purge_respects_start():
+    """start 把清理限定在 episode 的历史后缀：start 之前的闭合 tool call 保留。"""
+    from main_logic.core import _purge_closed_tool_calls
+    pre_a, pre_r = _tool_pair("pre")
+    ep_a, ep_r = _tool_pair("ep", reasoning="…")
+    history = [pre_a, pre_r, ep_a, ep_r]
+    # start=2 → 只清 index>=2 的那对，保留 Focus 之前的
+    assert _purge_closed_tool_calls(history, start=2) == 2
+    assert history == [pre_a, pre_r]
+    # start 越界 → no-op（历史已被 wipe/缩短的兜底）
+    assert _purge_closed_tool_calls(history, start=99) == 0
+    assert history == [pre_a, pre_r]
+
+
 def _purge_mgr(monkeypatch, history):
     """裸 LLMSessionManager + 携带 _conversation_history 的假 OmniOfflineClient。"""
     from main_logic.core import LLMSessionManager
@@ -843,6 +866,7 @@ def _purge_mgr(monkeypatch, history):
     mgr.lanlan_name = "x"
     mgr.state = SessionStateMachine(lanlan_name="x")
     mgr._focus_artifacts_pending = False
+    mgr._focus_artifacts_history_start = None
     sess = OmniOfflineClient.__new__(OmniOfflineClient)
     sess._conversation_history = history
     mgr.session = sess
@@ -883,19 +907,20 @@ async def test_maybe_purge_only_after_exit(monkeypatch):
     assert sess._conversation_history == []
 
 
-async def test_inline_decision_purges_history_on_exit(monkeypatch):
-    """inline 路径端到端：vulnerable 消息进 FOCUS(arm)、历史保留；neutral 消息衰减
-    退出时，在 stream_text 之前同步把已闭合 tool call(含 reasoning_content)清掉。"""
+async def test_inline_decision_purges_episode_only(monkeypatch):
+    """inline 端到端 + episode-scope：进 FOCUS 记历史起点；退出只清 episode 期间
+    产生的已闭合 tool call，Focus 之前的普通 tool call 保留。"""
     from main_logic.omni_offline_client import OmniOfflineClient
     keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
     _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1), exit=0.3, retention=0.5)
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     _stub_user_focus_setting(monkeypatch, enabled=True)
 
-    a, r = _tool_pair("c1", reasoning="思考链…")
+    # Focus 之前就有一对普通(非 thinking) tool call —— 必须保留
+    pre_a, pre_r = _tool_pair("pre", name="weather")
     mgr = _bare_mgr()
     sess = OmniOfflineClient.__new__(OmniOfflineClient)
-    sess._conversation_history = [a, r]
+    sess._conversation_history = [pre_a, pre_r]
     mgr.session = sess
 
     async def _noop(*x, **k):
@@ -903,14 +928,17 @@ async def test_inline_decision_purges_history_on_exit(monkeypatch):
     mgr._push_focus_indicator = _noop
     mgr._push_focus_charge = _noop
 
-    # vulnerable message → enter FOCUS, arm；episode 进行中历史不动
+    # vulnerable message → enter FOCUS；记下 history 起点(=2)
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
-    assert mgr._focus_artifacts_pending is True
-    assert len(sess._conversation_history) == 2
+    assert mgr._focus_artifacts_history_start == 2
+    # 模拟 episode 期间又产生一对(带 reasoning_content 的)闭合 tool call
+    ep_a, ep_r = _tool_pair("ep", reasoning="思考链…")
+    sess._conversation_history.extend([ep_a, ep_r])
 
-    # neutral message → charge 衰减出 FOCUS → REGULAR → stream 前同步清历史
+    # neutral message → 衰减出 FOCUS → REGULAR → 只清 episode 期间的(index>=2)
     assert await mgr._focus_inline_decision("嗯那个文件改好了发你了") is False
     assert mgr.state.mode is CognitionMode.REGULAR
-    assert sess._conversation_history == []
+    assert sess._conversation_history == [pre_a, pre_r]  # Focus 前的保留
     assert mgr._focus_artifacts_pending is False
+    assert mgr._focus_artifacts_history_start is None

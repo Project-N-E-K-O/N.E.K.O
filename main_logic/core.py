@@ -803,7 +803,7 @@ class ContextAppendResult:
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
-def _purge_closed_tool_calls(history: list) -> int:
+def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
     """Remove every CLOSED tool-call pair from the conversation history: an
     assistant message (role=assistant, carrying tool_calls) plus the tool-result
     messages immediately following it whose tool_call_id matches. Any
@@ -811,6 +811,11 @@ def _purge_closed_tool_calls(history: list) -> int:
     message for provider replay) is dropped together with it — deleting the
     whole pair, NOT just the field, since a thinking endpoint rejects a
     tool_calls turn whose reasoning_content went missing on replay.
+
+    Only assistant messages at index >= ``start`` are considered, so a Focus
+    exit scopes the purge to the episode's history suffix (recorded when Focus
+    was entered) and leaves closed tool calls from regular turns BEFORE Focus
+    began intact. ``start`` is clamped to [0, len].
 
     "Closed" = every tool_call id on the assistant message is answered by a
     following contiguous tool message. Unclosed calls (a call with no result —
@@ -821,8 +826,10 @@ def _purge_closed_tool_calls(history: list) -> int:
     if not history:
         return 0
     n = len(history)
+    start = max(0, min(int(start or 0), n))
     remove: set[int] = set()
-    for i, msg in enumerate(history):
+    for i in range(start, n):
+        msg = history[i]
         if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
             continue
         tool_calls = msg.get("tool_calls") or []
@@ -1122,6 +1129,8 @@ class LLMSessionManager:
         # 凝神退出时清理历史 thinking/已闭合 tool call 残留的边沿标志：进入 FOCUS
         # 时 arm，退出并清理后 disarm（见 _maybe_purge_focus_artifacts）。
         self._focus_artifacts_pending = False
+        # 进入 FOCUS 那刻的历史长度；退出只清这之后（episode 期间）的闭合 tool call。
+        self._focus_artifacts_history_start: int | None = None
 
         # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
         # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
@@ -2466,6 +2475,15 @@ class LLMSessionManager:
                 scored.score, topic_changed=topic_changed,
             )
             if mode is CognitionMode.FOCUS:
+                if not self._focus_artifacts_pending:
+                    # 首次进入本 episode：记下历史长度，退出时只清这之后（episode
+                    # 期间）产生的闭合 tool call，不动 Focus 之前的普通工具调用。
+                    hist = getattr(
+                        getattr(self, "session", None), "_conversation_history", None
+                    )
+                    self._focus_artifacts_history_start = (
+                        len(hist) if isinstance(hist, list) else None
+                    )
                 # arm：本 episode 的 thinking/tool 残留，退出时要清（见下）。
                 self._focus_artifacts_pending = True
             # Log every turn (incl. REGULAR) so tuning can watch the charge
@@ -2554,14 +2572,16 @@ class LLMSessionManager:
         if self.state.mode is CognitionMode.FOCUS:
             return  # 仍在 focus，残留还在用，不能清
         self._focus_artifacts_pending = False
-        sess = self.session
+        start = self._focus_artifacts_history_start or 0
+        self._focus_artifacts_history_start = None
+        sess = getattr(self, "session", None)
         if not isinstance(sess, OmniOfflineClient):
             return
         history = getattr(sess, "_conversation_history", None)
         if not history:
             return
         try:
-            removed = _purge_closed_tool_calls(history)
+            removed = _purge_closed_tool_calls(history, start=start)
             if removed:
                 logger.info(
                     "[%s] 凝神退出：从历史清除 thinking/已闭合 tool call 残留 %d 条",
