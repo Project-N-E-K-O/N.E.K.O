@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from config import CHARACTER_RESERVED_FIELDS
+from config import CHARACTER_RESERVED_FIELDS, RESERVED_FIELD_SCHEMA
 
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
@@ -111,6 +111,14 @@ async def _call_update(monkeypatch, payload, characters=None):
     )
     body = json.loads(response.body)
     return response, body, config_manager.saved_characters
+
+
+def test_pngtuber_reserved_schema_includes_mobile_layout_fields():
+    pngtuber_schema = RESERVED_FIELD_SCHEMA['avatar']['pngtuber']
+
+    assert pngtuber_schema['mobile_scale'] == (int, float)
+    assert pngtuber_schema['mobile_offset_x'] == (int, float)
+    assert pngtuber_schema['mobile_offset_y'] == (int, float)
 
 
 @pytest.mark.asyncio
