@@ -645,10 +645,12 @@
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            var captureType = detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId);
-            if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                captureType = 'screen'; // 无流无源 → pyautogui 全屏兜底
-            }
+            // 有前端流时按流/源判定；无前端流即 pyautogui 全屏兜底（后端截整屏），
+            // 此时忽略可能残留的 selectedScreenSourceId（窗口源捕获失败才会进兜底，
+            // 若仍读旧的 window:* 源会被判为 null 而漏标）
+            var captureType = S.screenCaptureStream
+                ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+                : 'screen';
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
