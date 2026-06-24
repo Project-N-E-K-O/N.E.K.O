@@ -14,10 +14,10 @@
 # limitations under the License.
 """ASGI middleware: global inbound request-body size guard.
 
-This rejects oversized request bodies *before* they reach the application
-layer (a router's ``request.json()`` / ``request.form()`` parse), uniformly
-across every router, and stays orthogonal to each router's business-level
-validation (e.g. ``memory_router.validate_chat_payload``).
+This rejects oversized request bodies before they are fully buffered by the
+application layer (a router's ``request.json()`` / ``request.form()`` parse),
+uniformly across every router, and stays orthogonal to each router's
+business-level validation (e.g. ``memory_router.validate_chat_payload``).
 
 Design (see issue #1586, raised from the PR #1585 discussion):
 
@@ -27,10 +27,10 @@ Design (see issue #1586, raised from the PR #1585 discussion):
   routers already enforce their own 1 MB-chunk streaming guards (read-and-tally,
   stop on overflow, never buffering the whole body in memory), so this guard
   passes multipart straight through to avoid killing legitimate large uploads.
-- Only the ``Content-Length`` header is inspected; the body itself is never
-  read. That is what makes the rejection happen "before parsing". When
-  ``Content-Length`` is absent (e.g. chunked transfer encoding) the request is
-  passed through — we would rather under-guard than reject a valid request.
+- ``Content-Length`` is inspected first so obviously oversized requests can be
+  rejected before parsing. Non-multipart bodies are also counted while the app
+  reads from ASGI ``receive`` so chunked / unknown-length requests cannot bypass
+  the cap and reach ``request.json()`` unbounded.
 - Only the ``http`` scope is handled; ``websocket`` / ``lifespan`` scopes are
   forwarded untouched (the Pet realtime WebSocket endpoints must not be
   affected).
@@ -54,8 +54,12 @@ import json
 DEFAULT_MAX_INBOUND_BODY_BYTES = 16 * 1024 * 1024
 
 
+class _InboundBodyTooLarge(Exception):
+    """Internal control flow for streamed non-multipart body overflow."""
+
+
 class InboundBodySizeLimitMiddleware:
-    """Reject oversized non-multipart request bodies before routers see them."""
+    """Reject oversized non-multipart request bodies before full buffering."""
 
     def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_INBOUND_BODY_BYTES):
         self.app = app
@@ -76,20 +80,28 @@ class InboundBodySizeLimitMiddleware:
             elif lowered == b"content-type":
                 content_type = value
 
-        if self._exceeds_limit(content_length, content_type):
+        is_multipart = self._is_multipart(content_type)
+        if self._exceeds_content_length_limit(content_length, is_multipart):
             await self._reject(send)
             return
 
-        await self.app(scope, receive, send)
+        if is_multipart:
+            await self.app(scope, receive, send)
+            return
 
-    def _exceeds_limit(self, content_length: bytes | None, content_type: bytes) -> bool:
+        wrapped_receive = self._limited_receive(receive)
+        try:
+            await self.app(scope, wrapped_receive, send)
+        except _InboundBodyTooLarge:
+            await self._reject(send)
+
+    def _is_multipart(self, content_type: bytes) -> bool:
+        return content_type.strip().lower().startswith(b"multipart/")
+
+    def _exceeds_content_length_limit(self, content_length: bytes | None, is_multipart: bool) -> bool:
         if content_length is None:
-            # No Content-Length (chunked / unknown): pass through rather than
-            # risk rejecting a valid streaming request.
             return False
-        # Multipart uploads are exempt — the upload routers guard them with
-        # their own streaming, much-larger caps.
-        if content_type.strip().lower().startswith(b"multipart/"):
+        if is_multipart:
             return False
         try:
             length = int(content_length)
@@ -98,6 +110,20 @@ class InboundBodySizeLimitMiddleware:
             # instead of guessing here.
             return False
         return length > self.max_body_bytes
+
+    def _limited_receive(self, receive):
+        seen = 0
+
+        async def wrapped_receive():
+            nonlocal seen
+            message = await receive()
+            if message.get("type") == "http.request":
+                seen += len(message.get("body") or b"")
+                if seen > self.max_body_bytes:
+                    raise _InboundBodyTooLarge
+            return message
+
+        return wrapped_receive
 
     async def _reject(self, send) -> None:
         body = json.dumps(

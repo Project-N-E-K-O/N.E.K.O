@@ -2,8 +2,9 @@
 """Tests for the global inbound body-size guard (issue #1586).
 
 The middleware caps oversized *non-multipart* request bodies before they reach
-any router, by inspecting only ``Content-Length``. Multipart uploads, requests
-without ``Content-Length``, and non-http scopes are passed through untouched.
+any router, by inspecting ``Content-Length`` and by counting bytes read from the
+ASGI receive stream. Multipart uploads and non-http scopes are passed through
+untouched.
 """
 from __future__ import annotations
 
@@ -24,12 +25,18 @@ def _http_scope(headers):
     return {"type": "http", "method": "POST", "path": "/x", "headers": list(headers)}
 
 
-async def _drive(middleware, scope):
+async def _drive(middleware, scope, receive_messages=None, *, read_body=False):
     """Run the middleware once; return (downstream_called, sent_messages)."""
     called = {"hit": False}
+    messages = list(receive_messages or [{"type": "http.request", "body": b"", "more_body": False}])
 
-    async def downstream(_scope, _receive, _send):
+    async def downstream(_scope, receive, _send):
         called["hit"] = True
+        if read_body:
+            while True:
+                message = await receive()
+                if message.get("type") != "http.request" or not message.get("more_body"):
+                    break
         # A real app would respond; emit a trivial 200 so send() is exercised.
         await _send({"type": "http.response.start", "status": 200, "headers": []})
         await _send({"type": "http.response.body", "body": b"ok"})
@@ -37,6 +44,8 @@ async def _drive(middleware, scope):
     middleware.app = downstream
 
     async def receive():
+        if messages:
+            return messages.pop(0)
         return {"type": "http.request", "body": b"", "more_body": False}
 
     sent = []
@@ -110,12 +119,60 @@ def test_multipart_content_type_is_case_insensitive():
 
 
 def test_missing_content_length_passes_through():
-    """Chunked / unknown-length requests are not rejected."""
+    """Small chunked / unknown-length requests are allowed."""
     mw = _make(max_bytes=64)
     scope = _http_scope([(b"content-type", b"application/json")])
-    hit, sent = _run(_drive(mw, scope))
+    hit, sent = _run(_drive(
+        mw,
+        scope,
+        [{"type": "http.request", "body": b"small", "more_body": False}],
+        read_body=True,
+    ))
     assert hit is True
     assert sent[0]["status"] == 200
+
+
+def test_missing_content_length_over_limit_rejected_while_streaming():
+    mw = _make(max_bytes=64)
+    scope = _http_scope([(b"content-type", b"application/json")])
+    hit, sent = _run(_drive(
+        mw,
+        scope,
+        [{"type": "http.request", "body": b"x" * 65, "more_body": False}],
+        read_body=True,
+    ))
+    assert hit is True, "downstream starts reading, but must not reach its 200 response"
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+
+
+def test_chunked_body_rejected_when_accumulated_size_exceeds_limit():
+    mw = _make(max_bytes=64)
+    scope = _http_scope([(b"content-type", b"application/json")])
+    hit, sent = _run(_drive(
+        mw,
+        scope,
+        [
+            {"type": "http.request", "body": b"x" * 40, "more_body": True},
+            {"type": "http.request", "body": b"x" * 25, "more_body": False},
+        ],
+        read_body=True,
+    ))
+    assert hit is True
+    assert sent[0]["status"] == 413
+
+
+def test_declared_under_limit_but_streamed_body_over_limit_rejected():
+    mw = _make(max_bytes=64)
+    scope = _http_scope([(b"content-length", b"10"), (b"content-type", b"application/json")])
+    hit, sent = _run(_drive(
+        mw,
+        scope,
+        [{"type": "http.request", "body": b"x" * 65, "more_body": False}],
+        read_body=True,
+    ))
+    assert hit is True
+    assert sent[0]["status"] == 413
 
 
 def test_malformed_content_length_passes_through():
