@@ -33,7 +33,7 @@ NEKO Live 当前有两条使用路径：
 
 ## 猫猫独播 30 分钟验收
 
-这一步用于熟人主播陪跑或小范围内测，不用于证明功能全量完成。
+这一步用于熟人主播陪跑或小范围内测，不用于证明功能全量完成。完整产品判定以 [`independent-mode-product-plan.md`](independent-mode-product-plan.md) 的 `Next Live Test Checklist` 为准；本节只保留现场操作速查。
 
 开播前确认：
 

@@ -55,6 +55,8 @@ Independent Mode is now past the first implementation and acceptance check and s
 
 The UI should keep the existing plugin-panel visual language: light gray page background, white cards, blue capsule tabs, status badges, and compact dashboard cards. Do not introduce a separate product shell, OBS dock layout, or a new visual system until the Independent Mode behavior is stable.
 
+Live-time assumption: during a real stream, the streamer will not keep watching the plugin panel. The panel is a preflight, remote-control, emergency, and after-action review surface. It should not become the primary live experience or a dense operator dashboard that expects constant attention.
+
 Inside the plugin-center hosted panel, the first viewport is limited. The console should prioritize streamer decisions over module inventory:
 
 1. whether NEKO can stream now;
@@ -63,6 +65,8 @@ Inside the plugin-center hosted panel, the first viewport is limited. The consol
 4. the smallest set of live actions: refresh, manual test, pause/resume, and pacing controls.
 
 Module details, account setup, health rows, readiness checklist, and advanced diagnostics may remain in the same panel format, but they should sit below the first decision area or in the existing secondary tabs.
+
+Future UI simplification should therefore remove live-time noise before adding more diagnostics. Keep the first screen focused on "can stream", "why quiet", "what NEKO will do next", and "safe controls"; move route traces, module inventories, and detailed review evidence into secondary or developer surfaces.
 
 ## Current Development Split
 
@@ -362,6 +366,66 @@ Implemented before the next live test (offline verified; live feel still needs t
 5. Result Labels: validation and dashboard output should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club signal capture instead of showing all ordinary live input as `live_danmaku`.
 6. Warmup Hosting Testability: the next live test should make the opening moment observable so the team can tell whether `warmup_hosting` fired, whether it spoke only one natural opening line, and whether it was not mistaken for idle hosting.
 7. Gift Signal v0: if a gift or fan-club medal appears again, capture it as a gift/fan-club signal. Do not build full Gift / SC / Guard behavior before the live pacing issues are fixed.
+
+## Next Live Test Checklist
+
+This is the canonical checklist for the next controlled solo-stream validation. Quickstart may link to it, but should not duplicate the full decision criteria.
+
+Goal: verify whether the offline fixes after the 2026-06-24 run improved the live feel. The test should answer whether NEKO can run a 30-minute `solo_stream` without awkward silence, noisy repetition, or context pollution.
+
+### Preflight
+
+- Use `solo_stream`.
+- Decide whether this is a real-output run (`dry_run=false`) or a chain-only run (`dry_run=true`) before the stream starts.
+- Clear viewer profiles only if the test needs a fresh first-appearance baseline.
+- The panel should be used for preflight, safe controls, and after-action review. The streamer should not need to watch it constantly during the live room.
+- Confirm the first screen answers: can NEKO stream, why she is quiet, what she is likely to do next, and how to pause or recover output.
+
+### Opening and warmup
+
+- `warmup_hosting` should be observable at the start of solo stream.
+- NEKO should speak at most one natural opening line.
+- The opening line should not sound like idle filler and should not ask viewers to rescue the room.
+- Solo readiness should mark warmup as observed after the opening path runs.
+
+### Danmaku continuity
+
+- The first useful viewer danmaku should route as `avatar_roast` and feel like a first-appearance moment.
+- Later ordinary danmaku from the same UID should route as `danmaku_response`.
+- Follow-up danmaku should not reuse avatar / ID roast templates.
+- The reply should target the current danmaku, not continue the previous NEKO response.
+- Short danmaku should get one short TTS-friendly reply.
+
+### Idle and active pacing
+
+- No-danmaku windows should let `idle_hosting` cover silence with one short line.
+- Idle lines should not be repeated, generic, or customer-service-like.
+- Active Engagement should wait after recent danmaku output and should not fire in an engaged room.
+- Active Engagement should create one easy reply point, not beg for interaction.
+- If NEKO feels too quiet or too noisy, tune pacing before adding event types.
+
+### Signal observation
+
+- Recent results should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club signal capture.
+- If a gift or fan-club medal appears, record whether it is captured as `gift_signal`.
+- Do not treat gift/fan-club observation as full Gift / SC / Guard behavior.
+
+### Pass / fail decision
+
+Pass if:
+
+- 30 minutes has no deathly silence and no obvious spam.
+- NEKO sounds like the same persona across opening, replies, idle lines, and active topics.
+- Follow-up danmaku does not feel polluted by the previous reply.
+- The streamer would still trust NEKO to hold the room.
+
+Fail or retest if:
+
+- replies are too long for live TTS;
+- Active Engagement feels pushy or generic;
+- Idle Hosting repeats or sounds awkward;
+- current danmaku is ignored in favor of old context;
+- the panel cannot explain why NEKO is quiet before the streamer starts guessing.
 
 Out of scope before the next live test:
 
