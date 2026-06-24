@@ -1238,7 +1238,7 @@ def test_badminton_template_contract():
     assert "var aimingCanvas = document.getElementById('aiming-canvas')" in html
     assert "function drawCourt()" in html
     assert "function drawNet()" in html
-    assert "function drawAiming(" in html
+    assert "function drawAiming(now)" in html
     assert "drawDistanceMarkers" in html
     assert "drawFreeThrowLine" not in html
     assert "drawThreePointLine" not in html
@@ -1275,7 +1275,7 @@ def test_badminton_template_contract():
     assert "game.power = 0;" in html
     assert 'id="mode-switcher"' not in html
     assert 'data-mode="spectator"' not in html
-    assert 'data-mode="duel"' not in html
+    assert 'data-mode="shooter"' not in html
     assert 'data-mode="duel"' not in html
     assert "function updateModeSwitcher()" not in html
     assert "function switchBadmintonMode(nextMode)" not in html

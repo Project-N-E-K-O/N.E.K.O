@@ -1676,11 +1676,11 @@ def test_badminton_non_chinese_static_quick_line_fallbacks_are_not_chinese():
     assert "var quickLinesFallbackJa = {" in html
     assert "var YUI_PASSIVE_LINES_DUEL_EN = {" in html
     assert "var YUI_PASSIVE_LINES_DUEL_JA = {" in html
-    assert "function getQuickLineFallbackSource() {" in html
+    assert "function getQuickLineFallbackSource(primary) {" in html
     assert "if (primary === 'zh') return YUI_PASSIVE_LINES_DUEL;" in html
     assert "if (primary === 'ja') return YUI_PASSIVE_LINES_DUEL_JA;" in html
     assert "return YUI_PASSIVE_LINES_DUEL_EN;" in html
-    assert "function getDefaultQuickLineFallback() {" in html
+    assert "function getDefaultQuickLineFallback(primary) {" in html
     assert "if (primary === 'zh') return quickLines;" in html
     assert "if (primary === 'ja') return quickLinesFallbackJa;" in html
     assert "return quickLinesFallbackEn;" in html
@@ -1693,10 +1693,14 @@ def test_badminton_speak_line_guards_non_chinese_from_chinese_fallback_text():
     assert "function isLikelyChineseFallbackLine(line) {" in html
     assert "var _jaFallbackLineLookup = null;" in html
     assert "function isKnownJapaneseFallbackLine(text) {" in html
+    assert "var _zhFallbackLineLookup = null;" in html
+    assert "function isKnownChineseFallbackLine(text) {" in html
     assert "function replaceUnexpectedChineseFallbackLine(line, event) {" in html
     assert "if (primary === 'zh') return text;" in html
-    assert "if (!isLikelyChineseFallbackLine(text)) return text;" in html
     assert "if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;" in html
+    assert "if (primary === 'ja' && !isKnownChineseFallbackLine(text)) return text;" in html
+    assert "if (!isLikelyChineseFallbackLine(text)) return text;" in html
+    assert "var fallback = pickLine(fallbackKey, primary);" in html
     assert "return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');" in html
 
     speak_start = html.index("function speakLine(line, control, event) {")

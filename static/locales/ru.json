@@ -4286,7 +4286,7 @@
          "modeSwitcher": "Режим бадминтона",
          "mode": {
              "spectator": "Свободная тренировка",
-             "duel": "Дуэль с Yui"
+             "duel": "Дуэль против Yui"
          },
          "hud": {
              "score": "Очки {{score}}",

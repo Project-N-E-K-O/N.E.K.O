@@ -4286,7 +4286,7 @@
          "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
-             "duel": "Yui と対戦"
+             "duel": "Yui と勝負"
          },
          "hud": {
              "score": "スコア {{score}}",

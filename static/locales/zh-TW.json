@@ -4286,7 +4286,7 @@
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由練習",
-             "duel": "跟 Yui 對戰"
+             "duel": "和 Yui 對戰"
          },
          "hud": {
              "score": "得分 {{score}}",

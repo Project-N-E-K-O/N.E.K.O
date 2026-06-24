@@ -4286,7 +4286,7 @@
          "modeSwitcher": "배드민턴 모드",
          "mode": {
              "spectator": "자유 연습",
-             "duel": "Yui와 대결"
+             "duel": "Yui와 승부"
          },
          "hud": {
              "score": "점수 {{score}}",

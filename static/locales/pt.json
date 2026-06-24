@@ -4286,7 +4286,7 @@
          "modeSwitcher": "Modo de badminton",
          "mode": {
              "spectator": "Treino livre",
-             "duel": "Duelo com Yui"
+             "duel": "Duelo contra Yui"
          },
          "hud": {
              "score": "Pontos {{score}}",

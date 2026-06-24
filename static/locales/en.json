@@ -4286,7 +4286,7 @@
          "modeSwitcher": "Badminton mode",
          "mode": {
              "spectator": "Free Practice",
-             "duel": "Duel Yui"
+             "duel": "Duel with Yui"
          },
          "hud": {
              "score": "Score {{score}}",

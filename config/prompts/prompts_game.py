@@ -1007,7 +1007,7 @@ _BADMINTON_PREGAME_CONTEXT_PROMPT_JA = """\
 
 判断ルール：証拠不足なら neutral_play。neutral_play は普通の陪玩で、関係修復や罰ではありません。duel では強い証拠と怒りがある時だけ punishing を強めに開始できます。落ち込みや引きこもり気味なら、集中して一緒にバドミントンに集中すること自体が少し和らげます。nekoInviteText が NEKO 自身の誘いなら openingLine で繰り返さないでください。
 
-モード：spectator は場边の観戦、duel は交互の勝負です。
+モード：spectator はコート脇での観戦、duel は交互の勝負です。
 """
 
 _BADMINTON_PREGAME_CONTEXT_PROMPT_KO = """\
