@@ -3429,6 +3429,12 @@
         }
     }
 
+    function syncTutorialGalgameSuppression() {
+        setGalgameModeTemporarilyDisabled(
+            state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()
+        );
+    }
+
     function setGalgameModeEnabled(enabled, options) {
         var requestOptions = options || {};
         var next = !!enabled;
@@ -4350,6 +4356,7 @@
             compactChatState: getCurrentCompactChatState(),
             composerDisabled: !!next
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
@@ -4367,6 +4374,7 @@
             compactInputLocked: next,
             composerDisabled: !!state.homeTutorialInteractionLocked
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
