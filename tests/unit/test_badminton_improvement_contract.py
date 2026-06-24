@@ -430,12 +430,12 @@ def test_badminton_audio_config_contract():
     octopus_ink_poof = ROOT / "static" / "game" / "games" / "badminton" / "audio" / "badminton-octopus-ink-poof.mp3"
     original_result = ROOT / "static" / "game" / "games" / "soccer" / "audio" / "Battle_1_E.mp3"
     assert source.exists()
-    assert result_short.exists()
+    assert not result_short.exists()
     assert banana_slip_goofy.exists()
     assert octopus_ink_poof.exists()
+    assert original_result.exists()
     assert 1000 < banana_slip_goofy.stat().st_size < 16000
     assert 1000 < octopus_ink_poof.stat().st_size < 12000
-    assert result_short.stat().st_size < original_result.stat().st_size // 10
     text = source.read_text(encoding="utf-8")
     assert "gameSystem.badminton.audioConfig" in text
     assert "audioMix" in text
@@ -450,13 +450,13 @@ def test_badminton_audio_config_contract():
     assert "whoosh: [{ src: racketSwing" in text
     assert "var racketShuttleHits = [" in text
     assert "var racketShuttleSingle =" in text
-    assert "var resultWinShort =" in text
+    assert "var resultWinShort =" not in text
     assert "var bananaSlipGoofy =" in text
     assert "var octopusInkPoof =" in text
     assert "bananaSlip: [{ src: bananaSlipGoofy" in text
     assert "octopusInk: [{ src: octopusInkPoof" in text
-    assert "result: { gameOver: [{ src: resultWinShort" in text
-    assert "result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3'" not in text
+    assert "result: { gameOver: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3', gainDb: 1.5 }] }" in text
+    assert "badminton-result-win-short.mp3" not in text
     assert "shuttleContact: racketShuttleHits.concat([racketShuttleSingle]).map" in text
 
 
@@ -1852,6 +1852,77 @@ def test_badminton_duel_uses_eleven_miss_elimination_instead_of_five_round_cap()
 
 
 @pytest.mark.unit
+def test_badminton_start_menu_bgm_tracks_start_screen_state():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    resolve_start = html.index("function _bdResolvePlaylist() {")
+    resolve_section = html[resolve_start:html.index("function _bdHasPlayableBgmTarget", resolve_start)]
+    start_screen_start = html.index("function startBadmintonFromStartScreen(options) {")
+    start_screen_section = html[start_screen_start:html.index("function showBadmintonStartScreenIfNeeded()", start_screen_start)]
+    activation_start = html.index("function activateBadmintonStartMenuAudio(ev) {")
+    activation_section = html[activation_start:html.index("function hideBadmintonStartOverlay()", activation_start)]
+
+    assert "var badmintonStartMenuAudioActivated = false;" in html
+    assert "if (!badmintonStartAccepted) {\n        return { key: 'startMenu', playlist: config.bgm.startMenu, repeat: true };\n      }" in resolve_section
+    assert resolve_section.index("if (!badmintonStartAccepted)") < resolve_section.index("if (game.state === 'game_over')")
+    assert "badmintonStartButton.contains(ev.target)" in activation_section
+    assert "badmintonStartMenuAudioActivated = true;" in activation_section
+    assert "if (ac && ac.state === 'suspended') ac.resume().catch(function () {});" in activation_section
+    assert "badmintonGameAudio.unlock();" in activation_section
+    assert "if (bgmEnabled) startBgm();" in activation_section
+    assert "removeBadmintonStartMenuAudioListeners();" in activation_section
+    assert "badmintonStartAccepted = true;" in start_screen_section
+    assert "removeBadmintonStartMenuAudioListeners();" in start_screen_section
+    assert start_screen_section.index("badmintonStartAccepted = true;") < start_screen_section.index("if (!options.skipTutorial) resumeAudio();")
+    assert "addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true);" in html
+    assert "window.removeEventListener('pointerdown', activateBadmintonStartMenuAudio, true);" in html
+
+
+@pytest.mark.unit
+def test_badminton_mood_bgm_uses_looped_configs_instead_of_end_segments():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    audio_config = (ROOT / "static" / "game" / "games" / "badminton" / "badminton-audio-config.js").read_text(encoding="utf-8")
+    resolve_start = html.index("function _bdResolvePlaylist() {")
+    resolve_section = html[resolve_start:html.index("function _bdHasPlayableBgmTarget", resolve_start)]
+
+    assert "if (moodBgm.loop) {" in resolve_section
+    assert "if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {" in resolve_section
+    assert "moodBgm = null;" in resolve_section
+    assert "var moodBgmKey = (currentMood === 'happy' || currentMood === 'relaxed')" in resolve_section
+    assert "? 'mood:chocobos'" in resolve_section
+    assert "key: moodBgmKey" in resolve_section
+    assert "loopedConfig: moodBgm" in resolve_section
+    assert "audio.playLoopedBgm(resolved.loopedConfig" in html
+    assert "happy: {\n          intro: '/static/game/games/soccer/audio/Chocobos_S.mp3',\n          loop: '/static/game/games/soccer/audio/Chocobos_L.mp3'," in audio_config
+    assert "relaxed: {\n          intro: '/static/game/games/soccer/audio/Chocobos_S.mp3',\n          loop: '/static/game/games/soccer/audio/Chocobos_L.mp3'," in audio_config
+    assert "angry: {\n          loop: '/static/game/games/soccer/audio/纯狐_心之所在_L.mp3',\n          outro: '/static/game/games/soccer/audio/纯狐_心之所在_E.mp3'," in audio_config
+    assert "calm: []," in audio_config
+    assert "sad: []," in audio_config
+    assert "surprised: []," in audio_config
+    assert "happy: {\n          gainDb:" not in audio_config
+    assert "angry: {\n          gainDb: -2.94," not in audio_config
+    assert "surprised: {\n          gainDb:" not in audio_config
+    assert "surprised: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3'" not in audio_config
+
+
+@pytest.mark.unit
+def test_badminton_reselects_in_game_bgm_when_returning_from_mood_bgm():
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    pick_start = html.index("function _bdPickInGameBgm() {")
+    pick_section = html[pick_start:html.index("function _bdShouldReselectInGameBgm()", pick_start)]
+    reselect_start = html.index("function _bdShouldReselectInGameBgm() {")
+    reselect_section = html[reselect_start:html.index("var _bdSelectedInGameBgm", reselect_start)]
+    resolve_start = html.index("function _bdResolvePlaylist() {")
+    resolve_section = html[resolve_start:html.index("function _bdHasPlayableBgmTarget", resolve_start)]
+
+    assert "return variants[Math.floor(Math.random() * variants.length)];" in pick_section
+    assert "return _bdBgmCurrentKey.indexOf('mood:') === 0;" in reselect_section
+    assert "var _bdSelectedInGameBgm = _bdPickInGameBgm();" in html
+    assert "if (_bdShouldReselectInGameBgm()) {\n        _bdSelectedInGameBgm = _bdPickInGameBgm();\n      }" in resolve_section
+    assert resolve_section.index("if (_bdShouldReselectInGameBgm())") > resolve_section.index("return { key: moodBgmKey, playlist: moodBgm, repeat: true };")
+    assert resolve_section.index("if (_bdShouldReselectInGameBgm())") < resolve_section.index("if (_bdSelectedInGameBgm && _bdSelectedInGameBgm.loop)")
+
+
+@pytest.mark.unit
 def test_badminton_result_bgm_only_starts_once_per_completed_game():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
     show_result = html[html.index("function showResult() {"):html.index("function persistCompletedResult()", html.index("function showResult() {"))]
@@ -1873,6 +1944,8 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     assert "badmintonGameAudio.sync('game-over');" not in show_result.replace("playResultBgmOnce();", "")
     assert "game.resultBgmPlayed = false;" in reset_section
     assert "badmintonGameAudio.resetSyncKey();" in reset_section
+    assert "if (bgmEnabled) badmintonGameAudio.sync('reset');" in reset_section
+    assert reset_section.index("badmintonGameAudio.resetSyncKey();") < reset_section.index("if (bgmEnabled) badmintonGameAudio.sync('reset');")
     assert "var _bdResultBgmTriggered = false;" in html
     assert "if (resolved.key === 'gameOver') {" in sync_bgm_section
     assert "if (_bdResultBgmTriggered) return;" in sync_bgm_section
