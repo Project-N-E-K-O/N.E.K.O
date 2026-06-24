@@ -648,6 +648,76 @@ async def test_notify_reasoning_done_clears_only_after_a_pulse():
 
 
 @pytest.mark.asyncio
+async def test_notify_reasoning_done_owner_seq_guards_cross_stream_clear():
+    """A backgrounded stream's clear must NOT fire once a newer stream has
+    re-pulsed under a fresher ownership seq — otherwise a preempted proactive
+    turn's finally would clear the bubble a foreground user turn is still
+    reasoning under (Codex P2)."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._reasoning_stream_seq = 0
+    client._reasoning_pulsed_this_stream = False
+    pulses = []
+
+    async def on_thinking_active(active):
+        pulses.append(active)
+
+    client.on_thinking_active = on_thinking_active
+
+    s1 = client._begin_reasoning_stream()          # proactive scope
+    await client._notify_reasoning_active()        # proactive pulses
+    s2 = client._begin_reasoning_stream()          # user stream_text interleaves
+    await client._notify_reasoning_active()        # user pulses under fresher seq
+    assert pulses == [True, True]
+
+    # Proactive finally with its OWN (older) seq must be suppressed.
+    await client._notify_reasoning_done(s1)
+    assert pulses == [True, True], "旧流的 finally 不能清掉新流的气泡"
+
+    # The owning (newer) stream's clear still works.
+    await client._notify_reasoning_done(s2)
+    assert pulses == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_pulses_when_reasoning_bundled_with_other_signal():
+    """A thinking provider can pack reasoning_content onto the SAME delta as a
+    visible token / finish_reason (or a tool_call_delta). The pulse must still
+    fire — it can't live only inside the pure-reasoning skip, or a reasoning
+    tool-call turn shows no bubble at all (Codex P2)."""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    # reasoning_content + content + finish_reason all on one chunk → fails the
+    # pure-reasoning skip (has content/finish) yet must still pulse.
+    chunks = [LLMStreamChunk(content="答案", reasoning_content="先想想", finish_reason="stop")]
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = _FakeLLM([chunks])
+    client._tool_definitions = []
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client.on_tool_call = None
+    client._reasoning_stream_seq = 0
+    client._reasoning_pulsed_this_stream = False
+
+    pulses = []
+
+    async def on_thinking_active(active):
+        pulses.append(active)
+
+    client.on_thinking_active = on_thinking_active
+
+    out = []
+    async for ch in client._astream_with_tools([{"role": "user", "content": "hi"}]):
+        out.append(ch)
+
+    assert pulses == [True], "reasoning 与可见 token / finish 同 chunk 时仍应 pulse"
+    assert any(getattr(ch, "content", None) == "答案" for ch in out)
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_omits_reasoning_when_absent():
     """非 thinking 端点（delta 不带 reasoning_content）时，assistant tool_calls
     消息不应凭空塞入 reasoning_content 字段，免得污染普通会话 / 触发某些 provider

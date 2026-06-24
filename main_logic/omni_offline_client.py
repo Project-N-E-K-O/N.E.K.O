@@ -616,8 +616,16 @@ class OmniOfflineClient:
         # forced-finalize, genai) pulse at most once per stream, and so the
         # end-of-stream clear only fires when this stream actually pulsed.
         # Re-armed at the top of BOTH stream entry points (stream_text and
-        # prompt_ephemeral).
+        # prompt_ephemeral) via _begin_reasoning_stream().
         self._reasoning_pulsed_this_stream = False
+        # Stream-ownership token: a proactive prompt_ephemeral turn can interleave
+        # with a user stream_text on this same client (core drops stale proactive
+        # chunks rather than awaiting the prompt). Each stream entry bumps the seq;
+        # a pulse stamps the pulsing seq; the prompt_ephemeral clear only fires for
+        # ITS OWN seq, so a backgrounded stream's finally can't clear the bubble a
+        # newer foreground stream just pulsed (Codex P2).
+        self._reasoning_stream_seq = 0
+        self._reasoning_pulsed_seq: Optional[int] = None
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
@@ -854,6 +862,7 @@ class OmniOfflineClient:
         if getattr(self, "_reasoning_pulsed_this_stream", False):
             return
         self._reasoning_pulsed_this_stream = True
+        self._reasoning_pulsed_seq = getattr(self, "_reasoning_stream_seq", 0)
         cb = getattr(self, "on_thinking_active", None)
         if cb is None:
             return
@@ -862,7 +871,16 @@ class OmniOfflineClient:
         except Exception as e:
             logger.debug("on_thinking_active(True) callback failed (ignored): %s", e)
 
-    async def _notify_reasoning_done(self) -> None:
+    def _begin_reasoning_stream(self) -> int:
+        """Open a new reasoning-pulse scope for one stream and return its ownership
+        token. Bumps the seq (so an older interleaving stream's clear can't fire
+        for this scope) and re-arms the per-stream pulse guard. Called at the top
+        of both stream entry points (stream_text and prompt_ephemeral)."""
+        self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
+        self._reasoning_pulsed_this_stream = False
+        return self._reasoning_stream_seq
+
+    async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
         """Symmetric clear for ``_notify_reasoning_active``: if THIS stream pulsed
         the thinking bubble True, push it back to False. Required for callers
         without an external unconditional clear — ``prompt_ephemeral``'s
@@ -874,9 +892,16 @@ class OmniOfflineClient:
         pre-pulse, which fires with no reasoning chunk), so this is wired into
         ``prompt_ephemeral``'s finally only.
 
-        Resets the guard so it is idempotent. Best-effort; getattr default guards
-        ``__new__`` test stubs that bypass ``__init__``."""
+        ``owner_seq`` is the token from this stream's ``_begin_reasoning_stream``:
+        the clear is suppressed when a NEWER interleaving stream has since pulsed
+        (its seq differs), so a backgrounded proactive turn can't clear the bubble
+        a foreground user turn is still reasoning under (Codex P2). Resets the
+        guard so it is idempotent. Best-effort; getattr defaults guard ``__new__``
+        test stubs that bypass ``__init__``."""
         if not getattr(self, "_reasoning_pulsed_this_stream", False):
+            return
+        if owner_seq is not None and getattr(self, "_reasoning_pulsed_seq", None) != owner_seq:
+            # A newer stream owns the current pulse — don't clear its bubble.
             return
         self._reasoning_pulsed_this_stream = False
         cb = getattr(self, "on_thinking_active", None)
@@ -1043,6 +1068,13 @@ class OmniOfflineClient:
                     streamed_text_buffer += chunk.content
                 if getattr(chunk, "reasoning_content", None):
                     streamed_reasoning_buffer += chunk.reasoning_content
+                    # Pulse the thinking bubble on ANY chunk carrying reasoning,
+                    # BEFORE the pure-reasoning skip below — a thinking provider
+                    # can pack reasoning_content onto the SAME delta as a
+                    # tool_call_delta / finish_reason (the OpenAI adapter keeps
+                    # them in one LLMStreamChunk), and a reasoning tool-call turn
+                    # has no visible token to show feedback otherwise (Codex P2).
+                    await self._notify_reasoning_active()
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -1065,9 +1097,8 @@ class OmniOfflineClient:
                     and not chunk.finish_reason
                     and not chunk.usage_metadata
                 ):
-                    # Surface "model is thinking" (boolean only, text stays
-                    # filtered) so the bubble pulses on ANY reasoning turn.
-                    await self._notify_reasoning_active()
+                    # Pure reasoning-only chunk: already pulsed above; drop it so
+                    # the "first token" TTFT埋点 isn't fooled by a reasoning token.
                     continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
@@ -1152,6 +1183,11 @@ class OmniOfflineClient:
                 pt = chunk.usage_metadata.get("prompt_tokens")
                 if pt:
                     final_prompt_tokens = pt
+            # Pulse on ANY reasoning chunk (incl. reasoning bundled with a tool
+            # delta / finish_reason on one delta), before the pure-reasoning skip
+            # below — same fix as the main loop (Codex P2).
+            if getattr(chunk, "reasoning_content", None):
+                await self._notify_reasoning_active()
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
@@ -1163,8 +1199,6 @@ class OmniOfflineClient:
                 and not chunk.finish_reason
                 and not chunk.usage_metadata
             ):
-                # Same boolean thinking pulse on the forced-finalize path.
-                await self._notify_reasoning_active()
                 continue
             if getattr(chunk, "content", None) and tool_leak_filter is not None:
                 chunk.content = self._filter_tool_leak_content(
@@ -1901,9 +1935,9 @@ class OmniOfflineClient:
             else:
                 return
 
-        # Fresh stream: re-arm the per-stream reasoning-pulse guard so this
-        # turn's first reasoning chunk re-pulses the thinking bubble.
-        self._reasoning_pulsed_this_stream = False
+        # Fresh stream: open a new reasoning-pulse scope (re-arm guard + bump the
+        # ownership seq) so this turn's first reasoning chunk re-pulses the bubble.
+        self._begin_reasoning_stream()
 
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
@@ -3250,10 +3284,11 @@ class OmniOfflineClient:
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
-        # Re-arm the thinking-pulse guard like stream_text does: this turn's first
-        # reasoning chunk should re-pulse, and the finally below must only clear if
-        # THIS turn pulsed.
-        self._reasoning_pulsed_this_stream = False
+        # Open a new reasoning-pulse scope like stream_text does and capture the
+        # ownership token: the finally clear below must fire ONLY for this turn's
+        # own pulse, never for a newer user stream_text that interleaved and
+        # re-pulsed under a fresher seq (Codex P2).
+        _reasoning_owner_seq = self._begin_reasoning_stream()
 
         try:
             self._is_responding = True
@@ -3413,9 +3448,10 @@ class OmniOfflineClient:
             # Clear the thinking bubble if this proactive/greeting/avatar turn
             # pulsed it but committed no visible text — unlike stream_text, there
             # is no external unconditional clear bracketing this call (Codex P2).
-            # No-op when nothing pulsed or it was already cleared on the first
-            # visible token (idempotent).
-            await self._notify_reasoning_done()
+            # Passing the owner seq suppresses the clear when a newer user turn
+            # interleaved and re-pulsed. No-op when nothing pulsed or it was
+            # already cleared on the first visible token (idempotent).
+            await self._notify_reasoning_done(_reasoning_owner_seq)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
