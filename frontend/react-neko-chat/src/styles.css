@@ -2593,7 +2593,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     calc(var(--compact-export-surface-width) * 1.46),
     calc(var(--compact-desktop-workarea-height, 900px) * 0.78)
   );
-  max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+  max-height: var(--compact-export-preview-max-height);
 }
 
 .compact-export-history-panel {
