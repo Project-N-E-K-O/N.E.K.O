@@ -315,6 +315,8 @@ class RoastRuntime:
 
     async def _start_live_listener(self, room_id: int) -> bool:
         started = await self.bili_live_ingest.start_listening(room_id)
+        if started:
+            self.pipeline.clear_dry_run_session_state()
         self.live_connection_state = "connected" if started else "disconnected"
         self.config.live_enabled = bool(started)
         self.safety_guard.set_connected(started)

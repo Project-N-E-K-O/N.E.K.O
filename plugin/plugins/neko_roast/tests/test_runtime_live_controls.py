@@ -149,6 +149,23 @@ async def test_connect_live_room_switches_active_room_without_double_start(runti
 
 
 @pytest.mark.asyncio
+async def test_connect_live_room_resets_dry_run_session_marker(runtime: RoastRuntime) -> None:
+    calls = 0
+
+    def clear_marker() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.config.live_room_id = 123
+    runtime.pipeline.clear_dry_run_session_state = clear_marker
+
+    snapshot = await runtime.connect_live_room()
+
+    assert snapshot["connected"] is True
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_disconnect_during_room_update_is_not_undone_by_stale_listener_snapshot(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True

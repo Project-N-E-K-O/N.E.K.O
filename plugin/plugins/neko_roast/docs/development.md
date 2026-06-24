@@ -514,7 +514,7 @@ danmaku_core on_event(cmd, 富模型)
 
 `danmaku_response.build_request()` 只用于同一 UID 已经完成出场锐评后的普通 `live_danmaku` 后续接话。`roast_once_per_uid` 的语义因此收敛为“每个观众只做一次出场锐评”，而不是“每个观众只能让 NEKO 回应一次”。后续弹幕仍必须经过 viewer profile、safety guard、dispatcher、dry_run 和 pacing；成功输出不调用 `viewer_profile.mark_roasted()`，避免把普通聊天回复继续累计成首评次数。
 
-在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `RoastPipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。
+在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `RoastPipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
 
 `danmaku_response` 的 prompt 只围绕当前弹幕接话：不能重复首次出场、头像、ID 或进场锐评模板；除非当前弹幕本身相关，否则不主动评价头像或昵称；独播（`solo_stream`）提示 NEKO 是台前唯一主播，需要自然接住话题；同播（`co_stream`）提示低打断，给主播留空间。
 
@@ -601,7 +601,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-24：`uv run pytest plugin/plugins/neko_roast/tests -q` → **161 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-24：`uv run pytest plugin/plugins/neko_roast/tests -q` → **163 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

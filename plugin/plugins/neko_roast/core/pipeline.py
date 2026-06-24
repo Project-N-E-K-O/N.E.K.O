@@ -14,6 +14,9 @@ class RoastPipeline:
         self._uid_locks: dict[str, asyncio.Lock] = {}
         self._dry_run_roasted_uids: set[str] = set()
 
+    def clear_dry_run_session_state(self) -> None:
+        self._dry_run_roasted_uids.clear()
+
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
         if not event.uid:
