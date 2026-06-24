@@ -130,6 +130,178 @@ function soloReadinessItemTone(status: string): "success" | "warning" | "danger"
   return "default"
 }
 
+function panelText(t: (key: string) => string, key: string, fallback: string): string {
+  const value = t(key)
+  if (!value || value === key || value.startsWith("panel.") || value.startsWith("entries.")) return fallback
+  return value
+}
+
+function labelFallback(group: string, value: string): string {
+  const labels: Record<string, Record<string, string>> = {
+    liveStatusSummary: {
+      ready_to_stream: "可以开播",
+      test_only: "当前只能测试",
+      temporarily_not_speaking: "暂时不会说话",
+      cannot_stream: "不能开播",
+    },
+    liveStatusReason: {
+      ready: "开播检查已就绪。",
+      dry_run: "测试模式已开启，不会真实输出。",
+      manual_paused: "猫猫已暂停。",
+      room_not_configured: "还没有配置直播间。",
+      live_ingest_disconnected: "直播接收还没有连接。",
+      cooldown: "猫猫正在等待冷却结束。",
+      safety_tripped: "安全门已停止输出。",
+      safety_degraded: "安全门处于降级状态。",
+      output_channel_unavailable: "输出通道当前不可用。",
+      all_ready: "所有检查都已就绪。",
+    },
+    liveModeRole: {
+      co_stream: "人猫同播",
+      solo_stream: "猫猫独播",
+    },
+    liveModeRoleHint: {
+      companion: "人猫同播：NEKO 是搭档，低打断补位。",
+      solo_host: "猫猫独播：NEKO 正在独自接待观众。",
+    },
+    liveState: {
+      engaged: "互动中",
+      warmup: "开场中",
+      quiet: "安静中",
+      idle: "冷场中",
+      paused: "已暂停",
+      blocked: "被阻断",
+    },
+    liveStateReason: {
+      recent_activity: "最近有互动，优先接话。",
+      solo_stream_warmup: "猫猫独播刚开始，适合开场接待。",
+      quiet_activity_gap: "直播间已经安静了一小会。",
+      low_activity: "互动较少。",
+      no_recent_activity: "最近没有新的互动。",
+      manual_paused: "猫猫已暂停。",
+      blocked_by_live_status: "当前开播状态还不允许输出。",
+    },
+    idleHostingCandidate: {
+      true: "适合冷场陪播",
+      false: "还没到冷场陪播时机",
+    },
+    idleHostingEligible: {
+      true: "可以补位",
+      false: "暂不能补位",
+    },
+    idleHostingReason: {
+      eligible: "猫猫独播处于冷场状态，可以准备补位。",
+      not_candidate: "还不是候选时机。",
+      minimum_interval: "正在等待最小间隔。",
+      auto_disabled: "多次失败后已自动停用。",
+      solo_idle_ready: "猫猫独播已进入冷场候选，可以准备补位。",
+    },
+    speechSummary: {
+      ready: "NEKO 现在可以说话",
+      test_only: "当前只能测试",
+      temporarily_not_speaking: "NEKO 暂时不会说话",
+      cannot_stream: "NEKO 还不能开播",
+      waiting_for_activity: "正在等合适的开口时机",
+      recently_spoke: "NEKO 刚刚说过话",
+      recently_skipped: "最近事件没有输出",
+      failed: "最近输出失败",
+      waiting: "正在等待合适时机",
+    },
+    speechReason: {
+      ready: "开播检查已就绪。",
+      dry_run: "测试模式已开启，不会真实输出。",
+      manual_paused: "NEKO 被手动暂停了。",
+      room_not_configured: "还没有配置直播间。",
+      live_ingest_disconnected: "直播接收还没有连接。",
+      cooldown: "NEKO 正在等待冷却结束。",
+      safety_tripped: "安全门已停止输出。",
+      safety_degraded: "安全门处于降级状态。",
+      output_channel_unavailable: "输出通道当前不可用。",
+      solo_stream_warmup: "猫猫独播刚开始，可以先说一句开场话。",
+      idle_hosting_candidate: "猫猫独播已空闲，可以进入冷场陪播。",
+      quiet_activity_gap: "直播间已经安静了一小会。",
+      no_recent_activity: "最近没有新的互动。",
+      waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。",
+      recent_output: "NEKO 刚刚已经输出过。",
+      recently_skipped: "最近事件被策略跳过。",
+      failed: "最近输出链路失败。",
+      "dispatcher.dry_run": "Dispatcher 以 dry_run 完成。",
+    },
+    liveDirectorAction: {
+      none: "暂无",
+      warmup_hosting: "开场接待",
+      active_engagement: "主动营业",
+      idle_hosting: "冷场陪播",
+    },
+    liveDirectorReason: {
+      waiting_for_viewer: "正在等待观众互动。",
+      companion_mode: "人猫同播不自动抢话。",
+      paused: "猫猫已暂停。",
+      blocked: "直播输出被阻断。",
+      recent_activity: "最近互动足够，猫猫应该接话而不是强行抛话题。",
+      solo_quiet: "猫猫独播较安静，可以轻主动营业。",
+      solo_warmup: "猫猫独播刚开始，可以先开场接待。",
+      solo_idle: "猫猫独播已冷场，可以冷场陪播。",
+      solo_idle_ready: "猫猫独播已冷场，可以冷场陪播。",
+      minimum_interval: "正在等待最小间隔。",
+      recent_danmaku_output: "猫猫刚接过弹幕，主动营业先等一下。",
+      not_candidate: "还不是候选时机。",
+      auto_disabled: "多次失败后已自动停用。",
+      active_engagement_not_ready: "主动营业暂未就绪。",
+      warmup_hosting_not_ready: "开场接待暂时还没准备好。",
+      idle_hosting_not_ready: "冷场陪播暂未就绪。",
+    },
+    activeEngagementCandidate: {
+      true: "适合轻主动营业",
+      false: "现在不适合主动营业",
+    },
+    activeEngagementReason: {
+      eligible: "猫猫独播处于安静状态，可以抛一个小话题。",
+      deferred: "主动营业暂缓，先验证接弹幕和冷场陪播。",
+      not_solo_stream: "主动营业 v0 只服务猫猫独播。",
+      paused: "猫猫已暂停。",
+      blocked: "直播输出被阻断。",
+      not_quiet: "主动营业等待安静状态，不在热聊或完全冷场时触发。",
+      cooldown: "输出冷却还在生效。",
+      minimum_interval: "主动营业正在等待最小间隔。",
+      live_status_not_ready: "当前直播状态还不能输出。",
+    },
+    warmupHostingCandidate: {
+      true: "适合开场",
+      false: "开场已过",
+    },
+    soloReadinessSummary: {
+      ready_for_test: "可以开始测试独播",
+      ready_for_live_test: "可以开始真实独播测试",
+      ready: "独播检查已就绪",
+      not_solo_stream: "请先切到猫猫独播",
+      live_not_ready: "直播间还没准备好",
+    },
+    soloReadinessStatus: {
+      ready: "可用",
+      blocked: "等待",
+      observed: "已触发",
+    },
+    soloReadinessItem: {
+      preflight: "开播检查",
+      warmup_hosting: "开场接待",
+      avatar_roast: "首次出场锐评",
+      danmaku_response: "后续弹幕接话",
+      active_engagement: "轻主动营业",
+      idle_hosting: "冷场陪播",
+      pacing_control: "节奏控制",
+    },
+    safety: {
+      running: "运行中",
+      paused: "已暂停",
+      tripped: "已急停",
+      degraded: "降级中",
+      unknown: "未知",
+    },
+  }
+  return labels[group]?.[value] || value.replace(/_/g, " ")
+}
+
 function formatLatencyMs(value: any): string {
   const ms = Number(value)
   if (!Number.isFinite(ms) || ms < 0) return "-"
@@ -161,11 +333,11 @@ function interactionRouteTone(route: string): "success" | "warning" | "danger" |
 }
 
 function interactionRouteLabel(route: string, t: (key: string) => string): string {
-  if (route === "avatar_roast") return t("panel.interaction.module.avatarRoast.title")
-  if (route === "danmaku_response") return t("panel.interaction.module.danmakuResponse.title")
-  if (route === "warmup_hosting") return t("panel.interaction.module.warmupHosting.title")
-  if (route === "idle_hosting") return t("panel.interaction.module.idleHosting.title")
-  if (route === "active_engagement") return t("panel.interaction.module.activeEngagement.title")
+  if (route === "avatar_roast") return panelText(t, "panel.interaction.module.avatarRoast.title", "首次出场锐评")
+  if (route === "danmaku_response") return panelText(t, "panel.interaction.module.danmakuResponse.title", "后续弹幕接话")
+  if (route === "warmup_hosting") return panelText(t, "panel.interaction.module.warmupHosting.title", "开场接待")
+  if (route === "idle_hosting") return panelText(t, "panel.interaction.module.idleHosting.title", "冷场陪播")
+  if (route === "active_engagement") return panelText(t, "panel.interaction.module.activeEngagement.title", "主动营业")
   return route
 }
 
@@ -620,6 +792,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const soloTestReady = !!soloTestReadiness.ready
   const soloTestSummary = String(soloTestReadiness.summary || "live_not_ready")
   const soloTestItems = Array.isArray(soloTestReadiness.items) ? soloTestReadiness.items : []
+  const dynamicLabel = (group: string, keyPrefix: string, value: string): string => (
+    panelText(t, `${keyPrefix}.${value}`, labelFallback(group, value))
+  )
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
@@ -689,39 +864,39 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <Grid cols={3}>
             <StatCard
               label={t("panel.columns.status")}
-              value={<StatusBadge tone={liveStatusTone(liveStatusSummary)} label={t(`panel.liveStatusSummary.${liveStatusSummary}`)} />}
+              value={<StatusBadge tone={liveStatusTone(liveStatusSummary)} label={dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)} />}
             />
-            <StatCard label={t("panel.columns.reason")} value={t(`panel.liveStatusReason.${liveStatusReason}`)} />
+            <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStatusReason", "panel.liveStatusReason", liveStatusReason)} />
             <StatCard label={t("panel.liveStatusSummary.cooldown")} value={`${liveStatusCooldown.toFixed(1)}s`} />
           </Grid>
           <Grid cols={3}>
-            <StatCard label={t("panel.fields.mode")} value={t(`panel.liveModeRole.${liveMode}`)} />
-            <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
-            <StatCard label={t("panel.columns.reason")} value={t(`panel.liveStateReason.${liveStateReason}`)} />
+            <StatCard label={t("panel.fields.mode")} value={dynamicLabel("liveModeRole", "panel.liveModeRole", liveMode)} />
+            <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
+            <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStateReason", "panel.liveStateReason", liveStateReason)} />
           </Grid>
           <Grid cols={3}>
             <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
             <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
             <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
           </Grid>
-          <Text>{t(`panel.liveModeRoleHint.${liveModeRole}`)}</Text>
+          <Text>{dynamicLabel("liveModeRoleHint", "panel.liveModeRoleHint", liveModeRole)}</Text>
           <Alert tone={liveStatusTone(liveStatusSummary)}>
-            {t(`panel.liveStatusSummary.${liveStatusSummary}`)} · {t(`panel.liveStatusReason.${liveStatusReason}`)}
+            {dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)} · {dynamicLabel("liveStatusReason", "panel.liveStatusReason", liveStatusReason)}
           </Alert>
           <Alert tone={idleHostingCandidate ? "success" : "info"}>
-            {t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)}
+            {dynamicLabel("idleHostingCandidate", "panel.idleHostingCandidate", idleHostingCandidate ? "true" : "false")}
           </Alert>
           <Grid cols={3}>
             <StatCard
               label={t("panel.idleHostingStatus.title")}
-              value={<StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={t(`panel.idleHostingStatus.eligible.${idleHostingEligible ? "true" : "false"}`)} />}
+              value={<StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={dynamicLabel("idleHostingEligible", "panel.idleHostingStatus.eligible", idleHostingEligible ? "true" : "false")} />}
             />
             <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
             <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
           </Grid>
-          <Text>{t(`panel.idleHostingStatus.reason.${idleHostingReason}`)}</Text>
+          <Text>{dynamicLabel("idleHostingReason", "panel.idleHostingStatus.reason", idleHostingReason)}</Text>
           <Alert tone={speechExplanationTone(speechSummary)}>
-            {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
+            {t("panel.speechExplanation.title")} · {dynamicLabel("speechSummary", "panel.speechExplanation.summary", speechSummary)} · {dynamicLabel("speechReason", "panel.speechExplanation.reason", speechReason)}
           </Alert>
           {speechLastStatus ? (
             <Text>
@@ -737,11 +912,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <Grid cols={2}>
             <StatCard
               label={t("panel.columns.status")}
-              value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={t(`panel.soloTestReadiness.summary.${soloTestSummary}`)} />}
+              value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={dynamicLabel("soloReadinessSummary", "panel.soloTestReadiness.summary", soloTestSummary)} />}
             />
             <StatCard
               label={t("panel.liveDirector.nextAutoAction")}
-              value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />}
+              value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />}
             />
           </Grid>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px" }}>
@@ -764,9 +939,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                   }}
                 >
                   <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {t(`panel.soloTestReadiness.item.${id}`)}
+                    {dynamicLabel("soloReadinessItem", "panel.soloTestReadiness.item", id)}
                   </span>
-                  <StatusBadge tone={soloReadinessItemTone(status)} label={t(`panel.soloTestReadiness.status.${status}`)} />
+                  <StatusBadge tone={soloReadinessItemTone(status)} label={dynamicLabel("soloReadinessStatus", "panel.soloTestReadiness.status", status)} />
                 </div>
               )
             })}
@@ -797,7 +972,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <StatCard label={t("panel.stats.room")} value={connection.room_id || config.live_room_id || "-"} />
             <StatCard label={t("panel.stats.connection")} value={<StatusBadge tone={connection.connected ? "success" : "warning"} label={connection.connected ? t("panel.connection.connected") : t("panel.connection.disconnected")} />} />
             <StatCard label={t("panel.stats.viewers")} value={connection.connected ? (connection.viewer_count ?? 0).toLocaleString() : "-"} />
-            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={t(`panel.safety.${safety.status || "unknown"}`)} />} />
+            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />} />
           </Grid>
           {started ? (
             <Grid cols={3}>
@@ -954,12 +1129,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
         </Grid>
         <Grid cols={3}>
-          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />} />
-          <StatCard label={t("panel.columns.reason")} value={t(`panel.liveDirector.reason.${liveDirectorReason}`)} />
+          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />} />
+          <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveDirectorReason", "panel.liveDirector.reason", liveDirectorReason)} />
           <StatCard label={t("panel.liveDirector.cooldown")} value={`${liveDirectorCooldown.toFixed(1)}s`} />
         </Grid>
         <Alert tone={speechExplanationTone(speechSummary)}>
-          {t("panel.speechExplanation.title")} · {t(`panel.speechExplanation.summary.${speechSummary}`)} · {t(`panel.speechExplanation.reason.${speechReason}`)}
+          {t("panel.speechExplanation.title")} · {dynamicLabel("speechSummary", "panel.speechExplanation.summary", speechSummary)} · {dynamicLabel("speechReason", "panel.speechExplanation.reason", speechReason)}
         </Alert>
         {latestResultReason ? (
           <Text>
@@ -1019,7 +1194,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Stack gap={12}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
           <StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={t("panel.interaction.module.idleHosting.badge")} />
-          <StatusBadge tone={idleHostingCandidate ? "success" : "default"} label={t(`panel.idleHostingCandidate.${idleHostingCandidate ? "true" : "false"}`)} />
+          <StatusBadge tone={idleHostingCandidate ? "success" : "default"} label={dynamicLabel("idleHostingCandidate", "panel.idleHostingCandidate", idleHostingCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.idleHosting.desc")}</Text>
         <Grid cols={2}>
@@ -1030,7 +1205,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
           <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
         </Grid>
-        <Text>{t(`panel.idleHostingStatus.reason.${idleHostingReason}`)}</Text>
+        <Text>{dynamicLabel("idleHostingReason", "panel.idleHostingStatus.reason", idleHostingReason)}</Text>
         {renderTagRow([
           { key: "panel.interaction.tags.cooldown", tone: "warning" },
           { key: "panel.interaction.tags.safetyRequired" },
@@ -1044,12 +1219,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Stack gap={12}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
           <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={t("panel.interaction.module.warmupHosting.badge")} />
-          <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={t(`panel.warmupHostingCandidate.${warmupHostingCandidate ? "true" : "false"}`)} />
+          <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={dynamicLabel("warmupHostingCandidate", "panel.warmupHostingCandidate", warmupHostingCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.warmupHosting.desc")}</Text>
         <Grid cols={2}>
-          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
-          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={t(`panel.liveDirector.action.${liveDirectorNextAction}`)} />} />
+          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
+          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />} />
         </Grid>
         {renderTagRow([
           { key: "panel.interaction.tags.openingBeat", tone: "success" },
@@ -1065,12 +1240,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Stack gap={12}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
           <StatusBadge tone={activeEngagementEligible ? "success" : "warning"} label={t("panel.interaction.module.activeEngagement.badge")} />
-          <StatusBadge tone={activeEngagementCandidate ? "success" : "default"} label={t(`panel.activeEngagementCandidate.${activeEngagementCandidate ? "true" : "false"}`)} />
+          <StatusBadge tone={activeEngagementCandidate ? "success" : "default"} label={dynamicLabel("activeEngagementCandidate", "panel.activeEngagementCandidate", activeEngagementCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.activeEngagement.desc")}</Text>
-        <Text>{t(`panel.activeEngagementStatus.reason.${activeEngagementReason}`)}</Text>
+        <Text>{dynamicLabel("activeEngagementReason", "panel.activeEngagementStatus.reason", activeEngagementReason)}</Text>
         <Grid cols={2}>
-          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />} />
+          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
           <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
         </Grid>
         <Grid cols={2}>
@@ -1176,7 +1351,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Stack>
           <Grid cols={2}>
             <StatCard label={t("panel.stats.queue")} value={`${safety.queue_size || 0}/${safety.queue_limit || config.queue_limit || 0}`} />
-            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={t(`panel.safety.${safety.status || "unknown"}`)} />} />
+            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />} />
           </Grid>
           {audit.length ? (
             <DataTable
@@ -1403,10 +1578,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <ToolbarGroup>
           <StatusBadge
             tone={liveStatusTone(liveStatusSummary)}
-            label={t(`panel.liveStatusSummary.${liveStatusSummary}`)}
+            label={dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)}
           />
-          <StatusBadge tone={liveStateTone(liveStateName)} label={t(`panel.liveState.${liveStateName}`)} />
-          <StatusBadge tone={statusTone(String(safety.status || ""))} label={t(`panel.safety.${safety.status || "unknown"}`)} />
+          <StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />
+          <StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />
         </ToolbarGroup>
         <ToolbarGroup>
           <RefreshButton label={t("panel.actions.refreshStatus")} />
