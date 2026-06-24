@@ -2112,11 +2112,29 @@
     if (/[A-Za-zÀ-ÖØ-öø-ÿ\u0400-\u04ff]/.test(text)) return false;
     return true;
   }
+  var _jaFallbackLineLookup = null;
+  function isKnownJapaneseFallbackLine(text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (!_jaFallbackLineLookup) {
+      _jaFallbackLineLookup = Object.create(null);
+      [quickLinesFallbackJa, YUI_PASSIVE_LINES_DUEL_JA].forEach(function (pool) {
+        Object.keys(pool || {}).forEach(function (key) {
+          (pool[key] || []).forEach(function (line) {
+            var normalized = String(line || '').trim();
+            if (normalized) _jaFallbackLineLookup[normalized] = true;
+          });
+        });
+      });
+    }
+    return !!_jaFallbackLineLookup[t];
+  }
   function replaceUnexpectedChineseFallbackLine(line, event) {
     var text = String(line || '').trim();
     var primary = normalizeRequestLanguagePrimary(getRequestLanguage());
     if (primary === 'zh') return text;
     if (event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply')) return text;
+    if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;
     if (!isLikelyChineseFallbackLine(text)) return text;
     var fallbackKey = getFallbackLineKey(event || {});
     var fallback = pickLine(fallbackKey);
