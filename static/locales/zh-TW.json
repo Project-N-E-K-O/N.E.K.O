@@ -1373,6 +1373,7 @@
         "vrmAnimation": {
             "title": "VRM動作預覽:",
             "selectAnimation": "選擇動作",
+            "addAnimation": "新增動作",
             "noAnimations": "未找到動作文件",
             "loading": "正在加載動作列表...",
             "animationListLoaded": "動作列表加載成功",

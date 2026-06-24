@@ -1373,6 +1373,7 @@
         "vrmAnimation": {
             "title": "VRM 애니메이션 미리보기:",
             "selectAnimation": "애니메이션",
+            "addAnimation": "애니메이션 추가",
             "noAnimations": "애니메이션 파일을 찾을 수 없습니다.",
             "loading": "애니메이션 목록 로드 중...",
             "animationListLoaded": "애니메이션 목록이 성공적으로 로드되었습니다.",
