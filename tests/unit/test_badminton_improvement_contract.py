@@ -316,6 +316,7 @@ def test_badminton_duel_applies_llm_difficulty_before_neko_shot():
 @pytest.mark.unit
 def test_badminton_duel_ramps_yui_difficulty_from_player_wins():
     html = _badminton_html()
+    finish_duel = html[html.index("function finishDuelShot("):html.index("function finishShot(", html.index("function finishDuelShot("))]
 
     assert "var duelDifficultyIdx = 2;" in html
     assert "var storedDuelDifficulty = readJson('bd_duel_difficulty', 'lv3');" in html
@@ -331,6 +332,9 @@ def test_badminton_duel_ramps_yui_difficulty_from_player_wins():
     assert "difficulty === 'max' ? 'lines.duel.difficultyMax' : 'lines.duel.difficultyLv2'" in html
     assert "var lines = _i18nArray(lineKey, fallbackLines);" in html
     assert "var rampEmote = difficulty === 'max' ? 'dominant' : 'surprised';" in html
+    assert "var previousDifficulty = getDuelDifficultyName();" in finish_duel
+    assert "var currentDifficulty = getDuelDifficultyName();" in finish_duel
+    assert "if (currentDifficulty !== previousDifficulty && bgmEnabled) badmintonGameAudio.sync('difficulty-ramp');" in finish_duel
     assert "speakDuelDifficultyRampLine(currentDifficulty);" in html
     assert "'过家家时间结束了'" in html
     assert "'从现在起天上地下唯我独尊'" in html

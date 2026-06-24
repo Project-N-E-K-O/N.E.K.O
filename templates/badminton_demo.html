@@ -6254,6 +6254,7 @@
     }
     game.totalScore = game.duel.playerScore;
     var currentDifficulty = getDuelDifficultyName();
+    if (currentDifficulty !== previousDifficulty && bgmEnabled) badmintonGameAudio.sync('difficulty-ramp');
     if (pointWinner === 'player' && currentDifficulty !== previousDifficulty) {
       showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: currentDifficulty }));
       speakDuelDifficultyRampLine(currentDifficulty);
