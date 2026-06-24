@@ -184,6 +184,12 @@ function Write-Snapshot {
     if ($null -eq $latency -and $null -ne $latest) {
         $latency = $latest.response_latency_ms
     }
+    $latestRoute = "-"
+    $latestSignal = "-"
+    if ($null -ne $latest) {
+        $latestRoute = Get-Field $latest.response_module
+        $latestSignal = Get-Field $latest.event_signal
+    }
     $latencyStatus = Get-LatencyStatus $latency $WarnLatencyMs $SlowLatencyMs
     $soloTestHint = Get-SoloTestHint $config.live_mode $liveStatus.summary $liveState.state $liveState.idle_hosting_candidate $idleHosting.eligible $idleHosting.reason $latencyStatus
     $soloTestFocus = Get-SoloTestFocus $config.dry_run $config.live_mode $liveStatus.summary $liveState.state $liveState.idle_hosting_candidate $idleHosting.eligible $latencyStatus
@@ -203,6 +209,8 @@ function Write-Snapshot {
         "speech=$(Get-Field $speech.summary)",
         "reason=$(Get-Field $speech.reason)",
         "last_result=$lastStatus",
+        "latest_route=$latestRoute",
+        "latest_signal=$latestSignal",
         "latency=$(Format-Latency $latency)",
         "latency_status=$latencyStatus",
         "solo_test_hint=$soloTestHint",

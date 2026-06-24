@@ -35,6 +35,39 @@ def _context_with_latency(latency_ms: int) -> dict:
     }
 
 
+def _context_with_latest_route_and_signal() -> dict:
+    return {
+        "state": {
+            "config": {"dry_run": False, "live_mode": "solo_stream"},
+            "live_connection": {"state": "connected", "connected": True},
+            "live_status": {"summary": "ready_to_stream", "reason": "ready"},
+            "live_state": {
+                "state": "engaged",
+                "reason": "recent_activity",
+                "idle_hosting_candidate": False,
+            },
+            "idle_hosting_status": {
+                "eligible": False,
+                "reason": "not_candidate",
+            },
+            "safety": {"status": "running"},
+            "speech_explanation": {
+                "summary": "recently_spoke",
+                "reason": "recent_output",
+                "last_result_status": "pushed",
+            },
+            "recent_results": [
+                {
+                    "status": "pushed",
+                    "response_module": "danmaku_response",
+                    "event_signal": "gift_signal",
+                    "response_latency_ms": 3200,
+                }
+            ],
+        }
+    }
+
+
 def _solo_idle_context() -> dict:
     return {
         "state": {
@@ -143,6 +176,14 @@ def test_monitor_live_script_reports_latest_response_latency(tmp_path: Path) -> 
     assert completed.returncode == 0, completed.stderr
     assert "latency=3.0s" in completed.stdout
     assert "last_result=pushed" in completed.stdout
+
+
+def test_monitor_live_script_reports_latest_route_and_signal(tmp_path: Path) -> None:
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal())
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_route=danmaku_response" in completed.stdout
+    assert "latest_signal=gift_signal" in completed.stdout
 
 
 def test_monitor_live_script_reports_solo_stream_idle_readiness(tmp_path: Path) -> None:
