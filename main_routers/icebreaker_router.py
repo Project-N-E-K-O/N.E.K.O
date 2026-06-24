@@ -365,6 +365,23 @@ async def icebreaker_choice(request: Request):
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
 
+    requested_session_id = str(data.get("session_id") or "")
+    # 双 tab 防污染：若同角色另起了新破冰 session（/route/start 把新 session 顶为
+    # active），被取代的旧 tab 的选择不该写进「有效路径」池。与 /context、/speak 一致
+    # 用 _stale_icebreaker_session_response 挡掉 session 不匹配的旧请求。
+    # 但与那两个端点不同：这里**不**要求 active route 必须存在——收尾的 handoff 选择
+    # 在 handleChoice 里先于 completeWithHandoff 的 route/end 触发，竞态下 route 可能已
+    # 结束，此时无 active state（不 stale）应照常落盘，避免丢掉最重要的最终选择。
+    active_state = _get_active_icebreaker_route_state(lanlan_name)
+    stale_response = _stale_icebreaker_session_response(
+        active_state,
+        requested_session_id,
+        lanlan_name=lanlan_name,
+        method="tutorial_choices",
+    )
+    if stale_response:
+        return stale_response
+
     payload = {
         "lanlan_name": lanlan_name,
         "session_id": data.get("session_id"),
