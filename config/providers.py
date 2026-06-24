@@ -25,6 +25,7 @@ hard-coding their own.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -183,7 +184,7 @@ def focus_extra_body(model: str) -> dict | None:
     ``EXTRA_BODY_*_THINKING`` constants):
       - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
       - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
-      - thinking_budget: 0 -> -1 (dynamic)              (Gemini 2.5)
+      - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (最低档), include_thoughts->True (Gemini 3)
       - reasoning.effort: none -> low                   (OpenRouter)
 
@@ -193,7 +194,10 @@ def focus_extra_body(model: str) -> dict | None:
     if not model:
         return None
     enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(model)
-    return dict(enabled) if enabled else None
+    # deepcopy: enabled is a shared module-level constant, possibly nested
+    # (Gemini's thinking_config); a caller mutating the result must not poison
+    # the registry. Cheap — focus_extra_body runs once per focus turn.
+    return copy.deepcopy(enabled) if enabled else None
 
 
 def leaks_thinking_in_content(model: str) -> bool:

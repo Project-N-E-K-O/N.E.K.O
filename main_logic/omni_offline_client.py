@@ -1529,14 +1529,6 @@ class OmniOfflineClient:
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
-            # Focus vision guard: this is the single choke point for vision-model
-            # switches. Record whether the session is now committed to a separate
-            # persistent vision model — used to recompute _focus_images_seen after
-            # repetition recovery wipes _conversation_history (the in-history image
-            # is gone, so only a permanent model switch should keep thinking off).
-            # Name-comparison can't tell vision from conversation when they're
-            # equal (shared-model profiles), hence this explicit flag.
-            self._focus_vision_committed = bool(use_vision_config)
             # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
             # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
@@ -1590,15 +1582,6 @@ class OmniOfflineClient:
                 self._conversation_history = [self._conversation_history[0]]
             else:
                 self._conversation_history = []
-
-            # Focus vision guard: the image-bearing history just got erased, so
-            # an image that only "persisted in history" (shared-model profile)
-            # no longer suppresses thinking — recompute the sticky flag from the
-            # one thing that survives a history wipe: an actual persistent
-            # vision-model switch. In shared-model profiles _focus_vision_committed
-            # is False (no switch happened) → flag clears; on a separate vision
-            # model it stays True (switch is irreversible).
-            self._focus_images_seen = getattr(self, "_focus_vision_committed", False)
 
             # 清空重复检测缓存
             self._recent_responses.clear()
@@ -1746,22 +1729,22 @@ class OmniOfflineClient:
         return summary
 
     @staticmethod
-    def _focus_stream_overrides(thinking_on: bool, uses_vision: bool, model: str) -> dict:
+    def _focus_stream_overrides(thinking_on: bool, model: str) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
-        When thinking-on (and not on a vision model), override extra_body with
-        ``focus_extra_body(model)`` — the provider's resolved extra_body minus
-        the thinking-disable keys. This lets thinking run free while PRESERVING
-        non-thinking provider extras (e.g. step-2-mini's built-in web_search),
-        which a blunt ``extra_body=None`` would silently drop. Returns ``{}``
-        (instance default, thinking off) otherwise.
+        When thinking-on, override extra_body with ``focus_extra_body(model)`` —
+        the provider's thinking knob flipped to its ENABLED form (per provider
+        dialect) while PRESERVING non-thinking provider extras (e.g. step-2-mini's
+        built-in web_search), which a blunt ``extra_body=None`` would drop.
+        Returns ``{}`` (instance default, thinking off) otherwise.
 
-        ``uses_vision`` must be True both when this turn carries images AND when
-        the session has already sent images (image data persists in history, so
-        a later text-only turn still runs on the vision model — vision + thinking
-        reliably times out, see ``main_routers/system_router.py`` Phase-2 note).
+        Vision-model turns are included: 凝神 runs thinking-on regardless of
+        whether the turn carries images. The inline streaming timeout
+        (``DIALOG_LLM_STREAM_TIMEOUT_SECONDS``, 180s) is generous enough for a
+        vision reasoning turn — unlike the short-windowed proactive Phase-2 path,
+        which still keeps thinking off (its 16-25s window would time out).
         """
-        if not (thinking_on and not uses_vision):
+        if not thinking_on:
             return {}
         from config.providers import focus_extra_body
         return {"extra_body": focus_extra_body(model)}
@@ -1821,20 +1804,6 @@ class OmniOfflineClient:
 
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
-        # Focus vision guard (sticky): mark the session vision-unsafe-for-thinking
-        # ONLY when this turn leaves a PERSISTENT vision state — either a separate
-        # vision-model switch (vision_model != model, irreversible once it
-        # happens), or an image that actually stays in _conversation_history.
-        # When history_replacement_text is set the image-bearing message is
-        # evicted to text-only in the finally block, so in shared-model profiles
-        # (vision_model == conversation_model) nothing persists; flagging there
-        # would falsely freeze thinking off on every later text-only Focus turn.
-        # Sticky (never cleared here) so a real earlier image still counts.
-        _persistent_vision_switch = bool(self.vision_model and self.vision_model != self.model)
-        _image_will_persist = not (history_replacement_text and str(history_replacement_text).strip())
-        self._focus_images_seen = getattr(self, "_focus_images_seen", False) or (
-            has_images and (_persistent_vision_switch or _image_will_persist)
-        )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -2041,26 +2010,20 @@ class OmniOfflineClient:
                         # instance's thinking-off extra_body applies. Routed
                         # through the visible (tool-leak-filtered) variant,
                         # which forwards **overrides to ``_astream_with_tools``.
-                        # uses_vision = images sent this turn or earlier this
-                        # session (sticky flag, not model-name equality — see the
-                        # _focus_images_seen note where has_images is computed).
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self._focus_images_seen, self.model,
+                            thinking_on, self.model,
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in
                         # a lone ``</think>``; hold + drop it before TTS/UI ever
                         # see it. Clean providers (reasoning_content path) get no
                         # stripper, so their streaming stays byte-for-byte untouched.
-                        # Gate on the SAME effective-thinking condition as
-                        # _focus_stream_overrides (``thinking_on and not uses_vision``):
-                        # a vision Focus turn runs thinking-OFF, so no </think> ever
-                        # arrives and a stripper would needlessly hold the stream.
+                        # Gate on the SAME condition as _focus_stream_overrides
+                        # (just ``thinking_on`` — vision turns now reason too).
                         from config.providers import leaks_thinking_in_content
                         think_stripper = (
                             ThinkingStreamStripper()
-                            if thinking_on and not self._focus_images_seen
-                            and leaks_thinking_in_content(self.model)
+                            if thinking_on and leaks_thinking_in_content(self.model)
                             else None
                         )
                         async for chunk in self._astream_visible_with_tools(
@@ -3152,15 +3115,9 @@ class OmniOfflineClient:
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
         if images:
-            # Focus vision guard: these proactive images are EPHEMERAL (not
-            # persisted to _conversation_history), so the only lasting effect is
-            # the model switch — which is irreversible once it happens. Mark the
-            # sticky guard ONLY when we actually switch to a separate persistent
-            # vision model. In shared-model profiles (vision_model ==
-            # conversation_model) nothing persists, so setting the flag would
-            # falsely suppress thinking on every later text-only Focus turn.
+            # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
+            # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
             if self.vision_model and self.vision_model != self.model:
-                self._focus_images_seen = True
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )

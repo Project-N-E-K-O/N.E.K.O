@@ -409,32 +409,31 @@ async def _drain(agen):
 
 
 def test_focus_stream_overrides_decision():
-    """The thinking-on override decision, vision guard, and provider-extra
-    preservation. ``stream_text`` applies this before streaming: thinking-on
-    only when focus is active AND not on a vision model; and when it does
-    override, it FLIPS the provider's thinking knob to its enabled form (per
-    provider dialect) while keeping non-thinking extras (e.g. web_search)."""
+    """The thinking-on override decision + provider-extra preservation.
+    ``stream_text`` applies this before streaming: thinking-on whenever focus is
+    active (vision turns included now); when it overrides, it FLIPS the provider's
+    thinking knob to its enabled form (per provider dialect) while keeping
+    non-thinking extras (e.g. web_search)."""
     from main_logic.omni_offline_client import OmniOfflineClient as _C
     # thinking.type provider → flipped to enabled (not dropped to None)
-    assert _C._focus_stream_overrides(True, False, "claude-sonnet-4-6") == {
+    assert _C._focus_stream_overrides(True, "claude-sonnet-4-6") == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
     # free server (model 名固定 free-model) shares the thinking.type dialect
-    assert _C._focus_stream_overrides(True, False, "free-model") == {
+    assert _C._focus_stream_overrides(True, "free-model") == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
     # OpenAI-shape bool knob flips False→True
-    assert _C._focus_stream_overrides(True, False, "qwen-flash") == {
+    assert _C._focus_stream_overrides(True, "qwen-flash") == {
         "extra_body": {"enable_thinking": True}
     }
     # unknown model → no resolved extra_body → None
-    assert _C._focus_stream_overrides(True, False, "test-model") == {"extra_body": None}
+    assert _C._focus_stream_overrides(True, "test-model") == {"extra_body": None}
     # step-2-mini ships a web_search tool → it MUST survive (not nuked to None)
-    so = _C._focus_stream_overrides(True, False, "step-2-mini")
+    so = _C._focus_stream_overrides(True, "step-2-mini")
     assert so["extra_body"] is not None and "tools" in so["extra_body"]
-    # vision guard / not-thinking → no override at all
-    assert _C._focus_stream_overrides(True, True, "step-2-mini") == {}
-    assert _C._focus_stream_overrides(False, False, "step-2-mini") == {}
+    # thinking off → no override (vision no longer gates thinking)
+    assert _C._focus_stream_overrides(False, "step-2-mini") == {}
 
 
 def test_focus_extra_body_provider_dialects():
@@ -505,42 +504,14 @@ async def test_focus_override_threads_through_visible_stream():
 
     # focus turn (no images, unknown model): _focus_stream_overrides → {"extra_body": None}
     c = _make_client()
-    overrides = OmniOfflineClient._focus_stream_overrides(True, False, c.model)
+    overrides = OmniOfflineClient._focus_stream_overrides(True, c.model)
     await _drain(c._astream_visible_with_tools(["m"], **overrides))
     assert captured[-1].get("extra_body", "MISSING") is None
 
     # regular turn: no extra_body threaded
     c2 = _make_client()
-    await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, False, c2.model)))
+    await _drain(c2._astream_visible_with_tools(["m"], **OmniOfflineClient._focus_stream_overrides(False, c2.model)))
     assert "extra_body" not in captured[-1]
-
-
-async def test_check_repetition_resets_vision_guard():
-    """Repetition recovery wipes _conversation_history → the sticky Focus vision
-    guard must recompute from the only thing that survives a wipe: a real
-    persistent vision-model switch. Shared-model (no switch) clears it; a
-    committed separate vision model keeps it (the switch is irreversible)."""
-    from main_logic.omni_offline_client import OmniOfflineClient
-
-    def _mk(committed):
-        c = OmniOfflineClient.__new__(OmniOfflineClient)
-        c._recent_responses = ["同一句重复回复", "同一句重复回复"]
-        c._max_recent_responses = 5
-        c._repetition_threshold = 0.5
-        c._conversation_history = []
-        c.on_repetition_detected = None
-        c._focus_vision_committed = committed
-        c._focus_images_seen = True  # set earlier by an image-bearing turn
-        return c
-
-    # shared-model profile (no persistent switch) → flag clears after wipe
-    c1 = _mk(False)
-    assert await c1._check_repetition("同一句重复回复") is True
-    assert c1._focus_images_seen is False
-    # separate vision model committed → flag survives (irreversible switch)
-    c2 = _mk(True)
-    assert await c2._check_repetition("同一句重复回复") is True
-    assert c2._focus_images_seen is True
 
 
 # ── 6. caller-level Focus gates: charge hygiene + privacy-independence ─────
