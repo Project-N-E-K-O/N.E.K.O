@@ -115,8 +115,7 @@ body.yui-guide-live2d-preparing #mmd-canvas {
 }
 
 body.yui-guide-live2d-preparing #live2d-floating-buttons,
-body.yui-guide-live2d-preparing #live2d-lock-icon,
-body.yui-guide-live2d-preparing #live2d-return-button-container {
+body.yui-guide-live2d-preparing #live2d-lock-icon {
   display: none !important;
   visibility: hidden !important;
   opacity: 0 !important;

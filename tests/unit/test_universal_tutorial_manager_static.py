@@ -254,7 +254,7 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
 
     assert "body.yui-guide-live2d-preparing #live2d-floating-buttons" in css_source
     assert "body.yui-guide-live2d-preparing #live2d-lock-icon" in css_source
-    assert "body.yui-guide-live2d-preparing #live2d-return-button-container" in css_source
+    assert "body.yui-guide-live2d-preparing #live2d-return-button-container" not in css_source
 
     assert "hideYuiGuideLive2DPreparingControls()" in app_ui_source
     restore_controls_block = app_ui_source.split("function restoreYuiGuideLive2DPreparingControls()", 1)[1].split(
@@ -264,6 +264,11 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "'live2d-floating-buttons'" in restore_controls_block
     assert "'live2d-lock-icon'" in restore_controls_block
     assert "'live2d-return-button-container'" not in restore_controls_block
+    hide_controls_block = app_ui_source.split("function hideYuiGuideLive2DPreparingControls()", 1)[1].split(
+        "function restoreYuiGuideLive2DPreparingControls",
+        1,
+    )[0]
+    assert "'live2d-return-button-container'" not in hide_controls_block
     assert "if (!preserveYuiGuidePreparing && floatingButtons) {" in app_ui_source
     assert "if (!preserveYuiGuidePreparing && lockIcon) {" in app_ui_source
 
@@ -278,6 +283,11 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "const fadeOutMs = 900;" in manager_source
     assert "opacity 900ms ease-in-out" in manager_source
     assert "'live2d-floating-buttons'," in manager_source
+    hide_prepare_block = manager_source.split("hideTutorialLive2dPreparingControls() {", 1)[1].split(
+        "async fadeOutCurrentTutorialSourceModel",
+        1,
+    )[0]
+    assert "'live2d-return-button-container'" not in hide_prepare_block
     clear_prepare_block = manager_source.split("clearTutorialLive2dPreparingStyles() {", 1)[1].split(
         "restoreTutorialLive2dDisplayState",
         1,
@@ -286,6 +296,7 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "id === 'live2d-floating-buttons'" in display_restore_block
     assert "id === 'live2d-lock-icon'" in display_restore_block
     assert "id === 'live2d-return-button-container'" not in display_restore_block
+    assert "'live2d-return-button-container'" not in clear_prepare_block
     assert "if (preparing === true) {" in manager_source
 
     assert "this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;" in reload_controller_source
