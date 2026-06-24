@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
+from .._prompt_context import short_reply_rules
 
 
 class WarmupHostingModule(BaseModule):
@@ -50,6 +51,7 @@ class WarmupHostingModule(BaseModule):
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it TTS-friendly and easy to continue from.",
+            *short_reply_rules(),
             "Output only NEKO's line.",
         ]
         return (

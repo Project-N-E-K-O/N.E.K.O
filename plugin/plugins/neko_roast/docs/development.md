@@ -601,7 +601,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-24：`uv run pytest plugin/plugins/neko_roast/tests -q` → **163 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-24：`uv run pytest plugin/plugins/neko_roast/tests -q` → **164 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 
@@ -644,3 +644,5 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 开发者模式是直播语境上的第二层上下文：先注入 `NEKO_ROAST_CONTEXT_INSTRUCTIONS`，再按开关注入 `NEKO_ROAST_DEVELOPER_INSTRUCTIONS`。退出开发者模式只发送 `NEKO_ROAST_DEVELOPER_RESTORE_INSTRUCTIONS`，不要误发完整插件关闭恢复语境。
 
 维护时不要只给字段说明。需要保留“猫猫是直播间同播伙伴，不是后台系统或插件播报员”的场景，让模型把弹幕当作直播现场互动来接话。即时事件提示词可以包含 UID、昵称、弹幕、强度、直播模式等结构化字段，但输出要求必须强调自然短句、不要复述字段、不要解释流程。
+
+直播输出 prompt 的短回复合约集中在 `modules/_prompt_context.py` 的 `short_reply_rules()`：所有会让 NEKO 开口的直播路径都应共享同一套约束，即一句话、不写段落、最多 35 个中文字符或 18 个英文词；短弹幕要更短地回，优先给一个紧凑的直播包袱，不展开解释或续写上一轮话题。当前已接入 `avatar_roast`、`danmaku_response`、`warmup_hosting`、`idle_hosting` 和 `active_engagement`。新增开口模块时必须复用该合约，并补契约测试锁住。

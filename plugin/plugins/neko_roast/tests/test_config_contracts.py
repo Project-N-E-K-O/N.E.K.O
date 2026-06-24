@@ -122,6 +122,53 @@ def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
     assert "Do not invent or hard-code streamer relationship labels" in co_stream.prompt_text
 
 
+def test_live_interaction_prompts_share_short_reply_contract():
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+    short_contract = "Hard length limit: one sentence, no paragraph, at most 35 Chinese characters or 18 English words."
+
+    danmaku = DanmakuResponseModule()
+    danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    danmaku_request = danmaku.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="短句", source="live_danmaku", live_mode="solo_stream"),
+        identity,
+        profile,
+    )
+
+    avatar = AvatarRoastModule()
+    avatar.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    avatar_request = avatar.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="短句", source="live_danmaku", live_mode="solo_stream"),
+        identity,
+        ViewerProfile(uid="42", nickname="viewer", roast_count=0),
+    )
+    idle_request = avatar.build_request(
+        ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
+        ViewerIdentity(uid="__neko_idle__", nickname="NEKO"),
+        ViewerProfile(uid="__neko_idle__", nickname="NEKO"),
+    )
+
+    warmup = WarmupHostingModule()
+    warmup.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    warmup_request = warmup.build_request(
+        ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream"),
+        ViewerIdentity(uid="__neko_warmup__", nickname="NEKO"),
+        ViewerProfile(uid="__neko_warmup__", nickname="NEKO"),
+    )
+
+    active = ActiveEngagementModule()
+    active.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    active_request = active.build_request(
+        ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
+        ViewerIdentity(uid="__neko_active__", nickname="NEKO"),
+        ViewerProfile(uid="__neko_active__", nickname="NEKO"),
+    )
+
+    for request in [danmaku_request, avatar_request, idle_request, warmup_request, active_request]:
+        assert short_contract in request.prompt_text
+        assert "If the viewer's danmaku is short, answer even shorter." in request.prompt_text
+
+
 def test_avatar_roast_prompt_does_not_hard_code_streamer_relationship_labels():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))

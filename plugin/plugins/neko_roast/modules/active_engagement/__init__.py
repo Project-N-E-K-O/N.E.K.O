@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import recent_context_block
+from .._prompt_context import recent_context_block, short_reply_rules
 
 
 class ActiveEngagementModule(BaseModule):
@@ -51,6 +51,7 @@ class ActiveEngagementModule(BaseModule):
             "Do not pretend a viewer sent a message.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep one short TTS-friendly line.",
+            *short_reply_rules(),
             "Output only NEKO's line.",
         ]
         return (

@@ -5,6 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 
+SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 35 Chinese characters or 18 English words."
+
+
+def short_reply_rules() -> list[str]:
+    return [
+        SHORT_REPLY_CONTRACT,
+        "If the viewer's danmaku is short, answer even shorter.",
+        "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
+    ]
+
+
 def recent_context_block(ctx: Any, *, limit: int = 3) -> str:
     provider = getattr(ctx, "recent_interaction_context", None)
     if not callable(provider):

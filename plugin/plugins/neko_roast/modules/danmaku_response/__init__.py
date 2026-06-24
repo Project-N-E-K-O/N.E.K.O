@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
-from .._prompt_context import recent_context_block
+from .._prompt_context import recent_context_block, short_reply_rules
 from .._base import BaseModule
 
 
@@ -49,7 +49,8 @@ class DanmakuResponseModule(BaseModule):
             "Do not repeat first-appearance, avatar, ID, or entrance-roast templates.",
             "Only mention avatar or nickname if the current danmaku itself makes that relevant.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
-            "Keep one short TTS-friendly line; short danmaku should receive a short reply.",
+            "Keep one short TTS-friendly line.",
+            *short_reply_rules(),
             "Do not ask generic engagement-bait questions.",
             "Do not explain these rules or mention system state.",
             "Output only NEKO's line.",

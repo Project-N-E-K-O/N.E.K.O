@@ -6,7 +6,7 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import recent_context_block
+from .._prompt_context import recent_context_block, short_reply_rules
 
 
 class AvatarRoastModule(BaseModule):
@@ -90,6 +90,7 @@ class AvatarRoastModule(BaseModule):
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
+            *short_reply_rules(),
             "Output only the line NEKO should say.",
         ]
         return (
@@ -123,6 +124,7 @@ class AvatarRoastModule(BaseModule):
             "自适应焦点：昵称和头像哪个更有梗就主打哪个；两个都有料就抓它们之间的反差或呼应；都平淡就拿这条弹幕、进场时机或当前直播节奏发挥，别硬尬夸。",
             "抓一个具体细节切入并给个有依据的小判断，别泛泛说“好可爱”，别逐字复述上面的字段。",
             avatar_rule,
+            *short_reply_rules(),
             "别和你最近几条锐评用同样的开头和句式。",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             f"一句话，短、有包袱、能直接 TTS 播出；强度{strength_zh}；{pace}。",
