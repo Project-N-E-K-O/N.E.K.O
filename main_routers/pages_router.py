@@ -279,27 +279,9 @@ def _render_drawing_guess(request: Request):
     })
 
 
-@router.get("/drawing_guess", response_class=HTMLResponse)
-async def drawing_guess(request: Request):
-    """Drawing Guess companion mini-game."""
-    return _render_drawing_guess(request)
-
-
-@router.get("/drawing-guess", response_class=HTMLResponse)
-async def drawing_guess_alias(request: Request):
-    """Hyphenated alias for the Drawing Guess companion mini-game."""
-    return _render_drawing_guess(request)
-
-
 @router.get("/drawing_guess_demo", response_class=HTMLResponse)
 async def drawing_guess_demo(request: Request):
-    """Legacy Drawing Guess demo route kept for old links."""
-    return _render_drawing_guess(request)
-
-
-@router.get("/drawing-guess-demo", response_class=HTMLResponse)
-async def drawing_guess_demo_alias(request: Request):
-    """Legacy hyphenated Drawing Guess demo route kept for old links."""
+    """Drawing Guess companion mini-game."""
     return _render_drawing_guess(request)
 
 

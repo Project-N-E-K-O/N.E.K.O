@@ -48,33 +48,10 @@ def _get_nested(payload: dict, dotted_key: str):
 async def test_drawing_guess_page_renders_shell(monkeypatch):
     monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
 
-    result = await pages_router.drawing_guess(_FakePageRequest())
+    result = await pages_router.drawing_guess_demo(_FakePageRequest())
 
     assert result["template_name"] == "templates/drawing_guess.html"
     assert "static_asset_version" in result["context"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_drawing_guess_hyphen_alias_renders_shell(monkeypatch):
-    monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
-
-    result = await pages_router.drawing_guess_alias(_FakePageRequest())
-
-    assert result["template_name"] == "templates/drawing_guess.html"
-    assert "static_asset_version" in result["context"]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_legacy_drawing_guess_demo_routes_render_shell(monkeypatch):
-    monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
-
-    underscore_result = await pages_router.drawing_guess_demo(_FakePageRequest())
-    hyphen_result = await pages_router.drawing_guess_demo_alias(_FakePageRequest())
-
-    assert underscore_result["template_name"] == "templates/drawing_guess.html"
-    assert hyphen_result["template_name"] == "templates/drawing_guess.html"
 
 
 @pytest.mark.unit

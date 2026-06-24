@@ -719,16 +719,44 @@
     hideExitConfirm(true);
   }
 
+  function closeDrawingGuessBrowserFallback() {
+    try { window.close(); } catch (_) {}
+    setTimeout(function () {
+      try {
+        if (!window.closed) window.location.assign('/');
+      } catch (_) {}
+    }, 150);
+  }
+
+  function closeDrawingGuessWindow() {
+    var host = window.nekoHost;
+    if (host && typeof host.closeWindow === 'function') {
+      try {
+        Promise.resolve(host.closeWindow())
+          .then(function (result) {
+            if (result && result.ok === false) {
+              closeDrawingGuessBrowserFallback();
+            }
+          })
+          .catch(function () {
+            closeDrawingGuessBrowserFallback();
+          });
+        return;
+      } catch (_) {}
+    }
+    closeDrawingGuessBrowserFallback();
+  }
+
   function leaveDrawingGuessPage() {
     hideExitReopenButton();
     hideExitConfirm(false);
     if (state.routeActive) {
       endRoute(false).finally(function () {
-        window.location.href = '/';
+        closeDrawingGuessWindow();
       });
       return;
     }
-    window.location.href = '/';
+    closeDrawingGuessWindow();
   }
 
   function shakeDebugTrigger() {
