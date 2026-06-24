@@ -945,7 +945,7 @@
         "coreApiProvider": "API principal (chat de voz, solo omnimodal)",
         "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto/Voz personalizada)",
         "saveSettings": "Guardar configuración",
-        "closeSettings": "Cerca",
+        "closeSettings": "Cerrar",
         "newbieRecommendTitle": "Recomendación de novato",
         "newbieRecommend": "Si aún no tiene una clave API, puede seleccionar \"Versión gratuita\" en las Opciones avanzadas a continuación para comenzar a usarla sin registrar ninguna cuenta.",
         "advancedOptions": "Opciones avanzadas (opcional)",
