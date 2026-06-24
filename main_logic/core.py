@@ -2845,6 +2845,11 @@ class LLMSessionManager:
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 若这次 cooldown 把 Focus 衰减出去(→REGULAR)，立即清 episode 残留：
+            # proactive/greeting 的 prompt_ephemeral 会在下个 inline turn 之前就从
+            # _conversation_history 构建、且不走 reconcile，必须赶在它前面清掉，否则
+            # 会把刚结束的 Focus tool-call/reasoning 残留带进随后的 REGULAR 轮。
+            await self._maybe_purge_focus_artifacts()
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)

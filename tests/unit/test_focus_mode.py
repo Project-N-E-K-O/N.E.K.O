@@ -913,6 +913,34 @@ async def test_maybe_purge_only_after_exit(monkeypatch):
     assert sess._conversation_history == []
 
 
+async def test_idle_cooldown_exit_purges_history(monkeypatch):
+    """A proactive idle cooldown that decays Focus out must also purge the episode
+    history artifacts — covering the exit path outside the inline decision, so a
+    later proactive/greeting prompt_ephemeral can't replay them."""
+    _patch_charge(monkeypatch, enter=1.0, exit=0.3, idle_replied=0.6, idle_silent=0.6)
+    a, r = _tool_pair("c1", reasoning="…")
+    mgr, sess = _purge_mgr(monkeypatch, [a, r])
+    # 模拟 inline 已进 FOCUS 并 arm（idle 路径自身不会 enter）
+    mgr._focus_artifacts_pending = True
+    mgr._focus_artifacts_history_start = 0
+    await mgr.state.update_focus(1.0)  # FOCUS, charge 1.0
+    snap = mgr.state.snapshot()
+    tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
+    assert mgr.state.mode is CognitionMode.FOCUS
+
+    # 第一次 cooldown：1.0*0.6=0.6 ≥ exit 0.3 → 仍 FOCUS，历史不动
+    await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
+    assert mgr.state.mode is CognitionMode.FOCUS
+    assert len(sess._conversation_history) == 2
+
+    # 继续衰减直到退出：0.36 → 0.216 < 0.3 → EXIT 时清历史
+    await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
+    await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
+    assert mgr.state.mode is CognitionMode.REGULAR
+    assert sess._conversation_history == []
+    assert mgr._focus_artifacts_pending is False
+
+
 async def test_inline_decision_purges_episode_only(monkeypatch):
     """inline end-to-end + episode-scope: entering FOCUS records the history start;
     exiting purges only the closed tool calls produced during the episode, keeping
