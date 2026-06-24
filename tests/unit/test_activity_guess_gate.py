@@ -168,3 +168,20 @@ def test_cached_unknown_signature_is_empty():
     gate.record_fired('A', 0, 0.0, scores={'x': 1.0}, guess='g')
     # A different, not-yet-narrated signature stays empty (honest, not stale).
     assert gate.cached('B') == ({}, '')
+
+
+def test_new_conversation_freshness_is_per_signature():
+    """A new turn must refresh EVERY cached activity when next visited, not just
+    the first one re-narrated. With a single global last-fired conv seq, the
+    first re-narration would consume the turn and leave the rest looking fresh.
+    """
+    gate = _gate(base=10.0, cap=80.0)
+    # Grow 'B' to its CAP interval under conv_seq=0; last fire at 390.
+    _fire_times(gate, 'B', conv_seq=0, start=0.0, end=400.0, step=5.0)
+    # New conversation turn (0 -> 1); a DIFFERENT activity 'A' is narrated first.
+    assert gate.should_fire('A', 1, 405.0) is True
+    gate.record_fired('A', 1, 405.0)
+    # 'B' was last narrated under conv_seq=0, so its guess predates the turn. It
+    # must refresh on revisit even though 'A' already consumed the new turn and
+    # B's own grown interval (CAP=80) has NOT elapsed (415 - 390 = 25 < 80).
+    assert gate.should_fire('B', 1, 415.0) is True

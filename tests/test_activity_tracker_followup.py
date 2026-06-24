@@ -1019,6 +1019,8 @@ def test_activity_guess_signature_excludes_idle_bucket():
     """
     from main_logic.activity.tracker import UserActivityTracker
 
+    from types import SimpleNamespace
+
     loop_source = inspect.getsource(UserActivityTracker._activity_guess_loop)
     sig_source = inspect.getsource(UserActivityTracker._coarse_activity_sig)
     # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
@@ -1027,12 +1029,27 @@ def test_activity_guess_signature_excludes_idle_bucket():
     # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
     assert "idle_bucket" not in loop_source
     assert "idle_bucket" not in sig_source
-    # The coarse signature keys on (state, window-category) — not the exact app
-    # (canonical) / subcategory, and not idle seconds.
-    assert "category" in sig_source
-    assert "canonical" not in sig_source
-    assert "subcategory" not in sig_source
     assert "self._activity_guess_gate.should_fire(" in loop_source
+    # Behaviour (not just the comment): the coarse key is (state, category) —
+    # different category → different key; same category but different
+    # canonical/subcategory → SAME key (coarsening), so window flicker within a
+    # category does not re-narrate.
+    work = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='IDE', subcategory='code'),
+    )
+    chat = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='chat', canonical='IM', subcategory='dm'),
+    )
+    same_bucket = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='Browser', subcategory='docs'),
+    )
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            != UserActivityTracker._coarse_activity_sig(chat))
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            == UserActivityTracker._coarse_activity_sig(same_bucket))
 
 
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():

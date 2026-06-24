@@ -32,7 +32,9 @@ re-describes the same two activities over and over.
 
 What this gate changes
 ----------------------
-The refresh interval becomes *adaptive to how novel the activity is*:
+The refresh interval becomes *adaptive to how novel the activity is*. Everything
+the gate tracks is keyed PER SIGNATURE so a one-off excursion never disturbs a
+separate signature's state:
 
 * **Coarsened signature** — callers pass ``(state, window-category)`` instead of
   the exact app, so flicking between two same-category apps is a no-op and even
@@ -43,29 +45,33 @@ The refresh interval becomes *adaptive to how novel the activity is*:
   already-narrated signatures therefore decays from "every BASE" toward "every
   CAP", and a one-off new activity does NOT reset the backoff a separate,
   still-oscillating signature has accumulated.
-* **Novelty bypass** — a signature not in the small recently-narrated cache, or a
-  new conversation turn (``conv_seq`` advanced), fires immediately and restarts
-  that signature's backoff. Switching to a genuinely different activity
-  (work → game) re-narrates at once; only re-describing the *same* activity backs
-  off.
+* **Novelty / freshness bypass** — a signature not in the small recently-narrated
+  cache, or one whose cached narration was built under an OLDER conversation turn
+  (``conv_seq``), fires immediately and restarts that signature's backoff. The
+  conversation seq is stored per signature, so a new turn refreshes *every*
+  cached activity when it is next visited — not just the first one re-narrated.
+  Switching to a genuinely different (or conversation-stale) activity re-narrates
+  at once; only re-describing the *same* activity under the *same* conversation
+  backs off.
 
 Per-signature narration cache
 -----------------------------
-The gate also stores the last narration (scores + guess text) **per signature**,
-not as one global slot. This is what keeps "staleness never makes it wrong"
-honest: when the backoff suppresses a re-narration, the consumer asks
-``cached(current_signature)`` and gets the narration for *the activity the user
-is in right now* — never a leftover narration for whichever signature happened to
-fire last. (Within a coarse bucket the narration stays at category granularity by
-design — two same-category apps share one entry; the exact app/title is carried
-by other snapshot fields, not this hint.)
+The gate also stores the last narration (scores + guess text) **per signature**.
+This is what keeps "staleness never makes it wrong" honest: when the backoff
+suppresses a re-narration, the consumer asks ``cached(current_signature)`` and
+gets the narration for *the activity the user is in right now* — never a leftover
+narration for whichever signature happened to fire last. (Within a coarse bucket
+the narration stays at category granularity by design — two same-category apps
+share one entry; the exact app/title is carried by other snapshot fields, not
+this hint.)
 
 The hard ``BASE`` floor is always respected (no two calls closer than ``BASE``),
-preserving the old anti-thrash guarantee during rapid flicker. The novelty check
-deliberately sits *above* the backoff interval so a genuinely new activity is
-never delayed by a grown interval — the cap only governs re-narrating something
-already seen. ``record_fired`` is called only after a narration LLM call actually
-succeeds, so failed/discarded calls do not advance the backoff or the cache.
+preserving the old anti-thrash guarantee during rapid flicker. The novelty/
+freshness checks deliberately sit *above* the backoff interval so a genuinely new
+or conversation-stale activity is never delayed by a grown interval — the cap
+only governs re-narrating something already seen under the current conversation.
+``record_fired`` is called only after a narration LLM call actually succeeds, so
+failed/discarded calls do not advance the backoff or the cache.
 """
 
 from __future__ import annotations
@@ -101,14 +107,15 @@ class ActivityGuessGate:
         # base <= 0 would zero out the floor and the ``2**streak`` interval.)
         self._cap = max(float(cap_seconds), self._base)
         self._cache_size = max(1, int(cache_size))
-        # signature -> (last_fire_ts, streak, scores, guess), LRU (most-recently
-        # fired at the end). The streak AND the narration are stored PER
-        # SIGNATURE: a one-off novel activity never resets a separate signature's
-        # backoff, and the consumer always reads the narration matching the
-        # current activity rather than whichever signature fired last.
-        self._narrated: "OrderedDict[Hashable, tuple[float, int, dict, str]]" = OrderedDict()
+        # signature -> (last_fire_ts, streak, conv_seq, scores, guess), LRU
+        # (most-recently fired at the end). Streak, the conversation seq, AND the
+        # narration are all stored PER SIGNATURE: a one-off novel activity (or a
+        # new conversation turn consumed by another signature) never disturbs a
+        # separate signature's backoff, freshness, or cached guess.
+        self._narrated: "OrderedDict[Hashable, tuple[float, int, int, dict, str]]" = OrderedDict()
+        # Global only for the hard anti-thrash floor (no two LLM calls closer
+        # than BASE, regardless of which signature).
         self._last_fire_ts: float | None = None
-        self._last_fire_conv_seq: int | None = None
         # Cap the per-signature streak so ``base * 2**streak`` can't grow without
         # bound — once the interval reaches CAP, a larger streak changes nothing.
         self._max_streak = 0
@@ -117,13 +124,6 @@ class ActivityGuessGate:
             eff *= 2
             self._max_streak += 1
 
-    def _conv_advanced(self, conv_seq: int) -> bool:
-        """A new conversation turn since the last fire is itself fresh context."""
-        return (
-            self._last_fire_conv_seq is not None
-            and conv_seq != self._last_fire_conv_seq
-        )
-
     def should_fire(self, sig: Hashable, conv_seq: int, now: float) -> bool:
         # Hard floor: never two calls closer than BASE — even on novelty or a new
         # conversation turn (preserves the old anti-thrash behaviour during rapid
@@ -131,11 +131,12 @@ class ActivityGuessGate:
         if self._last_fire_ts is not None and now - self._last_fire_ts < self._base:
             return False
         rec = self._narrated.get(sig)
-        if rec is None or self._conv_advanced(conv_seq):
-            # Genuinely new activity, or new conversation → refresh immediately,
+        if rec is None or rec[2] != conv_seq:
+            # Genuinely new activity, or this signature's cached narration was
+            # built under an older conversation turn → refresh immediately,
             # bypassing whatever backoff this signature had accumulated.
             return True
-        # Same activity, no new conversation → re-narrate only after this
+        # Same activity, same conversation → re-narrate only after this
         # signature's own grown interval has elapsed.
         last_ts, streak = rec[0], rec[1]
         return (now - last_ts) >= min(self._base * (2 ** streak), self._cap)
@@ -148,21 +149,20 @@ class ActivityGuessGate:
         scores: dict | None = None,
         guess: str = '',
     ) -> None:
-        """Record a *successful* narration; advances THIS signature's backoff
-        and stores its narration (scores + guess) for ``cached`` to serve."""
+        """Record a *successful* narration; advances THIS signature's backoff,
+        stamps its conversation seq, and stores its narration for ``cached``."""
         rec = self._narrated.get(sig)
-        if rec is None or self._conv_advanced(conv_seq):
+        if rec is None or rec[2] != conv_seq:
             # New signature (or evicted), or fresh conversation context → restart
             # this signature's backoff at streak 0. Other signatures are untouched.
             streak = 0
         else:
             streak = min(rec[1] + 1, self._max_streak)
-        self._narrated[sig] = (now, streak, scores if scores is not None else {}, guess)
+        self._narrated[sig] = (now, streak, conv_seq, scores if scores is not None else {}, guess)
         self._narrated.move_to_end(sig)
         while len(self._narrated) > self._cache_size:
             self._narrated.popitem(last=False)
         self._last_fire_ts = now
-        self._last_fire_conv_seq = conv_seq
 
     def cached(self, sig: Hashable) -> tuple[dict, str]:
         """The last narration recorded for ``sig`` as ``(scores, guess)``.
@@ -174,4 +174,4 @@ class ActivityGuessGate:
         rec = self._narrated.get(sig)
         if rec is None:
             return {}, ''
-        return rec[2], rec[3]
+        return rec[3], rec[4]
