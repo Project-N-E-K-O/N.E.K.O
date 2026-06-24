@@ -273,10 +273,13 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         if target_dir.exists():
             return JSONResponse(status_code=400, content={"success": False, "error": f"PNGTuber模型 {model_dir_name} 已存在，请先删除或重命名"})
 
-        source_format = str(model_json.get("source_format") or import_result.source_format)
-        normalized_config = _normalize_pngtuber_config(model_dir_name, model_json)
         model_json["model_type"] = "pngtuber"
+        source_format = str(model_json.get("source_format") or import_result.source_format)
         model_json["source_format"] = source_format
+        pngtuber_config = model_json.get("pngtuber")
+        if isinstance(pngtuber_config, dict):
+            pngtuber_config["source_format"] = source_format
+        normalized_config = _normalize_pngtuber_config(model_dir_name, model_json)
         with open(temp_dir / "model.json", "w", encoding="utf-8") as f:
             json.dump(model_json, f, ensure_ascii=False, indent=2)
 

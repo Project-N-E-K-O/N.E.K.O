@@ -65,8 +65,12 @@ def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
 
 def test_model_manager_pngtuber_delete_uses_folder_not_display_name_for_bound_check():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
-    start = script.index("// 获取当前使用中的模型标识")
-    end = script.index("const checkbox = document.createElement('input');", start)
+    start_anchor = "const currentPNGTuberFolder"
+    checkbox_anchor = "const checkbox = document.createElement('input');"
+    assert start_anchor in script
+    assert checkbox_anchor in script
+    start = script.index(start_anchor)
+    end = script.index(checkbox_anchor, start)
     bound_block = script[start:end]
 
     assert "const currentPNGTuberFolder" in bound_block
@@ -75,8 +79,12 @@ def test_model_manager_pngtuber_delete_uses_folder_not_display_name_for_bound_ch
     assert "currentPNGTuberUrl === modelUrl" in bound_block
     assert "!hasStableModelKey && currentModelInfo.name === model.name" in bound_block
 
-    checkbox_start = script.index("checkbox.value =", end)
-    checkbox_block = script[checkbox_start: script.index("checkbox.setAttribute('data-type'", checkbox_start)]
+    value_anchor = "checkbox.value ="
+    data_type_anchor = "checkbox.setAttribute('data-type'"
+    assert value_anchor in script[end:]
+    checkbox_start = script.index(value_anchor, end)
+    assert data_type_anchor in script[checkbox_start:]
+    checkbox_block = script[checkbox_start: script.index(data_type_anchor, checkbox_start)]
     assert "`${model.type}:${model.deleteKey}`" in checkbox_block
 
 

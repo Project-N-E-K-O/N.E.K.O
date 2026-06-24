@@ -524,6 +524,10 @@
                     source: options.source || 'emotion'
                 }) || applied;
             }
+            if (!applied && !this.isLayeredActive() && this.config[`${normalized}_image`]) {
+                this.setState(normalized);
+                applied = true;
+            }
 
             if (applied && durationMs > 0 && !this.isSpeaking) {
                 this.emotionTimer = setTimeout(() => {
@@ -1365,28 +1369,6 @@
             return true;
         }
 
-        getDebugState() {
-            const layers = this.layeredMetadata && Array.isArray(this.layeredMetadata.layers)
-                ? this.layeredMetadata.layers
-                : [];
-            return {
-                protocol: this.loadPlan?.protocol || '',
-                mode: this.isLayeredActive() ? 'layered' : 'image',
-                plannedMode: this.loadPlan?.mode || '',
-                adapter: this.config.adapter || '',
-                metadataUrl: this.loadPlan?.metadataUrl || this.config.layered_metadata || '',
-                layerCount: layers.length,
-                loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0,
-                currentState: this.state,
-                isSpeaking: !!this.isSpeaking,
-                lastError: this.lastError || '',
-                fallback: this.loadPlan?.fallback || {
-                    idle: this.config.idle_image || '',
-                    talking: this.config.talking_image || '',
-                },
-            };
-        }
-
         stateToSrc(state) {
             if (state === 'talking') return this.config.talking_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
             const emotionKey = `${state}_image`;
@@ -1596,13 +1578,25 @@
             return {
                 active: !!(container && container.style.display !== 'none' && !container.classList.contains('hidden')),
                 modelType: (window.lanlan_config?.model_type || '').toLowerCase() || null,
+                protocol: this.loadPlan?.protocol || '',
+                mode: this.isLayeredActive() ? 'layered' : 'image',
+                plannedMode: this.loadPlan?.mode || '',
+                adapter: this.config.adapter || '',
+                metadataUrl: this.loadPlan?.metadataUrl || this.config.layered_metadata || '',
+                fallback: this.loadPlan?.fallback || {
+                    idle: this.config.idle_image || '',
+                    talking: this.config.talking_image || '',
+                },
+                lastError: this.lastError || '',
                 state: this.state,
+                currentState: this.state,
                 isSpeaking: !!this.isSpeaking,
                 speakingMouthOpen: !!this.speakingMouthOpen,
                 layered: this.isLayeredActive(),
                 layeredConfigured: this.isLayeredConfigured(),
                 layeredStateIndex: this.layeredStateIndex,
                 layerCount: layers.length,
+                loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0,
                 renderedIdleLayerCount: this.renderedLayerCountForState('idle'),
                 renderedTalkingLayerCount: this.renderedLayerCountForState('talking'),
                 renderedLayers: this.renderedLayerDebugInfo(this.state || 'idle'),

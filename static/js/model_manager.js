@@ -4890,6 +4890,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         return metadataUrl;
     }
 
+    function isSafePNGTuberDiagnosticUrl(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return false;
+        if (/^(?:javascript|data|blob):/i.test(raw)) return false;
+        try {
+            const resolved = new URL(raw, window.location.origin);
+            return resolved.origin === window.location.origin;
+        } catch (_) {
+            return false;
+        }
+    }
+
     async function fetchPNGTuberLayeredMetadata(pngtuberConfig) {
         const metadataUrl = getPNGTuberDiagnosticMetadataUrl(pngtuberConfig);
         if (!metadataUrl) {
@@ -4898,9 +4910,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         try {
             lastPNGTuberDiagnosticsMetadataError = '';
-            const response = await fetch(metadataUrl, { cache: 'no-store' });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return await response.json();
+            if (!isSafePNGTuberDiagnosticUrl(metadataUrl)) {
+                throw new Error('unsafe metadata url');
+            }
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), PNGTUBER_DIAGNOSTIC_IMAGE_TIMEOUT_MS);
+            try {
+                const response = await fetch(metadataUrl, {
+                    cache: 'no-store',
+                    signal: controller.signal,
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            } finally {
+                clearTimeout(timer);
+            }
         } catch (error) {
             console.warn('[PNGTuber] 读取分层 metadata 失败:', error);
             lastPNGTuberDiagnosticsMetadataError = error && error.message
@@ -4914,16 +4938,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!value) return '';
         const protocol = window.NekoPNGTuberProtocol;
         if (protocol && typeof protocol.resolveSiblingAsset === 'function') {
-            return protocol.resolveSiblingAsset(baseUrl || '', value);
+            const resolved = protocol.resolveSiblingAsset(baseUrl || '', value);
+            return isSafePNGTuberDiagnosticUrl(resolved) ? resolved : '';
         }
         const raw = String(value || '').trim().replace(/\\/g, '/');
-        if (!raw || /^https?:\/\//i.test(raw) || raw.startsWith('/')) return raw;
+        if (!raw) return '';
         const base = String(baseUrl || '').trim().replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-        return base ? `${base}/${raw}` : raw;
+        const resolved = (/^https?:\/\//i.test(raw) || raw.startsWith('/'))
+            ? raw
+            : (base ? `${base}/${raw}` : raw);
+        return isSafePNGTuberDiagnosticUrl(resolved) ? resolved : '';
     }
 
     function probePNGTuberDiagnosticImage(src) {
         return new Promise((resolve) => {
+            if (!isSafePNGTuberDiagnosticUrl(src)) {
+                resolve({ ok: false, reason: 'unsafe url' });
+                return;
+            }
             const image = new Image();
             let settled = false;
             const finish = (ok, reason = '') => {

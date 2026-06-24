@@ -64,6 +64,7 @@
         IMAGE_KEYS.forEach((key) => {
             normalized[key] = normalizeAssetPath(source[key]);
         });
+        const idleImageForMetadataBase = normalizeAssetPath(source.idle_image);
         normalized.idle_image = normalized.idle_image || options.placeholder || DEFAULT_PLACEHOLDER;
         normalized.talking_image = normalized.talking_image || normalized.idle_image;
         normalized.drag_image = normalized.drag_image || normalized.idle_image;
@@ -76,7 +77,7 @@
         normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
         normalized.mirror = !!source.mirror;
         const metadataUrl = resolveSiblingAsset(
-            normalized.idle_image,
+            idleImageForMetadataBase,
             normalizeAssetPath(source.layered_metadata || source.metadata)
         );
         normalized.metadata = metadataUrl;

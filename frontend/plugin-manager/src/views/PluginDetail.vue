@@ -462,6 +462,7 @@ watch(locale, () => {
 .plugin-detail {
   padding: 0;
   height: calc(100vh - 132px);
+  height: calc(100dvh - 132px);
   min-height: 520px;
   display: flex;
   flex-direction: column;

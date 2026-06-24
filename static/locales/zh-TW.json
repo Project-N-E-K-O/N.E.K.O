@@ -1555,17 +1555,17 @@
             "status": {
                 "ok": "OK",
                 "unloaded": "未載入",
-                "fallback": "Fallback",
+                "fallback": "回退",
                 "partial": "部分載入",
-                "image": "Image",
-                "layered": "Layered"
+                "image": "圖片",
+                "layered": "分層"
             },
             "rows": {
                 "mode": "模式",
-                "adapter": "Adapter",
-                "metadata": "Metadata",
-                "metadataCheck": "Metadata 檢查",
-                "format": "Format",
+                "adapter": "適配器",
+                "metadata": "元資料",
+                "metadataCheck": "元資料檢查",
+                "format": "格式",
                 "layers": "圖層",
                 "layerAssets": "圖層資源",
                 "missing": "缺失",
@@ -1573,22 +1573,22 @@
                 "roles": "角色",
                 "mouthEye": "嘴/眼",
                 "state": "狀態",
-                "fallback": "Fallback",
+                "fallback": "回退",
                 "error": "錯誤"
             },
             "values": {
                 "ok": "OK",
                 "failedWithError": "失敗: {{error}}",
-                "modePlan": "{{mode}} / planned {{planned}}",
-                "layers": "{{loaded}}/{{total}} runtime / {{metadata}} metadata",
-                "layerAssets": "{{checked}}/{{total}} checked, missing {{missing}}, invalid {{invalid}}, skipped {{skipped}}",
-                "mouth": "mouth",
-                "eye": "eye",
-                "speaking": "speaking"
+                "modePlan": "{{mode}} / 計畫 {{planned}}",
+                "layers": "{{loaded}}/{{total}} 執行階段 / {{metadata}} 元資料",
+                "layerAssets": "已檢查 {{checked}}/{{total}}，缺失 {{missing}}，無效 {{invalid}}，略過 {{skipped}}",
+                "mouth": "嘴",
+                "eye": "眼",
+                "speaking": "說話中"
             },
             "fallbackReasons": {
-                "metadataFetchFailed": "metadata 取得失敗: {{error}}",
-                "layeredModeFallback": "計畫使用 layered，但執行模式是 {{mode}}",
+                "metadataFetchFailed": "元資料取得失敗: {{error}}",
+                "layeredModeFallback": "計畫使用分層模式，但執行模式是 {{mode}}",
                 "layerImagesFailed": "一個或多個圖層圖片載入失敗",
                 "emptyLayerRefs": "一個或多個圖層圖片引用為空"
             }

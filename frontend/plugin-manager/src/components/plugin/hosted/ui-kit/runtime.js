@@ -1078,7 +1078,7 @@ function FileDownload(props) {
       reportHostedRuntimeError('FileDownload.copy', error);
     }
   };
-  if (href && props.openExternal !== false && !String(href).startsWith('data:')) {
+  if (href && props.openExternal !== false && isSafeUrl(href) && !String(href).trim().toLowerCase().startsWith('data:')) {
     return Button({ className: classNames('neko-download', props.className), tone: props.tone || 'primary', onClick: openHref, children: [label] });
   }
   if (href && isSafeUrl(href)) {
@@ -1318,7 +1318,7 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, '*');
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, hostedTargetOrigin());
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);

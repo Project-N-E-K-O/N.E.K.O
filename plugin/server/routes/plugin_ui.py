@@ -39,6 +39,7 @@ _I18N_LOCALE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 # and only change when the plugin author edits a translation file, so we keep
 # the parsed bytes in process memory and revalidate via mtime on each hit.
 _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
+_HOSTED_UI_ARTIFACT_DIRS = ("artifacts", "local_artifacts")
 
 
 class HostedUiActionRequest(BaseModel):
@@ -358,7 +359,7 @@ async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: Hoste
             kind=request.kind,
             surface_id=request.surface_id,
             locale=request.locale,
-            timeout_seconds=(request.timeout_ms / 1000.0) if request.timeout_ms else None,
+            timeout_seconds=(request.timeout_ms / 1000.0) if request.timeout_ms is not None else None,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -393,6 +394,9 @@ async def plugin_hosted_ui_artifact(
         candidate = Path(file_path)
         target_file = candidate.resolve() if candidate.is_absolute() else (plugin_dir / candidate).resolve()
         target_file.relative_to(plugin_dir)
+        allowed_roots = [(plugin_dir / artifact_dir).resolve() for artifact_dir in _HOSTED_UI_ARTIFACT_DIRS]
+        if not any(target_file == root or target_file.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(status_code=403, detail="Access denied: artifact outside allowed artifact directories")
     except ValueError:
         raise HTTPException(status_code=403, detail="Access denied: artifact outside plugin directory")
     except OSError:

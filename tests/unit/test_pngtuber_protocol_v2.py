@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from main_routers.pngtuber_importers import import_pngtuber_package
 from main_routers.pngtuber_protocol import (
@@ -10,6 +11,10 @@ from main_routers.pngtuber_protocol import (
     validate_neko_pngtuber_v2_package,
 )
 from main_routers.pngtuber_router import _normalize_pngtuber_config, _validate_model_package
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PNGTUBER_ROUTER_PATH = PROJECT_ROOT / "main_routers" / "pngtuber_router.py"
 
 
 def _write_minimal_neko_pngtuber_v2_package(package_dir):
@@ -92,6 +97,17 @@ def test_neko_pngtuber_v2_sample_import_and_normalize_contract(tmp_path):
     assert normalized["metadata"] == "/user_pngtuber/sample_v2/metadata.neko-pngtuber.v2.json"
     assert normalized["layered_metadata"] == normalized["metadata"]
     assert normalized["idle_image"] == "/user_pngtuber/sample_v2/assets/idle.png"
+
+
+def test_pngtuber_upload_writes_source_format_before_normalizing_config():
+    source = PNGTUBER_ROUTER_PATH.read_text(encoding="utf-8")
+    upload_block = source[
+        source.index("        source_format = str(model_json.get(\"source_format\") or import_result.source_format)"):
+        source.index("        with open(temp_dir / \"model.json\"", source.index("        source_format = str(model_json.get(\"source_format\") or import_result.source_format)"))
+    ]
+
+    assert upload_block.index("model_json[\"source_format\"] = source_format") < upload_block.index("normalized_config = _normalize_pngtuber_config")
+    assert "pngtuber_config[\"source_format\"] = source_format" in upload_block
 
 
 def test_legacy_layered_canvas_package_still_validates(tmp_path):
