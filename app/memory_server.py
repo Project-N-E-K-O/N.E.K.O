@@ -4171,12 +4171,16 @@ async def get_recent_history(lanlan_name: str):
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
-        if i.type == 'system':
-            result += i.content + "\n"
+        if isinstance(i.content, str):
+            content = i.content
         else:
-            texts = [j['text'] for j in i.content if j['type']=='text']
-            joined = "\n".join(texts)
-            result += f"{name_mapping[i.type]} | {joined}\n"
+            texts = [j['text'] for j in i.content if isinstance(j, dict) and j.get('type') == 'text']
+            content = "\n".join(texts)
+        if i.type == 'system':
+            result += content + "\n"
+        else:
+            speaker = name_mapping.get(i.type, i.type)
+            result += f"{speaker} | {content}\n"
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
