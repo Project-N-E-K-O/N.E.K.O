@@ -1601,16 +1601,20 @@ def test_badminton_reset_abandons_active_route_before_rotating_session():
 
     assert "var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;" in reset_section
     assert "var routeSessionToEnd = sessionId;" in reset_section
+    assert "var routeWasEnded = endedRoute;" in reset_section
     assert "var pendingRouteStart = routeStartPromise;" in reset_section
+    assert "var pendingRouteEnd = routeEndPromise;" in reset_section
     assert "sessionId = createBadmintonSessionId();" in reset_section
     assert "var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();" in reset_section
     assert "var restartAfterRouteEnd = routeReadyForEnd.then(function () {" in reset_section
-    assert "if (endedRoute) return routeEndPromise || Promise.resolve();" in reset_section
+    assert "if (routeWasEnded) return pendingRouteEnd || Promise.resolve();" in reset_section
     assert "return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });" in reset_section
     assert "Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {" in reset_section
     assert "badmintonGameDisposed" in reset_section
     assert "startRoute();" in reset_section
     assert reset_section.index("var routeSessionToEnd = sessionId;") < reset_section.index("sessionId = createBadmintonSessionId();")
+    assert reset_section.index("var routeWasEnded = endedRoute;") < reset_section.index("endedRoute = false;")
+    assert reset_section.index("var pendingRouteEnd = routeEndPromise;") < reset_section.index("routeEndPromise = null;")
     assert reset_section.index("sessionId = createBadmintonSessionId();") < reset_section.index("return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });")
     assert "var detached = options && options.detached;" in end_route_section
     assert "var routeEndSessionId = (options && options.sessionId) || sessionId;" in end_route_section
