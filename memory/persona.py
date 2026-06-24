@@ -588,9 +588,7 @@ class PersonaManager:
                         # cosine-based retrieval matches.
                         self._invalidate_embedding_cache(entry)
                         modified = True
-                        # persona 文本不写 logger
                         logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
-                        print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
                 else:
                     # 新字段 → 创建
@@ -601,7 +599,6 @@ class PersonaManager:
                     new_card_entries.append(entry)
                     modified = True
                     logger.info(f"[Persona] {name}: card 同步新增 [{entity}] (len={len(text)})")
-                    print(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
 
             # 检查是否有 card 中已删除的条目
             removed_ids = set(existing_card.keys()) - expected_ids
@@ -610,7 +607,6 @@ class PersonaManager:
                 for rid in removed_ids:
                     removed_text = existing_card[rid].get('text', '')
                     logger.info(f"[Persona] {name}: card 同步移除 [{entity}] (len={len(removed_text)})")
-                    print(f"[Persona] {name}: card 同步移除 [{entity}] \"{removed_text[:40]}\"")
 
 
             if modified:
