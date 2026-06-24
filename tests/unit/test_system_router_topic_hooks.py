@@ -7,6 +7,13 @@ from main_routers.system_router import (
     _render_followup_topic_hooks,
     _resolve_topic_hook_locale,
 )
+from utils.llm_client import anthropic_retry_error_types
+
+
+def test_proactive_llm_retry_errors_include_anthropic_transients():
+    retry_types = system_router._PROACTIVE_LLM_RETRY_ERROR_TYPES
+    for error_type in anthropic_retry_error_types():
+        assert error_type in retry_types
 
 
 def test_screen_only_and_unfinished_thread_suppress_softer_open_threads():

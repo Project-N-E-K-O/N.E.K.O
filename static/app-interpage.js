@@ -163,6 +163,7 @@
             || action === 'yui_guide_rotate_compact_tool_wheel'
             || action === 'yui_guide_set_chat_buttons_disabled'
             || action === 'yui_guide_set_chat_input_locked'
+            || action === 'yui_guide_set_compact_chat_fixed_layout'
             || action === 'yui_guide_set_compact_history_open'
             || action === 'yui_guide_set_avatar_tool_menu_open'
             || action === 'yui_guide_set_compact_tool_fan_open'
@@ -513,12 +514,14 @@
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
         var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
+        var deferRevealPrepared = !!reloadOptions.deferRevealPrepared;
         var throwOnError = !!reloadOptions.throwOnError;
         var reloadKey = JSON.stringify({
             lanlan_name: targetLanlanName,
             temporaryConfig: temporaryConfig || null,
             skipIdleRestore: skipIdleRestore,
-            skipPersistentExpressions: skipPersistentExpressions
+            skipPersistentExpressions: skipPersistentExpressions,
+            deferRevealPrepared: deferRevealPrepared
         });
 
         if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
@@ -583,6 +586,7 @@
 
         function ensureLive2DRenderActive(reason) {
             try {
+                var preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
                 var manager = window.live2dManager || null;
                 var app = manager && manager.pixi_app;
                 var ticker = app && app.ticker;
@@ -592,14 +596,18 @@
 
                 if (currentModel) {
                     currentModel.visible = true;
-                    currentModel.alpha = 1;
+                    if (!preserveAvatarCornerPeekOpacity) {
+                        currentModel.alpha = 1;
+                    }
                     if (currentModel.renderable !== undefined) {
                         currentModel.renderable = true;
                     }
                 }
                 if (app && app.stage) {
                     app.stage.visible = true;
-                    app.stage.alpha = 1;
+                    if (!preserveAvatarCornerPeekOpacity) {
+                        app.stage.alpha = 1;
+                    }
                     if (app.stage.renderable !== undefined) {
                         app.stage.renderable = true;
                     }
@@ -1163,13 +1171,17 @@
                                 live2dContainer2.classList.remove('hidden');
                                 live2dContainer2.style.display = 'block';
                                 live2dContainer2.style.visibility = 'visible';
-                                live2dContainer2.style.removeProperty('opacity');
+                                if (!deferRevealPrepared) {
+                                    live2dContainer2.style.removeProperty('opacity');
+                                }
                                 live2dContainer2.style.removeProperty('pointer-events');
                             }
                             if (live2dCanvas2) {
                                 live2dCanvas2.style.display = 'block';
                                 live2dCanvas2.style.visibility = 'visible';
-                                live2dCanvas2.style.removeProperty('opacity');
+                                if (!deferRevealPrepared) {
+                                    live2dCanvas2.style.removeProperty('opacity');
+                                }
                                 live2dCanvas2.style.pointerEvents = 'auto';
                             }
                             if (window.lanlan_config) {
@@ -1260,7 +1272,7 @@
                         restoredPngtuberContainer.classList.remove('hidden');
                         restoredPngtuberContainer.style.display = 'block';
                         restoredPngtuberContainer.style.visibility = 'visible';
-                        restoredPngtuberContainer.style.pointerEvents = 'auto';
+                        restoredPngtuberContainer.style.pointerEvents = 'none';
                         var restoredPngtuberImage = restoredPngtuberContainer.querySelector('.pngtuber-image');
                         if (restoredPngtuberImage) {
                             restoredPngtuberImage.style.visibility = 'visible';
@@ -1813,7 +1825,7 @@
                     pngtuberContainer.style.display = 'block';
                     pngtuberContainer.style.visibility = 'visible';
                     pngtuberContainer.classList.remove('hidden');
-                    pngtuberContainer.style.pointerEvents = 'auto';
+                    pngtuberContainer.style.pointerEvents = 'none';
                 }
                 var pngtuberImage = pngtuberContainer ? pngtuberContainer.querySelector('.pngtuber-image') : null;
                 if (pngtuberImage) {
@@ -2796,6 +2808,11 @@
                 applyYuiGuideChatInputLocked(message.locked === true, message.reason || '');
                 return true;
             }
+            case 'yui_guide_set_compact_chat_fixed_layout': {
+                if (!isStandaloneChatPage()) return true;
+                applyYuiGuideCompactChatFixedLayout(message.fixed === true);
+                return true;
+            }
             case 'yui_guide_set_chat_spotlight': {
                 if (!isStandaloneChatPage() || !document.body) return true;
                 ensureYuiGuideExternalChatExpanded();
@@ -3105,6 +3122,12 @@
                         dispatchIdleCat1CompactMirrorState(event.data);
                         break;
                     }
+                    case 'idle_cat1_play_yarn_visibility': {
+                        var cat1PlayYarnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1PlayYarnCurrentName || event.data.lanlan_name !== cat1PlayYarnCurrentName)) break;
+                        dispatchIdleCat1PlayYarnVisibility(event.data);
+                        break;
+                    }
                     case 'idle_chat_pair_move_bounds': {
                         var pairMoveChatCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
@@ -3209,6 +3232,11 @@
                     case 'yui_guide_set_chat_input_locked': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatInputLocked(event.data.locked === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_chat_fixed_layout': {
+                        if (!isStandaloneChatPage() || !document.body) break;
+                        applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);
                         break;
                     }
                     case 'yui_guide_set_chat_cursor':
@@ -3329,13 +3357,168 @@
     bindStandaloneChatIdleActivityRelay();
     drainPendingYuiGuideChatBridgeQueue();
 
+    var yuiGuideStandaloneInteractionShield = null;
+    var yuiGuideStandaloneInteractionShieldBlocker = null;
+    var yuiGuideStandaloneGlobalInteractionShieldInstalled = false;
+    var yuiGuideStandaloneInteractionShieldEvents = [
+        'pointerdown',
+        'pointerup',
+        'pointermove',
+        'mousedown',
+        'mouseup',
+        'mousemove',
+        'click',
+        'dblclick',
+        'contextmenu',
+        'touchstart',
+        'touchmove',
+        'touchend',
+        'wheel',
+        'dragstart'
+    ];
+
+    function isYuiGuideStandaloneSkipTarget(target) {
+        var element = target && typeof target.closest === 'function'
+            ? target
+            : target && target.parentElement && typeof target.parentElement.closest === 'function'
+            ? target.parentElement
+            : null;
+        return !!(
+            element
+            && element.closest('#neko-tutorial-skip-btn, [data-yui-skip-control], [data-yui-emergency-exit]')
+        );
+    }
+
+    function isYuiGuideStandaloneMovementEvent(event) {
+        return !!(
+            event
+            && (
+                event.type === 'pointermove'
+                || event.type === 'mousemove'
+                || event.type === 'touchmove'
+            )
+        );
+    }
+
+    function blockYuiGuideStandaloneInteraction(event) {
+        if (!event || isYuiGuideStandaloneSkipTarget(event.target || null)) {
+            return;
+        }
+        if (isYuiGuideStandaloneMovementEvent(event)) {
+            return;
+        }
+        if (event.isTrusted === false) {
+            return;
+        }
+        if (typeof event.preventDefault === 'function' && event.cancelable !== false) {
+            event.preventDefault();
+        }
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        if (typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+        }
+    }
+
+    function setYuiGuideStandaloneGlobalInteractionShieldEnabled(enabled) {
+        var shouldEnable = enabled === true;
+        if (shouldEnable && yuiGuideStandaloneGlobalInteractionShieldInstalled) {
+            return;
+        }
+        if (!shouldEnable && !yuiGuideStandaloneGlobalInteractionShieldInstalled) {
+            return;
+        }
+        if (!yuiGuideStandaloneInteractionShieldBlocker) {
+            yuiGuideStandaloneInteractionShieldBlocker = blockYuiGuideStandaloneInteraction;
+        }
+        yuiGuideStandaloneInteractionShieldEvents.forEach(function (type) {
+            var options = type.indexOf('touch') === 0 || type === 'wheel'
+                ? { capture: true, passive: false }
+                : true;
+            if (shouldEnable) {
+                window.addEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            } else {
+                window.removeEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            }
+        });
+        yuiGuideStandaloneGlobalInteractionShieldInstalled = shouldEnable;
+    }
+
+    function ensureYuiGuideStandaloneInteractionShield() {
+        if (yuiGuideStandaloneInteractionShield && yuiGuideStandaloneInteractionShield.isConnected) {
+            return yuiGuideStandaloneInteractionShield;
+        }
+        if (!document.body) {
+            return null;
+        }
+
+        var shield = document.getElementById('yui-guide-standalone-interaction-shield');
+        if (!shield) {
+            shield = document.createElement('div');
+            shield.id = 'yui-guide-standalone-interaction-shield';
+            shield.setAttribute('aria-hidden', 'true');
+            shield.setAttribute('data-yui-cursor-hidden', 'true');
+            shield.style.position = 'fixed';
+            shield.style.inset = '0';
+            shield.style.zIndex = '2147483001';
+            shield.style.background = 'transparent';
+            shield.style.pointerEvents = 'auto';
+            shield.style.touchAction = 'none';
+            shield.style.userSelect = 'none';
+            document.body.appendChild(shield);
+        }
+
+        if (!yuiGuideStandaloneInteractionShieldBlocker) {
+            yuiGuideStandaloneInteractionShieldBlocker = blockYuiGuideStandaloneInteraction;
+        }
+        if (!shield.__yuiGuideStandaloneInteractionShieldInstalled) {
+            yuiGuideStandaloneInteractionShieldEvents.forEach(function (type) {
+                var options = type.indexOf('touch') === 0 || type === 'wheel'
+                    ? { capture: true, passive: false }
+                    : true;
+                shield.addEventListener(type, yuiGuideStandaloneInteractionShieldBlocker, options);
+            });
+            shield.__yuiGuideStandaloneInteractionShieldInstalled = true;
+        }
+        yuiGuideStandaloneInteractionShield = shield;
+        return shield;
+    }
+
+    function setYuiGuideStandaloneInteractionShieldEnabled(enabled) {
+        var shouldEnable = enabled === true;
+        if (!shouldEnable) {
+            if (yuiGuideStandaloneInteractionShield) {
+                yuiGuideStandaloneInteractionShield.hidden = true;
+                yuiGuideStandaloneInteractionShield.style.pointerEvents = 'none';
+            }
+            if (document.body) {
+                document.body.classList.remove('yui-guide-standalone-input-shield-active');
+            }
+            setYuiGuideStandaloneGlobalInteractionShieldEnabled(false);
+            return;
+        }
+
+        var shield = ensureYuiGuideStandaloneInteractionShield();
+        if (!shield) {
+            return;
+        }
+        shield.hidden = false;
+        shield.style.pointerEvents = 'auto';
+        if (document.body) {
+            document.body.classList.add('yui-guide-standalone-input-shield-active');
+        }
+        setYuiGuideStandaloneGlobalInteractionShieldEnabled(true);
+    }
+
     function applyYuiGuideChatLockState(disabled) {
         if (!document.body) {
             return;
         }
 
         var locked = disabled !== false;
-        document.body.classList.toggle('yui-guide-chat-buttons-disabled', locked);
+        document.body.classList.remove('yui-guide-chat-buttons-disabled');
+        setYuiGuideStandaloneInteractionShieldEnabled(locked);
 
         var activeElement = document.activeElement;
         if (
@@ -3347,62 +3530,6 @@
         ) {
             activeElement.blur();
         }
-
-        var readonlyTargets = document.querySelectorAll(
-            '#react-chat-window-shell textarea, '
-            + '#react-chat-window-shell input, '
-            + '#text-input-area textarea, '
-            + '#text-input-area input'
-        );
-        readonlyTargets.forEach(function (element) {
-            if (!element || !('readOnly' in element)) {
-                return;
-            }
-
-            if (locked) {
-                if (!element.hasAttribute('data-yui-guide-prev-readonly')) {
-                    element.setAttribute('data-yui-guide-prev-readonly', element.readOnly ? 'true' : 'false');
-                }
-                element.readOnly = true;
-                return;
-            }
-
-            var prevReadOnly = element.getAttribute('data-yui-guide-prev-readonly');
-            if (prevReadOnly !== null) {
-                element.readOnly = prevReadOnly === 'true';
-                element.removeAttribute('data-yui-guide-prev-readonly');
-            } else {
-                element.readOnly = false;
-            }
-        });
-
-        var contentEditableTargets = document.querySelectorAll(
-            '#react-chat-window-shell [contenteditable=\"true\"], '
-            + '#react-chat-window-shell [contenteditable=\"plaintext-only\"], '
-            + '#react-chat-window-shell [data-yui-guide-prev-contenteditable]'
-        );
-        contentEditableTargets.forEach(function (element) {
-            if (!element || typeof element.getAttribute !== 'function') {
-                return;
-            }
-
-            if (locked) {
-                if (!element.hasAttribute('data-yui-guide-prev-contenteditable')) {
-                    element.setAttribute(
-                        'data-yui-guide-prev-contenteditable',
-                        element.getAttribute('contenteditable') || 'true'
-                    );
-                }
-                element.setAttribute('contenteditable', 'false');
-                return;
-            }
-
-            var prevContentEditable = element.getAttribute('data-yui-guide-prev-contenteditable');
-            if (prevContentEditable !== null) {
-                element.setAttribute('contenteditable', prevContentEditable);
-                element.removeAttribute('data-yui-guide-prev-contenteditable');
-            }
-        });
     }
 
     function getReactChatWindowHost() {
@@ -3443,6 +3570,13 @@
         if (host && typeof host.setHomeTutorialInputLocked === 'function') {
             host.setHomeTutorialInputLocked(locked === true, reason || 'externalized-chat-guide');
         }
+    }
+
+    function applyYuiGuideCompactChatFixedLayout(fixed) {
+        if (!document.body) {
+            return;
+        }
+        document.body.classList.toggle('yui-guide-compact-chat-fixed', fixed === true);
     }
 
     function applyYuiGuideCompactHistoryOpen(open, reason) {
@@ -3553,6 +3687,20 @@
                 surfaceScreenRect: null,
                 anchorRatio: null,
                 catRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1PlayYarnVisibility(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-play-yarn-visibility', {
+            detail: Object.assign({
+                action: 'idle_cat1_play_yarn_visibility',
+                source: '',
+                hidden: false,
                 timestamp: Date.now(),
                 via: 'broadcast-channel'
             }, detail || {}, {
@@ -3822,6 +3970,7 @@
         switch (action) {
             case 'yui_guide_set_chat_buttons_disabled':
             case 'yui_guide_set_chat_input_locked':
+            case 'yui_guide_set_compact_chat_fixed_layout':
             case 'yui_guide_set_chat_spotlight':
             case 'yui_guide_set_chat_cursor':
             case 'yui_guide_drag_chat_cursor':
@@ -4807,6 +4956,7 @@
         });
         applyYuiGuideChatLockState(false);
         applyYuiGuideChatInputLocked(false, rawReason);
+        applyYuiGuideCompactChatFixedLayout(false);
         applyYuiGuideAvatarToolMenuOpen(false, rawReason);
         applyYuiGuideCompactHistoryOpen(false, rawReason);
         applyYuiGuideCompactToolFanOpen(false, rawReason);

@@ -176,6 +176,7 @@
         const state = loadGuideState();
 
         resetAllIcebreakerDays();
+        state.firstSeenDate = getTodayLocalDate();
         state.completedRounds = [];
         state.skippedRounds = [];
         state.currentRound = null;

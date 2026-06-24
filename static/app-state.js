@@ -111,6 +111,11 @@
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        // 本次正在 await session_started 的启动请求模式（'audio' / 'text'）。
+        // session_started 处理用它校验到达的 input_mode 是否与用户请求的一致：
+        // 不一致（典型是 proactive/greeting 并发自起的 text 会话发来的 ack）时
+        // 忽略，避免错误模式的 ack 收口用户的启动 promise / 翻转会话状态。
+        _pendingSessionStartMode: null,
         voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
@@ -185,6 +190,9 @@
 
         // --- UI / 杂项 ---
         focusModeEnabled: false,
+        // 凝神（cognition focus）per-user 总开关，默认开；关掉后端进不了 focus 态。
+        // 注意与上面的 focusModeEnabled（=麦克风静音/允许打断）是两回事。
+        focusCognitionEnabled: true,
         avatarReactionBubbleEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
@@ -232,6 +240,7 @@
         }
         S.sessionStartedResolver = null;
         S.sessionStartedRejecter = null;
+        S._pendingSessionStartMode = null;
     };
 
     // ======================== 工具函数 ========================
@@ -275,7 +284,7 @@
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-        'mergeMessagesEnabled', 'focusModeEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];

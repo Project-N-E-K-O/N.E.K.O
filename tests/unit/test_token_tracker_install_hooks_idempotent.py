@@ -124,3 +124,28 @@ async def test_install_hooks_idempotent_async_path(restore_openai_create):
         await AsyncCompletions.create(SimpleNamespace(), model="fake-model", stream=False)
 
     assert rec.call_count == 1, f"expected 1 record, got {rec.call_count}（async wrapper 叠层）"
+
+
+def test_record_anthropic_usage_maps_messages_usage_fields():
+    rec = MagicMock()
+
+    with patch.object(
+        tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)
+    ), tt.llm_call_context("conversation"):
+        tt.record_anthropic_usage(
+            "claude-test",
+            {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "cache_read_input_tokens": 80,
+            },
+        )
+
+    rec.assert_called_once_with(
+        model="claude-test",
+        prompt_tokens=100,
+        completion_tokens=25,
+        total_tokens=125,
+        cached_tokens=80,
+        call_type="conversation",
+    )

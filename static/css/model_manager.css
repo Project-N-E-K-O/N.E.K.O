@@ -27,6 +27,8 @@
     /* 描边颜色 */
     --button-text-stroke-width: 2px;
     /* 描边宽度（视觉上的） */
+    --dropdown-text-stroke-safe-inset: 4px;
+    /* 下拉项文字左侧描边安全区，防止阴影描边被 overflow 裁掉 */
     --dropdown-text-max-width: 200px;
     /* 下拉菜单项文字最大宽度，超出显示省略号 */
     --model-manager-control-width: 270px;
@@ -2878,9 +2880,9 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
 .dropdown-item-text::before {
     content: attr(data-text);
     position: absolute;
-    left: 0;
+    left: var(--dropdown-text-stroke-safe-inset);
     top: 0;
-    width: 100%;
+    width: calc(100% - var(--dropdown-text-stroke-safe-inset));
     height: 100%;
     z-index: -1;
     color: var(--button-text-stroke-color);
@@ -2912,9 +2914,9 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
 .dropdown-item-text::after {
     content: attr(data-text);
     position: absolute;
-    left: 0;
+    left: var(--dropdown-text-stroke-safe-inset);
     top: 0;
-    width: 100%;
+    width: calc(100% - var(--dropdown-text-stroke-safe-inset));
     height: 100%;
     z-index: 10;
     background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);

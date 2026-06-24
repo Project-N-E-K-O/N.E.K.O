@@ -57,11 +57,12 @@
     const ANGRY_EXIT_MIN_DURATION_MS = 1600;
     const ANGRY_EXIT_MAX_DURATION_MS = 16000;
     const PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS = 700;
-    const PLUGIN_DASHBOARD_CORNER_HIDE_MS = 520;
-    const PLUGIN_DASHBOARD_CORNER_APPEAR_MS = 720;
-    const PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45;
-    const PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08;
-    const PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35;
+    const PLUGIN_DASHBOARD_CORNER_HIDE_MS = 1000;
+    const PLUGIN_DASHBOARD_CORNER_APPEAR_MS = 1000;
+    const AVATAR_MOTION_HALF_BODY_FADE_OUT_MS = 420;
+    const AVATAR_MOTION_HALF_BODY_FADE_IN_MS = 900;
+    const AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18;
+    const AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36;
     const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647';
     const TAKEOVER_TOP_PEEK_TOP_OUTSIDE_RATIO = 0.6;
     const TAKEOVER_TOP_PEEK_CENTER_ABOVE_TOP_RATIO = 0.6;
@@ -77,6 +78,7 @@
     const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);
     const YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params']);
     const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
+    const YUI_AVATAR_CORNER_PEEK_CAPABILITIES = Object.freeze(['frame', 'lookAt']);
     const INTRO_VOICE_LOOK_AT_POINT_SMOOTHING = 0.58;
     const INTRO_VOICE_LOOK_AT_POSE_SMOOTHING = 0.72;
     const INTRO_VOICE_LOOK_AT_FIRST_POINT_RAMP_MS = 1200;
@@ -530,9 +532,13 @@
     let activeInterruptResistSession = null;
     let activeAngryExitSession = null;
     let activeIntroVoiceLookAtSession = null;
-    let activePluginDashboardCornerSession = null;
+    let activeAvatarCornerPeekSession = null;
+    let activeAvatarMotionSession = null;
     let activeReturnControlCueWaveSession = null;
     let activeGuideIdleSwaySession = null;
+    const activeFaceForwardLocks = new Map();
+    let previousFaceForwardLockValue = false;
+    let previousFaceForwardSuppressParamWriteValue = false;
 
     function clamp(value, min, max) {
         const number = Number(value);
@@ -993,6 +999,45 @@
             return coordinator.release(record.session, reason || 'release') === true;
         } catch (_) {
             return false;
+        }
+    }
+
+    function acquireYuiGuideFaceForwardLock(key) {
+        const lockKey = String(key || 'home-yui-guide-face-forward').trim() || 'home-yui-guide-face-forward';
+        const existingRefs = activeFaceForwardLocks.get(lockKey) || 0;
+        if (existingRefs > 0) {
+            activeFaceForwardLocks.set(lockKey, existingRefs + 1);
+            return {
+                release: function () {
+                    releaseYuiGuideFaceForwardLock(lockKey);
+                }
+            };
+        }
+        if (activeFaceForwardLocks.size === 0) {
+            previousFaceForwardLockValue = window.nekoYuiGuideFaceForwardLock === true;
+            previousFaceForwardSuppressParamWriteValue = window.nekoYuiGuideFaceForwardSuppressParamWrite === true;
+            window.nekoYuiGuideFaceForwardLock = true;
+            window.nekoYuiGuideFaceForwardSuppressParamWrite = false;
+        }
+        activeFaceForwardLocks.set(lockKey, 1);
+        return {
+            release: function () {
+                releaseYuiGuideFaceForwardLock(lockKey);
+            }
+        };
+    }
+
+    function releaseYuiGuideFaceForwardLock(key) {
+        const lockKey = String(key || 'home-yui-guide-face-forward').trim() || 'home-yui-guide-face-forward';
+        const refs = activeFaceForwardLocks.get(lockKey) || 0;
+        if (refs <= 1) {
+            activeFaceForwardLocks.delete(lockKey);
+        } else {
+            activeFaceForwardLocks.set(lockKey, refs - 1);
+        }
+        if (activeFaceForwardLocks.size === 0) {
+            window.nekoYuiGuideFaceForwardLock = previousFaceForwardLockValue === true;
+            window.nekoYuiGuideFaceForwardSuppressParamWrite = previousFaceForwardSuppressParamWriteValue === true;
         }
     }
 
@@ -1636,6 +1681,91 @@
         return true;
     }
 
+    function writeLookAtCenter(coreModel) {
+        if (!coreModel || typeof coreModel.setParameterValueById !== 'function') {
+            return false;
+        }
+        ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'].forEach((paramId) => {
+            try {
+                coreModel.setParameterValueById(paramId, 0);
+            } catch (_) {}
+        });
+        return true;
+    }
+
+    function resetModelFocusController(model) {
+        const focusController = model
+            && model.internalModel
+            && model.internalModel.focusController
+            ? model.internalModel.focusController
+            : null;
+        if (!focusController) {
+            return false;
+        }
+        try {
+            focusController.targetX = 0;
+            focusController.targetY = 0;
+            if (Number.isFinite(Number(focusController.x))) {
+                focusController.x = 0;
+            }
+            if (Number.isFinite(Number(focusController.y))) {
+                focusController.y = 0;
+            }
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function centerLive2DLookAt(context) {
+        const normalizedContext = context || {};
+        const manager = normalizedContext.manager || null;
+        const model = normalizedContext.model || (manager && getCurrentLive2DModel(manager));
+        const coreModel = normalizedContext.coreModel
+            || (model && model.internalModel && model.internalModel.coreModel);
+        if (manager) {
+            manager._lookAtTargetX = 0;
+            manager._lookAtTargetY = 0;
+            manager._lookAtCurrentX = 0;
+            manager._lookAtCurrentY = 0;
+        }
+        resetModelFocusController(model);
+        writeLookAtCenter(coreModel);
+    }
+
+    function setAvatarCornerPeekActiveFlag(value) {
+        try {
+            window.nekoYuiGuideAvatarCornerPeekActive = value === true;
+        } catch (_) {}
+    }
+
+    function normalizeAvatarCornerPeekPosition(value) {
+        const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+        if (
+            normalized === 'bottom-left'
+            || normalized === 'top-right'
+            || normalized === 'top-left'
+            || normalized === 'top-flipped'
+        ) {
+            return normalized;
+        }
+        return 'bottom-right';
+    }
+
+    function resolveAvatarCornerPeekRotationDegrees(position) {
+        const normalized = normalizeAvatarCornerPeekPosition(position);
+        if (normalized === 'top-left') {
+            return 135;
+        }
+        if (normalized === 'top-right') {
+            return -135;
+        }
+        if (normalized === 'bottom-left') {
+            return 45;
+        }
+        return -45;
+    }
+
     function freezeLive2DOverlayAnchors(manager) {
         if (!manager || !manager.pixi_app || !manager.pixi_app.ticker) {
             return null;
@@ -1703,6 +1833,265 @@
             model,
             resolveIntroGreetingHugModelFrame(baseFrame || readIntroGreetingHugModelFrame(model), manager, container, frameScale, frameY)
         );
+    }
+
+    class Live2DMotionBaseSession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            this.document = normalizedOptions.document || document;
+            this.manager = context.manager;
+            this.model = context.model;
+            this.coreModel = context.coreModel;
+            this.ticker = context.ticker || null;
+            this.container = normalizedOptions.container || getLive2DContainer(this.document);
+            this.reducedMotion = !!normalizedOptions.reducedMotion;
+            this.token = normalizedOptions.token || 0;
+            this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : function () { return false; };
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_AVATAR_CORNER_PEEK_CAPABILITIES.slice();
+            this.performanceLock = null;
+            this.initialModelFrame = null;
+            this.initialAlpha = 1;
+            this.startedAt = 0;
+            this.active = false;
+            this.finished = false;
+            this.result = 'idle';
+            this.frameId = 0;
+            this.tickerAttached = false;
+            this.tick = this.tick.bind(this);
+        }
+
+        isCurrentModel() {
+            if (!this.manager || !this.model || this.model.destroyed || !this.coreModel) {
+                return false;
+            }
+            const current = getCurrentLive2DModel(this.manager);
+            return current === this.model
+                && current.internalModel
+                && current.internalModel.coreModel === this.coreModel;
+        }
+
+        captureInitialState() {
+            this.initialModelFrame = readIntroGreetingHugModelFrame(this.model);
+            this.initialAlpha = readModelAlpha(this.model);
+            return !!this.initialModelFrame;
+        }
+
+        acquirePerformanceLock() {
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
+            return this.performanceLock;
+        }
+
+        attachTicker() {
+            if (this.ticker && typeof this.ticker.add === 'function') {
+                if (!this.tickerAttached) {
+                    this.ticker.add(this.tick);
+                    this.tickerAttached = true;
+                }
+                return;
+            }
+            if (!this.frameId) {
+                this.frameId = window.requestAnimationFrame(() => {
+                    this.frameId = 0;
+                    this.tick();
+                });
+            }
+        }
+
+        detachTicker() {
+            if (this.ticker && typeof this.ticker.remove === 'function' && this.tickerAttached) {
+                try {
+                    this.ticker.remove(this.tick);
+                } catch (_) {}
+                this.tickerAttached = false;
+            }
+            if (this.frameId) {
+                window.cancelAnimationFrame(this.frameId);
+                this.frameId = 0;
+            }
+        }
+
+        restoreModelFrame() {
+            if (!this.isCurrentModel() || !this.initialModelFrame) {
+                return false;
+            }
+            writeModelAlpha(this.model, this.initialAlpha);
+            return writeIntroGreetingHugModelFrame(this.model, this.initialModelFrame);
+        }
+
+        applyFrame(frame, alpha) {
+            if (!this.isCurrentModel() || !frame) {
+                return false;
+            }
+            if (Number.isFinite(Number(alpha))) {
+                writeModelAlpha(this.model, alpha);
+            }
+            centerLive2DLookAt(this);
+            return writeIntroGreetingHugModelFrame(this.model, frame);
+        }
+
+        blendFrame(fromFrame, toFrame, weight) {
+            const t = easeInOutCubic(clamp(weight, 0, 1));
+            return {
+                x: lerp(fromFrame.x, toFrame.x, t),
+                y: lerp(fromFrame.y, toFrame.y, t),
+                scaleX: lerp(fromFrame.scaleX, toFrame.scaleX, t),
+                scaleY: lerp(fromFrame.scaleY, toFrame.scaleY, t),
+                rotation: lerp(
+                    Number.isFinite(Number(fromFrame.rotation)) ? Number(fromFrame.rotation) : 0,
+                    Number.isFinite(Number(toFrame.rotation)) ? Number(toFrame.rotation) : 0,
+                    t
+                )
+            };
+        }
+
+        finish(reason) {
+            this.active = false;
+            this.finished = true;
+            this.result = reason || this.result || 'stopped';
+            this.detachTicker();
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
+            }
+            if (activeAvatarMotionSession === this) {
+                activeAvatarMotionSession = null;
+            }
+        }
+
+        stop(reason) {
+            this.restoreModelFrame();
+            this.finish(reason || 'stopped');
+            return Promise.resolve();
+        }
+
+        cancel(reason) {
+            return this.stop(reason || 'cancelled');
+        }
+
+        waitForFinish() {
+            return waitForSessionCompletion(this, (finishedSession) => ({
+                result: finishedSession.result || 'played',
+                reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : ''
+            }));
+        }
+
+        tick() {}
+    }
+
+    class Live2DFrameMotionSession extends Live2DMotionBaseSession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            super(context, normalizedOptions);
+            this.preset = String(normalizedOptions.preset || 'frame-motion');
+            this.enterMs = normalizeDuration(normalizedOptions.enterMs, 760);
+            this.holdMs = normalizeDuration(normalizedOptions.holdMs, 0);
+            this.restoreMode = normalizedOptions.restoreMode || normalizedOptions.restore || 'initial';
+            this.fromKind = normalizedOptions.from || 'initial';
+            this.toKind = normalizedOptions.to || 'initial';
+            this.frameScale = Number.isFinite(Number(normalizedOptions.frameScale))
+                ? Number(normalizedOptions.frameScale)
+                : INTRO_GREETING_HUG_CLOSE_SCALE;
+            this.frameY = Number.isFinite(Number(normalizedOptions.frameY))
+                ? Number(normalizedOptions.frameY)
+                : resolveIntroGreetingHugFrameShift(this.container);
+            this.fromFrame = null;
+            this.toFrame = null;
+        }
+
+        resolveViewportHeight() {
+            const screen = this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer
+                ? this.manager.pixi_app.renderer.screen
+                : null;
+            return Math.max(1, Number(screen && screen.height) || window.innerHeight || 1);
+        }
+
+        resolveOffscreenBottomFrame() {
+            const base = this.initialModelFrame;
+            const bounds = this.model && typeof this.model.getBounds === 'function'
+                ? this.model.getBounds()
+                : null;
+            const height = bounds && Number.isFinite(Number(bounds.height))
+                ? Math.max(1, Number(bounds.height))
+                : this.resolveViewportHeight() * 0.72;
+            return Object.assign({}, base, {
+                y: base.y + Math.max(220, height * 0.64)
+            });
+        }
+
+        resolveTargetFrame(kind) {
+            if (kind === 'offscreen-bottom') {
+                return this.resolveOffscreenBottomFrame();
+            }
+            if (kind === 'close-up') {
+                return resolveIntroGreetingHugModelFrame(
+                    this.initialModelFrame,
+                    this.manager,
+                    this.container,
+                    this.frameScale,
+                    this.frameY
+                );
+            }
+            return Object.assign({}, this.initialModelFrame);
+        }
+
+        start() {
+            if (!this.isCurrentModel() || !this.captureInitialState()) {
+                return false;
+            }
+            this.fromFrame = this.resolveTargetFrame(this.fromKind);
+            this.toFrame = this.resolveTargetFrame(this.toKind);
+            this.acquirePerformanceLock();
+            this.active = true;
+            this.startedAt = performance.now();
+            if (this.reducedMotion) {
+                this.applyFrame(this.toFrame, this.initialAlpha);
+                this.finish('played');
+                return true;
+            }
+            this.applyFrame(this.fromFrame, this.initialAlpha);
+            this.attachTicker();
+            return true;
+        }
+
+        tick() {
+            if (!this.active) {
+                return;
+            }
+            if (this.isCancelled()) {
+                this.cancel('cancelled');
+                return;
+            }
+            if (!this.isCurrentModel()) {
+                this.cancel('model_changed');
+                return;
+            }
+            const elapsed = Math.max(0, performance.now() - this.startedAt);
+            const enterProgress = this.enterMs > 0 ? clamp(elapsed / this.enterMs, 0, 1) : 1;
+            this.applyFrame(this.blendFrame(this.fromFrame, this.toFrame, enterProgress), this.initialAlpha);
+            if (elapsed >= this.enterMs + this.holdMs) {
+                if (this.restoreMode === 'commit-final') {
+                    this.applyFrame(this.toFrame, this.initialAlpha);
+                    this.finish('played');
+                    return;
+                }
+                if (this.restoreMode === 'half-body') {
+                    this.applyFrame(this.toFrame, this.initialAlpha);
+                } else if (this.restoreMode === 'initial') {
+                    this.restoreModelFrame();
+                }
+                this.finish('played');
+                return;
+            }
+            this.attachTicker();
+        }
     }
 
     class Live2DWakeupSession {
@@ -2679,7 +3068,7 @@
         }
     }
 
-    class Live2DPluginDashboardCornerSession {
+    class Live2DAvatarCornerPeekSession {
         constructor(context, options) {
             const normalizedOptions = options || {};
             this.document = normalizedOptions.document || document;
@@ -2692,9 +3081,11 @@
             this.hideMs = normalizeDuration(normalizedOptions.hideMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
             this.appearMs = normalizeDuration(normalizedOptions.appearMs, PLUGIN_DASHBOARD_CORNER_APPEAR_MS);
             this.totalDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
-            this.targetPreset = normalizedOptions.targetPreset === 'top_flipped'
-                ? 'top_flipped'
-                : 'corner';
+            this.targetPosition = normalizeAvatarCornerPeekPosition(
+                normalizedOptions.position
+                || normalizedOptions.targetPosition
+                || normalizedOptions.targetPreset
+            );
             this.token = normalizedOptions.token || 0;
             this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
                 ? normalizedOptions.isCancelled
@@ -2706,6 +3097,7 @@
             this.initialModelFrame = null;
             this.initialAlpha = 1;
             this.initialBounds = null;
+            this.peekRegionBounds = null;
             this.hiddenFrame = null;
             this.cornerFrame = null;
             this.cornerHiddenFrame = null;
@@ -2713,11 +3105,18 @@
             this.containerZIndexElevated = false;
             this.floatingButtonsFreezeToken = null;
             this.floatingButtonsFrozen = false;
+            this.freezeFloatingButtons = normalizedOptions.freezeFloatingButtons !== false;
+            this.rotateFloatingButtons = normalizedOptions.rotateFloatingButtons === true;
+            this.initialFloatingButtonsRotationRadians = null;
+            this.displayOpacityTargets = [];
+            this.displayOpacitySnapshots = [];
             this.performanceLock = null;
+            this.faceForwardLock = null;
+            this.previousCornerPeekActiveValue = false;
             this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-plugin-dashboard-corner';
             this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
                 ? normalizedOptions.performanceLockCapabilities.slice()
-                : YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES.slice();
+                : YUI_AVATAR_CORNER_PEEK_CAPABILITIES.slice();
             this.phase = 'idle';
             this.tickerAttached = false;
             this.interruptSuspendedAt = 0;
@@ -2743,15 +3142,23 @@
                 return false;
             }
             this.initialAlpha = readModelAlpha(this.model);
+            this.captureDisplayOpacityTargets();
             this.initialBounds = this.readBounds();
+            this.peekRegionBounds = this.resolvePeekRegionBounds();
             this.hiddenFrame = this.resolveHiddenFrame();
             this.cornerFrame = this.resolveCornerFrame();
             this.cornerHiddenFrame = this.resolveCornerHiddenFrame();
-            this.freezeFloatingButtonsPosition();
+            if (this.freezeFloatingButtons) {
+                this.freezeFloatingButtonsPosition();
+            }
             this.performanceLock = acquireYuiGuidePerformanceLock(
                 this.performanceLockKey,
                 this.performanceLockCapabilities
             );
+            this.faceForwardLock = acquireYuiGuideFaceForwardLock(this.performanceLockKey + '-face-forward');
+            this.previousCornerPeekActiveValue = window.nekoYuiGuideAvatarCornerPeekActive === true;
+            setAvatarCornerPeekActiveFlag(true);
+            centerLive2DLookAt(this);
             this.active = true;
             this.phase = 'enter';
             this.startedAt = performance.now();
@@ -2768,8 +3175,9 @@
             return true;
         }
 
-        stop(reason) {
-            return this.requestStop(reason || 'stopped', true);
+        stop(reason, options) {
+            const normalizedOptions = options || {};
+            return this.requestStop(reason || 'stopped', normalizedOptions.animateReturn !== false);
         }
 
         requestStop(reason, animateReturn) {
@@ -2807,14 +3215,21 @@
                 this.frameId = 0;
             }
             this.restoreFloatingButtonsPositionUpdates();
+            this.restoreFloatingButtonsRotation();
             this.restoreContainerZIndex();
             this.restoreModelFrame();
+            this.restoreDisplayOpacity();
+            if (this.faceForwardLock && typeof this.faceForwardLock.release === 'function') {
+                this.faceForwardLock.release(reason || 'stopped');
+                this.faceForwardLock = null;
+            }
+            setAvatarCornerPeekActiveFlag(this.previousCornerPeekActiveValue);
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
             }
-            if (activePluginDashboardCornerSession === this) {
-                activePluginDashboardCornerSession = null;
+            if (activeAvatarCornerPeekSession === this) {
+                activeAvatarCornerPeekSession = null;
             }
         }
 
@@ -2856,6 +3271,63 @@
             return true;
         }
 
+        captureDisplayOpacityTargets() {
+            const targets = [];
+            const pushTarget = (element) => {
+                if (!element || !element.style || targets.indexOf(element) !== -1) {
+                    return;
+                }
+                targets.push(element);
+            };
+            pushTarget(this.container);
+            try {
+                pushTarget(document.getElementById('live2d-canvas'));
+            } catch (_) {}
+            try {
+                const app = this.manager && this.manager.pixi_app ? this.manager.pixi_app : null;
+                pushTarget(app && app.view);
+                pushTarget(app && app.renderer && app.renderer.view);
+            } catch (_) {}
+            this.displayOpacityTargets = targets;
+            this.displayOpacitySnapshots = targets.map((element) => ({
+                element: element,
+                opacity: element.style.opacity || '',
+                transition: element.style.transition || ''
+            }));
+            targets.forEach((element) => {
+                element.style.transition = 'none';
+            });
+            return targets.length > 0;
+        }
+
+        writeDisplayOpacity(alpha) {
+            const opacity = clamp(Number(alpha), 0, 1);
+            const opacityText = String(Math.round(opacity * 1000) / 1000);
+            if (!Array.isArray(this.displayOpacityTargets) || this.displayOpacityTargets.length === 0) {
+                this.captureDisplayOpacityTargets();
+            }
+            this.displayOpacityTargets.forEach((element) => {
+                if (!element || !element.style) {
+                    return;
+                }
+                element.style.opacity = opacityText;
+            });
+        }
+
+        restoreDisplayOpacity() {
+            if (!Array.isArray(this.displayOpacitySnapshots)) {
+                return;
+            }
+            this.displayOpacitySnapshots.forEach((snapshot) => {
+                if (snapshot && snapshot.element && snapshot.element.style) {
+                    snapshot.element.style.opacity = snapshot.opacity || '';
+                    snapshot.element.style.transition = snapshot.transition || '';
+                }
+            });
+            this.displayOpacityTargets = [];
+            this.displayOpacitySnapshots = [];
+        }
+
         freezeFloatingButtonsPosition() {
             if (!this.manager || this.floatingButtonsFrozen) {
                 return false;
@@ -2883,6 +3355,33 @@
             this.manager._freezeFloatingButtonsPosition = !!(freezes && freezes.size > 0);
             this.floatingButtonsFreezeToken = null;
             this.floatingButtonsFrozen = false;
+            return true;
+        }
+
+        syncFloatingButtonsRotation(frame) {
+            if (!this.manager || !this.rotateFloatingButtons || !frame) {
+                return false;
+            }
+            if (this.initialFloatingButtonsRotationRadians === null) {
+                this.initialFloatingButtonsRotationRadians = Number.isFinite(Number(this.manager._floatingButtonsRotationRadians))
+                    ? Number(this.manager._floatingButtonsRotationRadians)
+                    : 0;
+            }
+            const rotation = Number.isFinite(Number(frame.rotation))
+                ? Number(frame.rotation)
+                : 0;
+            this.manager._floatingButtonsRotationRadians = rotation;
+            return true;
+        }
+
+        restoreFloatingButtonsRotation() {
+            if (!this.manager || !this.rotateFloatingButtons) {
+                return false;
+            }
+            this.manager._floatingButtonsRotationRadians = Number.isFinite(Number(this.initialFloatingButtonsRotationRadians))
+                ? Number(this.initialFloatingButtonsRotationRadians)
+                : 0;
+            this.initialFloatingButtonsRotationRadians = null;
             return true;
         }
 
@@ -2920,6 +3419,106 @@
             return null;
         }
 
+        normalizeScreenRect(rect) {
+            if (!rect || typeof rect !== 'object') {
+                return null;
+            }
+            const left = Number.isFinite(Number(rect.left))
+                ? Number(rect.left)
+                : Number(rect.x);
+            const top = Number.isFinite(Number(rect.top))
+                ? Number(rect.top)
+                : Number(rect.y);
+            const width = Number.isFinite(Number(rect.width))
+                ? Number(rect.width)
+                : (Number(rect.right) - left);
+            const height = Number.isFinite(Number(rect.height))
+                ? Number(rect.height)
+                : (Number(rect.bottom) - top);
+            if (!Number.isFinite(left) || !Number.isFinite(top) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return {
+                x: left,
+                y: top,
+                left: left,
+                top: top,
+                right: left + width,
+                bottom: top + height,
+                width: width,
+                height: height,
+                centerX: left + width * 0.5,
+                centerY: top + height * 0.5
+            };
+        }
+
+        resolveManagerPartRect(kind, hint) {
+            if (!this.manager) {
+                return null;
+            }
+            const methodName = kind === 'body'
+                ? 'getBodyScreenRectInfo'
+                : 'getHeadScreenRectInfo';
+            if (typeof this.manager[methodName] !== 'function') {
+                return null;
+            }
+            try {
+                const info = kind === 'body'
+                    ? this.manager[methodName](hint)
+                    : this.manager[methodName]();
+                return this.normalizeScreenRect(info && (info.rect || info));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        resolvePeekRegionBounds() {
+            const bounds = this.initialBounds;
+            if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+                return null;
+            }
+            const modelRect = this.normalizeScreenRect(bounds);
+            if (!modelRect) {
+                return null;
+            }
+            const headRect = this.resolveManagerPartRect('head');
+            const bodyRect = this.resolveManagerPartRect('body', headRect ? { rect: headRect } : undefined);
+            if (headRect) {
+                const centerX = Number.isFinite(headRect.centerX)
+                    ? headRect.centerX
+                    : headRect.left + headRect.width * 0.5;
+                const targetWidth = Math.max(
+                    headRect.width,
+                    bodyRect ? bodyRect.width * 0.58 : 0,
+                    modelRect.width * 0.26
+                );
+                const width = Math.min(modelRect.width * 0.72, Math.max(1, targetWidth));
+                const left = Math.max(modelRect.left, Math.min(modelRect.right - width, centerX - width * 0.5));
+                const lowerChest = bodyRect
+                    ? bodyRect.top + bodyRect.height * 0.36
+                    : headRect.bottom + headRect.height * 0.95;
+                const bottom = Math.min(
+                    modelRect.bottom,
+                    modelRect.top + modelRect.height * AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO,
+                    Math.max(headRect.bottom + headRect.height * 0.35, lowerChest)
+                );
+                const top = Math.max(modelRect.top, Math.min(headRect.top, bottom - Math.max(1, headRect.height)));
+                return this.normalizeScreenRect({
+                    left: left,
+                    top: top,
+                    right: left + width,
+                    bottom: Math.max(top + 1, bottom)
+                });
+            }
+
+            return this.normalizeScreenRect({
+                left: modelRect.left,
+                top: modelRect.top,
+                width: modelRect.width,
+                height: Math.max(1, modelRect.height * AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO)
+            });
+        }
+
         getViewportSize() {
             const screen = this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer
                 ? this.manager.pixi_app.renderer.screen
@@ -2944,8 +3543,44 @@
             };
         }
 
+        resolveRotatedRectOffset(rect, rotation) {
+            const base = this.initialModelFrame;
+            if (!base || !rect || rect.width <= 0 || rect.height <= 0) {
+                return null;
+            }
+            const cos = Math.cos(rotation);
+            const sin = Math.sin(rotation);
+            const points = [
+                { x: rect.x, y: rect.y },
+                { x: rect.x + rect.width, y: rect.y },
+                { x: rect.x, y: rect.y + rect.height },
+                { x: rect.x + rect.width, y: rect.y + rect.height }
+            ].map((point) => {
+                const dx = point.x - base.x;
+                const dy = point.y - base.y;
+                return {
+                    x: dx * cos - dy * sin,
+                    y: dx * sin + dy * cos
+                };
+            });
+            const xs = points.map((point) => point.x);
+            const ys = points.map((point) => point.y);
+            const left = Math.min.apply(Math, xs);
+            const top = Math.min.apply(Math, ys);
+            const right = Math.max.apply(Math, xs);
+            const bottom = Math.max.apply(Math, ys);
+            return {
+                left: left,
+                top: top,
+                right: right,
+                bottom: bottom,
+                width: right - left,
+                height: bottom - top
+            };
+        }
+
         resolveCornerFrame() {
-            if (this.targetPreset === 'top_flipped') {
+            if (this.targetPosition === 'top-flipped') {
                 return this.resolveTopFlippedFrame();
             }
             const base = this.initialModelFrame;
@@ -2956,16 +3591,30 @@
                 width: viewport.width * 0.36,
                 height: viewport.height * 0.7
             };
-            const modelCenterOffsetX = (bounds.x + bounds.width * 0.5) - base.x;
-            const modelCenterOffsetY = (bounds.y + bounds.height * 0.5) - base.y;
-            const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO);
-            const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO);
+            const peekRegion = this.peekRegionBounds || this.resolvePeekRegionBounds() || bounds;
+            const rotationDelta = resolveAvatarCornerPeekRotationDegrees(this.targetPosition) * Math.PI / 180;
+            const rotatedPeekRegion = this.resolveRotatedRectOffset(peekRegion, rotationDelta) || {
+                left: (peekRegion.x + peekRegion.width * 0.5) - base.x - peekRegion.width * 0.5,
+                top: (peekRegion.y + peekRegion.height * 0.5) - base.y - peekRegion.height * 0.5,
+                width: peekRegion.width,
+                height: peekRegion.height
+            };
+            const isLeft = this.targetPosition === 'bottom-left' || this.targetPosition === 'top-left';
+            const isTop = this.targetPosition === 'top-right' || this.targetPosition === 'top-left';
+            const edgeInsetX = Math.max(48, rotatedPeekRegion.width * AVATAR_CORNER_PEEK_EDGE_INSET_RATIO);
+            const edgeInsetY = Math.max(48, rotatedPeekRegion.height * AVATAR_CORNER_PEEK_EDGE_INSET_RATIO);
+            const desiredLeft = isLeft
+                ? edgeInsetX
+                : viewport.width - edgeInsetX - rotatedPeekRegion.width;
+            const desiredTop = isTop
+                ? edgeInsetY
+                : viewport.height - edgeInsetY - rotatedPeekRegion.height;
             return {
-                x: desiredCenterX - modelCenterOffsetX,
-                y: desiredCenterY - modelCenterOffsetY,
+                x: desiredLeft - rotatedPeekRegion.left,
+                y: desiredTop - rotatedPeekRegion.top,
                 scaleX: base.scaleX,
                 scaleY: base.scaleY,
-                rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)
+                rotation: base.rotation + rotationDelta
             };
         }
 
@@ -2992,7 +3641,7 @@
         }
 
         resolveCornerHiddenFrame() {
-            if (this.targetPreset === 'top_flipped') {
+            if (this.targetPosition === 'top-flipped') {
                 return this.resolveTopFlippedHiddenFrame();
             }
             const viewport = this.getViewportSize();
@@ -3000,9 +3649,17 @@
             const diagonalShift = bounds && bounds.height > 0
                 ? Math.max(180, bounds.height * 0.42)
                 : Math.max(180, viewport.height * 0.32);
+            const xDirection = (
+                this.targetPosition === 'bottom-left'
+                || this.targetPosition === 'top-left'
+            ) ? -1 : 1;
+            const yDirection = (
+                this.targetPosition === 'top-right'
+                || this.targetPosition === 'top-left'
+            ) ? -1 : 1;
             return {
-                x: this.cornerFrame.x + diagonalShift,
-                y: this.cornerFrame.y + diagonalShift,
+                x: this.cornerFrame.x + diagonalShift * xDirection,
+                y: this.cornerFrame.y + diagonalShift * yDirection,
                 scaleX: this.cornerFrame.scaleX,
                 scaleY: this.cornerFrame.scaleY,
                 rotation: this.cornerFrame.rotation
@@ -3037,7 +3694,13 @@
                 return false;
             }
             writeModelAlpha(this.model, alpha);
-            return writeIntroGreetingHugModelFrame(this.model, frame);
+            this.writeDisplayOpacity(alpha);
+            centerLive2DLookAt(this);
+            const applied = writeIntroGreetingHugModelFrame(this.model, frame);
+            if (applied) {
+                this.syncFloatingButtonsRotation(frame);
+            }
+            return applied;
         }
 
         blendFrame(fromFrame, toFrame, weight) {
@@ -3065,7 +3728,7 @@
                 }
                 return;
             }
-            if (this.isCancelled()) {
+            if (this.phase !== 'exit' && this.isCancelled()) {
                 this.cancel('cancelled');
                 return;
             }
@@ -3092,11 +3755,12 @@
             if (elapsed <= this.hideMs) {
                 const progress = this.hideMs > 0 ? easeInOutCubic(elapsed / this.hideMs) : 1;
                 this.applyFrame(
-                    this.blendFrame(this.initialModelFrame, this.hiddenFrame, progress),
+                    this.initialModelFrame,
                     lerp(this.initialAlpha, 0, progress)
                 );
             } else if (elapsed <= this.totalDurationMs) {
                 const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
+                this.elevateContainerZIndex();
                 this.applyFrame(
                     this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress),
                     lerp(0, 1, progress)
@@ -3112,13 +3776,14 @@
             if (elapsed <= this.hideMs) {
                 const progress = this.hideMs > 0 ? easeInOutCubic(elapsed / this.hideMs) : 1;
                 this.applyFrame(
-                    this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress),
+                    this.cornerFrame,
                     lerp(1, 0, progress)
                 );
             } else if (elapsed <= this.totalDurationMs) {
                 const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
+                this.restoreContainerZIndex();
                 this.applyFrame(
-                    this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress),
+                    this.initialModelFrame,
                     lerp(0, this.initialAlpha, progress)
                 );
             } else {
@@ -4781,7 +5446,8 @@
             activeSettingsPeekPanicSession,
             activeInterruptResistSession,
             activeIntroVoiceLookAtSession,
-            activePluginDashboardCornerSession,
+            activeAvatarCornerPeekSession,
+            activeAvatarMotionSession,
             activeReturnControlCueWaveSession,
             activeGuideIdleSwaySession
         ].filter((session) => session && session.active);
@@ -5231,37 +5897,482 @@
         };
     }
 
-    async function startPluginDashboardCornerPeek(options) {
+    async function startAvatarCornerPeek(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
         const context = await waitForLive2DContext(waitMs);
         if (!context) {
             return null;
         }
-        if (activePluginDashboardCornerSession && activePluginDashboardCornerSession.active) {
-            activePluginDashboardCornerSession.stop('replaced');
+        if (activeAvatarCornerPeekSession && activeAvatarCornerPeekSession.active) {
+            await activeAvatarCornerPeekSession.stop('replaced');
         }
-        const session = new Live2DPluginDashboardCornerSession(context, {
+        const session = new Live2DAvatarCornerPeekSession(context, {
             document: normalizedOptions.document || document,
             reducedMotion: !!normalizedOptions.reducedMotion,
             token: normalizedOptions.token || Date.now(),
             isCancelled: normalizedOptions.isCancelled,
             hideMs: normalizedOptions.hideMs,
             appearMs: normalizedOptions.appearMs,
-            targetPreset: normalizedOptions.targetPreset
+            position: normalizedOptions.position,
+            targetPosition: normalizedOptions.targetPosition,
+            targetPreset: normalizedOptions.targetPreset,
+            freezeFloatingButtons: normalizedOptions.freezeFloatingButtons,
+            rotateFloatingButtons: normalizedOptions.rotateFloatingButtons,
+            performanceLockKey: normalizedOptions.performanceLockKey,
+            performanceLockCapabilities: normalizedOptions.performanceLockCapabilities
         });
         if (!session.start()) {
             return null;
         }
-        activePluginDashboardCornerSession = session;
+        activeAvatarCornerPeekSession = session;
         return {
-            stop: function stopPluginDashboardCornerPeek(reason) {
-                return session.stop(reason || 'stopped');
+            stop: function stopAvatarCornerPeek(reason, options) {
+                return session.stop(reason || 'stopped', options);
             },
-            isActive: function isPluginDashboardCornerPeekActive() {
+            isActive: function isAvatarCornerPeekActive() {
                 return !!session.active;
             }
         };
+    }
+
+    async function startPluginDashboardCornerPeek(options) {
+        const normalizedOptions = options || {};
+        return startAvatarCornerPeek(Object.assign({}, normalizedOptions, {
+            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-plugin-dashboard-corner'
+        }));
+    }
+
+    function waitForAvatarMotionDelay(durationMs, isCancelled) {
+        const waitMs = Math.max(0, Number.isFinite(Number(durationMs)) ? Math.floor(Number(durationMs)) : 0);
+        if (waitMs <= 0) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            const startedAt = Date.now();
+            const poll = () => {
+                if (typeof isCancelled === 'function' && isCancelled()) {
+                    resolve();
+                    return;
+                }
+                if (Date.now() - startedAt >= waitMs) {
+                    resolve();
+                    return;
+                }
+                window.setTimeout(poll, Math.min(120, Math.max(16, waitMs - (Date.now() - startedAt))));
+            };
+            poll();
+        });
+    }
+
+    function normalizeAvatarMotionPreset(value) {
+        const preset = String(value || 'wave-zoom').trim().toLowerCase().replace(/_/g, '-');
+        if (
+            preset === 'bottom-rise'
+            || preset === 'bottom-rise-slow'
+            || preset === 'corner-peek'
+            || preset === 'top-peek'
+            || preset === 'soft-approach'
+            || preset === 'wave-zoom'
+        ) {
+            return preset;
+        }
+        return 'wave-zoom';
+    }
+
+    function revealAvatarMotionPrepared(options, reason) {
+        const normalizedOptions = options || {};
+        if (typeof normalizedOptions.revealPrepared !== 'function') {
+            return false;
+        }
+        try {
+            normalizedOptions.revealPrepared(reason || 'avatar_motion_ready');
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function applyAvatarMotionHalfBodyPlacement(options) {
+        const normalizedOptions = options || {};
+        const context = getLive2DContext();
+        if (!context || !context.model || context.model.destroyed) {
+            return false;
+        }
+        const container = getLive2DContainer(normalizedOptions.document || document);
+        const frameScale = Number.isFinite(Number(normalizedOptions.frameScale))
+            ? Number(normalizedOptions.frameScale)
+            : INTRO_GREETING_HUG_CLOSE_SCALE;
+        const frameY = Number.isFinite(Number(normalizedOptions.frameY))
+            ? Number(normalizedOptions.frameY)
+            : resolveIntroGreetingHugFrameShift(container);
+        return applyIntroGreetingHugFramePlacementToModel(
+            context.model,
+            context.manager,
+            container,
+            null,
+            frameScale,
+            frameY
+        );
+    }
+
+    function readElementOpacity(element) {
+        if (!element || !element.style) {
+            return 1;
+        }
+        const value = Number(element.style.opacity);
+        return Number.isFinite(value) ? clamp(value, 0, 1) : 1;
+    }
+
+    function collectAvatarMotionVisibleOpacityTargets(context, options) {
+        const normalizedOptions = options || {};
+        const doc = normalizedOptions.document || document;
+        const targets = [];
+        const pushTarget = (element) => {
+            if (!element || !element.style || targets.indexOf(element) !== -1) {
+                return;
+            }
+            targets.push(element);
+        };
+        pushTarget(getLive2DContainer(doc));
+        try {
+            pushTarget(doc.getElementById('live2d-canvas'));
+        } catch (_) {}
+        try {
+            const app = context && context.manager && context.manager.pixi_app
+                ? context.manager.pixi_app
+                : null;
+            pushTarget(app && app.view);
+            pushTarget(app && app.renderer && app.renderer.view);
+        } catch (_) {}
+        return targets.map((element) => ({
+            element: element,
+            opacity: readElementOpacity(element),
+            transition: element.style.transition || ''
+        }));
+    }
+
+    function writeAvatarMotionVisibleOpacity(context, targets, modelAlpha, displayAlpha) {
+        if (context && context.model && !context.model.destroyed) {
+            writeModelAlpha(context.model, modelAlpha);
+        }
+        const opacity = clamp(Number(displayAlpha), 0, 1);
+        const opacityText = String(Math.round(opacity * 1000) / 1000);
+        (Array.isArray(targets) ? targets : []).forEach((target) => {
+            const element = target && target.element ? target.element : null;
+            if (element && element.style) {
+                element.style.opacity = opacityText;
+            }
+        });
+    }
+
+    function showAvatarMotionFloatingButtons(options) {
+        const normalizedOptions = options || {};
+        if (normalizedOptions.freezeFloatingButtons !== false) {
+            return false;
+        }
+        const doc = normalizedOptions.document || document;
+        let element = null;
+        try {
+            element = doc.getElementById('live2d-floating-buttons');
+        } catch (_) {}
+        if (!element || !element.style) {
+            return false;
+        }
+        element.style.setProperty('display', 'flex', 'important');
+        element.style.setProperty('visibility', 'visible', 'important');
+        element.style.setProperty('opacity', '1', 'important');
+        element.style.setProperty('pointer-events', 'auto', 'important');
+        return true;
+    }
+
+    async function animateAvatarMotionVisibleOpacity(options) {
+        const normalizedOptions = options || {};
+        const context = normalizedOptions.context || getLive2DContext();
+        if (!context || !context.model || context.model.destroyed) {
+            return false;
+        }
+        const durationMs = normalizeDuration(normalizedOptions.durationMs, AVATAR_MOTION_HALF_BODY_FADE_IN_MS);
+        const targets = collectAvatarMotionVisibleOpacityTargets(context, normalizedOptions);
+        targets.forEach((target) => {
+            if (target.element && target.element.style) {
+                target.element.style.transition = 'none';
+            }
+        });
+        const fromModelAlpha = Number.isFinite(Number(normalizedOptions.fromModelAlpha))
+            ? clamp(Number(normalizedOptions.fromModelAlpha), 0, 1)
+            : readModelAlpha(context.model);
+        const toModelAlpha = Number.isFinite(Number(normalizedOptions.toModelAlpha))
+            ? clamp(Number(normalizedOptions.toModelAlpha), 0, 1)
+            : fromModelAlpha;
+        const fromDisplayAlpha = Number.isFinite(Number(normalizedOptions.fromDisplayAlpha))
+            ? clamp(Number(normalizedOptions.fromDisplayAlpha), 0, 1)
+            : (targets.length > 0 ? targets[0].opacity : 1);
+        const toDisplayAlpha = Number.isFinite(Number(normalizedOptions.toDisplayAlpha))
+            ? clamp(Number(normalizedOptions.toDisplayAlpha), 0, 1)
+            : fromDisplayAlpha;
+        const restoreTransitions = () => {
+            targets.forEach((target) => {
+                if (target.element && target.element.style) {
+                    target.element.style.transition = target.transition || '';
+                }
+            });
+        };
+        if (normalizedOptions.reducedMotion || durationMs <= 0) {
+            writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+            restoreTransitions();
+            return true;
+        }
+        return new Promise((resolve) => {
+            const startedAt = performance.now();
+            const tick = () => {
+                const current = context.manager ? getCurrentLive2DModel(context.manager) : context.model;
+                if (current !== context.model || context.model.destroyed) {
+                    if (!context.model.destroyed) {
+                        writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                    }
+                    restoreTransitions();
+                    resolve(false);
+                    return;
+                }
+                if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
+                    writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                    restoreTransitions();
+                    resolve(false);
+                    return;
+                }
+                const progress = clamp((performance.now() - startedAt) / durationMs, 0, 1);
+                const eased = easeInOutCubic(progress);
+                const modelAlpha = lerp(fromModelAlpha, toModelAlpha, eased);
+                const displayAlpha = lerp(fromDisplayAlpha, toDisplayAlpha, eased);
+                writeAvatarMotionVisibleOpacity(context, targets, modelAlpha, displayAlpha);
+                if (progress >= 1) {
+                    writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                    restoreTransitions();
+                    resolve(true);
+                    return;
+                }
+                window.requestAnimationFrame(tick);
+            };
+            window.requestAnimationFrame(tick);
+        });
+    }
+
+    async function fadeOutAvatarMotionVisibleLayer(options) {
+        const normalizedOptions = options || {};
+        const context = getLive2DContext();
+        if (!context || !context.model || context.model.destroyed) {
+            return false;
+        }
+        return animateAvatarMotionVisibleOpacity(Object.assign({}, normalizedOptions, {
+            context: context,
+            durationMs: normalizedOptions.halfBodyFadeOutMs || normalizedOptions.fadeOutMs || AVATAR_MOTION_HALF_BODY_FADE_OUT_MS,
+            fromModelAlpha: readModelAlpha(context.model),
+            toModelAlpha: 0,
+            toDisplayAlpha: 0
+        }));
+    }
+
+    async function fadeInAvatarMotionHalfBodyPlacement(options) {
+        const normalizedOptions = options || {};
+        const context = getLive2DContext();
+        if (!context || !context.model || context.model.destroyed) {
+            return false;
+        }
+        const targetAlpha = 1;
+        const targets = collectAvatarMotionVisibleOpacityTargets(context, normalizedOptions);
+        const targetDisplayAlpha = 1;
+        const restoreTransitions = () => {
+            targets.forEach((target) => {
+                if (target.element && target.element.style) {
+                    target.element.style.transition = target.transition || '';
+                }
+            });
+        };
+        targets.forEach((target) => {
+            if (target.element && target.element.style) {
+                target.element.style.transition = 'none';
+            }
+        });
+        const fadeInMs = normalizeDuration(
+            normalizedOptions.halfBodyFadeInMs || normalizedOptions.fadeInMs,
+            AVATAR_MOTION_HALF_BODY_FADE_IN_MS
+        );
+        if (!normalizedOptions.reducedMotion && fadeInMs > 0) {
+            writeAvatarMotionVisibleOpacity(context, targets, 0, 0);
+        }
+        const placed = applyAvatarMotionHalfBodyPlacement(normalizedOptions);
+        if (!placed || normalizedOptions.reducedMotion || fadeInMs <= 0) {
+            writeAvatarMotionVisibleOpacity(context, targets, targetAlpha, targetDisplayAlpha);
+            restoreTransitions();
+            return placed;
+        }
+        return new Promise((resolve) => {
+            const startedAt = performance.now();
+            const tick = () => {
+                const current = context.manager ? getCurrentLive2DModel(context.manager) : context.model;
+                if (current !== context.model || context.model.destroyed) {
+                    if (!context.model.destroyed) {
+                        writeAvatarMotionVisibleOpacity(context, targets, targetAlpha, targetDisplayAlpha);
+                    }
+                    restoreTransitions();
+                    resolve(false);
+                    return;
+                }
+                if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
+                    writeAvatarMotionVisibleOpacity(context, targets, targetAlpha, targetDisplayAlpha);
+                    restoreTransitions();
+                    resolve(false);
+                    return;
+                }
+                const progress = clamp((performance.now() - startedAt) / fadeInMs, 0, 1);
+                const eased = easeInOutCubic(progress);
+                const displayAlpha = lerp(0, targetDisplayAlpha, eased);
+                writeAvatarMotionVisibleOpacity(context, targets, lerp(0, targetAlpha, eased), displayAlpha);
+                if (progress >= 1) {
+                    writeAvatarMotionVisibleOpacity(context, targets, targetAlpha, targetDisplayAlpha);
+                    restoreTransitions();
+                    resolve(true);
+                    return;
+                }
+                window.requestAnimationFrame(tick);
+            };
+            window.requestAnimationFrame(tick);
+        });
+    }
+
+    async function playTimedAvatarCornerPeek(options, position) {
+        const normalizedOptions = options || {};
+        const restoreMode = normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body';
+        const handle = await startAvatarCornerPeek(Object.assign({}, normalizedOptions, {
+            position: position,
+            targetPreset: position,
+            freezeFloatingButtons: normalizedOptions.freezeFloatingButtons,
+            rotateFloatingButtons: normalizedOptions.rotateFloatingButtons,
+            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-corner'
+        }));
+        if (!handle || typeof handle.stop !== 'function') {
+            revealAvatarMotionPrepared(normalizedOptions, 'corner_peek_unavailable');
+            return { result: 'fallback', reason: 'corner_peek_unavailable' };
+        }
+        let revealTimer = 0;
+        let revealed = false;
+        const revealPrepared = (reason) => {
+            if (revealed) {
+                return false;
+            }
+            revealed = true;
+            if (revealTimer) {
+                window.clearTimeout(revealTimer);
+                revealTimer = 0;
+            }
+            const revealedNow = revealAvatarMotionPrepared(normalizedOptions, reason);
+            if (revealedNow) {
+                showAvatarMotionFloatingButtons(normalizedOptions);
+            }
+            return revealedNow;
+        };
+        if (typeof normalizedOptions.revealPrepared === 'function') {
+            const revealDelayMs = normalizedOptions.reducedMotion
+                ? 0
+                : normalizeDuration(normalizedOptions.revealDelayMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
+            if (revealDelayMs <= 0) {
+                revealPrepared('avatar_motion_reduced_ready');
+            } else {
+                revealTimer = window.setTimeout(() => {
+                    revealPrepared('avatar_motion_corner_peek_ready');
+                }, revealDelayMs);
+            }
+        }
+        await waitForAvatarMotionDelay(normalizedOptions.durationMs, normalizedOptions.isCancelled);
+        if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
+            if (revealTimer) {
+                window.clearTimeout(revealTimer);
+                revealTimer = 0;
+            }
+            await handle.stop('avatar_motion_cancelled');
+            return { result: 'cancelled', reason: 'cancelled' };
+        }
+        revealPrepared('avatar_motion_complete_before_handoff');
+        await fadeOutAvatarMotionVisibleLayer(normalizedOptions);
+        await handle.stop('avatar_motion_complete', { animateReturn: false });
+        if (restoreMode === 'half-body') {
+            await fadeInAvatarMotionHalfBodyPlacement(normalizedOptions);
+        }
+        return { result: 'played', reason: '' };
+    }
+
+    async function playFrameAvatarMotion(options, preset) {
+        const normalizedOptions = options || {};
+        const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs);
+        if (!context) {
+            return { result: 'fallback', reason: 'live2d_unavailable' };
+        }
+        if (activeAvatarMotionSession && activeAvatarMotionSession.active) {
+            await activeAvatarMotionSession.stop('replaced');
+        }
+        const durationMs = Number.isFinite(Number(normalizedOptions.durationMs))
+            ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs)))
+            : 2400;
+        const isBottomRise = preset === 'bottom-rise' || preset === 'bottom-rise-slow';
+        const defaultEnterMs = preset === 'bottom-rise-slow'
+            ? 1320
+            : (isBottomRise ? 920 : 760);
+        const enterMs = Number.isFinite(Number(normalizedOptions.enterMs))
+            ? Math.max(0, Math.floor(Number(normalizedOptions.enterMs)))
+            : (Number.isFinite(Number(normalizedOptions.approachMs))
+                ? Math.max(0, Math.floor(Number(normalizedOptions.approachMs)))
+                : defaultEnterMs);
+        const frameScale = INTRO_GREETING_HUG_CLOSE_SCALE;
+        const session = new Live2DFrameMotionSession(context, {
+            document: normalizedOptions.document || document,
+            reducedMotion: !!normalizedOptions.reducedMotion,
+            token: normalizedOptions.token || Date.now(),
+            isCancelled: normalizedOptions.isCancelled,
+            preset: preset,
+            from: isBottomRise ? 'offscreen-bottom' : 'initial',
+            to: isBottomRise ? 'close-up' : (preset === 'soft-approach' ? 'close-up' : 'initial'),
+            frameScale: Number.isFinite(Number(normalizedOptions.frameScale))
+                ? Number(normalizedOptions.frameScale)
+                : frameScale,
+            frameY: Number.isFinite(Number(normalizedOptions.frameY))
+                ? Number(normalizedOptions.frameY)
+                : undefined,
+            enterMs: enterMs,
+            holdMs: Math.max(0, durationMs - enterMs),
+            restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body',
+            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-frame'
+        });
+        if (!session.start()) {
+            revealAvatarMotionPrepared(normalizedOptions, 'avatar_motion_start_failed');
+            return { result: 'fallback', reason: 'avatar_motion_start_failed' };
+        }
+        revealAvatarMotionPrepared(normalizedOptions, 'avatar_motion_frame_started');
+        activeAvatarMotionSession = session;
+        return session.waitForFinish();
+    }
+
+    async function playAvatarMotion(options) {
+        const normalizedOptions = options || {};
+        const preset = normalizeAvatarMotionPreset(normalizedOptions.preset);
+        if (preset === 'wave-zoom') {
+            revealAvatarMotionPrepared(normalizedOptions, 'avatar_motion_wave_started');
+            return playIntroGreetingHug(Object.assign({}, normalizedOptions, {
+                approachMs: normalizedOptions.approachMs,
+                settleMs: normalizedOptions.settleMs
+            }));
+        }
+        if (preset === 'top-peek') {
+            return playTimedAvatarCornerPeek(normalizedOptions, 'top-flipped');
+        }
+        if (preset === 'corner-peek') {
+            return playTimedAvatarCornerPeek(
+                normalizedOptions,
+                normalizedOptions.position || normalizedOptions.targetPosition || 'bottom-right'
+            );
+        }
+        return playFrameAvatarMotion(normalizedOptions, preset);
     }
 
     async function playSettingsPeekPanic(options) {
@@ -5407,8 +6518,12 @@
         playSettingsPeekPanic: playSettingsPeekPanic,
         playInterruptResist: playInterruptResist,
         playAngryExit: playAngryExit,
+        playAvatarMotion: playAvatarMotion,
+        startAvatarCornerPeek: startAvatarCornerPeek,
         startPluginDashboardCornerPeek: startPluginDashboardCornerPeek,
         applyIntroGreetingHugFinalPlacement: applyIntroGreetingHugFinalPlacement,
+        Live2DMotionBaseSession: Live2DMotionBaseSession,
+        Live2DFrameMotionSession: Live2DFrameMotionSession,
         Live2DWakeupSession: Live2DWakeupSession,
         Live2DReturnControlCueWaveSession: Live2DReturnControlCueWaveSession,
         Live2DIntroGreetingHugSession: Live2DIntroGreetingHugSession,
@@ -5418,7 +6533,8 @@
         Live2DSettingsPeekPanicSession: Live2DSettingsPeekPanicSession,
         Live2DInterruptResistSession: Live2DInterruptResistSession,
         Live2DAngryExitSession: Live2DAngryExitSession,
-        Live2DPluginDashboardCornerSession: Live2DPluginDashboardCornerSession,
+        Live2DAvatarCornerPeekSession: Live2DAvatarCornerPeekSession,
+        Live2DPluginDashboardCornerSession: Live2DAvatarCornerPeekSession,
         computeWakeupPose: computeWakeupPose,
         computeWakeupRightHandWavePose: computeWakeupRightHandWavePose,
         computeIntroGreetingHugPose: computeIntroGreetingHugPose,

@@ -3,6 +3,95 @@
 
     function noop() {}
 
+    const PROACTIVE_STATE_KEYS = Object.freeze([
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled'
+    ]);
+
+    function snapshotProactiveState() {
+        const appState = window.appState || null;
+        const snapshot = {};
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            if (typeof window[key] !== 'undefined') {
+                snapshot[key] = !!window[key];
+            } else if (appState && typeof appState[key] !== 'undefined') {
+                snapshot[key] = !!appState[key];
+            } else {
+                snapshot[key] = false;
+            }
+        });
+        return snapshot;
+    }
+
+    function stopProactiveRuntime() {
+        [
+            'stopProactiveChatSchedule',
+            'stopProactiveVisionDuringSpeech',
+            'releaseProactiveVisionStream'
+        ].forEach((methodName) => {
+            if (typeof window[methodName] === 'function') {
+                try {
+                    window[methodName]();
+                } catch (error) {
+                    console.warn('[TutorialAvatarReloadController] 主动搭话运行时停止失败:', methodName, error);
+                }
+            }
+        });
+    }
+
+    function maybeRestartProactiveRuntime(snapshot) {
+        if (!snapshot || !snapshot.proactiveChatEnabled) {
+            return;
+        }
+        const hasMode = PROACTIVE_STATE_KEYS.some((key) => key !== 'proactiveChatEnabled' && !!snapshot[key]);
+        const scheduler = window.appProactive && typeof window.appProactive.scheduleProactiveChat === 'function'
+            ? window.appProactive.scheduleProactiveChat
+            : window.scheduleProactiveChat;
+        if (hasMode && typeof scheduler === 'function') {
+            try {
+                scheduler.call(window);
+            } catch (error) {
+                console.warn('[TutorialAvatarReloadController] 主动搭话调度恢复失败:', error);
+            }
+        }
+    }
+
+    function applyProactiveState(values, options) {
+        if (!values || typeof values !== 'object') {
+            return;
+        }
+        const appState = window.appState || null;
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(values, key)) {
+                return;
+            }
+            const next = !!values[key];
+            window[key] = next;
+            if (appState && typeof appState[key] !== 'undefined') {
+                appState[key] = next;
+            }
+        });
+        stopProactiveRuntime();
+        if (options && options.restart) {
+            maybeRestartProactiveRuntime(values);
+        }
+    }
+
+    function buildDisabledProactiveState() {
+        const state = {};
+        PROACTIVE_STATE_KEYS.forEach((key) => {
+            state[key] = false;
+        });
+        return state;
+    }
+
     class TutorialAvatarReloadController {
         constructor(options) {
             const normalizedOptions = options || {};
@@ -12,6 +101,7 @@
             this.resolveCurrentName = normalizedOptions.resolveCurrentName || noop;
             this.fetchCharacters = normalizedOptions.fetchCharacters || noop;
             this.buildSnapshotPayload = normalizedOptions.buildSnapshotPayload || noop;
+            this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;
             this.reloadModel = normalizedOptions.reloadModel || noop;
             this.setPreparing = normalizedOptions.setPreparing || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
@@ -29,7 +119,9 @@
             return this.overridePromise;
         }
 
-        beginOverride() {
+        beginOverride(options) {
+            const normalizedOptions = options || {};
+            const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
             const host = this.host;
             if (!host) {
                 return Promise.reject(new Error('tutorial avatar reload host is required'));
@@ -37,7 +129,7 @@
 
             if (this.overridePromise) {
                 if (this.override && (this.override.restoring || this.override.restoreRequested)) {
-                    return this.overridePromise.then(() => this.beginOverride());
+                    return this.overridePromise.then(() => this.beginOverride(options));
                 }
                 return this.overridePromise;
             }
@@ -87,9 +179,18 @@
                 };
                 this.override.currentName = currentName;
                 this.override.snapshotPayload = snapshotPayload;
+                this.override.proactiveSnapshot = snapshotProactiveState();
+                applyProactiveState(buildDisabledProactiveState());
 
+                await Promise.resolve(this.fadeOutCurrentModel({
+                    deferRevealPrepared
+                }));
+                ensureOverrideActive();
                 this.setPreparing(true);
-                await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });
+                await this.reloadModel(currentName, tutorialModelPayload, {
+                    temporary: true,
+                    deferRevealPrepared
+                });
                 ensureOverrideActive();
                 this.setPreparing(true);
                 this.applyIdentityOverride({
@@ -98,7 +199,6 @@
                     avatarDataUrl: '',
                     modelType: 'live2d'
                 });
-                console.log('[TutorialAvatarReloadController] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
             })(), setupDeadline]).catch(async (error) => {
                 override.cancelled = true;
                 this.revealPrepared();
@@ -160,6 +260,7 @@
 
             const currentName = override.currentName;
             const snapshotPayload = override.snapshotPayload;
+            const proactiveSnapshot = override.proactiveSnapshot;
             override.restoring = true;
 
             const restorePromise = Promise.resolve().then(async () => {
@@ -172,7 +273,6 @@
                     }
 
                     await this.reloadModel(currentName, snapshotPayload || {});
-                    console.log('[TutorialAvatarReloadController] 已恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
                 } catch (error) {
                     console.warn('[TutorialAvatarReloadController] 恢复新手教程前用户模型失败:', error);
                     if (typeof window.showCurrentModel === 'function') {
@@ -181,6 +281,7 @@
                         } catch (_) {}
                     }
                 } finally {
+                    applyProactiveState(proactiveSnapshot, { restart: true });
                     this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {

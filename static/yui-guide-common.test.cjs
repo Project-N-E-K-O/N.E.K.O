@@ -45,6 +45,121 @@ test('common guide helpers freeze config, register guides, and create locale aud
     });
 });
 
+test('common helper relays PC system cursor visibility and logs relay failures', () => {
+    const chatRelays = [];
+    const petRelays = [];
+    const channelMessages = [];
+    const warnings = [];
+    const nativeCursorCalls = [];
+    const storage = new Map([['yuiGuidePcOverlayRunId', 'run-cursor']]);
+    const localStorage = {
+        getItem(key) {
+            return storage.get(key) || null;
+        }
+    };
+    const consoleApi = {
+        warn(...args) {
+            warnings.push(args);
+        }
+    };
+    const consumeCursorVisibilityMessage = (message) => {
+        if (!message || message.action !== 'yui_guide_system_cursor_visibility') {
+            return;
+        }
+        nativeCursorCalls.push(message.hidden === true ? 'hideNativeCursor' : 'restoreNativeCursor');
+    };
+
+    common.syncPcSystemCursorHidden(true, 'tutorial-started', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.equal(chatRelays.length, 1);
+    assert.equal(petRelays.length, 1);
+    assert.equal(channelMessages.length, 1);
+    assert.deepEqual(chatRelays[0], petRelays[0]);
+    assert.deepEqual(chatRelays[0], channelMessages[0]);
+    assert.equal(chatRelays[0].action, 'yui_guide_system_cursor_visibility');
+    assert.equal(chatRelays[0].hidden, true);
+    assert.equal(chatRelays[0].tutorialRunId, 'run-cursor');
+    assert.equal(chatRelays[0].reason, 'tutorial-started');
+    assert.equal(typeof chatRelays[0].timestamp, 'number');
+    assert.equal(warnings.length, 0);
+    consumeCursorVisibilityMessage(chatRelays[0]);
+
+    common.syncPcSystemCursorHidden(false, 'destroy', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat(message) {
+                chatRelays.push(message);
+            },
+            relayToPet(message) {
+                petRelays.push(message);
+            }
+        },
+        channel: {
+            postMessage(message) {
+                channelMessages.push(message);
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.equal(chatRelays[1].hidden, false);
+    assert.equal(chatRelays[1].reason, 'destroy');
+    consumeCursorVisibilityMessage(chatRelays[1]);
+    assert.deepEqual(nativeCursorCalls, [
+        'hideNativeCursor',
+        'restoreNativeCursor'
+    ]);
+    assert.equal(warnings.length, 0);
+
+    const relayError = new Error('relay failed');
+    const petError = new Error('pet failed');
+    const channelError = new Error('channel failed');
+    common.syncPcSystemCursorHidden(false, 'destroy', {
+        localStorage,
+        nekoTutorialOverlay: {
+            relayToChat() {
+                throw relayError;
+            },
+            relayToPet() {
+                throw petError;
+            }
+        },
+        channel: {
+            postMessage() {
+                throw channelError;
+            }
+        },
+        console: consoleApi
+    });
+
+    assert.deepEqual(warnings.map((entry) => entry[1]), [
+        'relayToChat',
+        'relayToPet',
+        'nekoBroadcastChannel'
+    ]);
+    assert.deepEqual(warnings.map((entry) => entry[2]), [
+        relayError,
+        petError,
+        channelError
+    ]);
+});
+
 test('guide helpers are exported from a standalone module and re-exported by common', () => {
     const helpersSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/guide-helpers.js'), 'utf8');
     const commonSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/common.js'), 'utf8');
@@ -979,7 +1094,7 @@ test('director streams guide chat text over voice duration without an empty plac
 test('interaction takeover delegates external chat commands to the command bus boundary', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/interaction-takeover.js'), 'utf8');
     const constructorBlock = source.split('        constructor(options) {')[1].split(
-        '            this.interactionGuardHandler =',
+        '        setActive(active) {',
         1
     )[0];
     const commandsBlock = source.split('        setExternalizedChatButtonsDisabled(disabled) {')[1].split(
@@ -988,6 +1103,9 @@ test('interaction takeover delegates external chat commands to the command bus b
     )[0];
 
     assert.match(constructorBlock, /this\.externalChatCommandBus = this\.createExternalChatCommandBus\(\);/);
+    assert.doesNotMatch(constructorBlock, /addEventListener\((?:'pointerdown'|'click')/);
+    assert.doesNotMatch(source, /interactionGuardHandler/);
+    assert.doesNotMatch(source, /onInteractionGuard/);
     assert.match(source, /createExternalChatCommandBus\(\) \{[\s\S]*this\.window\.YuiGuideCommon[\s\S]*createTutorialBridgeCommandBus/);
     assert.match(source, /resolveLanlanName\(\) \{/);
     assert.doesNotMatch(source, /message\.lanlan_name = this\.resolveLanlanName\(\);/);
@@ -1011,6 +1129,33 @@ test('interaction takeover delegates external chat commands to the command bus b
     assert.doesNotMatch(clearFxBlock, /yui_guide_clear_chat_messages/);
     assert.doesNotMatch(commandsBlock, /getExternalChatChannel\(\)/);
     assert.doesNotMatch(commandsBlock, /channel\.postMessage/);
+});
+
+test('standalone chat guide lock uses a transparent shield instead of per-input locks', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'static', 'app-interpage.js'), 'utf8');
+    const lockBlock = source.split('    function applyYuiGuideChatLockState(disabled) {')[1].split(
+        '    function getReactChatWindowHost() {',
+        1
+    )[0];
+
+    assert.match(source, /function ensureYuiGuideStandaloneInteractionShield\(\) \{/);
+    assert.match(source, /function setYuiGuideStandaloneGlobalInteractionShieldEnabled\(enabled\) \{/);
+    assert.match(source, /shield\.id = 'yui-guide-standalone-interaction-shield';/);
+    assert.match(source, /shield\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /window\.addEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /window\.removeEventListener\(type,\s*yuiGuideStandaloneInteractionShieldBlocker,\s*options\);/);
+    assert.match(source, /function isYuiGuideStandaloneMovementEvent\(event\) \{/);
+    assert.match(source, /event\.type === 'pointermove'/);
+    assert.match(source, /event\.type === 'mousemove'/);
+    assert.match(source, /event\.type === 'touchmove'/);
+    assert.match(source, /if \(isYuiGuideStandaloneMovementEvent\(event\)\) \{[\s\S]*?return;/);
+    assert.match(source, /event\.isTrusted === false/);
+    assert.match(source, /document\.body\.classList\.add\('yui-guide-standalone-input-shield-active'\);/);
+    assert.match(lockBlock, /setYuiGuideStandaloneInteractionShieldEnabled\(locked\);/);
+    assert.match(lockBlock, /document\.body\.classList\.remove\('yui-guide-chat-buttons-disabled'\);/);
+    assert.doesNotMatch(lockBlock, /readOnly\s*=/);
+    assert.doesNotMatch(lockBlock, /contenteditable/);
+    assert.doesNotMatch(lockBlock, /classList\.toggle\('yui-guide-chat-buttons-disabled'/);
 });
 
 test('interaction takeover preserves external chat spotlight clears during resistance pause', () => {
@@ -1358,6 +1503,14 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(
         settingsTourFlowSource,
         /runPanelNarrationEllipse[\s\S]*director\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
+    );
+    assert.match(
+        settingsTourFlowSource,
+        /const waitForEllipseYield = async \(\) => \{[\s\S]*Promise\.race\(\[narrationSettledPromise,\s*delayPromise\]\)/
+    );
+    assert.match(
+        settingsTourFlowSource,
+        /director\.cursor\.runPauseAwareEllipse[\s\S]*await waitForEllipseYield\(\);/
     );
     assert.match(
         source,
@@ -1818,7 +1971,10 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
     assert.doesNotMatch(scrollBlock, /window\.addEventListener\('wheel'/);
     assert.doesNotMatch(unblockScrollBlock, /window\.removeEventListener\('wheel'/);
 
-    assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(1, \{/);
+    assert.match(source, /getHomeAvatarFloatingGuideStartRound\(options = \{\}\) \{/);
+    assert.match(source, /candidates\.push\(state\.pendingRound, state\.manualResetRound, 1\);/);
+    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideStartRound\(\);/);
+    assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(round, \{/);
     assert.doesNotMatch(source, /startYuiGuideSceneSequence|getDirectYuiGuideSceneIdsForCurrentPage|getPendingYuiGuideResumeScene/);
     assert.doesNotMatch(source, /callYuiGuideDirector|notifyYuiGuideStepEnter|notifyYuiGuideStepLeave/);
     assert.doesNotMatch(source, /waitForDriver|initDriver|getDriverConfig|recreateDriverWithI18n|startTutorialSteps|onStepChange/);
@@ -1952,7 +2108,7 @@ test('director routes termination requests through TutorialTerminationRouter', (
         1
     )[0];
     const pageHideBlock = directorSource.split('        onPageHide() {')[1].split(
-        '        get mobileTouchInteractionPassthrough() {',
+        '        hasOpenSystemDialog() {',
         1
     )[0];
     const pluginSkipBlock = directorSource.split('        async handlePluginDashboardSkipRequest(data) {')[1].split(

@@ -7,6 +7,7 @@ from .tutor_llm_agent_common import (
     normalize_mode,
     TutorReply,
     _ANSWER_VERDICTS,
+    _as_list,
     _as_str,
     _clamp_int,
 )
@@ -55,12 +56,49 @@ def _normalize_evaluation(
     next_action = _as_str(raw.get("next_action")).strip() or self._fallback_next_action(
         verdict
     )
+    covered_points = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("covered_points"))
+        if _as_str(item, str(item)).strip()
+    ]
+    missing_points = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("missing_points"))
+        if _as_str(item, str(item)).strip()
+    ]
+    misconceptions = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("misconceptions"))
+        if _as_str(item, str(item)).strip()
+    ]
+    step_feedback = [
+        _as_str(item, str(item)).strip()
+        for item in _as_list(raw.get("step_feedback"))
+        if _as_str(item, str(item)).strip()
+    ]
+    reference_answer = _as_str(raw.get("reference_answer")).strip() or _as_str(
+        context.get("expected_answer")
+    ).strip()
     return {
         "verdict": verdict,
         "score": score,
         "error_type": error_type,
         "feedback": feedback,
         "next_action": next_action,
+        "final_answer_correct": raw.get("final_answer_correct")
+        if isinstance(raw.get("final_answer_correct"), bool)
+        else verdict == "correct",
+        "covered_points": covered_points,
+        "missing_points": missing_points,
+        "misconceptions": misconceptions,
+        "step_feedback": step_feedback,
+        "reference_answer": reference_answer,
+        "related_topics": [
+            _as_str(item, str(item)).strip()
+            for item in _as_list(raw.get("related_topics"))
+            if _as_str(item, str(item)).strip()
+        ],
+        "math_equivalence_engine": {"enabled": False},
         "screen_type": self._screen_type_from_context(context),
     }
 

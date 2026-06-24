@@ -563,6 +563,13 @@ body.neko-game-active [id$="-lock-icon"] {
     object-position: center;
 }
 
+.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art {
+    width: 175%;
+    min-width: 175%;
+    max-width: none;
+    height: 100%;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -575,16 +582,31 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(1);
     --neko-idle-return-edge-transform: rotate(0deg);
+    --neko-idle-return-edge-visual-shift-y: 0px;
     width: 100%;
     height: 100%;
     display: block;
     object-fit: contain;
     object-position: center;
     position: relative;
+    top: var(--neko-idle-return-edge-visual-shift-y);
     z-index: 1;
     will-change: opacity, transform, filter;
     transform: var(--neko-idle-return-facing-transform) var(--neko-idle-return-edge-transform);
     transform-origin: center center;
+}
+
+.neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art,
+.neko-idle-return-art[data-neko-cat1-play-finishing="true"] {
+    width: 175% !important;
+    min-width: 175%;
+    max-width: none;
+    height: 100% !important;
+}
+
+#react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"] {
+    visibility: hidden !important;
+    pointer-events: none !important;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
@@ -726,6 +748,8 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
 }
@@ -1566,6 +1590,14 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: none;
 }
 
+/* 主动分享表情包 overlay 是纯被动展示挂件，必须全程点击穿透。它注册了 data-compact-geometry-owner="surface"，
+   会被上面那条把 surface 子树重新开成 auto 的通用规则命中；这里用同优先级、靠后定义的规则把它压回 none
+   （否则表情包显示期间会吞掉它矩形区域的点击）。React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay * {
+    pointer-events: none;
+}
+
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-controls,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-preview-region {
@@ -2040,6 +2072,7 @@ body.react-chat-window-dragging {
 
 .chat-avatar-preview-card-close {
     flex: 0 0 auto;
+    position: relative;
     width: 28px;
     height: 28px;
     border-radius: 999px;
@@ -2047,12 +2080,34 @@ body.react-chat-window-dragging {
     background: rgba(68, 183, 254, 0.08);
     color: #2497d9;
     cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
+    font-size: 0;
+    line-height: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
     transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.chat-avatar-preview-card-close::before,
+.chat-avatar-preview-card-close::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    background: currentColor;
+    pointer-events: none;
+}
+
+.chat-avatar-preview-card-close::before {
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.chat-avatar-preview-card-close::after {
+    transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 .chat-avatar-preview-card-close:hover {
@@ -2826,6 +2881,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 6px 8px;
     border-radius: 12px;
@@ -2841,11 +2897,13 @@ body.react-chat-window-dragging {
 
 .crop-tool-group {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 2px;
 }
 
 .crop-tool-divider {
+    flex: 0 0 auto;
     width: 1px;
     align-self: stretch;
     margin: 4px;
@@ -2971,6 +3029,7 @@ body.react-chat-window-dragging {
     flex-wrap: wrap;
     align-items: center;
     gap: 14px;
+    box-sizing: border-box;
     max-width: calc(100vw - 24px);
     padding: 8px 14px;
     border-radius: 12px;
@@ -3647,6 +3706,28 @@ body.react-chat-window-dragging {
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
     }
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    left: clamp(24px, 6vw, 72px) !important;
+    top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;
+    bottom: auto !important;
+    width: min(400px, calc(100vw - 32px)) !important;
+    transform: none !important;
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+    left: calc(clamp(24px, 6vw, 72px) + 200px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+    top: auto;
+    bottom: calc(100vh - min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + 16px);
+}
+
+body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+    top: calc(min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + var(--compact-surface-height, 58px) + 16px);
+    bottom: auto;
 }
 
 /* Agent HUD 空状态折叠按钮样式 */

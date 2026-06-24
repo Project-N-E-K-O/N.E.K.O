@@ -1067,6 +1067,154 @@ def _open_subtitle_harness(
 
 
 @pytest.mark.frontend
+def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-lock-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-goodbye-suppress-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.fetch = () => Promise.resolve({
+                json: () => Promise.resolve({ success: true, language: 'zh' }),
+            });
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const waitFor = async (predicate, label) => {
+                const deadline = Date.now() + 1000;
+                while (Date.now() < deadline) {
+                    if (predicate()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+                throw new Error(`Timed out waiting for ${label}`);
+            };
+            await waitFor(
+                () => window.nekoSubtitleShared
+                    && window.subtitleBridge
+                    && document.getElementById('subtitle-display')
+                    && document.getElementById('subtitle-text'),
+                'subtitle setup'
+            );
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const text = document.getElementById('subtitle-text');
+            window.subtitleBridge.setSubtitleEnabled(true, { source: 'test-enable' });
+            window.subtitleBridge.markStructured();
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent.length > 0,
+                'subtitle visible before goodbye'
+            );
+            const before = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+            await waitFor(
+                () => shared.getSettings().subtitleEnabled === true
+                    && shared.getRenderState().visible === false
+                    && display.classList.contains('hidden') === true,
+                'subtitle hidden during goodbye'
+            );
+            const duringGoodbye = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+
+            window.dispatchEvent(new CustomEvent('live2d-return-click'));
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent === before.text,
+                'subtitle restored after return'
+            );
+            const afterReturn = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+            await waitFor(
+                () => shared.getRenderState().visible === false
+                    && display.classList.contains('hidden') === true,
+                'subtitle hidden before character switch clear'
+            );
+            window.dispatchEvent(new CustomEvent('neko:goodbye-state-cleared', {
+                detail: { reason: 'character-switch' },
+            }));
+            await waitFor(
+                () => shared.getRenderState().visible === true
+                    && display.classList.contains('hidden') === false
+                    && text.textContent === before.text,
+                'subtitle restored after character switch clear'
+            );
+            const afterCharacterSwitchClear = {
+                enabled: shared.getSettings().subtitleEnabled,
+                renderEnabled: shared.getRenderState().subtitleEnabled,
+                visible: shared.getRenderState().visible,
+                hidden: display.classList.contains('hidden'),
+                text: text.textContent,
+            };
+            return { before, duringGoodbye, afterReturn, afterCharacterSwitchClear };
+        }
+        """
+    )
+
+    subtitle_text = result["before"]["text"]
+    assert subtitle_text
+    assert result["before"] == {
+        "enabled": True,
+        "renderEnabled": True,
+        "visible": True,
+        "hidden": False,
+        "text": subtitle_text,
+    }
+    assert result["duringGoodbye"] == {
+        "enabled": True,
+        "renderEnabled": True,
+        "visible": False,
+        "hidden": True,
+        "text": subtitle_text,
+    }
+    assert result["afterReturn"] == result["before"]
+    assert result["afterCharacterSwitchClear"] == result["before"]
+
+
+@pytest.mark.frontend
 def test_subtitle_danmaku_renderer_groups_every_two_punctuation_marks(
     mock_page: Page,
 ):
@@ -7320,6 +7468,118 @@ def test_subtitle_window_transcript_event_starts_overflow_auto_scroll(
     assert result["scrollTop"] > 0
     assert result["scrollTop"] < result["maxScrollTop"]
     assert result["scrollableDataset"] == "true"
+
+
+@pytest.mark.frontend
+def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 120})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-window-danmaku-auto-scroll-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleDanmakuMode', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 240,
+                height: 60,
+            }));
+            window.nekoSubtitle = {
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const waitFrames = (count) => new Promise((resolve) => {
+                const tick = () => {
+                    count -= 1;
+                    if (count <= 0) {
+                        resolve();
+                        return;
+                    }
+                    requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+            });
+            const shared = window.nekoSubtitleShared;
+            const display = document.getElementById('subtitle-display');
+            const scroll = document.getElementById('subtitle-scroll');
+            window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
+                detail: {
+                    translated: true,
+                    transcript: Array.from(
+                        { length: 30 },
+                        (_, index) => `line ${index + 1}, phrase ${index + 1}.`
+                    ).join('\\n'),
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const maxScrollTop = scroll.scrollHeight - scroll.clientHeight;
+            const afterRender = scroll.scrollTop;
+            scroll.scrollTop = maxScrollTop;
+            const wheelDuringDanmaku = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 24,
+            });
+            scroll.dispatchEvent(wheelDuringDanmaku);
+            const afterStateUpdate = scroll.scrollTop;
+            shared.requestSubtitleAutoScroll(scroll, {
+                speedPixelsPerSecond: 240,
+                delayMs: 0,
+            });
+            await waitFrames(20);
+            const afterAuto = scroll.scrollTop;
+            const scrollToBottomReturn = shared.scrollSubtitleToBottom(scroll);
+            const afterScrollToBottom = scroll.scrollTop;
+            return {
+                active: display.dataset.subtitleDanmakuActive || '',
+                afterRender,
+                afterAuto,
+                afterStateUpdate,
+                afterScrollToBottom,
+                itemCount: document.querySelectorAll('.subtitle-danmaku-item').length,
+                maxScrollTop,
+                scrollableDataset: scroll.dataset.subtitleScrollable,
+                scrollToBottomReturn,
+                wheelPrevented: wheelDuringDanmaku.defaultPrevented,
+            };
+        }
+        """
+    )
+
+    assert result["active"] == "true"
+    assert result["itemCount"] > 0
+    assert result["maxScrollTop"] > 0
+    assert result["afterRender"] == 0
+    assert result["afterStateUpdate"] == 0
+    assert result["afterAuto"] == 0
+    assert result["scrollToBottomReturn"] == 0
+    assert result["afterScrollToBottom"] == 0
+    assert result["wheelPrevented"] is False
+    assert result["scrollableDataset"] == "false"
 
 
 @pytest.mark.frontend

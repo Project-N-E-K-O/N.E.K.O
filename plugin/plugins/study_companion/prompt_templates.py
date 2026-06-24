@@ -37,6 +37,13 @@ STUDY_CONCEPT_EXPLAIN_EXAMPLE = {
 STUDY_QUESTION_GENERATE_EXAMPLE = {
     "question": "What is the key relationship described in the source text?",
     "answer": "The answer should restate the core rule or concept from the source text.",
+    "reference_answer": "The answer should restate the core rule or concept from the source text.",
+    "accepted_answers": ["A concise restatement of the core rule"],
+    "key_points": ["core rule", "relationship"],
+    "rubric": {"core rule": 70, "clear wording": 30},
+    "solution_steps": ["Identify the repeated rule", "Restate the relationship"],
+    "question_type": "short_answer",
+    "math_equivalence_engine": {"enabled": False},
     "hint": "Look for the main definition or rule that appears most often in the source.",
     "difficulty": 2,
     "topic": "core concept",
@@ -48,6 +55,14 @@ STUDY_ANSWER_EVALUATE_EXAMPLE = {
     "error_type": "incomplete",
     "feedback": "You identified the main idea, but one important step is missing.",
     "next_action": "Ask the learner to restate the missing step in one sentence.",
+    "final_answer_correct": False,
+    "covered_points": ["main idea"],
+    "missing_points": ["missing step"],
+    "misconceptions": [],
+    "step_feedback": ["The first step is correct; add the missing relation."],
+    "reference_answer": "A complete answer includes the main idea and the missing relation.",
+    "related_topics": ["core concept"],
+    "math_equivalence_engine": {"enabled": False},
 }
 
 STUDY_KNOWLEDGE_TRACK_EXAMPLE = {
@@ -81,11 +96,18 @@ STUDY_QUESTION_GENERATE_REQUIREMENTS = (
     "Requirements:\n"
     "1. question: one clear question grounded in the source text.\n"
     "2. answer: the compact reference answer.\n"
-    "3. hint: one short hint for the learner.\n"
-    "4. difficulty: integer from 1 to 5.\n"
-    "5. topic: a short label for the target concept.\n"
-    "6. Keep the output grounded in context.screen_classification when present.\n"
-    "7. Output must match this JSON structure:\n"
+    "3. reference_answer: same meaning as answer, suitable to reveal only after evaluation.\n"
+    "4. accepted_answers: short equivalent answers, if any.\n"
+    "5. key_points: concise scoring points, not a full solution.\n"
+    "6. rubric: small object mapping scoring point names to weights.\n"
+    "7. solution_steps: concise solution/check steps.\n"
+    "8. question_type: short_answer / math_exact / math_reasoning / multiple_choice.\n"
+    "9. hint: one direction-only hint; do not include the final answer or full solution.\n"
+    "10. difficulty: integer from 1 to 5.\n"
+    "11. topic: a short label for the target concept.\n"
+    "12. math_equivalence_engine.enabled must be false.\n"
+    "13. Keep the output grounded in context.screen_classification when present.\n"
+    "14. Output must match this JSON structure:\n"
 )
 
 STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT = (
@@ -101,8 +123,13 @@ STUDY_ANSWER_EVALUATE_REQUIREMENTS = (
     "3. error_type should be a short label such as: none / missing_step / misconception / vague / incomplete / unsupported.\n"
     "4. feedback should be short, direct, and actionable.\n"
     "5. next_action should state the next teaching step.\n"
-    "6. Use expected_answer and current question as the reference, but do not invent facts.\n"
-    "7. Output must match this JSON structure:\n"
+    "6. final_answer_correct should be true only when the final answer is correct.\n"
+    "7. covered_points and missing_points should summarize rubric coverage.\n"
+    "8. step_feedback should summarize reasoning or math steps when applicable.\n"
+    "9. reference_answer may be returned after evaluation.\n"
+    "10. math_equivalence_engine.enabled must be false; do not claim symbolic equivalence verification.\n"
+    "11. Use expected_answer and current question as the reference, but do not invent facts.\n"
+    "12. Output must match this JSON structure:\n"
 )
 
 STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT = (

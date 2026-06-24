@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
-import { ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
+import { deckTypeLabel, ensureBrandCSS, postStudySurfaceMessage, STUDY_SURFACE_MESSAGE_TYPES } from './study_surface_utils';
 import {
   deckGoalSavedMessage,
   getMemoryHabitStatus,
@@ -104,7 +104,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     <div className="study-panel surface-shell">
       <header className="study-panel__header">
         <div>
-          <h1>{text(props, 'ui.surface.memory_deck_list', 'Memory Decks')}</h1>
+          <h1>{text(props, 'ui.surface.memory_deck_list', 'Deck Management')}</h1>
           <span>{status || `${decks.length}`}</span>
         </div>
       </header>
@@ -116,10 +116,10 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
         <label>
           <span>{text(props, 'ui.memory.deck_type', 'Deck Type')}</span>
           <select value={deckType} disabled={busy} onChange={(event) => setDeckType(event.target.value)}>
-            <option value="word">word</option>
-            <option value="passage">passage</option>
-            <option value="formula">formula</option>
-            <option value="custom">custom</option>
+            <option value="word">{deckTypeLabel(props, 'word')}</option>
+            <option value="passage">{deckTypeLabel(props, 'passage')}</option>
+            <option value="formula">{deckTypeLabel(props, 'formula')}</option>
+            <option value="custom">{deckTypeLabel(props, 'custom')}</option>
           </select>
         </label>
         {habitBridgeAvailable(habitStatus) ? (
@@ -145,7 +145,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
       <div className="study-panel__actions">
         {decks.map((deck) => (
           <div key={deck.id} className="study-panel__row">
-            <span>{deck.name} / {deck.deck_type} / {deck.item_count || 0}</span>
+            <span>{deck.name} / {deckTypeLabel(props, deck.deck_type)} / {deck.item_count || 0}</span>
             {habitBridgeAvailable(habitStatus) ? (
               <button type="button" disabled={busy} onClick={() => saveDeckGoal(deck.id)}>
                 {text(props, 'ui.daily_goal.set_for_deck', 'Set Goal')}

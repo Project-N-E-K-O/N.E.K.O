@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
 import MessageBubble from './MessageBubble';
+import ThinkingDots from './ThinkingDots';
 import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
 
@@ -9,6 +10,7 @@ type MessageListProps = {
   messages: ChatMessage[];
   ariaLabel?: string;
   failedStatusLabel?: string;
+  thinking?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -29,6 +31,7 @@ export default function MessageList({
   messages,
   ariaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
   failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
+  thinking = false,
   onAction,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -60,7 +63,7 @@ export default function MessageList({
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
     container.scrollTop = container.scrollHeight;
-  }, [displayMessages]);
+  }, [displayMessages, thinking]);
 
   function clearScrollbarTimer() {
     if (scrollbarTimerRef.current === null) return;
@@ -150,7 +153,7 @@ export default function MessageList({
     transform: `translateY(${scrollbarState.top}px)`,
   };
 
-  if (displayMessages.length === 0) {
+  if (displayMessages.length === 0 && !thinking) {
     return (
       <div className="message-list-shell">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
@@ -179,6 +182,16 @@ export default function MessageList({
             onAction={onAction}
           />
         ))}
+        {thinking ? (
+          <article className="message-row message-row-assistant focus-thinking-row" data-focus-thinking="true">
+            <div className="avatar avatar-placeholder" aria-hidden="true" />
+            <div className="message-stack">
+              <div className="message-bubble message-bubble-assistant focus-thinking-bubble">
+                <ThinkingDots />
+              </div>
+            </div>
+          </article>
+        ) : null}
       </div>
       {scrollbarState.scrollable ? (
         <div

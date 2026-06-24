@@ -666,6 +666,7 @@ class MemoryRecallReranker:
         llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'], api_config['api_key'],
+            provider_type=api_config.get('provider_type'),
             timeout=8, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so the rerank-decisions array isn't truncated
         )

@@ -195,15 +195,18 @@
         return true;
     }
 
-    function translateGuideText(textKey, fallbackText) {
+    function translateGuideText(textKey, fallbackText, interpolation) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
         if (!normalizedKey || typeof window.t !== 'function') {
             return normalizedFallback;
         }
 
+        const hasInterpolation = interpolation && typeof interpolation === 'object';
         try {
-            const translated = window.t(normalizedKey);
+            const translated = hasInterpolation
+                ? window.t(normalizedKey, interpolation)
+                : window.t(normalizedKey);
             if (typeof translated === 'string' && translated.trim() && translated !== normalizedKey) {
                 return translated;
             }
@@ -416,20 +419,91 @@
         } catch (_) {}
     }
 
+    function normalizeAvatarFloatingGuideUsageTimestamp(value) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) {
+            return number;
+        }
+        if (typeof value === 'string' && value.trim()) {
+            const parsed = Date.parse(value);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        }
+        return 0;
+    }
+
+    function getAvatarFloatingGuideActiveRound() {
+        const memoryRound = Number(window.__avatarFloatingGuideCurrentRound || 0);
+        if (Number.isFinite(memoryRound) && memoryRound > 0) {
+            return Math.floor(memoryRound);
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        const persistedRound = Number(state && state.currentRound);
+        return Number.isFinite(persistedRound) && persistedRound > 0 ? Math.floor(persistedRound) : 0;
+    }
+
+    function recordAvatarFloatingGuideRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return;
+        }
+        const day = Math.floor(normalizedRound);
+        const startedAt = Date.now();
+        window.__avatarFloatingGuideCurrentRound = day;
+        const patch = {
+            currentRound: day,
+            currentRoundStartedAt: startedAt
+        };
+        patch['day' + day + 'StartedAt'] = startedAt;
+        writeAvatarFloatingGuideUsageState(patch);
+    }
+
     function markAvatarFloatingGuideUsage(key) {
         const normalizedKey = typeof key === 'string' ? key.trim() : '';
         if (!normalizedKey) {
             return;
         }
+        const activeRound = getAvatarFloatingGuideActiveRound();
         const patch = {};
         patch[normalizedKey] = true;
         patch[normalizedKey + 'At'] = Date.now();
+        if (activeRound) {
+            patch[normalizedKey + 'Round'] = activeRound;
+        }
         writeAvatarFloatingGuideUsageState(patch);
     }
 
     function hasAvatarFloatingGuideUsage(key) {
         const state = readAvatarFloatingGuideUsageState();
         return !!(state && state[key]);
+    }
+
+    function hasAvatarFloatingGuideVoiceUsedAfterRoundStart(round) {
+        const normalizedRound = Number(round);
+        if (!Number.isFinite(normalizedRound) || normalizedRound <= 0) {
+            return false;
+        }
+        const state = readAvatarFloatingGuideUsageState();
+        if (!state || !state.voiceUsed) {
+            return false;
+        }
+        const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);
+        const day = Math.floor(normalizedRound);
+        const roundStartKey = 'day' + day + 'StartedAt';
+        const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);
+        if (!voiceUsedAt) {
+            return false;
+        }
+        if (roundStartedAt) {
+            return voiceUsedAt >= roundStartedAt;
+        }
+
+        const voiceUsedRound = Number(state.voiceUsedRound);
+        if (Number.isFinite(voiceUsedRound) && Math.floor(voiceUsedRound) === day) {
+            return true;
+        }
+
+        const nextRoundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + (day + 1) + 'StartedAt']);
+        return !!(day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt);
     }
 
     if (!window.__avatarFloatingGuideUsageListenersInstalled) {
@@ -473,7 +547,6 @@
     const DAY6_PLUGIN_SIDE_PANEL_ACTION_TIMEOUT_MS = 1200;
     const DAY6_PLUGIN_SIDE_PANEL_DASHBOARD_WAIT_MS = 900;
     const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;
-    const AVATAR_STAND_IN_MODEL_FADE_MS = 1000;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -487,7 +560,9 @@
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1';
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
-    const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
+    const INTRO_ACTIVATION_HINT = '稍等一下，我马上开始说话啦～';
+    const INTRO_ACTIVATION_AUTO_ADVANCE_MS = 2600;
+    const INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS = 720;
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 18;
     const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_Y = 10;
@@ -2587,9 +2662,8 @@
             this.avatarFloatingGuideTutorialModeActive = false;
             this.avatarFloatingGuidePreviousIsInTutorial = false;
             this.avatarStandInShowTimer = null;
-            this.avatarStandInFadeTimer = null;
             this.avatarStandInHideTimer = null;
-            this.avatarStandInOpacityRestores = null;
+            this.avatarStandInPerformanceHandle = null;
             this.avatarStandInActive = false;
             this.avatarStandInToken = 0;
             this.avatarStandInController = new TutorialVisualControllers.AvatarStandInController(this);
@@ -2650,19 +2724,6 @@
                 ? window.TutorialInteractionTakeover.createController({
                     page: this.page,
                     overlay: this.overlay,
-                    allowTarget: (target, event) => this.isAllowedTutorialInteractionTarget(target, event),
-                    isSystemDialogTarget: (target, event) => this.isSystemDialogInteractionTarget(target, event),
-                    allowWindowPassthrough: true,
-                    allowTouchPassthrough: (event, controller) => {
-                        return !!(
-                            this.mobileTouchInteractionPassthrough
-                            && controller
-                            && typeof controller.isTouchInteractionEvent === 'function'
-                            && controller.isTouchInteractionEvent(event)
-                            && !this.awaitingIntroActivation
-                            && !this.manualPluginDashboardOpenAllowed
-                        );
-                    },
                     isDestroyed: () => this.destroyed,
                     isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),
@@ -2888,62 +2949,8 @@
             return this.avatarStandInController.getCue(day, sceneId);
         }
 
-        getAvatarStandInResourcePath(resource) {
-            const api = window.YuiGuideAvatarStandIn;
-            if (api && typeof api.getResourcePath === 'function') {
-                try {
-                    return api.getResourcePath(resource);
-                } catch (_) {}
-            }
-            return '';
-        }
-
         scheduleAvatarStandInForScene(scene, day, sceneRunId) {
             return this.avatarStandInController.schedule(scene, day, sceneRunId);
-        }
-
-        prepareAvatarStandInOpacityTargets() {
-            const elements = this.getReturnPetalTransitionOpacityElements();
-            const model = this.getReturnPetalTransitionModel();
-            const restores = [];
-            elements.forEach((element) => {
-                const originalInlineOpacity = element.style.opacity;
-                const originalInlineTransition = element.style.transition;
-                restores.push(() => {
-                    if (originalInlineTransition) {
-                        element.style.setProperty('transition', originalInlineTransition);
-                    } else {
-                        element.style.removeProperty('transition');
-                    }
-                    if (originalInlineOpacity) {
-                        element.style.setProperty('opacity', originalInlineOpacity);
-                    } else {
-                        element.style.removeProperty('opacity');
-                    }
-                });
-                element.style.setProperty('transition', 'opacity ' + AVATAR_STAND_IN_MODEL_FADE_MS + 'ms ease', 'important');
-                void element.offsetWidth;
-                element.style.setProperty('opacity', '0', 'important');
-            });
-            if (model && Number.isFinite(Number(model.alpha))) {
-                const originalAlpha = Number(model.alpha);
-                restores.push(() => {
-                    try {
-                        model.alpha = originalAlpha;
-                    } catch (_) {}
-                });
-            }
-            this.avatarStandInOpacityRestores = restores;
-        }
-
-        hideAvatarStandInModelAlpha() {
-            const model = this.getReturnPetalTransitionModel();
-            if (!model || !Number.isFinite(Number(model.alpha))) {
-                return;
-            }
-            try {
-                model.alpha = 0;
-            } catch (_) {}
         }
 
         showAvatarStandIn(cue, token) {
@@ -2952,27 +2959,38 @@
             }
             this.clearAvatarStandIn({ clearPending: false, restoreModel: true, preserveToken: true });
             this.avatarStandInActive = true;
-            this.prepareAvatarStandInOpacityTargets();
-            this.avatarStandInFadeTimer = window.setTimeout(() => {
-                this.avatarStandInFadeTimer = null;
-                if (token !== this.avatarStandInToken || this.isStopping() || this.destroyed) {
+            Promise.resolve(this.startAvatarCornerPeekPerformance({
+                position: cue.position,
+                isCancelled: () => token !== this.avatarStandInToken
+                    || this.isStopping()
+                    || this.destroyed
+            })).then((handle) => {
+                if (
+                    token !== this.avatarStandInToken
+                    || this.isStopping()
+                    || this.destroyed
+                ) {
+                    this.stopAvatarCornerPeekPerformance(handle, 'avatar_standin_cancelled').catch(() => {});
                     return;
                 }
-                this.hideAvatarStandInModelAlpha();
-                if (this.overlay && typeof this.overlay.showAvatarStandIn === 'function') {
-                    this.overlay.showAvatarStandIn({
-                        resource: cue.resource,
-                        position: cue.position,
-                        durationMs: cue.durationMs,
-                        url: this.getAvatarStandInResourcePath(cue.resource)
-                    });
+                if (!handle) {
+                    this.avatarStandInActive = false;
+                    return;
                 }
+                this.avatarStandInPerformanceHandle = handle;
+                const rawDurationMs = Number.isFinite(Number(cue.duration))
+                    ? Number(cue.duration)
+                    : Number(cue.durationMs);
+                const durationMs = Math.max(0, Number.isFinite(rawDurationMs) ? rawDurationMs : 0);
                 this.avatarStandInHideTimer = window.setTimeout(() => {
                     if (token === this.avatarStandInToken) {
                         this.clearAvatarStandIn({ clearPending: false, restoreModel: true });
                     }
-                }, Math.max(0, Number(cue.durationMs) || 0));
-            }, AVATAR_STAND_IN_MODEL_FADE_MS);
+                }, durationMs);
+            }).catch((error) => {
+                console.warn('[YuiGuide] Live2D 探身动作启动失败:', error);
+                this.avatarStandInActive = false;
+            });
         }
 
         clearAvatarStandIn(options) {
@@ -3005,6 +3023,9 @@
         setAvatarFloatingGuideTutorialMode(active) {
             const isActive = active === true;
             try {
+                if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                    this.overlay.setTutorialInputShieldActive(isActive);
+                }
                 if (isActive) {
                     if (!this.avatarFloatingGuideTutorialModeActive) {
                         this.avatarFloatingGuidePreviousIsInTutorial = window.isInTutorial === true;
@@ -3124,64 +3145,13 @@
             return !!target.closest('[data-guide-message="true"] .message-action-button');
         }
 
-        finishIntroActivation() {
-            if (!this.awaitingIntroActivation) {
-                return false;
-            }
-
+        waitForIntroActivationTransition() {
             this.awaitingIntroActivation = false;
-            if (typeof this._introActivationResolve === 'function') {
-                this._introActivationResolve();
-            }
-            return true;
-        }
-
-        waitForIntroActivationClick() {
-            this.awaitingIntroActivation = true;
-            return new Promise((resolve) => {
-                let resolved = false;
-
-                const cleanup = () => {
-                    document.removeEventListener('pointerdown', onPointerLike, true);
-                    document.removeEventListener('mousedown', onPointerLike, true);
-                    document.removeEventListener('touchstart', onPointerLike, true);
-                    document.removeEventListener('click', onPointerLike, true);
-                    document.removeEventListener('keydown', onKeyDown, true);
-                    this._introActivationResolve = null;
-                };
-                const complete = () => {
-                    if (resolved) {
-                        return;
-                    }
-                    resolved = true;
-                    cleanup();
-                    this.awaitingIntroActivation = false;
-                    resolve();
-                };
-                const onPointerLike = (event) => {
-                    if (!event || !this.isIntroActivationTarget(event.target)) {
-                        return;
-                    }
-                    complete();
-                };
-                const onKeyDown = (event) => {
-                    if (
-                        !event
-                        || (event.key !== 'Enter' && event.key !== ' ')
-                        || !this.isIntroActivationTarget(event.target)
-                    ) {
-                        return;
-                    }
-                    complete();
-                };
-
-                this._introActivationResolve = complete;
-                document.addEventListener('pointerdown', onPointerLike, true);
-                document.addEventListener('mousedown', onPointerLike, true);
-                document.addEventListener('touchstart', onPointerLike, true);
-                document.addEventListener('click', onPointerLike, true);
-                document.addEventListener('keydown', onKeyDown, true);
-            });
+            this._introActivationResolve = null;
+            const waitMs = this.shouldReduceTutorialMotion()
+                ? INTRO_ACTIVATION_REDUCED_MOTION_AUTO_ADVANCE_MS
+                : INTRO_ACTIVATION_AUTO_ADVANCE_MS;
+            return wait(waitMs);
         }
 
         shouldReduceTutorialMotion() {
@@ -3228,7 +3198,7 @@
             }
 
             if (normalizedSceneId === 'intro_activation') {
-                return '准备开始';
+                return this.resolveGuideCopy('tutorial.yuiGuide.bubbleMeta.ready', '准备开始');
             }
 
             const order = this.getHomePresentationSceneOrder();
@@ -3237,7 +3207,13 @@
                 return '';
             }
 
-            return '主页引导 ' + (index + 1) + '/' + order.length;
+            const current = index + 1;
+            const total = order.length;
+            const progressFallback = '主页引导 ' + current + '/' + total;
+            return this.resolveGuideCopy('tutorial.yuiGuide.bubbleMeta.homeProgress', progressFallback, {
+                current: current,
+                total: total
+            });
         }
 
         showGuideBubble(text, options, sceneId) {
@@ -3508,21 +3484,22 @@
             return this.petalTransitionController.playReturn(options);
         }
 
-        resolveGuideCopy(textKey, fallbackText) {
-            return translateGuideText(textKey, fallbackText);
+        resolveGuideCopy(textKey, fallbackText, interpolation) {
+            return translateGuideText(textKey, fallbackText, interpolation);
         }
 
         resolveAvatarFloatingSceneText(scene) {
             if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideUsage('voiceUsed')
+                const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);
+                return voiceUsedAfterDay1Start
                     ? this.resolveGuideCopy('tutorial.avatarFloating.day2.introVoiceUsed', scene.text || '')
-                    : '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。';
+                    : this.resolveGuideCopy(scene.textKey || 'tutorial.avatarFloating.day2.intro', scene.text || '');
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
         }
 
         resolveAvatarFloatingSceneVoiceKey(scene) {
-            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideUsage('voiceUsed')) {
+            if (scene && scene.id === 'day2_intro_context' && hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)) {
                 return 'avatar_floating_day2_intro_voice_used';
             }
             return scene && typeof scene.voiceKey === 'string' ? scene.voiceKey : '';
@@ -3530,7 +3507,7 @@
 
         resolveAvatarFloatingSceneEmotion(scene) {
             if (scene && scene.id === 'day2_intro_context') {
-                return hasAvatarFloatingGuideUsage('voiceUsed') ? 'happy' : 'sad';
+                return hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1) ? 'happy' : 'sad';
             }
             return scene && typeof scene.emotion === 'string' ? scene.emotion : '';
         }
@@ -7605,8 +7582,8 @@
             });
         }
 
-        async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise) {
-            return this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise);
+        async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext) {
+            return this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext);
         }
 
         closeChatToolPopover() {
@@ -7926,7 +7903,7 @@
                     bubbleEl.style.left = Math.round(bLeft) + 'px';
                     bubbleEl.style.top = Math.round(bTop) + 'px';
                 }
-                await this.waitForIntroActivationClick();
+                await this.waitForIntroActivationTransition();
                 if (sceneRunId !== this.sceneRunId || this.isStopping()) {
                     return false;
                 }
@@ -7982,11 +7959,12 @@
             return sceneRunId === this.sceneRunId && !this.isStopping();
         }
 
-        async playAvatarFloatingScene(scene, day, index, total) {
-            return this.sceneOrchestrator.playScene(scene, day, index, total);
+        async playAvatarFloatingScene(scene, day, index, total, roundContext) {
+            return this.sceneOrchestrator.playScene(scene, day, index, total, roundContext);
         }
 
         async playAvatarFloatingRound(round, options) {
+            recordAvatarFloatingGuideRoundStart(round);
             return this.sceneOrchestrator.playRound(round, options);
         }
 
@@ -8906,8 +8884,15 @@
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
             this.manualPluginDashboardOpenUserClicked = false;
-            if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
-                this.overlay.setInteractionShieldEnabled(false);
+            const shouldRestoreTutorialInputShield = !!(
+                this.overlay
+                && this.overlay.tutorialInputShieldActive === true
+            );
+            if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
+                this.overlay.setInteractionShieldSuppressed(true);
+            }
+            if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                this.overlay.setTutorialInputShieldActive(false);
             }
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
@@ -8965,10 +8950,13 @@
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
                 this.manualPluginDashboardOpenUserClicked = false;
-                if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
-                    this.overlay.setInteractionShieldEnabled(
-                        !!(document.body && document.body.classList.contains('yui-taking-over'))
+                if (this.overlay && typeof this.overlay.setTutorialInputShieldActive === 'function') {
+                    this.overlay.setTutorialInputShieldActive(
+                        shouldRestoreTutorialInputShield && runId === this.sceneRunId && !this.isStopping()
                     );
+                }
+                if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
+                    this.overlay.setInteractionShieldSuppressed(false);
                 }
                 if (runId === this.sceneRunId && !this.isStopping()) {
                     this.overlay.hideBubble();
@@ -9678,9 +9666,19 @@
             if (guardFailed()) {
                 return false;
             }
-            this.takeoverTopPeekHandle = await this.startPluginDashboardCornerPeekPerformance(runId, {
-                targetPreset: 'top_flipped'
-            });
+            const avatarStageApi = window.YuiGuideAvatarStage;
+            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
+                try {
+                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
+                        targetPreset: 'top_flipped',
+                        reducedMotion: this.shouldReduceTutorialMotion(),
+                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                    this.takeoverTopPeekHandle = null;
+                }
+            }
             if (guardFailed()) {
                 return false;
             }
@@ -11144,17 +11142,136 @@
             this.clearIntroGreetingChatHighlight();
         }
 
-        async runIntroGreetingHugPerformance() {
+        async runDailyIntroGreetingPerformance(scene, day, options) {
+            return this.runDailyIntroAvatarPerformance(Object.assign({}, scene || {}, {
+                introAvatarPerformance: Object.assign({
+                    preset: 'wave-zoom'
+                }, (scene && scene.introAvatarPerformance) || {})
+            }), day, options);
+        }
+
+        async runDailyIntroAvatarPerformance(scene, day, options) {
+            const normalizedOptions = options || {};
             const api = window.YuiGuideAvatarStage;
-            if (!api || typeof api.playIntroGreetingHug !== 'function') {
-                return null;
-            }
-            return api.playIntroGreetingHug({
-                approachMs: 2200,
-                settleMs: 1250,
-                reducedMotion: this.shouldReduceTutorialMotion(),
-                isCancelled: () => this.isStopping()
+            let revealed = false;
+            const resolveOnReveal = normalizedOptions.isFirstDailyScene === true;
+            let revealReadyResolve = null;
+            let revealReadySettled = false;
+            let revealReadyFallbackTimer = 0;
+            const revealReadyPromise = new Promise((resolve) => {
+                revealReadyResolve = resolve;
             });
+            const revealReadyFallbackMs = Number.isFinite(Number(normalizedOptions.revealReadyFallbackMs))
+                ? Math.max(0, Math.floor(Number(normalizedOptions.revealReadyFallbackMs)))
+                : 1600;
+            const resolveRevealReady = (value) => {
+                if (revealReadySettled) {
+                    return;
+                }
+                revealReadySettled = true;
+                if (revealReadyFallbackTimer) {
+                    window.clearTimeout(revealReadyFallbackTimer);
+                    revealReadyFallbackTimer = 0;
+                }
+                if (typeof revealReadyResolve === 'function') {
+                    revealReadyResolve(value);
+                }
+            };
+            const revealPrepared = typeof normalizedOptions.revealPrepared === 'function'
+                ? function revealDailyIntroPrepared(reason) {
+                    if (revealed) {
+                        return;
+                    }
+                    revealed = true;
+                    normalizedOptions.revealPrepared(reason || 'daily-intro-avatar-performance');
+                    resolveRevealReady(true);
+                }
+                : null;
+            if (!api || typeof api.playAvatarMotion !== 'function') {
+                if (revealPrepared) {
+                    revealPrepared('daily-intro-avatar-stage-unavailable');
+                }
+                resolveRevealReady(false);
+                return resolveOnReveal ? revealReadyPromise : null;
+            }
+            const performance = scene && scene.introAvatarPerformance
+                ? scene.introAvatarPerformance
+                : {};
+            const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
+            const text = scene && scene.text ? scene.text : '';
+            const durationMs = Number.isFinite(Number(performance.durationMs))
+                ? Math.max(0, Math.floor(Number(performance.durationMs)))
+                : this.getAvatarFloatingNarrationDurationMs(voiceKey, text);
+            const motionPromise = api.playAvatarMotion({
+                preset: performance.preset || 'wave-zoom',
+                position: performance.position || performance.targetPosition || '',
+                durationMs: durationMs,
+                restore: performance.restore || 'half-body',
+                approachMs: Number.isFinite(Number(performance.approachMs))
+                    ? Math.max(0, Math.floor(Number(performance.approachMs)))
+                    : (Number.isFinite(normalizedOptions.approachMs)
+                        ? Math.max(0, Math.floor(normalizedOptions.approachMs))
+                        : 2200),
+                settleMs: Number.isFinite(Number(performance.settleMs))
+                    ? Math.max(0, Math.floor(Number(performance.settleMs)))
+                    : (Number.isFinite(normalizedOptions.settleMs)
+                        ? Math.max(0, Math.floor(normalizedOptions.settleMs))
+                        : 1250),
+                frameScale: Number.isFinite(Number(performance.frameScale))
+                    ? Number(performance.frameScale)
+                    : undefined,
+                frameY: Number.isFinite(Number(performance.frameY))
+                    ? Number(performance.frameY)
+                    : undefined,
+                enterMs: Number.isFinite(Number(performance.enterMs))
+                    ? Math.max(0, Math.floor(Number(performance.enterMs)))
+                    : undefined,
+                releaseMs: Number.isFinite(Number(performance.releaseMs))
+                    ? Math.max(0, Math.floor(Number(performance.releaseMs)))
+                    : undefined,
+                readyWaitMs: Number.isFinite(Number(performance.readyWaitMs))
+                    ? Math.max(0, Math.floor(Number(performance.readyWaitMs)))
+                    : undefined,
+                freezeFloatingButtons: performance.freezeFloatingButtons === false ? false : undefined,
+                rotateFloatingButtons: performance.rotateFloatingButtons === true,
+                revealPrepared: revealPrepared,
+                reducedMotion: typeof normalizedOptions.reducedMotion === 'boolean'
+                    ? normalizedOptions.reducedMotion
+                    : this.shouldReduceTutorialMotion(),
+                isCancelled: typeof normalizedOptions.isCancelled === 'function'
+                    ? normalizedOptions.isCancelled
+                    : () => this.isStopping()
+            });
+            if (resolveOnReveal) {
+                if (!revealReadySettled && revealReadyFallbackMs > 0 && typeof window.setTimeout === 'function') {
+                    revealReadyFallbackTimer = window.setTimeout(() => {
+                        if (revealPrepared) {
+                            revealPrepared('daily-intro-avatar-reveal-timeout');
+                            return;
+                        }
+                        resolveRevealReady(false);
+                    }, revealReadyFallbackMs);
+                }
+                motionPromise.then(
+                    () => {
+                        resolveRevealReady(true);
+                    },
+                    (error) => {
+                        console.warn('[YuiGuide] 每日开场模型演出失败:', error);
+                        if (revealPrepared) {
+                            revealPrepared('daily-intro-avatar-motion-failed');
+                            return;
+                        }
+                        resolveRevealReady(false);
+                    }
+                );
+                return revealReadyPromise;
+            }
+            return motionPromise;
+        }
+
+        async runIntroGreetingHugPerformance() {
+            return this.runDailyIntroGreetingPerformance({ id: 'day1_intro_greeting' });
         }
 
         async runIntroGiftHeartPerformance() {
@@ -11337,20 +11454,24 @@
             } catch (_) {}
         }
 
-        async startPluginDashboardCornerPeekPerformance(runId, options) {
+        async startAvatarCornerPeekPerformance(options) {
             const api = window.YuiGuideAvatarStage;
-            if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
+            if (!api || typeof api.startAvatarCornerPeek !== 'function') {
                 return null;
             }
             const normalizedOptions = options || {};
             try {
-                return await api.startPluginDashboardCornerPeek({
+                return await api.startAvatarCornerPeek({
+                    position: normalizedOptions.position,
                     targetPreset: normalizedOptions.targetPreset,
-                    reducedMotion: this.shouldReduceTutorialMotion(),
-                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    performanceLockKey: normalizedOptions.performanceLockKey,
+                    reducedMotion: normalizedOptions.reducedMotion === true || this.shouldReduceTutorialMotion(),
+                    isCancelled: typeof normalizedOptions.isCancelled === 'function'
+                        ? normalizedOptions.isCancelled
+                        : () => this.isStopping()
                 });
             } catch (error) {
-                console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                console.warn('[YuiGuide] Live2D 探身动作启动失败:', error);
                 return null;
             }
         }
@@ -11450,6 +11571,24 @@
             } catch (_) {}
         }
 
+        async stopAvatarStandInPerformance(reason) {
+            const handle = this.avatarStandInPerformanceHandle;
+            this.avatarStandInPerformanceHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            await this.stopAvatarCornerPeekPerformance(handle, reason || 'avatar_standin_clear');
+        }
+
+        async stopAvatarCornerPeekPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'avatar_corner_peek_clear');
+            } catch (_) {}
+        }
+
         async runWakeupPrelude() {
             if (this.page !== 'home' || this.isStopping() || !this.wakeup || typeof this.wakeup.run !== 'function') {
                 if (typeof document !== 'undefined' && document.body) {
@@ -11531,6 +11670,7 @@
             document.documentElement.classList.add('yui-resistance-cursor-reveal');
             document.body.classList.add('yui-user-cursor-revealed');
             document.body.classList.add('yui-resistance-cursor-reveal');
+            this.syncSystemCursorHidden(false, 'user_cursor_revealed');
         }
 
         clearUserCursorReveal(resetCursor) {
@@ -11562,7 +11702,7 @@
         prepareResistanceCursorReveal() {
             if (this.userCursorRevealed) {
                 this.revealUserCursor();
-                return;
+                return false;
             }
 
             if (this.resistanceCursorTimer) {
@@ -11577,6 +11717,16 @@
                 document.body.classList.remove('yui-resistance-cursor-reveal');
                 this.restoreHiddenCursorAfterResistance = false;
             }, 3000);
+            return true;
+        }
+
+        syncSystemCursorHidden(hidden, reason = 'tutorial') {
+            if (
+                window.YuiGuideCommon
+                && typeof window.YuiGuideCommon.syncPcSystemCursorHidden === 'function'
+            ) {
+                window.YuiGuideCommon.syncPcSystemCursorHidden(hidden === true, reason);
+            }
         }
 
         playLightResistance(x, y, options) {
@@ -11610,6 +11760,7 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.syncSystemCursorHidden(false, 'destroy');
             this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
             this.restoreDay1TakeoverAgentSwitches('destroy').catch((error) => {
                 console.warn('[YuiGuide] 销毁时恢复 Day1 Agent 开关失败:', error);
@@ -11744,81 +11895,6 @@
                 return;
             }
             this.destroy();
-        }
-
-        get mobileTouchInteractionPassthrough() {
-            return this.shouldUseMobileTouchInteractionPassthrough();
-        }
-
-        shouldUseMobileTouchInteractionPassthrough() {
-            const coarsePointer = !!(
-                window.matchMedia
-                && window.matchMedia('(hover: none), (pointer: coarse)').matches
-            );
-            const narrowViewport = Math.max(
-                window.innerWidth || 0,
-                document.documentElement ? document.documentElement.clientWidth || 0 : 0
-            ) <= 768;
-            const touchCapable = !!(
-                'ontouchstart' in window
-                || (navigator && Number(navigator.maxTouchPoints || 0) > 0)
-            );
-
-            // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
-            return !!((coarsePointer || touchCapable) && narrowViewport);
-        }
-
-        isAllowedTutorialInteractionTarget(target) {
-            if (!target || typeof target.closest !== 'function') {
-                return false;
-            }
-
-            if (target.closest('#neko-tutorial-skip-btn')) {
-                return true;
-            }
-
-            if (this.isGuideMessageActionTarget(target)) {
-                return true;
-            }
-
-            if (this.awaitingIntroActivation) {
-                if (this.isIntroActivationTarget(target)) {
-                    this.finishIntroActivation();
-                    return true;
-                }
-            }
-
-            if (this.manualPluginDashboardOpenAllowed && this.manualPluginDashboardOpenTarget) {
-                const manualTarget = this.manualPluginDashboardOpenTarget;
-                if (
-                    target === manualTarget
-                    || (manualTarget.contains && manualTarget.contains(target))
-                    || (
-                        target.closest
-                        && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
-                    )
-                ) {
-                    this.manualPluginDashboardOpenUserClicked = true;
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        isSystemDialogInteractionTarget(target) {
-            if (!target || typeof target.closest !== 'function') {
-                return false;
-            }
-
-            return !!target.closest([
-                '#prominent-notice-overlay',
-                '.modal-overlay',
-                '.modal-dialog',
-                '.storage-location-completion-card',
-                '#storage-location-overlay',
-                '.storage-location-modal'
-            ].join(', '));
         }
 
         hasOpenSystemDialog() {

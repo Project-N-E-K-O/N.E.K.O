@@ -347,6 +347,14 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
     pngtuber_payload['scale'] = _bounded_number(pngtuber_payload.get('scale'), 1, 0.1, 5)
     pngtuber_payload['offset_x'] = _bounded_number(pngtuber_payload.get('offset_x'), 0, -5000, 5000)
     pngtuber_payload['offset_y'] = _bounded_number(pngtuber_payload.get('offset_y'), 0, -5000, 5000)
+    pngtuber_payload['mobile_scale'] = _bounded_number(
+        pngtuber_payload.get('mobile_scale'),
+        min(pngtuber_payload['scale'], 1),
+        0.1,
+        5,
+    )
+    pngtuber_payload['mobile_offset_x'] = _bounded_number(pngtuber_payload.get('mobile_offset_x'), 0, -5000, 5000)
+    pngtuber_payload['mobile_offset_y'] = _bounded_number(pngtuber_payload.get('mobile_offset_y'), 0, -5000, 5000)
     pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
     return pngtuber_payload, idle_image
 

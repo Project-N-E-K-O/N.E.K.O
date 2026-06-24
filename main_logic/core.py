@@ -74,6 +74,7 @@ from config import (
     SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
 )
 # FOCUS_MODE_ENABLED is read live with a function-local ``from config import
 # FOCUS_MODE_ENABLED`` at each gate (re-imported per call → picks up a runtime
@@ -638,6 +639,15 @@ IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 # 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
 FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
+# 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
+# 还要花几秒真正起目标模式会话（含最坏 ~12s 的 TTS 就绪等待），若把大半个 15s 都
+# 耗在等待上，重启发出的 session_started 会晚于前端 deadline，前端照样超时、甚至
+# reset 后才收到 ack 起孤儿会话（Codex P2）。取前端超时的一半，给重启留 ~7.5s 余量；
+# in-flight 没在这窗口内落定就放弃（回落 baseline：前端超时、无孤儿）。in-flight
+# （text）正常 1~3s 落定，远在窗口内。注：TTS 冷启动叠加 in-flight 贴线落定的双重
+# 最坏情形仍可能溢出 15s，此时由 start_session 末尾的连接/放弃校验与重启侧守卫兜底。
+CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
+
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
 # 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
@@ -793,6 +803,60 @@ class ContextAppendResult:
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
+def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
+    """Remove every CLOSED tool-call pair from the conversation history: an
+    assistant message (role=assistant, carrying tool_calls) plus the tool-result
+    messages immediately following it whose tool_call_id matches. Any
+    reasoning_content (the thinking model's chain, parked on that assistant
+    message for provider replay) is dropped together with it — deleting the
+    whole pair, NOT just the field, since a thinking endpoint rejects a
+    tool_calls turn whose reasoning_content went missing on replay.
+
+    Only assistant messages at index >= ``start`` are considered, so a Focus
+    exit scopes the purge to the episode's history suffix (recorded when Focus
+    was entered) and leaves closed tool calls from regular turns BEFORE Focus
+    began intact. ``start`` is clamped to [0, len].
+
+    "Closed" = every tool_call id on the assistant message is answered by a
+    following contiguous tool message. Unclosed calls (a call with no result —
+    an interrupted / in-flight turn) are kept so live state is never corrupted.
+    Plain Human / AI / System (BaseMessage) entries are never touched. Returns
+    the number of messages deleted.
+    """
+    if not history:
+        return 0
+    n = len(history)
+    start = max(0, min(int(start or 0), n))
+    remove: set[int] = set()
+    for i in range(start, n):
+        msg = history[i]
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
+            continue
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            continue
+        call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+        if not call_ids:
+            continue
+        # execute 路径原子追加 assistant + 紧随其后的各 tool result，所以闭合的
+        # 结果消息是「连续」的；遇到非 tool 消息即停止该 assistant 的结果收集。
+        result_idx: list[int] = []
+        covered: set = set()
+        for j in range(i + 1, n):
+            rj = history[j]
+            if isinstance(rj, dict) and rj.get("role") == "tool":
+                result_idx.append(j)
+                covered.add(rj.get("tool_call_id"))
+            else:
+                break
+        if call_ids <= covered:  # 每个 call 都有结果 → 已闭合，整对删
+            remove.add(i)
+            remove.update(result_idx)
+    for idx in sorted(remove, reverse=True):
+        del history[idx]
+    return len(remove)
+
+
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
         self.websocket = None
@@ -838,6 +902,12 @@ class LLMSessionManager:
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
         self._audio_stream_epoch = 0
+        # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
+        # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
+        # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
+        # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
+        # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
+        self._user_session_abandon_epoch = 0
         self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -1056,6 +1126,11 @@ class LLMSessionManager:
         # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
         # proactive）共用同一个 scorer，保证行为不分裂。
         self._focus_scorer = FocusScorer(lanlan_name)
+        # 凝神退出时清理历史 thinking/已闭合 tool call 残留的边沿标志：进入 FOCUS
+        # 时 arm，退出并清理后 disarm（见 _maybe_purge_focus_artifacts）。
+        self._focus_artifacts_pending = False
+        # 进入 FOCUS 那刻的历史长度；退出只清这之后（episode 期间）的闭合 tool call。
+        self._focus_artifacts_history_start: int | None = None
 
         # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
         # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
@@ -1091,6 +1166,12 @@ class LLMSessionManager:
                     self.lanlan_name, e,
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
+
+        # activity_guess narration 的「下游消费方」门控：会话 goodbye_silent（猫娘挂机
+        # 静默）时，proactive Phase 2 一进门就 bail，narration 没人读。把 is_goodbye_silent
+        # 注入 tracker，让 20s 心跳在静默期跳过昂贵的 emotion-tier LLM 外呼（规则心跳照跑）。
+        # tracker 跨 session 长存、心跳不随 End Session 取消，否则挂机后会一直空烧 LLM。
+        self._activity_tracker.set_narration_suppressed_check(self.is_goodbye_silent)
 
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
@@ -2339,11 +2420,30 @@ class LLMSessionManager:
             # with charge just under the enter bar; if we only cleared on FOCUS,
             # that frozen charge would survive the disabled window and let an
             # unrelated mild cue enter on stale evidence once re-enabled.
-            # update_focus self-clears when the switch is off (idempotent).
+            # update_focus self-clears when the (config) switch is off (idempotent).
             await self.state.update_focus(0.0)
             # Reconcile AGAIN after the self-clear: if the switch was flipped off
             # mid-episode, the clear above is silent (no FOCUS_EXIT), so clear the
             # badge this turn rather than waiting for the next one.
+            await self._reconcile_focus_indicator()
+            return False
+        # Per-user master switch (对话设置 → focusCognitionEnabled): the user can
+        # turn 凝神 off entirely while the global config flag stays on. Defaults on
+        # when unset. The master emotion read is independent (its own pipeline) and
+        # is NOT affected by this gate.
+        try:
+            focus_user_enabled = bool(
+                (await aload_global_conversation_settings()).get('focusCognitionEnabled', True)
+            )
+        except Exception:
+            focus_user_enabled = True
+        if not focus_user_enabled:
+            # Hard-clear (not update_focus(0.0)): with the config flag still on,
+            # update_focus only DECAYS by retention, leaving residual charge and a
+            # FOCUS mode lingering for a turn or two — so the badge/glow wouldn't
+            # drop until the charge bled below exit. clear_focus zeroes everything
+            # silently (no FOCUS_EXIT) so 凝神 turns off at once when the user asks.
+            await self.state.clear_focus()
             await self._reconcile_focus_indicator()
             return False
         if not (user_text and user_text.strip()):
@@ -2374,6 +2474,18 @@ class LLMSessionManager:
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
             )
+            if mode is CognitionMode.FOCUS:
+                if not self._focus_artifacts_pending:
+                    # 首次进入本 episode：记下历史长度，退出时只清这之后（episode
+                    # 期间）产生的闭合 tool call，不动 Focus 之前的普通工具调用。
+                    hist = getattr(
+                        getattr(self, "session", None), "_conversation_history", None
+                    )
+                    self._focus_artifacts_history_start = (
+                        len(hist) if isinstance(hist, list) else None
+                    )
+                # arm：本 episode 的 thinking/tool 残留，退出时要清（见下）。
+                self._focus_artifacts_pending = True
             # Log every turn (incl. REGULAR) so tuning can watch the charge
             # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
             logger.info(
@@ -2381,6 +2493,12 @@ class LLMSessionManager:
                 self.lanlan_name, scored.score,
                 self.state.snapshot().get("focus_charge"), mode.value, scored.signals,
             )
+            # Stream the post-turn charge for the frontend edge glow.
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 退出边沿同步清理（此刻在 stream_text 之前、无并发）：inline 自然退出
+            # （decayed / hard_cap / topic_switch）都在此命中并清；FOCUS 维持时是
+            # no-op（仍在 episode 内）。silent early-return 路径由 reconcile 兜底。
+            await self._maybe_purge_focus_artifacts()
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -2408,30 +2526,102 @@ class LLMSessionManager:
         from config import FOCUS_MODE_ENABLED  # live read
         if not FOCUS_MODE_ENABLED:
             return False
+        # Honor the per-user master switch here too (defense in depth): if the
+        # user turned 凝神 off mid-episode, a proactive turn must not keep running
+        # thinking-on before the next inline turn clears the episode.
+        try:
+            if not bool(load_global_conversation_settings().get('focusCognitionEnabled', True)):
+                return False
+        except Exception:
+            # Fail-open: a settings-read hiccup must not silently disable an
+            # active Focus episode — fall through to the live state.mode below.
+            pass
         return self.state.mode is CognitionMode.FOCUS
 
     async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
         """SM subscriber for FOCUS_ENTER / FOCUS_EXIT — immediate badge update on
-        the normal hysteresis path. Delegates to the idempotent push."""
+        the normal hysteresis path. Delegates to the idempotent push.
+
+        NB: history artifact arm/purge is deliberately NOT done here.
+        ``_dispatch_subscribers`` fires async callbacks fire-and-forget
+        (``ensure_future``), so a FOCUS_EXIT-driven purge could race the reply
+        stream. Arming + purging happen SYNCHRONOUSLY on the inline decision path
+        and the per-turn reconcile instead (see ``_maybe_purge_focus_artifacts``)."""
         await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
+
+    async def _maybe_purge_focus_artifacts(self) -> None:
+        """On the edge where Focus mode turns OFF, wipe the thinking + closed
+        tool-call traces the just-ended episode left in history, so they can't
+        bias the REGULAR reply that follows (or a fresh session).
+
+        Called SYNCHRONOUSLY from two places (NOT the async FOCUS_EXIT event,
+        which fires fire-and-forget and could race the stream):
+          - the inline decision, right after update_focus and BEFORE stream_text
+            — catches inline exits (decayed / hard_cap / topic_switch);
+          - the per-turn _reconcile_focus_indicator — catches the silent exits
+            (master switch / per-user setting / privacy self-clear / clear_focus)
+            and a proactive-cooldown exit on the next inline turn.
+
+        Idempotent: runs once per episode, only when Focus was actually entered
+        (``_focus_artifacts_pending``) AND the mode has dropped back to REGULAR.
+        All call sites sit OUTSIDE the stream boundary, so there is no concurrent
+        history mutation. Only text sessions (OmniOfflineClient) keep history.
+        """
+        if not self._focus_artifacts_pending:
+            return
+        if self.state.mode is CognitionMode.FOCUS:
+            return  # 仍在 focus，残留还在用，不能清
+        self._focus_artifacts_pending = False
+        start = self._focus_artifacts_history_start or 0
+        self._focus_artifacts_history_start = None
+        sess = getattr(self, "session", None)
+        if not isinstance(sess, OmniOfflineClient):
+            return
+        history = getattr(sess, "_conversation_history", None)
+        if not history:
+            return
+        try:
+            removed = _purge_closed_tool_calls(history, start=start)
+            if removed:
+                logger.info(
+                    "[%s] 凝神退出：从历史清除 thinking/已闭合 tool call 残留 %d 条",
+                    self.lanlan_name, removed,
+                )
+        except Exception as e:
+            logger.warning("[%s] 凝神退出历史清理失败(忽略): %s", self.lanlan_name, e)
 
     async def _reconcile_focus_indicator(self) -> None:
         """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
         history-wipe, master-switch / privacy self-clear in update_focus) so the
-        badge can't get stuck on. Called once per turn; idempotent."""
+        badge AND the charge glow can't get stuck on. Called once per turn. The
+        charge push reads the (now-cleared → 0) snapshot, so a silent exit that
+        only reconciles the binary state still tells the glow to fade out. Also
+        the catch-all purge point for silent Focus exits (no FOCUS_EXIT event)."""
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
+        await self._push_focus_charge()
+        await self._maybe_purge_focus_artifacts()
 
-    async def _push_focus_indicator(self, active: bool) -> None:
-        """Mirror the cognition indicator (focus_state) to the frontend — a
-        subtle breathing glow (see react-neko-chat). Idempotent on the cached
-        state so the event path and the per-turn reconcile never double-fire.
-        Ephemeral UI state: pushed live over the websocket and mirrored to the
-        sync queue for cross-server, but never persisted to history (the badge
-        is not conversation; memory consumes FOCUS_EXIT's payload separately).
+    async def resync_focus_for_new_window(self) -> None:
+        """Re-emit ALL focus signals to a freshly-connected window (greeting_check):
+        the charge glow, the binary focus_state, AND the transient thinking pulse.
+        ``force=True`` bypasses the idempotent cache so a window opened mid-FOCUS
+        (or mid-thinking) gets the current indicator even though no enter/exit /
+        thinking transition fires for it."""
+        await self._push_focus_charge()
+        await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS, force=True)
+        await self._push_focus_thinking(getattr(self, "_focus_thinking_active", False), force=True)
+
+    async def _push_focus_indicator(self, active: bool, *, force: bool = False) -> None:
+        """Mirror the cognition indicator (focus_state) to the frontend (drives
+        the screen-reader status node; the visible glow is charge-driven). Idempotent
+        on the cached state so the event path and the per-turn reconcile never
+        double-fire — except ``force=True`` (a new window re-sync) re-pushes even
+        when unchanged. Ephemeral UI state: pushed live over the websocket and
+        mirrored to the sync queue for cross-server, but never persisted to history.
         Best-effort: a ws failure must never disturb the caller."""
         # getattr default guards bypass-__init__ constructions (bare test mgrs,
         # cross-server / unpickled managers) — they simply have no badge to sync.
-        if active == getattr(self, "_focus_indicator_active", False):
+        if not force and active == getattr(self, "_focus_indicator_active", False):
             return
         self._focus_indicator_active = active
         msg = {"type": "focus_state", "active": active}
@@ -2450,6 +2640,114 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_state ws push failed: %s", self.lanlan_name, e)
 
+    async def _push_focus_charge(self, charge: Optional[float] = None) -> None:
+        """Stream the live Focus charge (0..1) to the frontend so the edge glow
+        can scale continuously: onset at FOCUS_CHARGE_EXIT, the non-linear jump +
+        breathing at FOCUS_CHARGE_ENTER, peak toward FOCUS_CHARGE_CAP. Carries the
+        wall-clock stamp so the frontend extrapolates the same time decay between
+        pushes for a smooth fade (no per-second server spam). Pushed on every
+        charge change AND on (re)connect so a freshly-opened window (e.g. the
+        separate /chat_full window) lands on the correct brightness immediately.
+        Ephemeral, ws + sync-queue only, never persisted. Best-effort.
+
+        ``at_ms`` is the charge's LAST-CHANGE wall-clock (not "now"), so the
+        frontend extrapolates the time decay from the right moment — a reconnect
+        after a long gap must not replay a stale un-decayed charge as if current.
+        When Focus is disabled we push 0 (not skip) so a lit glow can't linger."""
+        from config import FOCUS_MODE_ENABLED  # live read
+        try:
+            snap = self.state.snapshot()
+        except Exception:
+            snap = {}
+        if not FOCUS_MODE_ENABLED:
+            charge, at = 0.0, 0.0
+        else:
+            if charge is None:
+                try:
+                    charge = float(snap.get("focus_charge") or 0.0)
+                except Exception:
+                    charge = 0.0
+            at = snap.get("focus_charge_at") or 0.0
+        at_ms = int(at * 1000) if at and at > 0 else int(time.time() * 1000)
+        msg = {"type": "focus_charge", "charge": round(max(0.0, float(charge)), 4),
+               "at_ms": at_ms}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_charge sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_charge ws push failed: %s", self.lanlan_name, e)
+
+    async def _push_focus_thinking(self, active: bool, *, force: bool = False) -> None:
+        """Pulse a transient "model is thinking" signal to the frontend so the
+        chat history can show a thinking-dots bubble while a Focus turn runs
+        thinking-on but hasn't emitted any visible content yet. Pushed True right
+        before such a turn streams, cleared (False) the moment the first visible
+        chunk lands (send_lanlan_response) or the turn ends. Idempotent on the
+        cached state so per-chunk callers can clear blindly without spamming —
+        except ``force=True`` (a new-window re-sync) re-pushes even when
+        unchanged, mirroring _push_focus_indicator so a window opened mid-thinking
+        lands on the current bubble. Ephemeral: ws + sync-queue only, never
+        persisted. Best-effort — a ws failure must never disturb the caller.
+
+        getattr default guards bypass-__init__ constructions (bare test mgrs,
+        cross-server / unpickled managers) — they simply have no bubble to sync."""
+        if not force and active == getattr(self, "_focus_thinking_active", False):
+            return
+        self._focus_thinking_active = active
+        msg = {"type": "focus_thinking", "active": active}
+        try:
+            self.sync_message_queue.put({"type": "json", "data": msg})
+        except Exception as e:
+            logger.debug("[%s] focus_thinking sync-queue push failed: %s", self.lanlan_name, e)
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                if self.websocket_lock:
+                    async with self.websocket_lock:
+                        await ws.send_json(msg)
+                else:
+                    await ws.send_json(msg)
+        except Exception as e:
+            logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
+
+    async def handle_thinking_active(self, active: bool = True) -> None:
+        """Session callback: the model started (active=True) or finished
+        (active=False) emitting reasoning/thinking chunks for the current stream
+        (the text is filtered out upstream; only this boolean pulse reaches us).
+        Drives the chat thinking-dots bubble for ANY reasoning turn — decoupled
+        from the Focus inline decision. A Focus turn pre-pulses the bubble before
+        streaming (still works, idempotent); a non-Focus turn whose provider
+        reasons internally pulses here on its first reasoning chunk. The bubble
+        is cleared on the first visible token (send_lanlan_response), when the
+        text turn ends (the unconditional finally in the text path), or — for a
+        proactive/greeting/avatar turn that reasons but commits no visible text —
+        by the active=False clear from prompt_ephemeral's finally. Best-effort —
+        idempotent via ``_push_focus_thinking``'s cached state."""
+        await self._push_focus_thinking(active)
+
+    def _make_thinking_active_callback(self, session_ref):
+        """Bind ``handle_thinking_active`` to ONE specific OmniOfflineClient so a
+        reasoning pulse only drives the bubble while that client is the live
+        session. The thinking bubble is a single per-window surface; a pulse from
+        a NON-current client — a pending hot-swap session, or a just-demoted old
+        session still draining a stream after the swap — must not light or clear
+        the current window (CodeRabbit). The live session always matches, so its
+        pulses/clears pass through unchanged; everything else is a silent no-op.
+        getattr default tolerates call-time teardown where self.session is None."""
+        async def _on_thinking_active(active: bool) -> None:
+            if session_ref is getattr(self, "session", None):
+                await self.handle_thinking_active(active)
+        return _on_thinking_active
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -2458,12 +2756,15 @@ class LLMSessionManager:
         entering and sustaining Focus is driven solely by the inline path (the
         user's own messages). This only lets an active episode cool down.
 
-        Two-tier decay by whether the turn actually spoke:
-          * ``replied=True`` (a Phase-2 proactive reply was delivered) → faster
-            ``FOCUS_IDLE_REPLIED_RETENTION``: speaking spends more of the episode.
+        Decay rate by whether the turn actually spoke, via two config knobs:
+          * ``replied=True`` (a Phase-2 proactive reply was delivered) →
+            ``FOCUS_IDLE_REPLIED_RETENTION``.
           * ``replied=False`` (Phase-2 reached but produced no reply — empty /
-            aborted) → slower ``FOCUS_IDLE_SILENT_RETENTION``: barely spends it.
-        So Focus persistence is driven by how often she speaks, not raw time.
+            aborted) → ``FOCUS_IDLE_SILENT_RETENTION``.
+        Currently both are tuned to the same value (0.8), so speaking and silence
+        cool the episode at one gentle rate; the split is kept for future
+        re-tuning (invariant: replied <= silent). Focus persistence is driven by
+        how often a proactive turn fires, not raw time.
 
         ``episode_token`` / ``turn_token`` pin the decay to the exact focus state
         this proactive turn observed when it made its thinking decision — the
@@ -2572,6 +2873,12 @@ class LLMSessionManager:
                 self.lanlan_name, replied,
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
+            await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 若这次 cooldown 把 Focus 衰减出去(→REGULAR)，立即清 episode 残留：
+            # proactive/greeting 的 prompt_ephemeral 会在下个 inline turn 之前就从
+            # _conversation_history 构建、且不走 reconcile，必须赶在它前面清掉，否则
+            # 会把刚结束的 Focus tool-call/reasoning 残留带进随后的 REGULAR 轮。
+            await self._maybe_purge_focus_artifacts()
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",
                            self.lanlan_name, e)
@@ -3668,6 +3975,10 @@ class LLMSessionManager:
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
+            # First visible content of the turn → the model has finished its
+            # (hidden) 凝神 thinking, so drop the thinking-dots bubble. Idempotent,
+            # so this is a no-op on regular / proactive turns that never lit it.
+            await self._push_focus_thinking(False)
         self.sync_message_queue.put({"type": "json", "data": message})
         if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
@@ -5243,7 +5554,23 @@ class LLMSessionManager:
 
         # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
         await self.send_session_failed(input_mode)
-        await self.cleanup()
+        # reset_starting_count=False：本函数从失败的 start_session 的 except 里调用，
+        # 那次 start_session 的 finally 才是 _starting_session_count guard 的唯一所有者
+        # 并会在最后递减它。若让这里的 cleanup 提前把 count 清 0，会开出一个"失败任务
+        # 尚未完全收尾、但 count 已 0"的窗口，等待中的跨模式重启会据此重入，随后被
+        # 失败任务残余的 cleanup（清 websocket）和 finally（减 guard）clobber（Codex P2）。
+        await self.cleanup(reset_starting_count=False)
+        # 但 reset_starting_count=False 会让 end_session 的 inactive-early 路径跳过
+        # pending_input_data.clear()（那块与 guard 释放耦合），导致本次失败启动期间缓存的
+        # 输入残留、被下次成功启动的 _flush_pending_input_data() 误注入（Codex P2）。
+        # 这里显式补清本次失败 start 自己的输入：此刻 count 仍被本次 finally 持有(>0)，
+        # 没有并发 start 穿过、缓存里只可能是本次失败 start 的输入，清理安全。
+        # 不走 end_session 的 gating 改动，rebuild 路径(同样 reset_starting_count=False 但
+        # 需要保留输入回放)语义不受影响。
+        async with self.input_cache_lock:
+            self.session_ready = False
+            self.pending_input_data.clear()
+            self._clear_pending_context_appends()
 
     @property
     def is_starting(self) -> bool:
@@ -5392,7 +5719,14 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
-    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
+    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio',
+                            *, user_initiated=False, _allow_cross_mode_restart=True):
+        # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
+        # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
+        # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
+        # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
+        # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
+        # 二次并发撞车回落静默 return 而非无界递归。
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
         # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
@@ -5431,8 +5765,7 @@ class LLMSessionManager:
             # 仅对**同模式**的去重请求补发 ack：in-flight 启的是它自己的模式，
             # 跨模式（如 greeting 拉 text、另一路同刻请求 audio）若复用 in-flight 的
             # session_started(text)，前端会按 text 切 UI、收口 promise，而用户要的
-            # audio 会话根本没起（CodeRabbit）。跨模式时维持原静默 return（与改动前
-            # 完全一致，不更差）。
+            # audio 会话根本没起（CodeRabbit）。
             if (self._starting_input_mode or input_mode) == input_mode:
                 logger.warning("⚠️ Session正在启动中，等 in-flight 启动落定后给本请求补发 session_started")
                 # 等 in-flight 那次启动**自己落定**（_starting_session_count 归 0）。
@@ -5454,6 +5787,65 @@ class LLMSessionManager:
                 # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
                 if self._starting_session_count == 0 and self.session and self.is_active:
                     await self.send_session_started(input_mode)
+            elif user_initiated and _allow_cross_mode_restart:
+                # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
+                # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
+                # （audio）。早期实现静默 return，但用户的 audio 请求是显式意图：
+                # 静默丢弃会让前端干等 15s ack 超时，且超时时发的 end_session 还会把
+                # 正在建立的 proactive text 会话一并撕掉（proactive 语音也播不出）。
+                # 改为：等 in-flight 那次启动落定（_starting_session_count 归 0）后，
+                # 递归重入起一个本模式的新会话——它会按 5588 行的旧 session 清理逻辑
+                # 替换掉刚建好的旧模式会话。不复用 in-flight 的 ack（跨模式复用会按
+                # 错模式切 UI，见上）。
+                logger.warning("⚠️ Session正在启动中（跨模式），等 in-flight 落定后改起 %s 会话", input_mode)
+                # 快照"用户放弃"计数：仅在前端/用户主动 end_session 时递增（见
+                # end_session 顶部）。in-flight 真正落定时 count 由其自身 finally 归 0、
+                # abandon epoch 不变；而前端 15s 超时发的 end_session 会把 count 清 0
+                # 且 abandon epoch +1。只在「count 归 0 且 abandon epoch 未变」时重启——
+                # 区分"真落定"与"用户已放弃 + 被 end_session 清零"，避免在 UI 已 reject
+                # 后凭空起孤儿会话（Codex P2）。关键：不能用 _audio_stream_epoch——它在
+                # in-flight 启动失败的 by_server cleanup 里也会涨，会把用户仍在等待的
+                # audio 误判成放弃、回到 15s 干等（CodeRabbit）。
+                _abandon_epoch = self._user_session_abandon_epoch
+                _waited = 0.0
+                while self._starting_session_count > 0 and _waited < CROSS_MODE_RESTART_WAIT_SECONDS:
+                    await asyncio.sleep(0.05)
+                    _waited += 0.05
+                # 重启前的连接校验，两个条件都要满足：
+                #   1) 本请求那把 ws（param）仍连接。in-flight 失败时
+                #      _handle_session_start_exception→cleanup() 会把 self.websocket 清成
+                #      None，但浏览器连接其实还开着——这种必须能重启，否则用户 audio 干等
+                #      15s（Codex P2）。判据用 param ws 的连接态，不看 self.websocket：浏览器
+                #      真刷新/断连时这把 param ws 会变 DISCONNECTED。
+                #   2) self.websocket 仍是这把或已被清空（None）。若已被换成另一条新连接，
+                #      说明发生了重连，别用旧 ws 重启去和新连接打架（Codex P2 stale ws）。
+                try:
+                    _param_ws_connected = (
+                        websocket is not None
+                        and hasattr(websocket, 'client_state')
+                        and websocket.client_state == websocket.client_state.CONNECTED
+                    )
+                except Exception:  # noqa: BLE001
+                    _param_ws_connected = False
+                _self_ws_ok = self.websocket is websocket or self.websocket is None
+                if self._starting_session_count != 0:
+                    logger.warning("⚠️ 跨模式等待 in-flight 启动超时（%.1fs，留余量给重启），放弃改起 %s", _waited, input_mode)
+                elif self._user_session_abandon_epoch != _abandon_epoch:
+                    logger.warning("⚠️ 跨模式等待期间用户主动结束了启动（已放弃），不再改起 %s", input_mode)
+                elif not (_param_ws_connected and _self_ws_ok):
+                    logger.warning("⚠️ 跨模式等待期间 websocket 已断连/被新连接替换，不再改起 %s", input_mode)
+                else:
+                    # in-flight 干净落定且连接仍在：递归重入起目标模式。
+                    # 先清熔断：用户显式请求按 websocket_router 语义本应清，但当时
+                    # _starting_session_count>0 让它没清；若 in-flight 失败把熔断跳了闸，
+                    # 递归会在熔断检查（5427）处静默 return、不发 session_failed → 前端干等
+                    # 15s。这里替它清，让重启真正起来或走正常失败上报（Codex P2）。
+                    # 重入禁用跨模式重启（_allow_cross_mode_restart=False）把递归深度封到 1，
+                    # 二次并发撞车回落静默 return 而非无界递归（greptile P2）。guard 检查
+                    # （5431）前无 await，count==0 的判定到重入是原子的。
+                    self.reset_session_start_circuit()
+                    await self.start_session(websocket, new, input_mode,
+                                             user_initiated=True, _allow_cross_mode_restart=False)
             else:
                 logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
             return
@@ -5798,7 +6190,11 @@ class LLMSessionManager:
                         vision_model=vision_config['model'],
                         vision_base_url=vision_config['base_url'],
                         vision_api_key=vision_config['api_key'],
+                        provider_type=conversation_config.get('provider_type'),
+                        vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
+                        # on_thinking_active bound below via a session-scoped
+                        # closure so only the LIVE session drives the bubble.
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -5824,6 +6220,7 @@ class LLMSessionManager:
                         ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
+                    new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
                 else:
                     realtime_config = self._config_manager.get_model_api_config('realtime')
                     new_session = OmniRealtimeClient(
@@ -6284,6 +6681,9 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
+                    # on_thinking_active bound below via a session-scoped closure:
+                    # the pending session must NOT light the current window's
+                    # bubble while it warms up / before the hot-swap promotes it.
                     on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -6306,6 +6706,7 @@ class LLMSessionManager:
                     ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
+                self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -6629,6 +7030,7 @@ class LLMSessionManager:
         full_text: str,
         expected_speech_id: str | None = None,
         action_note: str | None = None,
+        source_tag: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -6692,14 +7094,18 @@ class LLMSessionManager:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
                 # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
-                # LLM 给自己的元数据备忘，不算复读对象。
-                try:
-                    from memory.anti_repeat import get_anti_repeat_corpus
-                    get_anti_repeat_corpus().record_output(
-                        self.lanlan_name, full_text, is_proactive=True,
-                    )
-                except Exception as _exc:  # pragma: no cover
-                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
+                # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+                # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+                # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+                # BM25 评分豁免对偶）。
+                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                    try:
+                        from memory.anti_repeat import get_anti_repeat_corpus
+                        get_anti_repeat_corpus().record_output(
+                            self.lanlan_name, full_text, is_proactive=True,
+                        )
+                    except Exception as _exc:  # pragma: no cover
+                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
@@ -9158,7 +9564,25 @@ class LLMSessionManager:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:
                         stream_text_kwargs["history_replacement_text"] = memory_text
-                    await self.session.stream_text(data, **stream_text_kwargs)
+                    if _focus_thinking:
+                        # 凝神 turn runs thinking-on: pre-pulse the frontend so the
+                        # bubble shows up the instant the turn starts (immediate
+                        # feedback), before any reasoning chunk arrives. Idempotent
+                        # and harmless — a non-Focus turn instead pulses lazily from
+                        # OmniOfflineClient.on_thinking_active on its first reasoning
+                        # chunk (handle_thinking_active). Either way the bubble clears
+                        # on the first visible token (send_lanlan_response) or in the
+                        # unconditional finally below.
+                        await self._push_focus_thinking(True)
+                    try:
+                        await self.session.stream_text(data, **stream_text_kwargs)
+                    finally:
+                        # Clear unconditionally: a non-Focus turn may have pulsed the
+                        # bubble True via the reasoning callback, so gating the clear
+                        # on _focus_thinking would leave it stuck on tool-only / empty
+                        # / error turns. _push_focus_thinking is idempotent, so a no-op
+                        # clear when nothing pulsed costs nothing.
+                        await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
@@ -9375,6 +9799,14 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+        # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
+        # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
+        # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
+        # 不算，避免把 in-flight 启动失败误判成"用户放弃"而误杀跨模式重启
+        # （见 start_session 跨模式分支的 _user_session_abandon_epoch 守卫）。放在所有
+        # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
+        if not by_server and reset_starting_count:
+            self._user_session_abandon_epoch += 1
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -9525,23 +9957,34 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self, expected_websocket=None, *, expected_session=None):
+    async def cleanup(self, expected_websocket=None, *, expected_session=None, reset_starting_count=True):
         """
         Clean up session resources.
-        
+
         Args:
             expected_websocket: optional, the expected websocket instance.
                                If provided and it doesn't match the current websocket, skip cleanup.
                                Prevents an old connection from wrongly cleaning up a new connection's resources (race protection).
             expected_session: optional, the expected session instance.
                              Session-level guard from lifecycle callbacks, passed through to end_session.
+            reset_starting_count: forwarded to end_session. Pass False when the
+                             caller is itself a start_session that owns the
+                             _starting_session_count guard and will decrement it
+                             in its own finally — letting cleanup reset it to 0
+                             early opens a premature-0 window where a concurrent
+                             start (e.g. the cross-mode restart wait) sees the
+                             guard freed before the failing start has fully
+                             unwound, then gets its websocket/guard clobbered by
+                             the still-running teardown (Codex P2). Same rationale
+                             as the in-start old-session cleanup at line ~5610.
         """
         if expected_websocket is not None and self.websocket is not None:
             if self.websocket != expected_websocket:
                 logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
                 return
-        
-        await self.end_session(by_server=True, expected_session=expected_session)
+
+        await self.end_session(by_server=True, expected_session=expected_session,
+                               reset_starting_count=reset_starting_count)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:

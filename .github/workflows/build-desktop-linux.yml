@@ -244,6 +244,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
+          # changelog/.md 与 survey/.json 是纯数据文件，--include-package=config 只编 .py
+          # 不带它们，必须显式 include-data-dir，否则打包后 /api/changelog 与 /api/survey
+          # 读不到内容（survey 是 Steam-only，正是只在打包构建里跑）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/changelog=config/changelog"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/surveys=config/surveys"
 
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"

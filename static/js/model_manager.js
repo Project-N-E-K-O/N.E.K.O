@@ -816,6 +816,53 @@ function setModelManagerStatusText(message) {
     if (statusSpan) statusSpan.textContent = message;
 }
 
+const MODEL_MANAGER_SETTINGS_WAITING_EVENT = 'neko-model-manager-settings-waiting-change';
+
+function getModelManagerSettingsWaitingMessage() {
+    return window._modelManagerSettingsWaitingMessage
+        || modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
+}
+
+function isModelManagerSettingsWaiting() {
+    return window._modelManagerSettingsWaiting === true
+        || Number(window._modelManagerSettingsWaitingCount || 0) > 0;
+}
+
+function dispatchModelManagerSettingsWaitingChange() {
+    const waiting = isModelManagerSettingsWaiting();
+    window._modelManagerSettingsWaiting = waiting;
+    try {
+        window.dispatchEvent(new CustomEvent(MODEL_MANAGER_SETTINGS_WAITING_EVENT, {
+            detail: {
+                waiting,
+                message: getModelManagerSettingsWaitingMessage()
+            }
+        }));
+    } catch (_) {}
+}
+
+function beginModelManagerSettingsWaiting(message) {
+    const waitingMessage = message || getModelManagerSettingsWaitingMessage();
+    window._modelManagerSettingsWaitingCount = Number(window._modelManagerSettingsWaitingCount || 0) + 1;
+    window._modelManagerSettingsWaitingMessage = waitingMessage;
+    dispatchModelManagerSettingsWaitingChange();
+
+    let finished = false;
+    return () => {
+        if (finished) return;
+        finished = true;
+        window._modelManagerSettingsWaitingCount = Math.max(
+            0,
+            Number(window._modelManagerSettingsWaitingCount || 0) - 1
+        );
+        if (window._modelManagerSettingsWaitingCount === 0) {
+            window._modelManagerSettingsWaiting = false;
+            window._modelManagerSettingsWaitingMessage = '';
+        }
+        dispatchModelManagerSettingsWaitingChange();
+    };
+}
+
 async function resolveModelManagerLanlanName() {
     if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
         rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
@@ -1504,6 +1551,10 @@ async function captureDefaultCardFaceModelImage(state = {}, width, height) {
 async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
     const abortSignal = options.signal || null;
     const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const waitingMessage = modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
+    const finishSettingsWaiting = options.skipSettingsWaiting
+        ? null
+        : beginModelManagerSettingsWaiting(waitingMessage);
     const throwIfCancelled = () => {
         if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
             const error = new Error('默认卡面生成已取消');
@@ -1512,78 +1563,84 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
         }
     };
 
-    throwIfCancelled();
-    setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
-
-    const cardW = 600;
-    const cardH = 800;
-    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
-    throwIfCancelled();
-    const sourceCanvas = modelImage.canvas;
-    const output = document.createElement('canvas');
-    output.width = cardW;
-    output.height = cardH;
-    const ctx = output.getContext('2d');
-    if (!ctx) throw new Error('card_canvas_context_failed');
-
-    ctx.fillStyle = '#E8F4F8';
-    ctx.fillRect(0, 0, cardW, cardH);
-
-    drawImageCover(
-        ctx,
-        sourceCanvas,
-        0,
-        0,
-        cardW,
-        cardH,
-        modelImage.drawOptions || {}
-    );
-
-    const cardBlob = await canvasToPngBlob(output);
-    throwIfCancelled();
-    const formData = new FormData();
-    formData.append('image', cardBlob, 'card_face.png');
-
-    const controller = new AbortController();
-    const abortFallbackUpload = () => controller.abort();
-    if (abortSignal) {
-        if (abortSignal.aborted) {
-            abortFallbackUpload();
-        } else {
-            abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
-        }
-    }
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-    let response;
     try {
         throwIfCancelled();
-        response = await fetch(
-            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
-            { method: 'PUT', body: formData, signal: controller.signal }
-        );
-    } catch (error) {
-        if (error && error.name === 'AbortError') {
-            if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
-                const abortError = new Error('默认卡面生成已取消');
-                abortError.name = 'AbortError';
-                throw abortError;
-            }
-            throw new Error('默认卡面上传超时，请稍后重试');
-        }
-        throw error;
-    } finally {
-        clearTimeout(timeoutId);
-        if (abortSignal) {
-            abortSignal.removeEventListener('abort', abortFallbackUpload);
-        }
-    }
-    throwIfCancelled();
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `HTTP ${response.status}`);
-    }
+        setModelManagerStatusText(waitingMessage);
 
-    notifyCardFaceUpdatedFromModelManager(lanlanName);
+        const cardW = 600;
+        const cardH = 800;
+        const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
+        throwIfCancelled();
+        const sourceCanvas = modelImage.canvas;
+        const output = document.createElement('canvas');
+        output.width = cardW;
+        output.height = cardH;
+        const ctx = output.getContext('2d');
+        if (!ctx) throw new Error('card_canvas_context_failed');
+
+        ctx.fillStyle = '#E8F4F8';
+        ctx.fillRect(0, 0, cardW, cardH);
+
+        drawImageCover(
+            ctx,
+            sourceCanvas,
+            0,
+            0,
+            cardW,
+            cardH,
+            modelImage.drawOptions || {}
+        );
+
+        const cardBlob = await canvasToPngBlob(output);
+        throwIfCancelled();
+        const formData = new FormData();
+        formData.append('image', cardBlob, 'card_face.png');
+
+        const controller = new AbortController();
+        const abortFallbackUpload = () => controller.abort();
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                abortFallbackUpload();
+            } else {
+                abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
+            }
+        }
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        let response;
+        try {
+            throwIfCancelled();
+            response = await fetch(
+                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+                { method: 'PUT', body: formData, signal: controller.signal }
+            );
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+                    const abortError = new Error('默认卡面生成已取消');
+                    abortError.name = 'AbortError';
+                    throw abortError;
+                }
+                throw new Error('默认卡面上传超时，请稍后重试');
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
+            if (abortSignal) {
+                abortSignal.removeEventListener('abort', abortFallbackUpload);
+            }
+        }
+        throwIfCancelled();
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${response.status}`);
+        }
+
+        notifyCardFaceUpdatedFromModelManager(lanlanName);
+    } finally {
+        if (typeof finishSettingsWaiting === 'function') {
+            finishSettingsWaiting();
+        }
+    }
 }
 
 async function offerCardFaceAfterModelSave(state = {}) {
@@ -1908,6 +1965,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
     const _earlyBackBtn = document.getElementById('backToMainBtn');
     const _earlyBackHandler = () => {
+        if (isModelManagerSettingsWaiting()) {
+            setModelManagerStatusText(getModelManagerSettingsWaitingMessage());
+            return;
+        }
         if (window.opener && !window.opener.closed) {
             window.close();
         } else {
@@ -2226,6 +2287,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userModelList = document.getElementById('user-model-list');
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
+    let lastVrmAnimationSelection = '_no_motion_';
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
     let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
@@ -2950,6 +3012,118 @@ document.addEventListener('DOMContentLoaded', async () => {
             }, duration);
         }
     };
+
+    const showSettingsWaitingNotice = () => {
+        const message = getModelManagerSettingsWaitingMessage();
+        showStatus(message, 0);
+        showModelManagerToast(message, 0, 'loading');
+    };
+
+    const restoreStatusAfterSettingsWaiting = () => {
+        if (currentModelInfo && currentModelInfo.name) {
+            showStatus(
+                t('live2d.currentModel', `当前模型: ${currentModelInfo.name}`, { model: currentModelInfo.name }),
+                0
+            );
+        }
+    };
+
+    const blockSettingsWaitingSidebarInteraction = (event) => {
+        if (!isModelManagerSettingsWaiting()) return;
+        const target = event.target;
+        if (!(target instanceof Element) || !target.closest('#sidebar')) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        showSettingsWaitingNotice();
+    };
+
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) {
+        ['click', 'pointerdown', 'mousedown', 'keydown', 'input', 'change'].forEach(eventName => {
+            sidebar.addEventListener(eventName, blockSettingsWaitingSidebarInteraction, true);
+        });
+    }
+
+    const setModelManagerSettingsWaitingControls = (waiting, message) => {
+        const waitingMessage = message || getModelManagerSettingsWaitingMessage();
+        document.body?.classList.toggle('model-manager-settings-waiting', waiting);
+
+        document.querySelectorAll(
+            '#sidebar button, #sidebar select, #sidebar input, #sidebar textarea, #sidebar a[href], #sidebar [role="button"]'
+        ).forEach(control => {
+            if (!(control instanceof HTMLElement)) return;
+            const supportsDisabled = control instanceof HTMLButtonElement
+                || control instanceof HTMLSelectElement
+                || control instanceof HTMLInputElement
+                || control instanceof HTMLTextAreaElement;
+            if (waiting) {
+                if (supportsDisabled && !control.disabled) {
+                    control.dataset.modelManagerSettingsWaitingDisabled = '1';
+                    control.disabled = true;
+                }
+                if (control.dataset.modelManagerSettingsWaitingTabindex === undefined) {
+                    control.dataset.modelManagerSettingsWaitingTabindex = control.hasAttribute('tabindex')
+                        ? control.getAttribute('tabindex')
+                        : '';
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled === undefined) {
+                    control.dataset.modelManagerSettingsWaitingAriaDisabled = control.getAttribute('aria-disabled') || '';
+                }
+                control.setAttribute('tabindex', '-1');
+                control.setAttribute('aria-disabled', 'true');
+                control.setAttribute('aria-busy', 'true');
+            } else {
+                control.removeAttribute('aria-busy');
+                if (control.dataset.modelManagerSettingsWaitingDisabled === '1') {
+                    control.disabled = false;
+                    delete control.dataset.modelManagerSettingsWaitingDisabled;
+                }
+                if (control.dataset.modelManagerSettingsWaitingTabindex !== undefined) {
+                    const previousTabIndex = control.dataset.modelManagerSettingsWaitingTabindex;
+                    if (previousTabIndex === '') {
+                        control.removeAttribute('tabindex');
+                    } else {
+                        control.setAttribute('tabindex', previousTabIndex);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingTabindex;
+                }
+                if (control.dataset.modelManagerSettingsWaitingAriaDisabled !== undefined) {
+                    const previousAriaDisabled = control.dataset.modelManagerSettingsWaitingAriaDisabled;
+                    if (previousAriaDisabled === '') {
+                        control.removeAttribute('aria-disabled');
+                    } else {
+                        control.setAttribute('aria-disabled', previousAriaDisabled);
+                    }
+                    delete control.dataset.modelManagerSettingsWaitingAriaDisabled;
+                }
+            }
+        });
+
+        if (waiting) {
+            document.querySelectorAll('#sidebar [id$="-dropdown"]').forEach(dropdown => {
+                if (dropdown instanceof HTMLElement) {
+                    dropdown.style.display = 'none';
+                }
+            });
+            showStatus(waitingMessage, 0);
+            showModelManagerToast(waitingMessage, 0, 'loading');
+        } else {
+            restoreStatusAfterSettingsWaiting();
+            showModelManagerToast('', 0);
+        }
+    };
+
+    window.addEventListener(MODEL_MANAGER_SETTINGS_WAITING_EVENT, event => {
+        const detail = event.detail || {};
+        setModelManagerSettingsWaitingControls(detail.waiting === true, detail.message);
+    });
+    if (isModelManagerSettingsWaiting()) {
+        setModelManagerSettingsWaitingControls(true, getModelManagerSettingsWaitingMessage());
+    }
 
     try {
         if (!window.live2dManager) {
@@ -5527,12 +5701,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             vrmAnimations = (data.success && data.animations) ? data.animations : [];
 
             if (vrmAnimationSelect) {
-                // 始终保留"无动作"选项，让用户能清空已保存的动作配置
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
+                const previousValue = vrmAnimationSelect.value;
+                vrmAnimationSelect.innerHTML = '';
                 const noMotionOption = document.createElement('option');
                 noMotionOption.value = '_no_motion_';
                 noMotionOption.textContent = t('live2d.noMotion', '无动作');
                 vrmAnimationSelect.appendChild(noMotionOption);
+
+                const addAnimationOption = document.createElement('option');
+                addAnimationOption.value = '';
+                addAnimationOption.textContent = t('live2d.vrmAnimation.addAnimation', '添加动作');
+                vrmAnimationSelect.appendChild(addAnimationOption);
 
                 if (vrmAnimations.length > 0) {
                     vrmAnimations.forEach(anim => {
@@ -5555,6 +5734,41 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
+                // 选中态优先级：会话内用户主动选的真实动作（previousValue）
+                // > 角色已保存的单动作（reserved vrm.animation）> 无动作。
+                // 关键：模板给 select 预置了 value=_no_motion_ 的初始 option（见 model_manager.html），
+                // 首次进页面 previousValue 就是这个 sentinel——必须把它排除在「会话内选择」外，
+                // 否则恢复分支永远走不到，下拉停在 _no_motion_，无关保存又把 vrm_animation 清成 ''
+                // （即本次要修的回归）。不恢复已保存值时，saveModelToCharacter 会把 _no_motion_
+                // 映射成 vrm_animation:''，后端据此清空保留字段。
+                let resolvedValue = '_no_motion_';
+                if (previousValue && previousValue !== '_no_motion_' && Array.from(vrmAnimationSelect.options)
+                        .some(option => option.value === previousValue)) {
+                    resolvedValue = previousValue;
+                } else {
+                    // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
+                    const savedAnimation = await getSavedVrmAnimationUrl();
+                    if (savedAnimation) {
+                        let matched = Array.from(vrmAnimationSelect.options).find(option =>
+                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                        if (!matched) {
+                            // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
+                            // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
+                            // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
+                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
+                            matched = document.createElement('option');
+                            matched.value = savedAnimation;
+                            matched.setAttribute('data-path', savedAnimation);
+                            matched.setAttribute('data-filename', label);
+                            matched.textContent = label;
+                            vrmAnimationSelect.appendChild(matched);
+                        }
+                        resolvedValue = matched.value;
+                    }
+                }
+                vrmAnimationSelect.value = resolvedValue;
+                lastVrmAnimationSelection = vrmAnimationSelect.value || '_no_motion_';
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
                     vrmAnimationSelectBtn.disabled = false;
@@ -5627,20 +5841,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmAnimationSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
+            // 如果选择的是"添加动作"入口，触发文件选择器
             if (selectedValue === '') {
                 const vrmAnimationFileUpload = document.getElementById('vrm-animation-file-upload');
                 if (vrmAnimationFileUpload) {
                     vrmAnimationFileUpload.click();
                 }
-                // 重置选择器到第一个选项（保持显示"选择动作"）
-                e.target.value = '';
-                updateVRMAnimationSelectButtonText(); // 更新按钮文字为"选择动作"
+                const restoreValue = Array.from(vrmAnimationSelect.options)
+                    .some(option => option.value === lastVrmAnimationSelection)
+                    ? lastVrmAnimationSelection
+                    : '_no_motion_';
+                e.target.value = restoreValue;
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
             // 无动作选项：停止当前播放的 VRM 动作
             if (selectedValue === '_no_motion_') {
+                lastVrmAnimationSelection = '_no_motion_';
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -5649,9 +5867,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
                 stopIdleRotation('vrm');
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
+            lastVrmAnimationSelection = selectedValue;
             updateVRMAnimationSelectButtonText();
             const animationPath = e.target.value;
             if (animationPath && playVrmAnimationBtn) {
@@ -5714,7 +5934,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 播放/暂停 VRM 动作（切换功能）
     if (playVrmAnimationBtn) {
         playVrmAnimationBtn.addEventListener('click', async () => {
-            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value) {
+            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value || vrmAnimationSelect.value === '_no_motion_') {
                 showStatus(t('live2d.vrmAnimation.selectAnimationFirst', '请先选择动作'), 2000);
                 return;
             }
@@ -6658,7 +6878,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const expressions = vrmManager.expression.getExpressionList();
 
-        vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.selectExpression', '选择表情')}</option>`;
+        vrmExpressionSelect.innerHTML = '';
         const noExpressionOption = document.createElement('option');
         noExpressionOption.value = '_no_expression_';
         noExpressionOption.textContent = t('live2d.noExpression', '无表情');
@@ -6677,6 +6897,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 播放按钮保持禁用，直到用户选择一个表情
             if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
+            vrmExpressionSelect.value = '_no_expression_';
             updateVRMExpressionDropdown();
             updateVRMExpressionSelectButtonText();
         } else {
@@ -6729,12 +6950,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmExpressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"选择表情"），显示提示（VRM表情通常是内置的）
+            // 空值仅作为无可用表情/异常状态兜底；正常列表不再提供"选择表情"选项。
             if (selectedValue === '') {
                 showStatus(t('live2d.vrmExpression.builtInOnly', 'VRM表情通常是模型内置的，无法单独上传'), 3000);
-                // 重置选择器到第一个选项（保持显示"选择表情"）
-                e.target.value = '';
-                updateVRMExpressionSelectButtonText(); // 更新按钮文字为"选择表情"
+                e.target.value = '_no_expression_';
+                updateVRMExpressionSelectButtonText();
                 // 禁用播放按钮
                 if (triggerVrmExpressionBtn) {
                     triggerVrmExpressionBtn.disabled = true;
@@ -6801,7 +7021,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (triggerVrmExpressionBtn) {
         triggerVrmExpressionBtn.addEventListener('click', () => {
             const name = vrmExpressionSelect.value;
-            if (!name) {
+            if (!name || name === '_no_expression_') {
                 showStatus(t('live2d.vrmExpression.selectFirst', '请先选择一个表情'));
                 return;
             }
@@ -7658,6 +7878,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
         } catch (error) {
             console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 读取角色已保存的单个 VRM 动作（reserved vrm.animation）。
+    // 与 restoreVrmIdleAnimation 对偶：后者恢复待机动作多选，本函数为 loadVRMAnimations
+    // 提供单动作下拉的恢复值，避免首次进入页面时下拉默认落在 _no_motion_。
+    async function getSavedVrmAnimationUrl() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return null;
+
+            const data = await RequestHelper.fetchJson('/api/characters');
+            const charData = data['猫娘']?.[lanlanName];
+            const saved = charData?.vrm_animation;
+            return (typeof saved === 'string' && saved) ? saved : null;
+        } catch (error) {
+            console.error('[VRM] 读取已保存动作失败:', error);
+            return null;
         }
     }
 
@@ -9073,6 +9311,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         _earlyBackBtn.removeEventListener('click', _earlyBackHandler);
     }
     backToMainBtn.addEventListener('click', async () => {
+        if (isModelManagerSettingsWaiting()) {
+            const message = getModelManagerSettingsWaitingMessage();
+            showStatus(message, 0);
+            showModelManagerToast(message, 0, 'loading');
+            return;
+        }
         // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
         if (window.hasUnsavedChanges && window._savedModelSnapshot && !window._modelManagerParameterEditedSinceSave) {
             if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
@@ -10921,6 +11165,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
     notifyCardMakerFallbackOwnerClosing();
+
+    if (isModelManagerSettingsWaiting()) {
+        const message = getModelManagerSettingsWaitingMessage();
+        setModelManagerStatusText(message);
+        e.preventDefault();
+        e.returnValue = message;
+        return message;
+    }
 
     // 尝试退出全屏
     if (isFullscreen()) {

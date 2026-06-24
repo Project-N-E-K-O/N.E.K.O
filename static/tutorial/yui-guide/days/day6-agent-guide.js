@@ -32,12 +32,27 @@
                 {
                     id: 'day6_intro_agent',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day6_intro_agent', target: 'chat-window' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-window', durationMs: 760 }
+                    ],
                     textKey: 'tutorial.avatarFloating.day6.intro',
                     voiceKey: 'avatar_floating_day6_intro',
                     text: '噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的【猫爪】啦！前两天虽然简单提过一下，但它里面藏着的厉害功能可多着呢。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'corner-peek',
+                        position: 'bottom-right',
+                        restore: 'half-body',
+                        freezeFloatingButtons: false,
+                        rotateFloatingButtons: true
+                    }
                 },
                 {
                     id: 'day6_agent_status_master',

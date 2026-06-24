@@ -44,6 +44,41 @@ function nodeMasteryLevel(node: KnowledgeNode) {
   return 'weak';
 }
 
+function nodeLabel(node?: Partial<KnowledgeNode>) {
+  return String(node?.label || node?.id || '-');
+}
+
+function relationLabel(props: PluginSurfaceProps, relation?: string) {
+  const normalized = String(relation || 'related').trim().toLowerCase();
+  if (normalized === 'prerequisite') return text(props, 'ui.knowledge.edge_relation.prerequisite', 'Prerequisite');
+  if (normalized === 'related') return text(props, 'ui.knowledge.edge_relation.related', 'Related');
+  if (normalized === 'similar') return text(props, 'ui.knowledge.edge_relation.similar', 'Similar');
+  if (normalized === 'extends') return text(props, 'ui.knowledge.edge_relation.extends', 'Extends');
+  if (normalized === 'next') return text(props, 'ui.knowledge.edge_relation.next', 'Next');
+  if (normalized === 'nearby') return text(props, 'ui.knowledge.edge_relation.nearby', 'Nearby');
+  return normalized || text(props, 'ui.knowledge.edge_relation.related', 'Related');
+}
+
+function edgeGroups(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
+  const labels = new Map(nodes.map((node) => [String(node.id || ''), nodeLabel(node)]));
+  const groups = new Map<string, { from: string; fromId: string; items: Array<{ relation: string; rawRelation: string; to: string }> }>();
+  edges.slice(0, 80).forEach((edge) => {
+    const fromId = String(edge.from || '').trim();
+    const toId = String(edge.to || '').trim();
+    if (!fromId && !toId) return;
+    const key = fromId || '-';
+    const group = groups.get(key) || { from: labels.get(key) || key, fromId: key, items: [] };
+    const rawRelation = String(edge.relation || 'related').trim().toLowerCase();
+    group.items.push({
+      relation: relationLabel(props, edge.relation),
+      rawRelation,
+      to: labels.get(toId) || toId || '-',
+    });
+    groups.set(key, group);
+  });
+  return Array.from(groups.values());
+}
+
 export default function KnowledgeMap(props: PluginSurfaceProps) {
   const [nodes, setNodes] = useState<KnowledgeNode[]>([]);
   const [edges, setEdges] = useState<KnowledgeEdge[]>([]);
@@ -103,8 +138,30 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           );
         })}
       </div>
-      <div className="study-panel__reply-label">{text(props, 'ui.label.edges', 'Edges')}</div>
-      <pre>{edges.slice(0, 30).map((edge) => `${edge.from} -> ${edge.to}${edge.relation ? ` (${edge.relation})` : ''}`).join('\n')}</pre>
+      <div className="study-panel__reply-label">{text(props, 'ui.knowledge.edge_section', 'Relationships')}</div>
+      <div className="knowledge-edge-list">
+        {edgeGroups(props, nodes, edges).slice(0, 12).map((group) => (
+          <article key={group.fromId} className="knowledge-edge-card">
+            <h3>{group.from}</h3>
+            <div className="knowledge-edge-card__items">
+              {group.items.slice(0, 6).map((item, index) => (
+                <div key={`${item.rawRelation}:${item.to}:${index}`} className="knowledge-edge-row" data-relation={item.rawRelation || 'related'}>
+                  <span className="knowledge-edge-row__relation">{item.relation}</span>
+                  <span className="knowledge-edge-row__target">{item.to}</span>
+                </div>
+              ))}
+              {group.items.length > 6 ? (
+                <span className="knowledge-edge-more">+ {group.items.length - 6} {text(props, 'ui.knowledge.edge_more_suffix', 'more')}</span>
+              ) : null}
+            </div>
+          </article>
+        ))}
+        {!edges.length ? (
+          <pre>{summary.topic_count || nodes.length
+            ? text(props, 'ui.knowledge.edge_empty', 'No relationships to show yet.')
+            : text(props, 'ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.')}</pre>
+        ) : null}
+      </div>
     </div>
   );
 }

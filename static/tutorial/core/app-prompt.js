@@ -656,7 +656,6 @@
                 if (restored && canRestoreAgentSnapshot(restoreToken)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
-                    console.log('[TutorialPrompt] restored interrupted agent suppression:', reason || 'init');
                 }
             })
             .catch(function (error) {

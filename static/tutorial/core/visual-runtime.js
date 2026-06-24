@@ -31,6 +31,26 @@
         return scene.audio || {};
     }
 
+    function resolveSceneVoiceKey(director, legacyScene, fallbackVoiceKey) {
+        if (director && typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+            return director.resolveAvatarFloatingSceneVoiceKey(legacyScene) || fallbackVoiceKey || '';
+        }
+        return fallbackVoiceKey || '';
+    }
+
+    function resolveSceneEmotion(director, legacyScene, fallbackEmotion) {
+        if (director && typeof director.resolveAvatarFloatingSceneEmotion === 'function') {
+            const legacyEmotion = legacyScene && typeof legacyScene.emotion === 'string'
+                ? legacyScene.emotion
+                : '';
+            if (fallbackEmotion && fallbackEmotion !== legacyEmotion) {
+                return fallbackEmotion;
+            }
+            return director.resolveAvatarFloatingSceneEmotion(legacyScene) || fallbackEmotion || '';
+        }
+        return fallbackEmotion || '';
+    }
+
     function safeCall(target, methodName, fallbackValue, ...args) {
         if (!target || typeof target[methodName] !== 'function') {
             return fallbackValue;
@@ -106,13 +126,33 @@
         handleChatMessage(event, context) {
             const director = getDirector(context) || this.director;
             const legacyScene = getLegacyScene(context);
-            const text = event.text || safeCall(director, 'resolveAvatarFloatingSceneText', '', legacyScene);
+            const sceneTextKey = (legacyScene && legacyScene.textKey) || '';
+            const eventTextKey = event.textKey || '';
+            // The displayed bubble text must be localized. The normalized timeline
+            // command carries the raw `scene.text` (zh fallback) + its textKey, so we
+            // resolve through the director (which translates via i18n and applies
+            // per-scene special cases) instead of rendering `event.text` directly.
+            let text;
+            if (
+                eventTextKey
+                && eventTextKey !== sceneTextKey
+                && director
+                && typeof director.resolveGuideCopy === 'function'
+            ) {
+                text = director.resolveGuideCopy(eventTextKey, event.text || '');
+            } else {
+                text = safeCall(director, 'resolveAvatarFloatingSceneText', '', legacyScene) || event.text || '';
+            }
             if (!text || !director || typeof director.appendGuideChatMessage !== 'function') {
                 return false;
             }
             director.appendGuideChatMessage(text, {
-                textKey: event.textKey || legacyScene.textKey || '',
-                voiceKey: event.voiceKey || (getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''),
+                textKey: eventTextKey || sceneTextKey,
+                voiceKey: resolveSceneVoiceKey(
+                    director,
+                    legacyScene,
+                    event.voiceKey || getSceneAudio(context).voiceKey || legacyScene.voiceKey || ''
+                ),
                 buttons: Array.isArray(event.buttons) ? event.buttons : []
             });
             return true;
@@ -121,7 +161,7 @@
         handleEmotionSet(event, context) {
             const director = getDirector(context) || this.director;
             const legacyScene = getLegacyScene(context);
-            const emotion = event.emotion || legacyScene.emotion || '';
+            const emotion = resolveSceneEmotion(director, legacyScene, event.emotion || legacyScene.emotion || '');
             if (!emotion || !director || typeof director.applyGuideEmotion !== 'function') {
                 return false;
             }
@@ -491,7 +531,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             if (director.operationRegistry && typeof director.operationRegistry.run === 'function') {
@@ -499,7 +540,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             return false;

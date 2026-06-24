@@ -43,6 +43,8 @@
             const normalizedOptions = options || {};
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
+            // syncSystemCursorHidden: optional callback for PC builds that need
+            // to reveal the real cursor during resistance and angry-exit scenes.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length
@@ -100,9 +102,16 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
+            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                call(this.callbacks, 'prepareResistanceCursorReveal', null, normalizedOptions);
+                call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
+                shouldRestoreHiddenCursorAfterResistance = call(
+                    this.callbacks,
+                    'prepareResistanceCursorReveal',
+                    false,
+                    normalizedOptions
+                ) === true;
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -160,6 +169,9 @@
                 if (this.isStopping()) {
                     return;
                 }
+                if (shouldRestoreHiddenCursorAfterResistance) {
+                    call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
+                }
 
                 const didRestorePresentationSnapshot = call(
                     this.callbacks,
@@ -202,6 +214,7 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -491,9 +504,11 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
+            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                director.prepareResistanceCursorReveal(normalizedOptions);
+                this.syncSystemCursorHidden(false, 'interrupt_resist_light');
+                shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
             }
 
             director.pauseCurrentSceneForResistance();
@@ -540,6 +555,9 @@
                 if (this.isStopping()) {
                     return;
                 }
+                if (shouldRestoreHiddenCursorAfterResistance) {
+                    this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
+                }
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = director.activeNarration;
@@ -578,6 +596,7 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};
             const performance = (angryStep && angryStep.performance) || {};
@@ -648,6 +667,13 @@
         destroy() {
             this.destroyed = true;
             this.lightResistanceActive = false;
+        }
+
+        syncSystemCursorHidden(hidden, reason) {
+            const director = this.director;
+            if (director && typeof director.syncSystemCursorHidden === 'function') {
+                director.syncSystemCursorHidden(hidden, reason);
+            }
         }
     }
 
