@@ -35,6 +35,7 @@ import os
 import sys
 import time
 from queue import Queue
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -259,6 +260,73 @@ def test_stream_text_drops_screenshot_superseded_by_later_ai_turn():
     assert c._proactive_image_to_inject is None
     assert c._proactive_image_history_len == 0
     c.switch_model.assert_not_awaited()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2b. prompt_ephemeral —— a visible ephemeral reply supersedes the staged screen
+#     (covers persist_response=False replies the history-len marker can't see)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_offline_for_ephemeral():
+    """Minimal client to drive prompt_ephemeral up to its finally block."""
+    c = OmniOfflineClient.__new__(OmniOfflineClient)
+    c._conversation_history = [SystemMessage(content="sys")]
+    c._pending_images = []
+    c._proactive_image_to_inject = None
+    c._proactive_image_staged_at = 0.0
+    c._proactive_image_history_len = 0
+    c.model = "m"
+    c.vision_model = ""  # no images here, keep model switch out of the path
+    c._is_responding = False
+    c._prefix_buffer_size = 0
+    c.master_name = "M"
+    c.lanlan_name = "L"
+    c.on_text_delta = AsyncMock()
+    c.on_status_message = None
+    c.on_response_done = AsyncMock()
+    c._begin_reasoning_stream = MagicMock(return_value=1)
+    c._notify_reasoning_done = AsyncMock()
+
+    def _set_chunks(chunks):
+        async def _fake(messages):
+            for ch in chunks:
+                yield ch
+        c._astream_visible_with_tools = _fake
+
+    return c, _set_chunks
+
+
+def test_prompt_ephemeral_visible_reply_supersedes_staged_screenshot():
+    """The avatar-tap path: a visible persist_response=False reply leaves history
+    length unchanged (the marker can't see it), so prompt_ephemeral itself must
+    clear the staged screenshot when it commits visible text (Codex P2)."""
+    c, set_chunks = _make_offline_for_ephemeral()
+    c.set_proactive_screenshot("SCREEN_B64")
+    set_chunks([SimpleNamespace(content="戳你一下喵~")])
+
+    committed = asyncio.run(
+        c.prompt_ephemeral("======戳头像======", completion_mode="response", persist_response=False)
+    )
+
+    assert committed is True
+    assert c._proactive_image_to_inject is None
+    assert c._proactive_image_staged_at == 0.0
+    assert c._proactive_image_history_len == 0
+
+
+def test_prompt_ephemeral_no_visible_text_keeps_staged_screenshot():
+    """An aborted / no-text ephemeral attempt must NOT drop a still-valid staged
+    screen (the user saw no new reply)."""
+    c, set_chunks = _make_offline_for_ephemeral()
+    c.set_proactive_screenshot("SCREEN_B64")
+    set_chunks([])  # nothing emitted → content_committed is False
+
+    committed = asyncio.run(
+        c.prompt_ephemeral("======戳头像======", completion_mode="response", persist_response=False)
+    )
+
+    assert committed is False
+    assert c._proactive_image_to_inject == "SCREEN_B64"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -3553,6 +3553,16 @@ class OmniOfflineClient:
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
             content_committed = bool(committed_text)
+            # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
+            # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
+            # 屏幕截图过时——清掉它。persist_response=False 的回复（如头像 quip）不进
+            # 历史、历史长度不变，stream_text 的 history-len marker 看不到，必须在这条
+            # ephemeral 回复的 choke point 清（Codex P2）。只在真吐了可见文本时清，
+            # 半途 abort / 无文本的尝试不丢一张仍有效的暂存屏。
+            if content_committed:
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
             # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
             # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
             # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
