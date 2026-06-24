@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-static-asset-version="{{ static_asset_version }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/indoor-badminton-arena-bg-v4.jpg?v=20260618g">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/miami-beach-sunset-bg-v2.webp?v=20260618b">
-<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v=20260624a">
+<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v={{ static_asset_version }}">
 <title>羽毛球挑战 - Badminton</title>
 <script>
   (function () {
@@ -1273,9 +1273,14 @@
   var playerVrmHeldShuttle = null;
   var yuiVrmRacket = null;
   var SENSEI_VRM_PATH = '/static/vrm/sensei.vrm';
+  function badmintonAssetUrl(path) {
+    var version = '';
+    try { version = document.documentElement.getAttribute('data-static-asset-version') || ''; } catch (_) {}
+    return version ? path + '?v=' + encodeURIComponent(version) : path;
+  }
   var BADMINTON_RACKET_SPRITE_SRC = '/static/game/games/badminton/images/badminton-racket-sprite.svg?v=20260618a';
   var YUI_BANANA_PEEL_SPRITE_SRC = '/static/game/games/badminton/images/yui-banana-peel-sprite.png?v=20260622a';
-  var YUI_CHEAT_INK_OVERLAY_SRC = '/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v=20260624a';
+  var YUI_CHEAT_INK_OVERLAY_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-octopus-ink-overlay.png');
   var badmintonRacketSpriteImage = null;
   var yuiBananaPeelSpriteImage = null;
   var yuiInkOverlayImage = null;
@@ -5228,22 +5233,24 @@
     }
     var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;
     if (shouldRestartRoute) {
+      var routeSessionToEnd = sessionId;
       var pendingRouteStart = routeStartPromise;
+      sessionId = createBadmintonSessionId();
+      endedRoute = false;
+      routeEndFetchPending = false;
+      routeEndBeaconDelivered = false;
+      routeEndPromise = null;
+      routeStartPromise = null;
+      routeActive = false;
       var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();
       var restartAfterRouteEnd = routeReadyForEnd.then(function () {
         if (endedRoute) return routeEndPromise || Promise.resolve();
-        return endRoute(false);
+        return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });
       });
-      routeActive = false;
       resetVoiceArbiter();
       Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {
         if (badmintonGameDisposed) return;
-        endedRoute = false;
-        routeEndFetchPending = false;
-        routeEndBeaconDelivered = false;
-        routeEndPromise = null;
         routeActive = false;
-        sessionId = createBadmintonSessionId();
         startRoute();
       });
     }
@@ -8927,7 +8934,6 @@
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _badmintonGameMemoryPolicyPayload()), 22000).then(function (res) {
       if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over') {
-        if (badmintonGameDisposed && res && res.ok) Promise.resolve(endRoute(true, { force: true })).catch(function () {});
         return res;
       }
       if (!res || !res.ok) {
@@ -8998,17 +9004,20 @@
   }
   function endRoute(useBeacon, options) {
     var force = options && options.force;
-    if (endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });
-    endedRoute = true;
-    routeActive = false;
-    clearInterval(heartbeatTimer);
-    clearInterval(drainTimer);
-    heartbeatTimer = 0;
-    drainTimer = 0;
-    var routeEndSessionId = sessionId;
+    var detached = options && options.detached;
+    if (!detached && endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });
+    if (!detached) endedRoute = true;
+    if (!detached) routeActive = false;
+    if (!detached) {
+      clearInterval(heartbeatTimer);
+      clearInterval(drainTimer);
+      heartbeatTimer = 0;
+      drainTimer = 0;
+    }
+    var routeEndSessionId = (options && options.sessionId) || sessionId;
     var roundCompleted = game.state === 'game_over';
     var payloadObj = {
-      session_id: sessionId, lanlan_name: getRouteLanlanName(),
+      session_id: routeEndSessionId, lanlan_name: getRouteLanlanName(),
       reason: roundCompleted ? 'badminton_game_over' : 'badminton_abandoned',
       mode: currentMode,
       gameStarted: true,
@@ -9067,32 +9076,43 @@
     if (useBeacon && navigator.sendBeacon) {
       try {
         if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) {
-          routeEndBeaconDelivered = true;
-          routeEndFetchPending = false;
-          routeEndPromise = Promise.resolve({ ok: true, beacon: true });
-          return;
+          if (!detached) {
+            routeEndBeaconDelivered = true;
+            routeEndFetchPending = false;
+            routeEndPromise = Promise.resolve({ ok: true, beacon: true });
+          }
+          return Promise.resolve({ ok: true, beacon: true });
         }
       } catch (_) {}
     }
-    routeEndFetchPending = true;
-    routeEndPromise = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).then(function (res) {
-      routeEndFetchPending = false;
+    if (!detached) routeEndFetchPending = true;
+    var routeEndRequest = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).then(function (res) {
+      if (!detached) routeEndFetchPending = false;
       return res.json().catch(function () { return { ok: res.ok }; });
     }).then(function (res) {
-      if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);
+      if (!detached && res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);
       return res;
     }).catch(function (err) {
-      routeEndFetchPending = false;
-      if (!badmintonGameDisposed && sessionId === routeEndSessionId) endedRoute = false;
+      if (!detached) routeEndFetchPending = false;
+      if (!detached && !badmintonGameDisposed && sessionId === routeEndSessionId) endedRoute = false;
       throw err;
     });
+    if (detached) return routeEndRequest;
+    routeEndPromise = routeEndRequest;
     return routeEndPromise;
   }
 
   function disposeBadmintonGame(reason) {
     if (badmintonGameDisposed) return;
+    var pendingRouteStart = routeStartPromise;
     badmintonGameDisposed = true;
-    try { Promise.resolve(endRoute(true)).catch(function () {}); } catch (_) {}
+    try {
+      var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {
+        if (res && res.ok) return endRoute(true, { force: true });
+        return endRoute(true);
+      }) : endRoute(true);
+      Promise.resolve(routeEndAfterStart).catch(function () {});
+    } catch (_) {}
     if (badmintonFrameRequestId) {
       cancelAnimationFrame(badmintonFrameRequestId);
       badmintonFrameRequestId = 0;

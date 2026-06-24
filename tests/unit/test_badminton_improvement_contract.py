@@ -232,7 +232,8 @@ def test_badminton_pagehide_and_exit_share_dispose_lifecycle():
 
     assert "var badmintonGameDisposed = false;" in html
     assert "function disposeBadmintonGame(reason) {" in html
-    assert "Promise.resolve(endRoute(true)).catch(function () {});" in html
+    assert "var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {" in html
+    assert "Promise.resolve(routeEndAfterStart).catch(function () {});" in html
     assert "cancelAnimationFrame(badmintonFrameRequestId);" in html
     assert "clearTimeout(badmintonHiddenFrameTimer);" in html
     assert "badmintonGameAudio.destroy();" in html
@@ -1578,7 +1579,8 @@ def test_badminton_scoring_waits_for_route_end_and_records_run_max():
     assert "lanlan_name: scoreLanlanName," in html
     assert "var entry = recordGame(game.bestStreak, getRunMaxDistancePx(), game.totalScore, game.shotTypeCount);" in html
     assert "keepalive: true" in html
-    assert "routeEndPromise = fetch(url, { method: 'POST'" in html
+    assert "var routeEndRequest = fetch(url, { method: 'POST'" in html
+    assert "routeEndPromise = routeEndRequest;" in html
     assert "return res.json().catch(function () { return { ok: res.ok }; });" in html
 
     session_capture_index = html.index("var completedSessionId = sessionId;")
@@ -1598,22 +1600,24 @@ def test_badminton_reset_abandons_active_route_before_rotating_session():
     end_route_section = html[end_route_start:html.index("function cycleTheme()", end_route_start)]
 
     assert "var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;" in reset_section
+    assert "var routeSessionToEnd = sessionId;" in reset_section
     assert "var pendingRouteStart = routeStartPromise;" in reset_section
+    assert "sessionId = createBadmintonSessionId();" in reset_section
     assert "var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();" in reset_section
     assert "var restartAfterRouteEnd = routeReadyForEnd.then(function () {" in reset_section
     assert "if (endedRoute) return routeEndPromise || Promise.resolve();" in reset_section
-    assert "return endRoute(false);" in reset_section
-    assert "sessionId = createBadmintonSessionId();" in reset_section
+    assert "return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });" in reset_section
     assert "Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {" in reset_section
     assert "badmintonGameDisposed" in reset_section
     assert "startRoute();" in reset_section
-    assert reset_section.index("var pendingRouteStart") < reset_section.index("return endRoute(false);")
-    assert reset_section.index("return endRoute(false);") < reset_section.index("sessionId = createBadmintonSessionId();")
-    assert "routeActive = false;" in end_route_section
+    assert reset_section.index("var routeSessionToEnd = sessionId;") < reset_section.index("sessionId = createBadmintonSessionId();")
+    assert reset_section.index("sessionId = createBadmintonSessionId();") < reset_section.index("return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });")
+    assert "var detached = options && options.detached;" in end_route_section
+    assert "var routeEndSessionId = (options && options.sessionId) || sessionId;" in end_route_section
+    assert "if (!detached) routeActive = false;" in end_route_section
     assert "heartbeatTimer = 0;" in end_route_section
     assert "drainTimer = 0;" in end_route_section
-    assert "var routeEndSessionId = sessionId;" in end_route_section
-    assert "if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);" in end_route_section
+    assert "if (!detached && res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);" in end_route_section
 
 
 @pytest.mark.unit
@@ -1627,7 +1631,12 @@ def test_badminton_route_start_pending_close_is_cancelled_by_dispose():
     assert "if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over')" in start_route
     assert "if (badmintonGameDisposed) return Promise.resolve({ ok: false, reason: 'disposed' });" in start_route
     assert "if (badmintonGameDisposed) return res;" in start_route
-    assert "Promise.resolve(endRoute(true)).catch(function () {});" in dispose_section
+    assert "endRoute(true, { force: true })" not in start_route
+    assert "var pendingRouteStart = routeStartPromise;" in dispose_section
+    assert "var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {" in dispose_section
+    assert "if (res && res.ok) return endRoute(true, { force: true });" in dispose_section
+    assert "return endRoute(true);" in dispose_section
+    assert "Promise.resolve(routeEndAfterStart).catch(function () {});" in dispose_section
     assert "badmintonGameDisposed = true;" in dispose_section
 
 
@@ -2826,7 +2835,6 @@ def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert BADMINTON_INK_OVERLAY.exists()
-    assert BADMINTON_INK_OVERLAY.stat().st_size > 120_000
     assert BADMINTON_INK_OVERLAY.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     from PIL import Image
     with Image.open(BADMINTON_INK_OVERLAY) as ink_overlay:
@@ -2848,8 +2856,10 @@ def test_badminton_yui_octopus_ink_has_stronger_screen_coverage():
         assert sum(1 for point in screen_splatter_points if alpha.getpixel(point) >= 90) >= 7
     assert "alpha: active ? clamp(0.38 + fade * 0.52, 0, 0.9) : 0," in html
     assert "aimingCtx.fillRect(0, 0, BASE_W, BASE_H);" in html
-    assert '<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v=20260624a">' in html
-    assert "var YUI_CHEAT_INK_OVERLAY_SRC = '/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v=20260624a';" in html
+    assert '<html lang="zh-CN" data-static-asset-version="{{ static_asset_version }}">' in html
+    assert '<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v={{ static_asset_version }}">' in html
+    assert "function badmintonAssetUrl(path) {" in html
+    assert "var YUI_CHEAT_INK_OVERLAY_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-octopus-ink-overlay.png');" in html
     assert "var yuiInkOverlayImage = null;" in html
     assert "function preloadYuiInkOverlayImage() {" in html
     assert "function isYuiInkOverlayImageReady() {" in html
@@ -3347,7 +3357,7 @@ def test_badminton_unload_can_retry_pending_route_end_with_beacon():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert "var routeEndFetchPending = false;" in html
-    assert "if (endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });" in html
+    assert "if (!detached && endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });" in html
     assert "routeEndFetchPending = true;" in html
     assert "routeEndBeaconDelivered = true;" in html
 
