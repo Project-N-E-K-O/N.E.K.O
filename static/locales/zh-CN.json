@@ -1975,7 +1975,7 @@
         "systemPrompt": "系统指令（谨慎修改）",
         "systemPromptWarning": "系统指令 - 修改可能导致角色行为异常，后果自负",
         "addField": "新增设定",
-        "aiAssist": "AI 猫猫辅助生成",
+        "aiAssist": "猫猫辅助生成",
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",
         "aiCompanionExpand": "展开",
         "aiCompanionDragHint": "拖动窗口",
