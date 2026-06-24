@@ -975,6 +975,7 @@
   var badmintonResizeFrame = 0;
   var badmintonGameDisposed = false;
   var badmintonEventCleanupFns = [];
+  var badmintonStartMenuAudioListenerCleanups = [];
   var NET_COLS = 17;
   var NET_ROWS = 7;
   var BADMINTON = {
@@ -1518,12 +1519,18 @@
     writeBadmintonStorage(key, JSON.stringify(value));
   }
   function addBadmintonEventListener(target, type, handler, options) {
-    if (!target || typeof target.addEventListener !== 'function') return handler;
+    if (!target || typeof target.addEventListener !== 'function') return function () {};
     target.addEventListener(type, handler, options);
-    badmintonEventCleanupFns.push(function () {
+    var active = true;
+    var cleanup = function () {
+      if (!active) return;
+      active = false;
       try { target.removeEventListener(type, handler, options); } catch (_) {}
-    });
-    return handler;
+      var cleanupIndex = badmintonEventCleanupFns.indexOf(cleanup);
+      if (cleanupIndex >= 0) badmintonEventCleanupFns.splice(cleanupIndex, 1);
+    };
+    badmintonEventCleanupFns.push(cleanup);
+    return cleanup;
   }
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
   function getBadmintonFrameNow() {
@@ -1955,9 +1962,10 @@
     return !!(badmintonStartOverlay && !badmintonStartOverlay.hidden && !badmintonStartAccepted);
   }
   function removeBadmintonStartMenuAudioListeners() {
-    window.removeEventListener('pointerdown', activateBadmintonStartMenuAudio, true);
-    window.removeEventListener('keydown', activateBadmintonStartMenuAudio, true);
-    window.removeEventListener('touchstart', activateBadmintonStartMenuAudio, true);
+    while (badmintonStartMenuAudioListenerCleanups.length) {
+      var cleanup = badmintonStartMenuAudioListenerCleanups.pop();
+      try { cleanup(); } catch (_) {}
+    }
   }
   function activateBadmintonStartMenuAudio(ev) {
     if (badmintonStartMenuAudioActivated || !isBadmintonStartOverlayActive()) return;
@@ -2535,10 +2543,12 @@
     var target = String(name || '').trim();
     for (var i = 0; i < DUEL_DIFFICULTY.length; i++) {
       if (DUEL_DIFFICULTY[i].name === target) {
+        var changed = duelDifficultyIdx !== i;
         duelDifficultyIdx = i;
         writeJson('bd_duel_difficulty', target);
         showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: target }));
         updateDebugReadout();
+        if (changed && bgmEnabled) badmintonGameAudio.sync('difficulty-changed');
         return true;
       }
     }
@@ -5499,7 +5509,6 @@
     game.resultRecorded = false;
     game.resultBgmPlayed = false;
     badmintonGameAudio.resetSyncKey();
-    if (bgmEnabled) badmintonGameAudio.sync('reset');
     game.globalRank = 0;
     game.globalTotalPlayers = 0;
     clearTimeout(game.duel.timer);
@@ -5517,6 +5526,7 @@
     game.duel.pendingShot = null;
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
+    if (bgmEnabled) badmintonGameAudio.sync('reset');
     currentSessionEntryId = '';
     isPositionTransitioning = false;
     clearTimeout(shotAnimationTimer);
@@ -9959,9 +9969,9 @@
       startBadmintonFromStartScreen();
     });
   }
-  addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true);
-  addBadmintonEventListener(window, 'keydown', activateBadmintonStartMenuAudio, true);
-  addBadmintonEventListener(window, 'touchstart', activateBadmintonStartMenuAudio, true);
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'keydown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'touchstart', activateBadmintonStartMenuAudio, true));
   addBadmintonEventListener(window, 'resize', scheduleBadmintonResize);
   window.addEventListener('beforeunload', function () {
     disposeBadmintonGame('beforeunload');

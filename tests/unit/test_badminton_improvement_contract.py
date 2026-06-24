@@ -1873,8 +1873,14 @@ def test_badminton_start_menu_bgm_tracks_start_screen_state():
     assert "badmintonStartAccepted = true;" in start_screen_section
     assert "removeBadmintonStartMenuAudioListeners();" in start_screen_section
     assert start_screen_section.index("badmintonStartAccepted = true;") < start_screen_section.index("if (!options.skipTutorial) resumeAudio();")
-    assert "addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true);" in html
-    assert "window.removeEventListener('pointerdown', activateBadmintonStartMenuAudio, true);" in html
+    assert "var badmintonStartMenuAudioListenerCleanups = [];" in html
+    assert "badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true));" in html
+    assert "badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'keydown', activateBadmintonStartMenuAudio, true));" in html
+    assert "badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'touchstart', activateBadmintonStartMenuAudio, true));" in html
+    assert "while (badmintonStartMenuAudioListenerCleanups.length)" in html
+    assert "var cleanupIndex = badmintonEventCleanupFns.indexOf(cleanup);" in html
+    assert "if (cleanupIndex >= 0) badmintonEventCleanupFns.splice(cleanupIndex, 1);" in html
+    assert "window.removeEventListener('pointerdown', activateBadmintonStartMenuAudio, true);" not in html
 
 
 @pytest.mark.unit
@@ -1883,6 +1889,8 @@ def test_badminton_mood_bgm_uses_looped_configs_instead_of_end_segments():
     audio_config = (ROOT / "static" / "game" / "games" / "badminton" / "badminton-audio-config.js").read_text(encoding="utf-8")
     resolve_start = html.index("function _bdResolvePlaylist() {")
     resolve_section = html[resolve_start:html.index("function _bdHasPlayableBgmTarget", resolve_start)]
+    difficulty_start = html.index("function setDuelDifficulty(name) {")
+    difficulty_section = html[difficulty_start:html.index("function getPlayerWinDifficultyIndex", difficulty_start)]
 
     assert "if (moodBgm.loop) {" in resolve_section
     assert "if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {" in resolve_section
@@ -1903,6 +1911,9 @@ def test_badminton_mood_bgm_uses_looped_configs_instead_of_end_segments():
     assert "angry: {\n          gainDb: -2.94," not in audio_config
     assert "surprised: {\n          gainDb:" not in audio_config
     assert "surprised: [{ src: '/static/game/games/soccer/audio/Battle_1_E.mp3'" not in audio_config
+    assert "var changed = duelDifficultyIdx !== i;" in difficulty_section
+    assert "if (changed && bgmEnabled) badmintonGameAudio.sync('difficulty-changed');" in difficulty_section
+    assert difficulty_section.index("duelDifficultyIdx = i;") < difficulty_section.index("if (changed && bgmEnabled) badmintonGameAudio.sync('difficulty-changed');")
 
 
 @pytest.mark.unit
@@ -1946,7 +1957,7 @@ def test_badminton_result_bgm_only_starts_once_per_completed_game():
     assert "game.resultBgmPlayed = false;" in reset_section
     assert "badmintonGameAudio.resetSyncKey();" in reset_section
     assert "if (bgmEnabled) badmintonGameAudio.sync('reset');" in reset_section
-    assert reset_section.index("badmintonGameAudio.resetSyncKey();") < reset_section.index("if (bgmEnabled) badmintonGameAudio.sync('reset');")
+    assert reset_section.index("game.duel.sandbagShots = 0;") < reset_section.index("if (bgmEnabled) badmintonGameAudio.sync('reset');")
     assert "var _bdResultBgmTriggered = false;" in html
     assert "if (resolved.key === 'gameOver') {" in sync_bgm_section
     assert "if (_bdResultBgmTriggered) return;" in sync_bgm_section
