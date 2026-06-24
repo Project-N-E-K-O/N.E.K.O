@@ -74,14 +74,8 @@ def normalize_badminton_prompt_locale(language: Any) -> str:
 
 def _normalize_mode(mode: Any) -> str:
     mode_name = str(mode or "").strip().lower()
-    if mode_name.startswith("shooter"):
-        return "shooter"
     if mode_name.startswith("duel"):
         return "duel"
-    if mode_name.startswith("timed"):
-        return "timed"
-    if mode_name.startswith("horse"):
-        return "horse"
     return "spectator"
 
 
@@ -89,10 +83,12 @@ BADMINTON_QUICK_LINES_PROMPTS = {
     "zh-CN": """\
 你是{name}，{personality}
 
-你正在为羽毛球小游戏生成快路径短台词。只输出 JSON，不要 Markdown，不要解释。
+你正在为羽毛球小游戏生成可直接显示或播报的即时短台词。只输出 JSON，不要 Markdown，不要解释。
 规则：
-- 每个必需 key 输出 2-4 条短台词。
-- 台词必须像 NEKO 的现场反应，不要像系统旁白。
+- 输出对象必须包含下面全部必需 keys；每个 key 对应 2-4 条中文短句数组。
+- 把自己当作正在看球的 Yui：语气贴合{name}人设，短、自然、有现场反应。
+- 每句尽量 4-14 个字，可以轻微吐槽或鼓劲，但不要解释规则、不要复述 key 名。
+- 按事件写准含义：line_in=压线，net_touch=擦网过，zone_in=落入目标区，out=出界，net=挂网，shot_missed=没打到，long_aim=瞄太久。
 - 不要输出 mood、expression、intensity 或控制 JSON。
 
 必需 keys:
@@ -101,10 +97,12 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
     "zh-TW": """\
 你是{name}，{personality}
 
-你正在為羽毛球小遊戲產生快路徑短台詞。只輸出 JSON，不要 Markdown，不要解釋。
+你正在為羽毛球小遊戲產生可直接顯示或播報的即時短台詞。只輸出 JSON，不要 Markdown，不要解釋。
 規則：
-- 每個必要 key 輸出 2-4 句短台詞。
-- 台詞必須像 NEKO 的現場反應，不要像系統旁白。
+- 輸出物件必須包含下面全部必要 keys；每個 key 對應 2-4 句中文短句陣列。
+- 把自己當作正在看球的 Yui：語氣貼合{name}人設，短、自然、有現場反應。
+- 每句盡量 4-14 個字，可以輕微吐槽或打氣，但不要解釋規則、不要複述 key 名。
+- 按事件寫準含義：line_in=壓線，net_touch=擦網過，zone_in=落入目標區，out=出界，net=掛網，shot_missed=沒打到，long_aim=瞄太久。
 - 不要輸出 mood、expression、intensity 或控制 JSON。
 
 必要 keys:
@@ -116,7 +114,7 @@ You are {name}. {personality}
 Generate quick-path short lines for the badminton minigame. Output JSON only, with no Markdown or explanation.
 Rules:
 - Each required key must contain 2-4 short spoken lines.
-- Lines must sound like NEKO reacting in the moment, not system narration.
+- Lines must sound like Yui reacting in the moment, not system narration.
 - Do not include mood, expression, intensity, or control JSON.
 
 Required keys:
@@ -128,7 +126,7 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 バドミントンミニゲーム用のクイック短台詞を生成してください。Markdown や説明なしで JSON だけを出力してください。
 ルール:
 - 必須 key ごとに 2-4 個の短い台詞を入れる。
-- 台詞はシステム説明ではなく、NEKO のその場の反応にする。
+- 台詞はシステム説明ではなく、Yui のその場の反応にする。
 - mood、expression、intensity、制御 JSON は入れない。
 
 必須 keys:
@@ -140,7 +138,7 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 배드민턴 미니게임용 빠른 경로 짧은 대사를 생성하세요. Markdown 이나 설명 없이 JSON 만 출력하세요.
 규칙:
 - 필수 key마다 짧은 대사 2-4개를 넣으세요.
-- 대사는 시스템 설명이 아니라 NEKO의 현장 반응처럼 들려야 합니다.
+- 대사는 시스템 설명이 아니라 Yui의 현장 반응처럼 들려야 합니다.
 - mood, expression, intensity, 제어 JSON 을 포함하지 마세요.
 
 필수 keys:
@@ -152,7 +150,7 @@ line_in, net_touch, zone_in, out, net, shot_missed, game_over, long_aim, close_t
 Сгенерируй короткие быстрые реплики для мини-игры в бадминтон. Выводи только JSON, без Markdown и объяснений.
 Правила:
 - Для каждого обязательного key дай 2-4 короткие реплики.
-- Реплики должны звучать как реакция NEKO в моменте, а не как системное описание.
+- Реплики должны звучать как реакция Yui в моменте, а не как системное описание.
 - Не добавляй mood, expression, intensity или управляющий JSON.
 
 Обязательные keys:
@@ -164,7 +162,7 @@ Eres {name}. {personality}
 Genera frases cortas de ruta rápida para el minijuego de bádminton. Devuelve solo JSON, sin Markdown ni explicaciones.
 Reglas:
 - Cada key obligatorio debe tener 2-4 frases breves.
-- Las frases deben sonar como una reacción inmediata de NEKO, no como narración del sistema.
+- Las frases deben sonar como una reacción inmediata de Yui, no como narración del sistema.
 - No incluyas mood, expression, intensity ni JSON de control.
 
 Keys obligatorios:
@@ -176,7 +174,7 @@ Você é {name}. {personality}
 Gere falas curtas de caminho rápido para o minijogo de badminton. Retorne apenas JSON, sem Markdown nem explicações.
 Regras:
 - Cada key obrigatório deve ter 2-4 falas curtas.
-- As falas devem soar como reação imediata da NEKO, não como narração do sistema.
+- As falas devem soar como reação imediata da Yui, não como narração do sistema.
 - Não inclua mood, expression, intensity nem JSON de controle.
 
 Keys obrigatórios:
@@ -208,8 +206,8 @@ _MODE_LABELS = {
 
 _MODE_SUFFIXES = {
     "duel": {
-        "zh-CN": "\n当前模式是 duel：你和玩家轮流击球，围绕比分、对拉节奏和胜负压力写台词。",
-        "zh-TW": "\n目前模式是 duel 對拉：你和玩家輪流擊球，圍繞比分、對拉節奏和勝負壓力寫台詞。",
+        "zh-CN": "\n当前模式是 duel 对拉：玩家和 Yui 轮流回球。台词要围绕比分压力、回合攻防和谁占上风；不要写成单纯练习提示。",
+        "zh-TW": "\n目前模式是 duel 對拉：玩家和 Yui 輪流回球。台詞要圍繞比分壓力、回合攻防和誰佔上風；不要寫成單純練習提示。",
         "en": "\nCurrent mode is duel: you and the player take turns hitting, so focus on score pressure, rally rhythm, and competitive tension.",
         "ja": "\n現在のモードは duel です。あなたとプレイヤーが交互に打つため、得点の圧力、ラリーのリズム、勝負感を中心にしてください。",
         "ko": "\n현재 모드는 duel 입니다. 당신과 플레이어가 번갈아 치므로 점수 압박, 랠리 리듬, 승부 긴장감에 집중하세요.",
@@ -217,70 +215,40 @@ _MODE_SUFFIXES = {
         "es": "\nEl modo actual es duel: tú y el jugador golpean por turnos, así que céntrate en el marcador, el ritmo del intercambio y la presión competitiva.",
         "pt": "\nO modo atual é duel: você e o jogador rebatem em turnos, então foque no placar, ritmo da troca e tensão competitiva.",
     },
-    "shooter": {
-        "zh-CN": "\n当前模式是 shooter：玩家控制 Yui 的瞄准、力度和出手，台词要评价玩家的操作。",
-        "zh-TW": "\n目前模式是 shooter：玩家控制 Yui 的瞄準、力度和出手，台詞要評價玩家的操作。",
-        "en": "\nCurrent mode is shooter: the player controls Yui's aim, power, and release, so lines should evaluate the player's control skill rather than Yui's own skill.",
-        "ja": "\n現在のモードは shooter です。プレイヤーが Yui の狙い、力加減、リリースを操作するため、プレイヤーの操作技術を評価してください。",
-        "ko": "\n현재 모드는 shooter 입니다. 플레이어가 Yui 의 조준, 힘, 릴리즈를 조작하므로 플레이어의 조작 실력을 평가하세요.",
-        "ru": "\nТекущий режим — shooter: игрок управляет прицелом, силой и релизом Yui, поэтому оценивай управление игрока.",
-        "es": "\nEl modo actual es shooter: el jugador controla la puntería, fuerza y lanzamiento de Yui, así que evalúa el control del jugador.",
-        "pt": "\nO modo atual é shooter: o jogador controla mira, força e soltura da Yui, então avalie o controle do jogador.",
-    },
-    "timed": {
-        "zh-CN": "\n当前模式是 timed：短台词要围绕倒计时、限时冲分、命中节奏，不要提三次机会。",
-        "zh-TW": "\n目前模式是 timed：短台詞要圍繞倒數、限時衝分、命中節奏，不要提三次機會。",
-        "en": "\nCurrent mode is timed: focus on countdown pressure, time-attack scoring, and shot rhythm; do not mention three chances.",
-        "ja": "\n現在のモードは timed です。カウントダウン、制限時間内の得点、返球リズムを中心にし、3 回のチャンスには触れないでください。",
-        "ko": "\n현재 모드는 timed 입니다. 카운트다운 압박, 제한 시간 득점, 타구 리듬에 집중하고 세 번의 기회는 언급하지 마세요.",
-        "ru": "\nТекущий режим — timed: фокусируйся на таймере, наборе очков за время и ритме ударов; не упоминай три попытки.",
-        "es": "\nEl modo actual es timed: céntrate en la cuenta atrás, puntuar contra reloj y el ritmo de golpeo; no menciones tres oportunidades.",
-        "pt": "\nO modo atual é timed: foque na contagem regressiva, pontuação contra o tempo e ritmo das rebatidas; não mencione três chances.",
-    },
-    "horse": {
-        "zh-CN": "\n当前模式是 HORSE：聚焦出题、复刻、字母惩罚和轮到谁，不要写成比分对战。",
-        "zh-TW": "\n目前模式是 HORSE：聚焦出題、複刻、字母懲罰和輪到誰，不要寫成比分對戰。",
-        "en": "\nCurrent mode is HORSE: focus on setting shots, copying shots, letter penalties, and whose turn it is; do not write scoreboard lines.",
-        "ja": "\n現在のモードは HORSE です。出題、再現、文字ペナルティ、誰の番かを中心にし、点数勝負として書かないでください。",
-        "ko": "\n현재 모드는 HORSE 입니다. 문제 내기, 따라 하기, 글자 벌칙, 누구 차례인지에 집중하고 점수 대결처럼 쓰지 마세요.",
-        "ru": "\nТекущий режим — HORSE: фокусируйся на задании удара, повторении, штрафных буквах и очереди хода; не пиши как игру по счету.",
-        "es": "\nEl modo actual es HORSE: céntrate en proponer golpes, copiarlos, letras de penalización y de quién es el turno; no lo escribas como marcador.",
-        "pt": "\nO modo atual é HORSE: foque em criar rebatidas, copiá-las, penalidades de letras e de quem é a vez; não escreva como placar.",
-    },
 }
 
 BADMINTON_QUICK_LINES_FALLBACKS = {
     "zh-CN": {
-        "line_in": ["贴线了，算你准", "这球压得挺好"],
-        "net_touch": ["擦网偷过去了", "这角度有点险"],
-        "zone_in": ["刚好进区", "落点挺会挑"],
-        "out": ["差一点出去了", "这拍有点长"],
-        "net": ["被网挡住了", "拍面再抬一点"],
-        "shot_missed": ["没事，下一拍", "别急，先看准"],
-        "game_over": ["这局到这儿", "还要再打一局吗"],
-        "long_aim": ["再不挥球要落了", "想太久会僵哦"],
-        "close_to_record": ["纪录快到了", "再稳一拍就到"],
-        "new_record": ["好吧，破纪录了", "这球我认了"],
-        "streak_5": ["五拍连住了", "手感开始热了"],
-        "streak_10": ["十连了？有点稳", "别得意，还没完"],
-        "streak_15": ["十五连还不断", "我开始认真看了"],
-        "streak_20": ["二十连也太久了", "这回合还没结束？"],
+        "line_in": ["压线，算你准", "这落点够刁"],
+        "net_touch": ["擦网也过了", "这球贴着网溜过去"],
+        "zone_in": ["正中目标区", "落点很会挑"],
+        "out": ["差一点出界", "这拍稍微长了"],
+        "net": ["挂网了", "拍面再抬一点"],
+        "shot_missed": ["没事，下一球", "别急，先看准"],
+        "game_over": ["这局到这儿", "还要再来一局吗"],
+        "long_aim": ["快出手，球要落了", "别想太久，会僵"],
+        "close_to_record": ["纪录就在前面", "再稳一拍就到"],
+        "new_record": ["新纪录，认了", "这球真够狠"],
+        "streak_5": ["五连了，手热了", "节奏开始顺了"],
+        "streak_10": ["十连？有点稳", "别飘，还没完"],
+        "streak_15": ["十五连还不断", "这回合真能磨"],
+        "streak_20": ["二十连，太离谱", "这球还没完？"],
     },
     "zh-TW": {
-        "line_in": ["壓線了，算你準", "這球落點挺漂亮"],
-        "net_touch": ["擦網也過去了", "這角度有點險"],
-        "zone_in": ["剛好進區", "落點很會挑"],
-        "out": ["差一點出界了", "這拍有點長"],
-        "net": ["被網擋住了", "拍面再抬一點"],
-        "shot_missed": ["沒事，下一拍", "別急，先看準"],
-        "game_over": ["這局到這裡", "還要再打一局嗎"],
-        "long_aim": ["再不揮球要落了", "想太久會僵住喔"],
-        "close_to_record": ["紀錄快到了", "再穩一拍就到"],
-        "new_record": ["好吧，破紀錄了", "這球我認了"],
-        "streak_5": ["五拍連住了", "手感開始熱了"],
-        "streak_10": ["十連了？有點穩", "別得意，還沒完"],
-        "streak_15": ["十五連還不斷", "我開始認真看了"],
-        "streak_20": ["二十連也太久了", "這回合還沒結束？"],
+        "line_in": ["壓線，算你準", "這落點夠刁"],
+        "net_touch": ["擦網也過了", "這球貼著網溜過去"],
+        "zone_in": ["正中目標區", "落點很會挑"],
+        "out": ["差一點出界", "這拍稍微長了"],
+        "net": ["掛網了", "拍面再抬一點"],
+        "shot_missed": ["沒事，下一球", "別急，先看準"],
+        "game_over": ["這局到這裡", "還要再來一局嗎"],
+        "long_aim": ["快出手，球要落了", "別想太久，會僵"],
+        "close_to_record": ["紀錄就在前面", "再穩一拍就到"],
+        "new_record": ["新紀錄，認了", "這球真的夠狠"],
+        "streak_5": ["五連了，手熱了", "節奏開始順了"],
+        "streak_10": ["十連？有點穩", "別飄，還沒完"],
+        "streak_15": ["十五連還不斷", "這回合真能磨"],
+        "streak_20": ["二十連，太離譜", "這球還沒完？"],
     },
     "en": {
         "line_in": ["On the line!", "Nice placement"],

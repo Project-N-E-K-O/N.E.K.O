@@ -518,7 +518,6 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.leaderboard.title",
         "badminton.leaderboard.global",
         "badminton.leaderboard.local",
-        "badminton.leaderboard.shooter",
         "badminton.leaderboard.duel",
         "badminton.leaderboard.empty",
         "badminton.leaderboard.totalPlayers",
@@ -600,7 +599,6 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.shot.attempt",
         "badminton.lines.fallback",
         "badminton.lines.default.line_in",
-        "badminton.lines.shooter.line_in",
         "badminton.lines.duel.line_in",
         "badminton.lines.pressure.lastTied",
         "badminton.lines.pressure.lastAhead",
@@ -645,7 +643,7 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
     }
     required_keys.update(
         f"badminton.lines.{group}.{line_key}"
-        for group in ("default", "shooter", "duel")
+        for group in ("default", "duel")
         for line_key in line_keys
     )
     required_keys = {
@@ -657,6 +655,18 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
         missing = sorted(key for key in required_keys if _get_nested(payload, key) is None)
         assert not missing, f"{locale_path.name} missing badminton i18n keys: {missing}"
+        for removed_key in (
+            "badminton.mode.shooter",
+            "badminton.mode.timed",
+            "badminton.mode.horse",
+            "badminton.leaderboard.shooter",
+            "badminton.leaderboard.mode.shooter",
+            "badminton.leaderboard.mode.timed",
+            "badminton.leaderboard.mode.horse",
+            "badminton.lines.shooter",
+            "badminton.lines.horse",
+        ):
+            assert _get_nested(payload, removed_key) is None
         duel_title = _get_nested(payload, "badminton.hud.duelTitle")
         eleven_point_markers = ("11", "十一", "１１")
         assert isinstance(duel_title, str) and any(
@@ -1302,53 +1312,28 @@ def test_badminton_non_duel_prompts_do_not_advertise_difficulty_control(lang, mo
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
-def test_badminton_horse_system_prompt_does_not_inherit_duel_rules(lang):
-    prompt = prompts_game.get_badminton_system_prompt(lang, mode="horse")
+def test_badminton_spectator_prompt_matches_default_badminton_contract():
+    zh = prompts_game.get_badminton_system_prompt("zh", mode="spectator")
+    en = prompts_game.get_badminton_system_prompt("en", mode="spectator")
 
-    assert "event.mode=horse" in prompt
-    assert "event.mode=duel" not in prompt
-    assert "player_duel_shot" not in prompt
-    assert "neko_duel_shot" not in prompt
-    assert "neko_duel_turn" not in prompt
-    assert "duel.player_score" not in prompt
-    assert "duel.neko_score" not in prompt
-
-
-@pytest.mark.unit
-def test_badminton_horse_system_prompt_uses_horse_end_contract():
-    zh = prompts_game.get_badminton_system_prompt("zh", mode="horse")
-    en = prompts_game.get_badminton_system_prompt("en", mode="horse")
-
-    assert "本局共有三次失误机会" not in zh
+    assert "羽毛球小游戏" in zh
+    assert "自由练习" not in zh
+    assert "本模式不按三次机会淘汰" in zh
     assert "三次机会用完" not in zh
-    assert "attempts_remaining" not in zh
-    assert "HORSE 字母已经结算出胜负" in zh
-    assert "the run has three miss chances" not in en
+    assert "badminton minigame" in en
+    assert "free-practice" not in en
+    assert "This mode is not a three-miss elimination run" in en
     assert "all three chances are gone" not in en
-    assert "attempts_remaining" not in en
-    assert "HORSE letters have decided the result" in en
 
 
 @pytest.mark.unit
-def test_badminton_horse_system_prompt_matches_chat_event_payload():
-    zh = prompts_game.get_badminton_system_prompt("zh", mode="horse")
-    en = prompts_game.get_badminton_system_prompt("en", mode="horse")
+@pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
+@pytest.mark.parametrize("removed_mode", ("shooter", "timed", "horse"))
+def test_badminton_removed_modes_use_spectator_prompt(lang, removed_mode):
+    spectator = prompts_game.get_badminton_system_prompt(lang, mode="spectator")
+    prompt = prompts_game.get_badminton_system_prompt(lang, mode=removed_mode)
 
-    assert "只有复刻失败的一方吃到 HORSE 字母" in zh
-    assert "出题失败只是换对方出题" in zh
-    assert "只有复刻失败才描述谁吃到字母" in zh
-    assert "currentState.attempts_results 最后一条的 horse_phase" in zh
-    assert "不要用 event.horse.phase 判断" in zh
-    assert "结合 winner" not in zh
-    assert "winner 字段" in zh
-    assert "only a side that fails a copy attempt takes a HORSE letter" in en
-    assert "failed setup just passes setup to the other side" in en
-    assert "mention a letter only for failed copy attempts" in en
-    assert "last currentState.attempts_results entry's horse_phase" in en
-    assert "do not infer it from event.horse.phase" in en
-    assert "summarize with winner" not in en
-    assert "do not rely on a winner field" in en
+    assert prompt == spectator
 
 
 @pytest.mark.unit
@@ -1356,11 +1341,18 @@ def test_badminton_horse_system_prompt_matches_chat_event_payload():
 def test_badminton_quick_lines_mode_prompts_are_distinct_and_localized(lang):
     spectator = prompts_game.get_badminton_quick_lines_prompt(lang, mode="spectator")
 
-    for mode in ("duel", "shooter", "timed", "horse"):
-        prompt = prompts_game.get_badminton_quick_lines_prompt(lang, mode=mode)
-        assert prompt != spectator
-        if lang != "en":
-            assert "Current mode is" not in prompt
+    prompt = prompts_game.get_badminton_quick_lines_prompt(lang, mode="duel")
+    assert prompt != spectator
+    if lang != "en":
+        assert "Current mode is" not in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("removed_mode", ("shooter", "timed", "horse"))
+def test_badminton_removed_modes_use_spectator_quick_lines_prompt(removed_mode):
+    spectator = prompts_game.get_badminton_quick_lines_prompt("zh", mode="spectator")
+
+    assert prompts_game.get_badminton_quick_lines_prompt("zh", mode=removed_mode) == spectator
 
 
 @pytest.mark.unit
@@ -1385,6 +1377,10 @@ def test_badminton_quick_lines_uses_dedicated_prompt_module_for_neko_core_locale
     traditional_prompt = prompts_badminton.get_badminton_quick_lines_prompt("zh-TW", mode="duel")
     assert simplified_prompt != english_prompt
     assert traditional_prompt != simplified_prompt
+    assert "正在看球的 Yui" in simplified_prompt
+    assert "正在看球的 NEKO" not in simplified_prompt
+    assert "Yui reacting" in english_prompt
+    assert "NEKO reacting" not in english_prompt
     assert "duel" in english_prompt
     assert "對拉" in traditional_prompt
 
@@ -1395,56 +1391,15 @@ def test_badminton_quick_lines_uses_dedicated_prompt_module_for_neko_core_locale
 
 
 @pytest.mark.unit
-def test_badminton_english_quick_lines_do_not_mix_mode_suffixes():
-    timed = prompts_game.get_badminton_quick_lines_prompt("en", mode="timed")
-    horse = prompts_game.get_badminton_quick_lines_prompt("en", mode="horse")
-
-    assert "Current mode is timed" in timed
-    assert "Current mode is shooter" not in timed
-    assert "Current mode is HORSE" in horse
-    assert "Current mode is duel" not in horse
-
-
-@pytest.mark.unit
-def test_badminton_zh_horse_quick_lines_do_not_inherit_duel_prompt():
-    prompt = prompts_game.get_badminton_quick_lines_prompt("zh", mode="horse")
-
-    assert "当前模式是 HORSE" in prompt
-    assert "羽毛球对战回合" not in prompt
-    assert "轮流出手" not in prompt
-    assert "比分和对战节奏" not in prompt
-    assert "duel" not in prompt
-
-
-@pytest.mark.unit
 def test_badminton_prompt_localizations_do_not_fallback_to_english():
     english_spectator = prompts_game.get_badminton_system_prompt("en", mode="spectator")
     english_duel = prompts_game.get_badminton_system_prompt("en", mode="duel")
-    english_shooter = prompts_game.get_badminton_system_prompt("en", mode="shooter")
-    english_timed = prompts_game.get_badminton_system_prompt("en", mode="timed")
-    english_horse = prompts_game.get_badminton_system_prompt("en", mode="horse")
     english_quick = prompts_game.get_badminton_quick_lines_prompt("en", mode="spectator")
     english_pregame = prompts_game.get_badminton_pregame_context_prompt("en")
-
-    assert english_timed != english_spectator
-    assert english_horse != english_spectator
-    assert english_timed != english_shooter
-    assert english_horse != english_duel
-    assert "event.mode=timed" in english_timed
-    assert "event.mode=horse" in english_horse
-    assert prompts_game.get_badminton_quick_lines_prompt("zh", mode="timed") != (
-        prompts_game.get_badminton_quick_lines_prompt("zh", mode="shooter")
-    )
-    assert prompts_game.get_badminton_quick_lines_prompt("zh", mode="horse") != (
-        prompts_game.get_badminton_quick_lines_prompt("zh", mode="duel")
-    )
 
     for lang in ("zh", "ja", "ko", "ru", "es", "pt"):
         assert prompts_game.get_badminton_system_prompt(lang, mode="spectator") != english_spectator
         assert prompts_game.get_badminton_system_prompt(lang, mode="duel") != english_duel
-        assert prompts_game.get_badminton_system_prompt(lang, mode="shooter") != english_shooter
-        assert prompts_game.get_badminton_system_prompt(lang, mode="timed") != english_timed
-        assert prompts_game.get_badminton_system_prompt(lang, mode="horse") != english_horse
         assert prompts_game.get_badminton_quick_lines_prompt(lang, mode="spectator") != english_quick
         assert prompts_game.get_badminton_pregame_context_prompt(lang) != english_pregame
 

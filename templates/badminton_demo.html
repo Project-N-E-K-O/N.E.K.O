@@ -1158,7 +1158,6 @@
   var isPositionTransitioning = false;
   var shotAnimationTimer = 0;
   var yuiActionTimer = 0;
-  var latestShooterRating = '';
   function createBadmintonSessionId() {
     return 'badminton-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   }
@@ -3941,10 +3940,6 @@
     }), chatClientTimeoutMs)
       .then(function (res) {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
-        if (res && res.shooter_rating) {
-          latestShooterRating = res.shooter_rating;
-          if (resultPanel.classList.contains('show')) showResult();
-        }
         if (res && res.control) {
           if (res.control.difficulty) setDuelDifficulty(res.control.difficulty);
           if (res.control.mood) setMood(res.control.mood, { reason: 'llm' });
@@ -5451,7 +5446,6 @@
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
     currentSessionEntryId = '';
-    latestShooterRating = '';
     isPositionTransitioning = false;
     clearTimeout(shotAnimationTimer);
     clearTimeout(yuiActionTimer);

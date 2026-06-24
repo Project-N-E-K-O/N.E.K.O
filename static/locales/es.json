@@ -4286,10 +4286,7 @@
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
-             "shooter": "Desafío de golpe",
-             "duel": "Duelo con Yui",
-             "timed": "Contrarreloj",
-             "horse": "HORSE"
+             "duel": "Duelo con Yui"
          },
          "hud": {
              "score": "Puntos {{score}}",
@@ -4302,16 +4299,11 @@
              "practice": "Práctica libre",
              "yourTurn": "Tu turno",
              "nekoTurn": "Golpe de Neko",
-             "horseLetters": "Tú {{player}} / Neko {{neko}}",
-             "horseChallenge": "Replica {{distance}} {{angle}}°",
-             "horseSet": "Propón un golpe",
              "unlimitedAttempts": "Ilimitado",
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
              "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
-             "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "act.",
              "off": "desact."
@@ -4324,8 +4316,6 @@
              "rating": "Valoración de control: {{rating}}",
              "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
              "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
-             "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
              "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
              "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
              "attemptsSummary": "Resumen de golpes: {{summary}}",
@@ -4342,7 +4332,6 @@
              "title": "Clasificación",
              "global": "Global",
              "local": "Local",
-            "shooter": "Golpe",
              "duel": "Duelo",
              "empty": "Aún no hay registros",
              "totalPlayers": "Jugadores {{count}}",
@@ -4350,10 +4339,7 @@
              "recent": "Últimas {{count}} partidas",
              "loading": "Cargando...",
              "mode": {
-                 "timed": "Tiempo",
-                 "horse": "HORSE",
                  "spectator": "Espectador",
-                "shooter": "Golpe",
                  "duel": "Duelo"
              }
          },
@@ -4375,8 +4361,7 @@
                  "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
                  "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
                  "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4523,64 +4508,6 @@
                      "Levanta la cara de la raqueta."
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "Reinicia el control.",
-                     "Firme. Yo te sigo."
-                 ],
-                 "game_over": [
-                     "Ese control a?n falta.",
-                     "No me hagas correr en vano."
-                 ],
-                 "long_aim": [
-                     "R?pido, se me endurece la mano.",
-                     "?A?n eliges ?ngulo?"
-                 ],
-                 "close_to_record": [
-                     "El r?cord est? cerca.",
-                     "No tiembles en este golpe."
-                 ],
-                 "new_record": [
-                     "Vale, nuevo r?cord.",
-                     "La coordinaci?n estuvo decente."
-                 ],
-                 "streak_5": [
-                     "Cinco seguidos. No flotes.",
-                     "Este ritmo est? estable."
-                 ],
-                 "streak_10": [
-                     "?Diez seguidos? No presumas.",
-                     "Tienes la mano bastante firme."
-                 ],
-                 "streak_15": [
-                     "?Quince? No te agrandes.",
-                     "Este s? lo sostuviste."
-                 ],
-                 "streak_20": [
-                     "?Veinte? ?A?n seguimos?",
-                     "Esta ronda se puso loca."
-                 ],
-                 "line_in": [
-                     "Vale, fue preciso.",
-                     "Controlaste bien la raqueta."
-                 ],
-                 "net_touch": [
-                     "La rozaste por encima.",
-                     "El ?ngulo arriesgado funcion?."
-                 ],
-                 "zone_in": [
-                     "No sonr?as. Fue suerte.",
-                     "Elegiste bien la ca?da."
-                 ],
-                 "out": [
-                     "Un poco menos de fuerza.",
-                     "Te apuraste en esa."
-                 ],
-                 "net": [
-                     "?A d?nde me llevas?",
-                     "Levanta la cara de la raqueta."
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "Todavía hay oportunidad.",
@@ -4697,10 +4624,6 @@
                  "lastBehind": "Anota este y ganas.",
                  "playerAhead": "No lo haces mal...",
                  "playerBehind": "Aprieta un poco más."
-             },
-             "horse": {
-                 "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                 "playerMiss": "Tú también sumas {{letters}}."
              },
              "mindGame": [
                  "Te tiembla la mano.",

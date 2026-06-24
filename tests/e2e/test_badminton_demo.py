@@ -154,7 +154,7 @@ def test_badminton_legacy_modes_fall_back_to_duel(mock_page: Page, running_serve
 @pytest.mark.e2e
 def test_badminton_duel_eleven_player_misses_and_restart(mock_page: Page, running_server: str):
     page = mock_page
-    _goto_badminton(page, running_server, "shooter")
+    _goto_badminton(page, running_server, "duel")
 
     for _ in range(11):
         _force_shot_result(page, False)
@@ -172,7 +172,7 @@ def test_badminton_duel_eleven_player_misses_and_restart(mock_page: Page, runnin
 @pytest.mark.e2e
 def test_badminton_mode_switcher_is_removed(mock_page: Page, running_server: str):
     page = mock_page
-    _goto_badminton(page, running_server, "shooter")
+    _goto_badminton(page, running_server, "legacy")
 
     expect(page.locator("#mode-switcher")).to_have_count(0)
     state = page.evaluate("window.BadmintonDemo.getState()")
