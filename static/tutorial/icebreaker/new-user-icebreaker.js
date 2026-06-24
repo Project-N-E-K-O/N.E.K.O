@@ -498,20 +498,44 @@
             choice: choice,
             label: String(info.label || ''),
             handoff: info.handoff === true,
-            completed: info.completed === true
+            completed: info.completed === true,
+            seq: Number(info.seq) || 0
         };
-        return getLocalMutationHeaders().then(function (headers) {
+
+        function parseChoiceResponse(response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json().then(function (data) {
+                return !!(data && data.ok);
+            });
+        }
+
+        // 与 /context 同款：缓存的 local-mutation token 过期（如后端重启而页面常驻）时，
+        // 403 csrf_validation_failed 不当普通失败丢弃，刷新 token 后重试一次，避免静默漏记。
+        function postChoiceWithHeaders(headers, allowRetry) {
             return fetch(ICEBREAKER_API_BASE + '/choice', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postChoiceWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseChoiceResponse(response);
+                    });
+                }
+                return parseChoiceResponse(response);
             });
-        }).then(function (response) {
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            return response.json();
-        }).then(function (data) {
-            return !!(data && data.ok);
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return postChoiceWithHeaders(headers, true);
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
             return false;
@@ -818,26 +842,10 @@
         session.choiceInFlight = true;
         clearChoicePrompt();
         var label = (detail.option && detail.option.label) || getText(session.localeData, option.labelKey);
-        // 叶子节点的选项带 handoffKey（无 next），那一次点击就是这天的收尾选择；中间节点
-        // 带 next。两种都在这里被点，统一在此落进持久化选项池（session.nodeId 即本次选择
-        // 所属节点，deliverNode 之后会被改写，所以现在就记）。
+        // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
         var isHandoffChoice = !!option.handoffKey;
-        var choiceWritePromise = recordChoiceToPool({
-            day: session.day,
-            sessionId: session.sessionId,
-            nodeId: session.nodeId,
-            choice: choice,
-            label: label,
-            handoff: isHandoffChoice,
-            completed: isHandoffChoice
-        });
-        if (isHandoffChoice) {
-            // 收尾选择会结束 route，而后端严格模式下 route 一关就拒收 /choice。fire-and-forget
-            // 下这条最重要的选择可能在网络重排中迟到被拒，故把写入 promise 挂到 session，让
-            // completeWithHandoff 在 endIcebreakerRoute 前 await 它（recordChoiceToPool 内部
-            // 已 catch、永不 reject，await 不会挂）。
-            session.pendingChoiceWrite = choiceWritePromise;
-        }
+        // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
+        var choiceNodeId = session.nodeId;
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
@@ -852,6 +860,26 @@
             }
             if (activeSession !== session) {
                 return null;
+            }
+            // 仅在用户消息被接受后才写池：appendChatMessage 返回 null（host 渲染超时）会回滚到
+            // 原节点，此刻不能留下一条用户可能改选的幻影选项（handoff 还会误标 completed）。
+            // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget 写入
+            // 到达顺序被网络打乱的影响。
+            var choiceWritePromise = recordChoiceToPool({
+                day: session.day,
+                sessionId: session.sessionId,
+                nodeId: choiceNodeId,
+                choice: choice,
+                label: label,
+                handoff: isHandoffChoice,
+                completed: isHandoffChoice,
+                seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            });
+            if (isHandoffChoice) {
+                // 收尾选择会结束 route，严格后端 route 一关就拒收。把写入 promise 挂到 session，
+                // 让 completeWithHandoff 在 endIcebreakerRoute 前 await 它，保证它在 route 仍
+                // active 时到达服务端（recordChoiceToPool 内部已 catch、永不 reject，await 不挂）。
+                session.pendingChoiceWrite = choiceWritePromise;
             }
             if (option.next) {
                 return deliverNode(option.next);

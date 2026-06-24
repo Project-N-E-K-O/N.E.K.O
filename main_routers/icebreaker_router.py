@@ -400,6 +400,7 @@ async def icebreaker_choice(request: Request):
         "label": data.get("label"),
         "handoff": data.get("handoff"),
         "completed": data.get("completed"),
+        "seq": data.get("seq"),
         "source": ICEBREAKER_SOURCE,
     }
     try:

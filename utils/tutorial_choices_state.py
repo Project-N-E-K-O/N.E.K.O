@@ -85,6 +85,9 @@ def _normalize_choice(raw_choice: Any) -> dict[str, Any] | None:
         "label": _clean_str(raw_choice.get("label"), limit=_LABEL_LIMIT),
         "handoff": bool(raw_choice.get("handoff")),
         "session_id": _clean_str(raw_choice.get("session_id"), limit=_SESSION_LIMIT),
+        # 客户端自增步序：消费侧按 seq 还原点击顺序，不依赖数组到达顺序（fire-and-forget
+        # 写入可能被网络打乱）。0 表示调用方未提供。
+        "seq": _clamp_int(raw_choice.get("seq")),
         "at": _clamp_int(raw_choice.get("at")),
     }
 
@@ -205,6 +208,7 @@ def record_tutorial_choice(
         "label": payload.get("label"),
         "handoff": payload.get("handoff"),
         "session_id": session_id,
+        "seq": payload.get("seq"),
         "at": now_ms,
     })
 
