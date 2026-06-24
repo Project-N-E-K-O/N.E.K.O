@@ -191,7 +191,7 @@ MASTER_EMOTION_VA_PROMPT = {
 - arousal（唤醒度）：0 到 1 之间的小数。0 = 平静、低能量、放松，1 = 高度激动、强烈、能量很高（无论正负）。
 - confidence（置信度）：0 到 1 之间的小数，表示你对本次判断的把握。
 - complexity（认知复杂度）：0 到 1 之间的小数。表示说话者正在提出一个**复杂的、客观的问题**（数学题、逻辑题、推理题、需要多步推导的客观问题等）的程度。1 = 明确在问这类烧脑客观题，0 = 没有在问、或只是闲聊／情绪倾诉／简单问题。与情绪独立判断。
-- external_intent（外部意图）：0 到 1 之间的小数。表示这一轮在多大程度上**需要外部能力**——要么明确要求一个对外操作（打开、搜索、控制、运行某个外部东西，操作某 app 或设备，改动外部状态），要么需要外部、实时、或超出你已知范围的信息才能回答（天气、价格、新闻、实时状态等，疑问句也算）。1 = 显然需要，0 = 只是闲聊、倾诉、表达观点、或凭对话和常识就能回答。与情绪和复杂度都独立判断：纯靠推理就能解的难题（数学、逻辑）归 complexity，这里仍取低。
+- external_intent（外部意图）：0 到 1 之间的小数。表示这一轮在多大程度上**需要外部能力**——要么明确要求一个对外操作（打开、搜索、控制、运行某个外部东西，操作某 app 或设备，改动外部状态），要么需要外部、实时、或超出你已知范围的信息才能回答（天气、价格、新闻、实时状态等；这类外部/实时信息的疑问句也算）。1 = 显然需要，0 = 只是闲聊、倾诉、表达观点、或凭对话和常识就能回答。与情绪和复杂度都独立判断：纯靠推理就能解的难题（数学、逻辑）归 complexity，这里仍取低。
 
 判断规则：
 1. 只依据这段文本本身流露的情绪，不要脑补未给出的背景。
@@ -208,7 +208,7 @@ Dimensions:
 - arousal: a number between 0 and 1. 0 = calm, low energy, relaxed; 1 = highly activated, intense, high energy (regardless of sign).
 - confidence: a number between 0 and 1 indicating your certainty.
 - complexity: a number between 0 and 1 — how much the speaker is posing a COMPLEX, OBJECTIVE question (math, logic, reasoning, multi-step analytical problems). 1 = clearly asking such a hard objective question; 0 = not asking, or just chatting / venting / a simple question. Judge independently of emotion.
-- external_intent: a number between 0 and 1 — how much this turn needs an external capability: either it EXPLICITLY asks to perform an external action (open, search, control, run something, operate an app or device, change external state), OR it needs external, real-time, or beyond-what-you-know information to answer (weather, prices, news, live status, etc. — questions count too). 1 = clearly needed; 0 = just chatting, venting, giving an opinion, or answerable from the conversation and common sense. Judge independently of both emotion and complexity: a hard problem solvable by pure reasoning (math, logic) belongs to complexity and stays low here.
+- external_intent: a number between 0 and 1 — how much this turn needs an external capability: either it EXPLICITLY asks to perform an external action (open, search, control, run something, operate an app or device, change external state), OR it needs external, real-time, or beyond-what-you-know information to answer (weather, prices, news, live status, etc.; questions about those external/live facts count too). 1 = clearly needed; 0 = just chatting, venting, giving an opinion, or answerable from the conversation and common sense. Judge independently of both emotion and complexity: a hard problem solvable by pure reasoning (math, logic) belongs to complexity and stays low here.
 
 Rules:
 1. Judge only from the emotion this text reveals; do not invent unstated context.
@@ -225,7 +225,7 @@ Return JSON only, with no explanation.""",
 - arousal（覚醒度）：0〜1 の数値。0 = 落ち着き・低エネルギー・リラックス、1 = 強い興奮・激しさ・高エネルギー（正負を問わず）。
 - confidence（確信度）：0〜1 の数値で、今回の判断の確かさ。
 - complexity（認知的複雑さ）：0〜1 の数値。話し手が**複雑で客観的な問い**（数学・論理・推論、多段階の分析が要る客観的な問題など）をどれだけ投げかけているか。1 = 明確にそうした難しい客観的問題を問うている、0 = 問うていない、または雑談／感情の吐露／単純な質問。感情とは独立に判断する。
-- external_intent（外部意図）：0〜1 の数値。このターンが**外部の能力をどれだけ必要としているか**——外部の動作を明確に要求している（何かを開く・検索・制御・実行する、アプリや機器を操作する、外部の状態を変える）か、または外部・リアルタイム・あなたの既知を超える情報がないと答えられない（天気・価格・ニュース・リアルタイムの状態など。疑問文も含む）。1 = 明らかに必要、0 = 雑談・吐露・意見、または会話と常識だけで答えられる。感情とも複雑さとも独立に判断する：純粋な推論だけで解ける難問（数学・論理）は complexity に属し、ここでは低いまま。
+- external_intent（外部意図）：0〜1 の数値。このターンが**外部の能力をどれだけ必要としているか**——外部の動作を明確に要求している（何かを開く・検索・制御・実行する、アプリや機器を操作する、外部の状態を変える）か、または外部・リアルタイム・あなたの既知を超える情報がないと答えられない（天気・価格・ニュース・リアルタイムの状態など。こうした外部・リアルタイム情報を尋ねる疑問文も含む）。1 = 明らかに必要、0 = 雑談・吐露・意見、または会話と常識だけで答えられる。感情とも複雑さとも独立に判断する：純粋な推論だけで解ける難問（数学・論理）は complexity に属し、ここでは低いまま。
 
 判断ルール：
 1. この文章がにじませる感情だけで判断し、書かれていない背景を補わない。
@@ -242,7 +242,7 @@ JSONのみを返し、説明文は付けないでください。""",
 - arousal(각성도): 0~1 사이 숫자. 0 = 차분함, 낮은 에너지, 이완; 1 = 강한 흥분, 격렬함, 높은 에너지(긍·부정 무관).
 - confidence(확신도): 0~1 사이 숫자로 이번 판단에 대한 확신.
 - complexity(인지적 복잡도): 0~1 사이 숫자. 말하는 사람이 **복잡하고 객관적인 질문**(수학·논리·추론, 다단계 분석이 필요한 객관적 문제 등)을 얼마나 던지고 있는지. 1 = 그런 어려운 객관적 문제를 분명히 묻는 중, 0 = 묻지 않음, 또는 잡담／감정 토로／단순한 질문. 감정과 독립적으로 판단.
-- external_intent(외부 의도): 0~1 사이 숫자. 이 턴이 **외부 능력을 얼마나 필요로 하는지**——외부 동작을 명시적으로 요청하거나(무언가를 열기·검색·제어·실행, 앱이나 기기 조작, 외부 상태 변경), 또는 외부·실시간·당신이 아는 범위를 넘는 정보가 있어야 답할 수 있는 경우(날씨·가격·뉴스·실시간 상태 등. 의문문도 포함). 1 = 분명히 필요, 0 = 잡담·토로·의견, 또는 대화와 상식만으로 답할 수 있음. 감정 및 복잡도와 독립적으로 판단: 순수한 추론만으로 풀리는 어려운 문제(수학·논리)는 complexity 에 속하며 여기서는 낮게 유지.
+- external_intent(외부 의도): 0~1 사이 숫자. 이 턴이 **외부 능력을 얼마나 필요로 하는지**——외부 동작을 명시적으로 요청하거나(무언가를 열기·검색·제어·실행, 앱이나 기기 조작, 외부 상태 변경), 또는 외부·실시간·당신이 아는 범위를 넘는 정보가 있어야 답할 수 있는 경우(날씨·가격·뉴스·실시간 상태 등. 이런 외부·실시간 정보를 묻는 의문문도 포함). 1 = 분명히 필요, 0 = 잡담·토로·의견, 또는 대화와 상식만으로 답할 수 있음. 감정 및 복잡도와 독립적으로 판단: 순수한 추론만으로 풀리는 어려운 문제(수학·논리)는 complexity 에 속하며 여기서는 낮게 유지.
 
 판단 규칙:
 1. 이 문장이 드러내는 감정만으로 판단하고, 주어지지 않은 배경을 지어내지 마세요.
@@ -259,7 +259,7 @@ JSONのみを返し、説明文は付けないでください。""",
 - arousal (возбуждение): число от 0 до 1. 0 = спокойствие, низкая энергия, расслабленность; 1 = сильное возбуждение, интенсивность, высокая энергия (независимо от знака).
 - confidence (уверенность): число от 0 до 1, отражающее вашу уверенность.
 - complexity (когнитивная сложность): число от 0 до 1 — насколько говорящий задаёт СЛОЖНЫЙ ОБЪЕКТИВНЫЙ вопрос (математика, логика, рассуждение, многошаговые аналитические задачи). 1 = явно задаёт такой трудный объективный вопрос; 0 = не задаёт, либо просто болтает / делится чувствами / простой вопрос. Оценивайте независимо от эмоции.
-- external_intent (внешнее намерение): число от 0 до 1 — насколько этот ход требует внешней возможности: либо ЯВНО просит выполнить внешнее действие (открыть, найти, управлять, запустить что-то, работать с приложением или устройством, изменить внешнее состояние), либо требует внешней, реального времени или выходящей за пределы известного вам информации для ответа (погода, цены, новости, текущий статус и т. п.; вопросы тоже считаются). 1 = явно нужно; 0 = болтовня, излияние чувств, мнение или ответ из разговора и здравого смысла. Оценивайте независимо и от эмоции, и от сложности: трудная задача, решаемая чистым рассуждением (математика, логика), относится к complexity и здесь остаётся низкой.
+- external_intent (внешнее намерение): число от 0 до 1 — насколько этот ход требует внешней возможности: либо ЯВНО просит выполнить внешнее действие (открыть, найти, управлять, запустить что-то, работать с приложением или устройством, изменить внешнее состояние), либо требует внешней, реального времени или выходящей за пределы известного вам информации для ответа (погода, цены, новости, текущий статус и т. п.; вопросы о таких внешних/актуальных данных тоже считаются). 1 = явно нужно; 0 = болтовня, излияние чувств, мнение или ответ из разговора и здравого смысла. Оценивайте независимо и от эмоции, и от сложности: трудная задача, решаемая чистым рассуждением (математика, логика), относится к complexity и здесь остаётся низкой.
 
 Правила:
 1. Судите только по эмоции, выраженной в этом тексте; не домысливайте неуказанный контекст.
@@ -276,7 +276,7 @@ Dimensiones:
 - arousal (activación): un número entre 0 y 1. 0 = calma, baja energía, relajación; 1 = muy activado, intenso, alta energía (sin importar el signo).
 - confidence (confianza): un número entre 0 y 1 que indica tu seguridad.
 - complexity (complejidad cognitiva): un número entre 0 y 1 — cuánto está planteando quien habla una PREGUNTA COMPLEJA y OBJETIVA (matemáticas, lógica, razonamiento, problemas analíticos de varios pasos). 1 = claramente hace una de esas preguntas objetivas difíciles; 0 = no pregunta, o solo charla / se desahoga / pregunta simple. Júzgalo independientemente de la emoción.
-- external_intent (intención externa): un número entre 0 y 1 — cuánto necesita este turno una capacidad externa: o bien pide EXPLÍCITAMENTE realizar una acción externa (abrir, buscar, controlar, ejecutar algo, operar una app o dispositivo, cambiar estado externo), o bien necesita información externa, en tiempo real o más allá de lo que sabes para responder (clima, precios, noticias, estado en vivo, etc.; las preguntas también cuentan). 1 = claramente necesario; 0 = charla, desahogo, opinión, o se responde con la conversación y el sentido común. Júzgalo independientemente de la emoción y de la complejidad: un problema difícil resoluble por puro razonamiento (matemáticas, lógica) pertenece a complexity y aquí permanece bajo.
+- external_intent (intención externa): un número entre 0 y 1 — cuánto necesita este turno una capacidad externa: o bien pide EXPLÍCITAMENTE realizar una acción externa (abrir, buscar, controlar, ejecutar algo, operar una app o dispositivo, cambiar estado externo), o bien necesita información externa, en tiempo real o más allá de lo que sabes para responder (clima, precios, noticias, estado en vivo, etc.; las preguntas sobre esos datos externos/en vivo también cuentan). 1 = claramente necesario; 0 = charla, desahogo, opinión, o se responde con la conversación y el sentido común. Júzgalo independientemente de la emoción y de la complejidad: un problema difícil resoluble por puro razonamiento (matemáticas, lógica) pertenece a complexity y aquí permanece bajo.
 
 Reglas:
 1. Juzga solo por la emoción que revela este texto; no inventes contexto no dado.
@@ -293,7 +293,7 @@ Dimensões:
 - arousal (ativação): um número entre 0 e 1. 0 = calmo, baixa energia, relaxado; 1 = muito ativado, intenso, alta energia (independente do sinal).
 - confidence (confiança): um número entre 0 e 1 indicando sua certeza.
 - complexity (complexidade cognitiva): um número entre 0 e 1 — o quanto o falante está fazendo uma PERGUNTA COMPLEXA e OBJETIVA (matemática, lógica, raciocínio, problemas analíticos de várias etapas). 1 = claramente faz uma dessas perguntas objetivas difíceis; 0 = não pergunta, ou apenas conversa / desabafa / pergunta simples. Julgue independentemente da emoção.
-- external_intent (intenção externa): um número entre 0 e 1 — o quanto este turno precisa de uma capacidade externa: ou pede EXPLICITAMENTE para realizar uma ação externa (abrir, buscar, controlar, executar algo, operar um app ou dispositivo, mudar estado externo), ou precisa de informação externa, em tempo real ou além do que você sabe para responder (clima, preços, notícias, status ao vivo, etc.; perguntas também contam). 1 = claramente necessário; 0 = conversa, desabafo, opinião, ou respondível pela conversa e bom senso. Julgue independentemente da emoção e da complexidade: um problema difícil solúvel por puro raciocínio (matemática, lógica) pertence a complexity e aqui permanece baixo.
+- external_intent (intenção externa): um número entre 0 e 1 — o quanto este turno precisa de uma capacidade externa: ou pede EXPLICITAMENTE para realizar uma ação externa (abrir, buscar, controlar, executar algo, operar um app ou dispositivo, mudar estado externo), ou precisa de informação externa, em tempo real ou além do que você sabe para responder (clima, preços, notícias, status ao vivo, etc.; perguntas sobre esses dados externos/ao vivo também contam). 1 = claramente necessário; 0 = conversa, desabafo, opinião, ou respondível pela conversa e bom senso. Julgue independentemente da emoção e da complexidade: um problema difícil solúvel por puro raciocínio (matemática, lógica) pertence a complexity e aqui permanece baixo.
 
 Regras:
 1. Julgue apenas pela emoção que este texto revela; não invente contexto não fornecido.
