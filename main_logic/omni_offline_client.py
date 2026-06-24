@@ -698,6 +698,11 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
+        # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
+        # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，
+        # 见 core.py proactive media 注释（Codex P2）。单张、一次性消费。
+        self._proactive_image_to_inject = None
 
         # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
         # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
@@ -1947,8 +1952,11 @@ class OmniOfflineClient:
         # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
 
-        # Check if we need to switch to vision model
-        has_images = len(self._pending_images) > 0
+        # Check if we need to switch to vision model. A staged proactive-vision
+        # screenshot (the screen she just commented on) counts as an image too,
+        # so a text-only user reply still goes multi-modal and the model sees it.
+        proactive_image = self._proactive_image_to_inject
+        has_images = bool(proactive_image) or len(self._pending_images) > 0
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -1969,7 +1977,17 @@ class OmniOfflineClient:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first
+            # Add images first. Temporal order: the proactive screenshot (the
+            # screen she commented on, BEFORE the user spoke) leads, then the
+            # user's own pending frame(s) — so the model doesn't mistake the
+            # earlier screen for what the user just captured.
+            if proactive_image:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{proactive_image}"
+                    }
+                })
             for img_b64 in self._pending_images:
                 content.append({
                     "type": "image_url",
@@ -1985,10 +2003,17 @@ class OmniOfflineClient:
             })
 
             user_message = HumanMessage(content=content)
-            logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
+            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            logger.info(
+                f"Sending multi-modal message with {_img_count} image(s)"
+                f"{' (incl. proactive screen)' if proactive_image else ''}"
+            )
 
-            # Clear pending images after using them
+            # Clear pending images after using them (content already holds the
+            # data urls). The proactive screenshot is one-shot: consumed by this
+            # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
+            self._proactive_image_to_inject = None
         else:
             # Text-only message（已含 system_prefix watermark 前缀，若有）
             user_message = HumanMessage(content=_user_text_with_prefix)
@@ -3082,6 +3107,23 @@ class OmniOfflineClient:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
 
+    def set_proactive_screenshot(self, image_b64: str | None) -> None:
+        """Stage (or clear) the proactive-vision screenshot for the user's next reply.
+
+        When proactive chat used the screen as its material, the committed
+        AIMessage carries only text, so the conversation model can't see what
+        was on screen when the user replies. This stashes that screenshot so the
+        NEXT ``stream_text`` folds it in as leading visual context — symmetric
+        with how ``_pending_images`` carries the user's own frame, but kept in a
+        SEPARATE single-slot field: sharing ``_pending_images`` would steal the
+        user's next frame (see core.py proactive media note / Codex P2).
+
+        Pass ``None`` (e.g. a non-vision proactive round) to clear, so the slot
+        always reflects the most recent committed proactive round's screen and a
+        stale screenshot never trails a later screen-unrelated talk.
+        """
+        self._proactive_image_to_inject = image_b64 or None
+
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
         # 仅留文本。base64 图片在 vision tokenizer 下约 1.5k~3k tokens/张，
@@ -3542,6 +3584,7 @@ class OmniOfflineClient:
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()
+        self._proactive_image_to_inject = None
         if self.llm:
             try:
                 await self.llm.aclose()
