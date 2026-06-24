@@ -366,13 +366,22 @@ async def icebreaker_choice(request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     requested_session_id = str(data.get("session_id") or "")
-    # 双 tab 防污染：若同角色另起了新破冰 session（/route/start 把新 session 顶为
-    # active），被取代的旧 tab 的选择不该写进「有效路径」池。与 /context、/speak 一致
-    # 用 _stale_icebreaker_session_response 挡掉 session 不匹配的旧请求。
-    # 但与那两个端点不同：这里**不**要求 active route 必须存在——收尾的 handoff 选择
-    # 在 handleChoice 里先于 completeWithHandoff 的 route/end 触发，竞态下 route 可能已
-    # 结束，此时无 active state（不 stale）应照常落盘，避免丢掉最重要的最终选择。
+    # 选项必须属于当前 active 的破冰 route，才能写进「有效路径」池——与 /context、
+    # /speak 完全对齐：无 active route → route_not_active；session 不匹配（双 tab 下
+    # 新 session 顶掉旧的）→ stale 拒绝。这样被取代的旧 tab、以及 route 结束后迟到的
+    # 旧请求都进不来，池子不被污染。
+    # 不必担心丢掉收尾的 handoff 选择：前端 recordChoiceToPool 在 handleChoice 开头
+    # 同步发起本请求，而 route/end 要等之后两次 appendChatMessage（各含一个 /context
+    # 往返）才发起，本请求实质上比 route/end 早约两个往返，落地时 route 仍 active。
     active_state = _get_active_icebreaker_route_state(lanlan_name)
+    if not active_state:
+        return {
+            "ok": False,
+            "reason": "route_not_active",
+            "lanlan_name": lanlan_name,
+            "source": ICEBREAKER_SOURCE,
+            "method": "tutorial_choices",
+        }
     stale_response = _stale_icebreaker_session_response(
         active_state,
         requested_session_id,

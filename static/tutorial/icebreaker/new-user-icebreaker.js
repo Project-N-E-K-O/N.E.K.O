@@ -486,8 +486,12 @@
         var nodeId = String(info.nodeId || '').trim();
         var choice = String(info.choice || '').trim();
         if (!nodeId || !choice) return Promise.resolve(false);
+        // 用 session 起始钉死的角色快照，而非点击时现取 resolveLanlanName()：若中途换了
+        // 当前角色，选项仍归属到 /route/start 激活的那个角色，避免把后半段路径写到错角色
+        // 名下（正是这个 per-角色池要避免的串味）。同步取值，防 activeSession 在 await 中被清。
+        var lanlanName = String((activeSession && activeSession.lanlanName) || resolveLanlanName() || '');
         var body = {
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: lanlanName,
             session_id: String(info.sessionId || (activeSession && activeSession.sessionId) || ''),
             day: String(info.day || (activeSession && activeSession.day) || ''),
             node_id: nodeId,
@@ -999,6 +1003,8 @@
                 localeData: localeData || {},
                 nodeId: dayConfig.root,
                 offTopicCount: 0,
+                // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
+                lanlanName: resolveLanlanName(),
                 sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
             };
             return startIcebreakerRoute(nextSession).then(function (started) {
