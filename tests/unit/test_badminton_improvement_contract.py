@@ -1649,7 +1649,7 @@ def test_badminton_generated_quick_lines_override_static_i18n_lines():
 
     assert "var generatedQuickLines = {};" in html
     assert "var generated = generatedQuickLines[key] || [];" in html
-    assert "if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';" in html
+    assert "if (!(options && options.skipGenerated) && generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';" in html
     assert "generatedQuickLines[key] = pool;" in html
     assert "quickLines[key] = pool;" not in html
 
@@ -1717,7 +1717,7 @@ def test_badminton_speak_line_guards_non_chinese_from_chinese_fallback_text():
 def test_badminton_localechange_refreshes_generated_quick_lines():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
-    start = html.index("window.addEventListener('localechange', function () {")
+    start = html.index("addBadmintonEventListener(window, 'localechange', function () {")
     localechange = html[start:html.index("});", start) + len("});")]
 
     assert "generatedQuickLines = {};" in localechange
@@ -1910,7 +1910,7 @@ def test_badminton_voice_request_does_not_use_browser_playback_bridge():
     assert "readVoiceOccupancy()" not in request_section
     assert "playbackDeferredOnce" not in request_section
     assert "voice_deferred_once" not in request_section
-    assert "showBubble(entry.line, entry.control);" in request_section
+    assert "showBubble(entry.line, entry.control, entry.event);" in request_section
 
 
 @pytest.mark.unit

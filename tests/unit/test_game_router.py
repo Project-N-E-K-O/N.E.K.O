@@ -717,7 +717,7 @@ def test_badminton_prompt_and_control_contract():
         language="zh",
     )
 
-    assert "羽毛球挑战小游戏" in prompt
+    assert "羽毛球小游戏" in prompt
     assert "有效区域或目标落点" in prompt
     assert "line_in、net_touch、zone_in、out、net" in prompt
     assert "expression" in prompt
