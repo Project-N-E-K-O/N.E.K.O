@@ -2,7 +2,7 @@
 """Drawing Guess mini-game fallback endpoints.
 
 This router owns the game-specific round state for the standalone
-``/drawing_guess_demo`` page. The generic route lifecycle remains in
+``/drawing_guess`` page. The generic route lifecycle remains in
 ``game_router`` under ``/api/game/drawing_guess/route/*``.
 """
 

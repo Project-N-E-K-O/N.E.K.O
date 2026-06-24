@@ -2196,7 +2196,7 @@
         return Object.assign({
           session_id: state.sessionId,
           lanlan_name: state.lanlanName,
-          source: 'drawing_guess_demo',
+          source: 'drawing_guess',
           game_type: GAME_TYPE,
           i18n_language: currentLanguage(),
           gameStarted: false,
@@ -2281,7 +2281,7 @@
         updateIdentity();
         clearInterval(state.heartbeatTimer);
         var payload = JSON.stringify(routePayload({
-          reason: 'drawing_guess_demo_closed',
+          reason: 'drawing_guess_closed',
           roundCompleted: false,
           round_completed: false,
           postgameProactive: false
@@ -2395,6 +2395,6 @@
   <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
-  <script src="/static/game/games/drawing_guess/drawing-guess-demo.js?v={{ static_asset_version }}"></script>
+  <script src="/static/game/games/drawing_guess/drawing-guess.js?v={{ static_asset_version }}"></script>
 </body>
 </html>

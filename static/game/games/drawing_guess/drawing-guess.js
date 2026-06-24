@@ -795,7 +795,7 @@
     var payload = {
       session_id: sessionId,
       lanlan_name: lanlanName,
-      source: 'drawing_guess_demo',
+      source: 'drawing_guess',
       game_type: GAME_TYPE,
       i18n_language: currentLanguage(),
       reason: 'drawing_guess_debug_character_switch',
@@ -1050,7 +1050,7 @@
       interrupt_audio: false,
       event: {
         kind: 'drawing_guess_neko_line',
-        source: 'drawing_guess_demo',
+        source: 'drawing_guess',
         phase: state.phase,
         round: state.roundNumber,
         text_length: item.line.length
@@ -1262,7 +1262,7 @@
     return Object.assign({
       session_id: state.sessionId,
       lanlan_name: state.lanlanName,
-      source: 'drawing_guess_demo',
+      source: 'drawing_guess',
       game_type: GAME_TYPE,
       i18n_language: currentLanguage(),
       gameStarted: state.phase !== 'tutorial',

@@ -131,7 +131,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d-emotion.js",
     _PROJECT_ROOT / "static/live2d-interaction.js",
     _PROJECT_ROOT / "static/live2d-model.js",
-    _PROJECT_ROOT / "static/game/games/drawing_guess/drawing-guess-demo.js",
+    _PROJECT_ROOT / "static/game/games/drawing_guess/drawing-guess.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
@@ -271,24 +271,36 @@ async def badminton_demo(request: Request):
     })
 
 
-def _render_drawing_guess_demo(request: Request):
+def _render_drawing_guess(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/drawing_guess_demo.html", {
+    return templates.TemplateResponse("templates/drawing_guess.html", {
         "request": request,
         **_static_assets_ctx(),
     })
 
 
+@router.get("/drawing_guess", response_class=HTMLResponse)
+async def drawing_guess(request: Request):
+    """Drawing Guess companion mini-game."""
+    return _render_drawing_guess(request)
+
+
+@router.get("/drawing-guess", response_class=HTMLResponse)
+async def drawing_guess_alias(request: Request):
+    """Hyphenated alias for the Drawing Guess companion mini-game."""
+    return _render_drawing_guess(request)
+
+
 @router.get("/drawing_guess_demo", response_class=HTMLResponse)
 async def drawing_guess_demo(request: Request):
-    """Drawing guess companion mini-game demo."""
-    return _render_drawing_guess_demo(request)
+    """Legacy Drawing Guess demo route kept for old links."""
+    return _render_drawing_guess(request)
 
 
 @router.get("/drawing-guess-demo", response_class=HTMLResponse)
 async def drawing_guess_demo_alias(request: Request):
-    """Hyphenated alias for the drawing guess companion mini-game demo."""
-    return _render_drawing_guess_demo(request)
+    """Legacy hyphenated Drawing Guess demo route kept for old links."""
+    return _render_drawing_guess(request)
 
 
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)

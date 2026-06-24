@@ -1561,7 +1561,7 @@ def test_invite_game_configs_and_i18n_complete():
     expected_urls = {
         'soccer': '/soccer_demo',
         'badminton': '/badminton_demo',
-        'drawing_guess': '/drawing_guess_demo',
+        'drawing_guess': '/drawing_guess',
     }
     assert set(MINI_GAME_INVITE_AVAILABLE_GAMES) == set(expected_urls)
     for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
@@ -1603,5 +1603,5 @@ def test_accept_drawing_guess_invite_returns_drawing_guess_url():
 
     assert result['action'] == 'open_game'
     assert result['game_type'] == 'drawing_guess'
-    assert result['game_url'].startswith('/drawing_guess_demo?')
+    assert result['game_url'].startswith('/drawing_guess?')
     assert 'session_id=dg-sess' in result['game_url']

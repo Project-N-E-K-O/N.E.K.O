@@ -7,8 +7,8 @@ from main_routers import pages_router
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DRAWING_GUESS_TEMPLATE = ROOT / "templates" / "drawing_guess_demo.html"
-DRAWING_GUESS_SCRIPT = ROOT / "static" / "game" / "games" / "drawing_guess" / "drawing-guess-demo.js"
+DRAWING_GUESS_TEMPLATE = ROOT / "templates" / "drawing_guess.html"
+DRAWING_GUESS_SCRIPT = ROOT / "static" / "game" / "games" / "drawing_guess" / "drawing-guess.js"
 I18N_SCRIPT = ROOT / "static" / "i18n-i18next.js"
 LOCALES_DIR = ROOT / "static" / "locales"
 
@@ -45,36 +45,50 @@ def _get_nested(payload: dict, dotted_key: str):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_drawing_guess_demo_page_renders_shell(monkeypatch):
+async def test_drawing_guess_page_renders_shell(monkeypatch):
     monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
 
-    result = await pages_router.drawing_guess_demo(_FakePageRequest())
+    result = await pages_router.drawing_guess(_FakePageRequest())
 
-    assert result["template_name"] == "templates/drawing_guess_demo.html"
+    assert result["template_name"] == "templates/drawing_guess.html"
     assert "static_asset_version" in result["context"]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_drawing_guess_demo_hyphen_alias_renders_shell(monkeypatch):
+async def test_drawing_guess_hyphen_alias_renders_shell(monkeypatch):
     monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
 
-    result = await pages_router.drawing_guess_demo_alias(_FakePageRequest())
+    result = await pages_router.drawing_guess_alias(_FakePageRequest())
 
-    assert result["template_name"] == "templates/drawing_guess_demo.html"
+    assert result["template_name"] == "templates/drawing_guess.html"
     assert "static_asset_version" in result["context"]
 
 
 @pytest.mark.unit
-def test_drawing_guess_demo_static_route_contract():
+@pytest.mark.asyncio
+async def test_legacy_drawing_guess_demo_routes_render_shell(monkeypatch):
+    monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
+
+    underscore_result = await pages_router.drawing_guess_demo(_FakePageRequest())
+    hyphen_result = await pages_router.drawing_guess_demo_alias(_FakePageRequest())
+
+    assert underscore_result["template_name"] == "templates/drawing_guess.html"
+    assert hyphen_result["template_name"] == "templates/drawing_guess.html"
+
+
+@pytest.mark.unit
+def test_drawing_guess_static_route_contract():
     html = _html()
     script = _script()
 
-    assert "/static/game/games/drawing_guess/drawing-guess-demo.js" in html
+    assert "/static/game/games/drawing_guess/drawing-guess.js" in html
     assert "var GAME_TYPE = 'drawing_guess';" in script
     assert "var ROUND_API = '/api/game/drawing_guess';" in script
     assert "lanlan_name: queryLanlan || ''" in html
     assert "lanlan_name: queryLanlan || 'drawing_guess_demo'" not in html
+    assert "source: 'drawing_guess_demo'" not in html
+    assert "source: 'drawing_guess_demo'" not in script
     assert "fetch('/api/characters/current_catgirl'" in script
     assert '<button id="start-button"' not in html
     assert '<button id="reload-character-button"' not in html
