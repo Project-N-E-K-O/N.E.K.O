@@ -1705,9 +1705,12 @@ def test_badminton_speak_line_guards_non_chinese_from_chinese_fallback_text():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert "function isLikelyChineseFallbackLine(line) {" in html
+    assert "var _jaFallbackLineLookup = null;" in html
+    assert "function isKnownJapaneseFallbackLine(text) {" in html
     assert "function replaceUnexpectedChineseFallbackLine(line, event) {" in html
     assert "if (primary === 'zh') return text;" in html
     assert "if (!isLikelyChineseFallbackLine(text)) return text;" in html
+    assert "if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;" in html
     assert "return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');" in html
 
     speak_start = html.index("function speakLine(line, control, event) {")
