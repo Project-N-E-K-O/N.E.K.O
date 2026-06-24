@@ -12,6 +12,7 @@ class RoastPipeline:
     def __init__(self, ctx: Any) -> None:
         self.ctx = ctx
         self._uid_locks: dict[str, asyncio.Lock] = {}
+        self._dry_run_roasted_uids: set[str] = set()
 
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
@@ -57,6 +58,8 @@ class RoastPipeline:
                 already_roasted = False
                 if uid_lock is not None:
                     already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
+                    if not already_roasted and self.ctx.config.dry_run and event.source == "live_danmaku":
+                        already_roasted = identity.uid in self._dry_run_roasted_uids
                 is_repeat_live_danmaku = (
                     uid_lock is not None
                     and event.source == "live_danmaku"
@@ -118,6 +121,8 @@ class RoastPipeline:
 
                 if request.dry_run:
                     steps.append(PipelineStep("neko_dispatcher", "dry_run", output))
+                    if should_mark_roasted:
+                        self._dry_run_roasted_uids.add(identity.uid)
                     result = InteractionResult(
                         False,
                         "dry_run",

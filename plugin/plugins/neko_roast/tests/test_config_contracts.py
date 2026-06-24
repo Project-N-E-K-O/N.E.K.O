@@ -721,6 +721,98 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_dry_run_repeat_live_danmaku_uses_session_first_roast_marker():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        def __init__(self):
+            self.mark_calls = 0
+
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            self.mark_calls += 1
+
+    class Dispatcher:
+        def __init__(self):
+            self.requests = []
+
+        async def push_roast(self, request):
+            self.requests.append(request)
+            return f"dry_run({request.prompt_text})"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="avatar_roast",
+                live_mode=event.live_mode,
+                strength="normal",
+                dry_run=True,
+            )
+
+    class DanmakuResponse:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="danmaku_response",
+                live_mode=event.live_mode,
+                strength="normal",
+                dry_run=True,
+            )
+
+    viewer_profile = ViewerProfileModule()
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=viewer_profile,
+        avatar_roast=AvatarRoast(),
+        danmaku_response=DanmakuResponse(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+    pipeline = RoastPipeline(ctx)
+
+    first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
+    second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+
+    assert first.status == "dry_run"
+    assert second.status == "dry_run"
+    assert any(step.id == "avatar_roast" and step.status == "ok" for step in first.steps)
+    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert any(step.id == "danmaku_response" and step.status == "ok" for step in second.steps)
+    assert not any(step.id == "viewer_profile.mark_roasted" for step in first.steps + second.steps)
+    assert viewer_profile.mark_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_pipeline_records_idle_hosting_as_own_route():
     class Audit:
         def record(self, *_args, **_kwargs):

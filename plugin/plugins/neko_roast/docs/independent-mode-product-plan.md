@@ -393,6 +393,7 @@ Goal: verify whether the offline fixes after the 2026-06-24 run improved the liv
 
 - The first useful viewer danmaku should route as `avatar_roast` and feel like a first-appearance moment.
 - Later ordinary danmaku from the same UID should route as `danmaku_response`.
+- In chain-only `dry_run`, the same runtime session may treat a successful dry-run first appearance as a session-local first-roast marker so the next same-UID danmaku can validate `danmaku_response`; this must not persist `roast_count` or write a permanent first-roast result.
 - Follow-up danmaku should not reuse avatar / ID roast templates.
 - The reply should target the current danmaku, not continue the previous NEKO response.
 - Short danmaku should get one short TTS-friendly reply.
