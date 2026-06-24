@@ -63,6 +63,29 @@ def test_model_manager_pngtuber_preview_dropdown_uses_i18n_config():
     assert "iconAltKey: 'live2d.pngtuberStatePreview'" in config_block
 
 
+def test_model_manager_pngtuber_talk_preview_keeps_i18n_after_early_load():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    update_block = script[
+        script.index("function updatePNGTuberTalkPreviewButtonText()"):
+        script.index("function refreshLocalizedInteractiveTexts()", script.index("function updatePNGTuberTalkPreviewButtonText()"))
+    ]
+    refresh_block = script[
+        script.index("function refreshLocalizedInteractiveTexts()"):
+        script.index("// 动作播放状态", script.index("function refreshLocalizedInteractiveTexts()"))
+    ]
+    controls_block = script[
+        script.index("function clearPNGTuberPreviewControls()"):
+        script.index("if (pngtuberTalkPreviewBtn) {", script.index("if (pngtuberTalkPreviewBtn) {") + 1)
+    ]
+
+    assert "t('live2d.pngtuberTalkPreview', '测试说话')" in update_block
+    assert "setAttribute('data-i18n-title', 'live2d.pngtuberTalkPreview')" in update_block
+    assert "setAttribute('data-i18n-aria', 'live2d.pngtuberTalkPreview')" in update_block
+    assert "textSpan.setAttribute('data-i18n', 'live2d.pngtuberTalkPreview')" in update_block
+    assert "updatePNGTuberTalkPreviewButtonText();" in refresh_block
+    assert controls_block.count("updatePNGTuberTalkPreviewButtonText();") >= 1
+
+
 def test_model_manager_pngtuber_card_face_prefers_visible_drawable():
     script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
     start = script.index("function getPNGTuberCaptureDrawable()")
@@ -87,6 +110,37 @@ def test_model_manager_pngtuber_save_preserves_stored_placement():
         script.index("if (currentModelType === 'pngtuber')") :
         script.index("['adapter', 'layered_metadata', 'source_format', 'source_type']", script.index("if (currentModelType === 'pngtuber')"))
     ]
+
+
+def test_model_manager_pngtuber_character_config_fallback_loads_preview():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    timer_decl = "let pngtuberTalkPreviewTimer = null;"
+    preview_block = script[
+        script.index("async function previewPNGTuberConfig("):
+        script.index("async function loadSelectedPNGTuberOption(", script.index("async function previewPNGTuberConfig("))
+    ]
+    select_block = script[
+        script.index("async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch("):
+        script.index("function rememberSelectedPNGTuberModel(", script.index("async function selectAndPreviewFirstPNGTuberModelAfterModeSwitch("))
+    ]
+    current_character_block = script[
+        script.index("if (modelType === 'pngtuber' && hasValidPNGTuber)"):
+        script.index("if (modelType === 'live3d' && !hasValidVRMPath", script.index("if (modelType === 'pngtuber' && hasValidPNGTuber)"))
+    ]
+
+    assert script.index(timer_decl) < script.index("await switchModelDisplay(savedModelType, savedSubType);")
+    assert script.count(timer_decl) == 1
+    assert "window.lanlan_config.model_type = 'pngtuber';" in preview_block
+    assert "window.lanlan_config.live3d_sub_type = '';" in preview_block
+    assert "window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);" in preview_block
+    assert preview_block.index("window.lanlan_config.model_type = 'pngtuber';") < preview_block.index("await window.loadPNGTuberAvatar(pngtuberConfig);")
+    assert "if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;" in preview_block
+    assert "await window.loadPNGTuberAvatar(pngtuberConfig);" in preview_block
+    assert "throw new Error('PNGTuber runtime not loaded');" in preview_block
+    assert "if (preferredConfig) {" in select_block
+    assert "return await previewPNGTuberConfig(preferredConfig" in select_block
+    assert "if (preferredConfig) return false;" not in select_block
+    assert "await previewPNGTuberConfig(pngtuberConfig, {" in current_character_block
 
 
 def test_card_maker_rejects_remote_pngtuber_assets_before_export():
