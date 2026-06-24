@@ -124,6 +124,7 @@ function soloReadinessTone(ready: boolean, summary: string): "success" | "warnin
 }
 
 function soloReadinessItemTone(status: string): "success" | "warning" | "danger" | "default" {
+  if (status === "observed") return "success"
   if (status === "ready") return "success"
   if (status === "blocked") return "warning"
   return "default"

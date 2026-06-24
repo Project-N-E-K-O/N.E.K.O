@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "配信ルームはまだ準備中",
   "panel.soloTestReadiness.status.ready": "準備OK",
   "panel.soloTestReadiness.status.blocked": "待機",
+  "panel.soloTestReadiness.status.observed": "Observed",
   "panel.soloTestReadiness.item.preflight": "配信前チェック",
   "panel.soloTestReadiness.item.warmup_hosting": "開場あいさつ",
   "panel.soloTestReadiness.item.avatar_roast": "初登場いじり",

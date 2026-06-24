@@ -987,6 +987,7 @@ class RoastRuntime:
             summary = "ready_for_live_test"
 
         blocked_status = "ready" if ready else "blocked"
+        warmup_observed = self._has_recent_response_module("warmup_hosting")
         items = [
             {
                 "id": "preflight",
@@ -995,8 +996,8 @@ class RoastRuntime:
             },
             {
                 "id": "warmup_hosting",
-                "status": blocked_status,
-                "reason": "available" if ready else summary,
+                "status": "observed" if warmup_observed else blocked_status,
+                "reason": "observed" if warmup_observed else ("available" if ready else summary),
             },
             {
                 "id": "avatar_roast",
@@ -1032,6 +1033,17 @@ class RoastRuntime:
             "next_auto_action": str(director.get("next_auto_action") or "none"),
             "items": items,
         }
+
+    def _has_recent_response_module(self, module_id: str) -> bool:
+        target = str(module_id)
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            if self._route_from_result(result) == target:
+                return True
+        return False
 
     def _active_engagement_min_interval_seconds(self) -> float:
         return {

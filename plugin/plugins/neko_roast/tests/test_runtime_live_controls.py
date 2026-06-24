@@ -989,6 +989,30 @@ async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: 
 
 
 @pytest.mark.asyncio
+async def test_solo_test_readiness_marks_warmup_hosting_observed_after_result(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream"),
+            steps=[PipelineStep("warmup_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    state = await runtime.dashboard_state()
+
+    items = {item["id"]: item for item in state["solo_test_readiness"]["items"]}
+    assert items["warmup_hosting"]["status"] == "observed"
+    assert items["warmup_hosting"]["reason"] == "observed"
+
+
+@pytest.mark.asyncio
 async def test_solo_test_readiness_blocks_companion_mode(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True

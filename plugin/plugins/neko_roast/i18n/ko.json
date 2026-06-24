@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "방송방이 아직 준비되지 않았습니다",
   "panel.soloTestReadiness.status.ready": "준비됨",
   "panel.soloTestReadiness.status.blocked": "대기",
+  "panel.soloTestReadiness.status.observed": "Observed",
   "panel.soloTestReadiness.item.preflight": "방송 전 확인",
   "panel.soloTestReadiness.item.warmup_hosting": "오프닝 진행",
   "panel.soloTestReadiness.item.avatar_roast": "첫 등장 평가",

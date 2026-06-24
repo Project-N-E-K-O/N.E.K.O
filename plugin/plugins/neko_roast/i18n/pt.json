@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "A sala ainda não está pronta",
   "panel.soloTestReadiness.status.ready": "Pronto",
   "panel.soloTestReadiness.status.blocked": "Aguardar",
+  "panel.soloTestReadiness.status.observed": "Observed",
   "panel.soloTestReadiness.item.preflight": "Checagem pré-live",
   "panel.soloTestReadiness.item.warmup_hosting": "Abertura da live",
   "panel.soloTestReadiness.item.avatar_roast": "Roast de primeira aparição",

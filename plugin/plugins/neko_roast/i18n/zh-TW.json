@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "直播間還沒準備好",
   "panel.soloTestReadiness.status.ready": "可用",
   "panel.soloTestReadiness.status.blocked": "等待",
+  "panel.soloTestReadiness.status.observed": "已觸發",
   "panel.soloTestReadiness.item.preflight": "開播檢查",
   "panel.soloTestReadiness.item.warmup_hosting": "開場接待",
   "panel.soloTestReadiness.item.avatar_roast": "首次出場銳評",

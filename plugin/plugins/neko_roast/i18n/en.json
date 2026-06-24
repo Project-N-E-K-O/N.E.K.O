@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "Live room not ready yet",
   "panel.soloTestReadiness.status.ready": "Ready",
   "panel.soloTestReadiness.status.blocked": "Wait",
+  "panel.soloTestReadiness.status.observed": "Observed",
   "panel.soloTestReadiness.item.preflight": "Preflight",
   "panel.soloTestReadiness.item.warmup_hosting": "Opening host line",
   "panel.soloTestReadiness.item.avatar_roast": "First viewer roast",

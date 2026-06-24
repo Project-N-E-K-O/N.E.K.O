@@ -374,6 +374,7 @@
   "panel.soloTestReadiness.summary.live_not_ready": "Комната еще не готова",
   "panel.soloTestReadiness.status.ready": "Готово",
   "panel.soloTestReadiness.status.blocked": "Ждет",
+  "panel.soloTestReadiness.status.observed": "Observed",
   "panel.soloTestReadiness.item.preflight": "Проверка перед эфиром",
   "panel.soloTestReadiness.item.warmup_hosting": "Открывающая реплика",
   "panel.soloTestReadiness.item.avatar_roast": "Первый roast зрителя",

@@ -278,6 +278,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.soloTestReadiness.summary.live_not_ready",
         "panel.soloTestReadiness.status.ready",
         "panel.soloTestReadiness.status.blocked",
+        "panel.soloTestReadiness.status.observed",
         "panel.soloTestReadiness.item.preflight",
         "panel.soloTestReadiness.item.warmup_hosting",
         "panel.soloTestReadiness.item.avatar_roast",
