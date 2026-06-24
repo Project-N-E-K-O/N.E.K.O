@@ -1553,6 +1553,7 @@
         "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
         "vllmRefTextPlaceholder": "예: 앞으로 저보다 더 잘할 수 있기를 바랍니다",
         "vllmRefTextRequired": "참조 오디오 전사를 입력하세요(vLLM-Omni 클론 필수)",
+        "vllmRefTextTooLong": "참조 오디오 전사가 너무 깁니다. 100자 이내로 입력하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

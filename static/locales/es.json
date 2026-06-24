@@ -1553,6 +1553,7 @@
         "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
         "vllmRefTextPlaceholder": "p.ej. Espero que en el futuro puedas hacerlo aún mejor que yo",
         "vllmRefTextRequired": "Introduzca la transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni)",
+        "vllmRefTextTooLong": "La transcripción del audio de referencia es demasiado larga; manténgala dentro de 100 caracteres",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

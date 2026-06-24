@@ -1553,6 +1553,7 @@
         "vllmRefTextHint": "参考音声で話されている内容をそのまま入力してください。テキストと音声が合わないとクローン品質が低下します",
         "vllmRefTextPlaceholder": "例：今後私よりさらに上手にできることを願っています",
         "vllmRefTextRequired": "参考音声の書き起こしを入力してください（vLLM-Omni クローンでは必須）",
+        "vllmRefTextTooLong": "参考音声の書き起こしが長すぎます。100文字以内に収めてください",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

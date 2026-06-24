@@ -1493,7 +1493,7 @@ async function registerVoice() {
                 return;
             }
             if (refTextVal.length > 100) {
-                resultDiv.textContent = 'vLLM-Omni 参考音频原文过长，请控制在 100 字以内';
+                resultDiv.textContent = window.t ? window.t('voice.vllmRefTextTooLong') : 'vLLM-Omni 参考音频原文过长，请控制在 100 字以内';
                 resultDiv.className = 'result error';
                 return;
             }

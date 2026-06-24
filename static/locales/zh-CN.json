@@ -1553,6 +1553,7 @@
         "vllmRefTextHint": "逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降",
         "vllmRefTextPlaceholder": "例如：希望你以后能够做的比我还好呦",
         "vllmRefTextRequired": "请填写参考音频原文（vLLM-Omni 克隆必填）",
+        "vllmRefTextTooLong": "vLLM-Omni 参考音频原文过长，请控制在 100 字以内",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里百炼 CosyVoice",

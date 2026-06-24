@@ -48,6 +48,7 @@ import tempfile
 import wave
 import zlib
 import socket
+import inspect
 from dataclasses import dataclass
 from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
@@ -4572,14 +4573,33 @@ async def get_voice_preview(
             # 端点必失败（dual to vllm_omni_tts_worker 的 URL 规整）。
             from main_logic.tts_client import _vllm_omni_normalize_ws_endpoint
             ws_endpoint = _vllm_omni_normalize_ws_endpoint(base_url)
+            # API key 鉴权（对齐 worker 的 _connect_and_config 双路径：WS handshake
+            # Authorization header + session.config.api_key）。有认证的 vLLM 端点克隆
+            # 预览也需要传 key，否则 401 失败（C6 fix）。
+            vllm_api_key = str((preview_core_config or {}).get('ttsModelApiKey') or '').strip()
+            ws_kwargs = {"max_size": None, "open_timeout": 10, "close_timeout": 5}
+            if vllm_api_key:
+                # 兼容旧版本 websockets：用 inspect 探测参数名，避免 try/except TypeError
+                # 过宽吞掉 WS 通信中的合法 TypeError，也避免 await connect() + async with ws:
+                # 导致 websockets 16.0 的 connect.__aenter__ 再次 await self 重连（C6-1 fix）。
+                # NOTE: preview 用 inspect 探测参数名，worker 仍用 try/except TypeError。
+                # 两条路径策略不同是因为 preview 是短连接（async with 自动管理），
+                # worker 是长连接（手动管理）。worker 的 try/except TypeError 在
+                # connect() 阶段执行，send/recv 在块外，吞没风险较低。
+                try:
+                    _ws_sig = inspect.signature(websockets.connect)
+                    _header_key = "additional_headers" if "additional_headers" in _ws_sig.parameters else "extra_headers"
+                except (ValueError, TypeError):
+                    _header_key = "additional_headers"  # 新版本优先
+                ws_kwargs[_header_key] = [
+                    ("Authorization", f"Bearer {vllm_api_key}"),
+                ]
             try:
                 # 整体超时 30s：vLLM-Omni 预览无服务端超时，若服务端接受连接但不发
                 # session.done（半开/挂起），async for 会永久阻塞占用 worker。open_timeout/
                 # close_timeout 与 worker 的 _connect_and_config 对齐。
                 async with asyncio.timeout(30):
-                    async with websockets.connect(
-                        ws_endpoint, max_size=None, open_timeout=10, close_timeout=5,
-                    ) as ws:
+                    async with websockets.connect(ws_endpoint, **ws_kwargs) as ws:
                         # 发送 session.config
                         config_msg = {
                             "type": "session.config",
@@ -4593,6 +4613,9 @@ async def get_voice_preview(
                         }
                         if ref_text:
                             config_msg["ref_text"] = ref_text
+                        # session 层鉴权（部分自建服务端从 config 读 api_key）
+                        if vllm_api_key:
+                            config_msg["api_key"] = vllm_api_key
                         await ws.send(json.dumps(config_msg))
                         # 发送预览文本
                         await ws.send(json.dumps({"type": "input.text", "text": text}))
@@ -5492,6 +5515,18 @@ async def voice_clone(
         if provider == 'vllm_omni':
             existing_ref_text = str((voice_data_ex or {}).get('clone_ref_text') or '').strip()
             if existing_ref_text != vllm_ref_text:
+                # 清理旧条目：否则 find_voice_by_audio_md5 按插入顺序总是先返回
+                # 最旧的匹配条目，旧 voice 永远占位，新注册无限重复创建；
+                # 旧 voice 也仍出现在音色列表中，用户可能选到错误音色。
+                try:
+                    _config_manager.delete_voice_for_current_api(voice_id_ex)
+                    logger.info(
+                        f"vLLM-Omni 克隆音色 {voice_id_ex} ref_text 变更"
+                        f"（旧: {existing_ref_text!r} → 新: {vllm_ref_text!r}），已删除旧条目")
+                except Exception:
+                    logger.warning(
+                        "vLLM-Omni 旧条目 %s 删除失败，可能导致下次去重仍命中旧条目",
+                        voice_id_ex, exc_info=True)
                 existing = None
     if existing:
         voice_id, voice_data = existing

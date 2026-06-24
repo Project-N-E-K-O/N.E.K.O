@@ -1553,6 +1553,7 @@
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
         "vllmRefTextPlaceholder": "e.g. I hope you can do even better than me in the future",
         "vllmRefTextRequired": "Please enter the reference audio transcript (required for vLLM-Omni clone)",
+        "vllmRefTextTooLong": "Reference audio transcript is too long; please keep it within 100 characters",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
