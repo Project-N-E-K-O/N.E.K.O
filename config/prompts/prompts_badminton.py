@@ -19,8 +19,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from utils.language_utils import normalize_language_code
-
 
 NEKO_CORE_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
@@ -64,20 +62,13 @@ def normalize_badminton_prompt_locale(language: Any) -> str:
         return "zh-CN"
     if raw in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[raw]
-    try:
-        full = normalize_language_code(str(language), format="full")
-    except Exception:
-        full = ""
-    if full in NEKO_CORE_LOCALES:
-        return full
-    try:
-        short = normalize_language_code(str(language), format="short")
-    except Exception:
-        short = ""
-    if short in _LANGUAGE_ALIASES:
-        return _LANGUAGE_ALIASES[short]
-    if short in {"en", "ja", "ko", "ru", "es", "pt"}:
-        return short
+    if raw.startswith("zh"):
+        if "tw" in raw or "hk" in raw or "hant" in raw:
+            return "zh-TW"
+        return "zh-CN"
+    for locale in ("en", "ja", "ko", "ru", "es", "pt"):
+        if raw == locale or raw.startswith(f"{locale}-"):
+            return locale
     return "en"
 
 
