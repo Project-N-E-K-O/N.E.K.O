@@ -412,10 +412,21 @@ def test_focus_stream_overrides_decision():
     """The thinking-on override decision, vision guard, and provider-extra
     preservation. ``stream_text`` applies this before streaming: thinking-on
     only when focus is active AND not on a vision model; and when it does
-    override, it strips only thinking keys (keeps e.g. web_search)."""
+    override, it FLIPS the provider's thinking knob to its enabled form (per
+    provider dialect) while keeping non-thinking extras (e.g. web_search)."""
     from main_logic.omni_offline_client import OmniOfflineClient as _C
-    # pure-thinking provider → override drops to None (nothing non-thinking left)
-    assert _C._focus_stream_overrides(True, False, "claude-sonnet-4-6") == {"extra_body": None}
+    # thinking.type provider → flipped to enabled (not dropped to None)
+    assert _C._focus_stream_overrides(True, False, "claude-sonnet-4-6") == {
+        "extra_body": {"thinking": {"type": "enabled"}}
+    }
+    # free server (model 名固定 free-model) shares the thinking.type dialect
+    assert _C._focus_stream_overrides(True, False, "free-model") == {
+        "extra_body": {"thinking": {"type": "enabled"}}
+    }
+    # OpenAI-shape bool knob flips False→True
+    assert _C._focus_stream_overrides(True, False, "qwen-flash") == {
+        "extra_body": {"enable_thinking": True}
+    }
     # unknown model → no resolved extra_body → None
     assert _C._focus_stream_overrides(True, False, "test-model") == {"extra_body": None}
     # step-2-mini ships a web_search tool → it MUST survive (not nuked to None)
@@ -424,6 +435,46 @@ def test_focus_stream_overrides_decision():
     # vision guard / not-thinking → no override at all
     assert _C._focus_stream_overrides(True, True, "step-2-mini") == {}
     assert _C._focus_stream_overrides(False, False, "step-2-mini") == {}
+
+
+def test_focus_extra_body_provider_dialects():
+    """focus_extra_body flips each provider's thinking knob to its ENABLED form
+    per that provider's own dialect (not a blind key-drop). Free server defaults
+    to disabled and flips to enabled; non-thinking extras and MiniMax's
+    reasoning_split (no on/off semantics) are preserved unchanged."""
+    from config.providers import (
+        focus_extra_body, get_extra_body, EXTRA_BODY_CLAUDE,
+    )
+    from config.providers import EXTRA_BODY_MINIMAX  # not re-exported via config/__init__
+
+    # free server (model 名固定 free-model): regular turn sends thinking DISABLED…
+    assert get_extra_body("free-model") == {"thinking": {"type": "disabled"}}
+    assert get_extra_body("free-model") == EXTRA_BODY_CLAUDE
+    # …凝神 flips it to enabled (thinking.type dialect)
+    assert focus_extra_body("free-model") == {"thinking": {"type": "enabled"}}
+
+    # per-dialect enabled forms
+    assert focus_extra_body("qwen-flash") == {"enable_thinking": True}
+    assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
+    assert focus_extra_body("gemini-2.5-flash") == {
+        "extra_body": {"google": {"thinking_config": {"thinking_budget": -1}}}
+    }
+    assert focus_extra_body("gemini-3-flash-preview") == {
+        "extra_body": {"google": {"thinking_config": {"thinking_level": "high", "include_thoughts": True}}}
+    }
+    assert focus_extra_body("google/gemini-2.5-flash") == {"reasoning": {"effort": "high"}}
+
+    # MiniMax reasoning_split is not an on/off knob → preserved, not flipped
+    assert focus_extra_body("MiniMax-M2.5") == EXTRA_BODY_MINIMAX
+    # non-thinking provider extra (step web_search) preserved on a focus turn
+    assert "tools" in focus_extra_body("step-2-mini")
+    # unknown / empty model → no extra_body
+    assert focus_extra_body("nonexistent") is None
+    assert focus_extra_body("") is None
+
+    # returns a fresh dict each call — mutating the result can't poison the constant
+    focus_extra_body("qwen-flash")["enable_thinking"] = False
+    assert focus_extra_body("qwen-flash") == {"enable_thinking": True}
 
 
 async def test_focus_override_threads_through_visible_stream():
