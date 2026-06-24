@@ -150,6 +150,26 @@ def test_thinking_message_shape_only_type_and_active():
     assert msg["active"] is True
 
 
+def test_handle_thinking_active_pulses_bubble_on():
+    # handle_thinking_active is the session callback fired when the model emits a
+    # reasoning chunk on ANY turn (Focus or not). It pulses the bubble True via the
+    # idempotent _push_focus_thinking — decoupled from the Focus inline decision.
+    stub = _stub()
+    stub.handle_thinking_active = _bind(stub, "handle_thinking_active")
+    asyncio.run(stub.handle_thinking_active())
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+
+def test_handle_thinking_active_is_idempotent_within_turn():
+    # Multiple reasoning chunks in one turn must not spam the bubble — the cached
+    # state in _push_focus_thinking collapses repeated True pulses to one push.
+    stub = _stub()
+    handler = _bind(stub, "handle_thinking_active")
+    asyncio.run(handler())
+    asyncio.run(handler())
+    assert _pushed_thinking(stub) == [{"type": "focus_thinking", "active": True}]
+
+
 def test_thinking_force_re_pushes_for_new_window():
     # resync_focus_for_new_window replays the thinking pulse with force=True so a
     # window opened mid-thinking lands on the current bubble — the idempotent

@@ -574,6 +574,7 @@ class OmniOfflineClient:
         voice: str = "",  # Unused for text mode but kept for compatibility
         turn_detection_mode = None,  # Unused for text mode
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+        on_thinking_active: Optional[Callable[[], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,  # Unused
         on_interrupt: Optional[Callable[[], Awaitable[None]]] = None,  # Unused
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -604,6 +605,14 @@ class OmniOfflineClient:
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
+        # Pulsed once per stream the first time the model emits a reasoning /
+        # thinking chunk (filtered out before it reaches text/TTS — only the
+        # "is thinking" boolean is surfaced). Drives the chat thinking-dots
+        # bubble for ANY turn that actually reasons, decoupled from Focus mode.
+        self.on_thinking_active = on_thinking_active
+        # Per-stream guard so the three reasoning-filter points (openai loop,
+        # forced-finalize, genai) notify the bubble at most once per stream_text.
+        self._reasoning_pulsed_this_stream = False
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
@@ -826,6 +835,28 @@ class OmniOfflineClient:
                 "content": result.output_as_json_string(),
             })
 
+    async def _notify_reasoning_active(self) -> None:
+        """Tell the host (once per stream) that the model is emitting reasoning /
+        thinking chunks, so the chat can show a thinking-dots bubble even on a
+        non-Focus turn whose provider reasons internally. The reasoning TEXT is
+        still filtered out at the call site — only this boolean pulse escapes.
+        Idempotent on ``_reasoning_pulsed_this_stream`` so the three filter
+        points can call it blindly. Best-effort: a callback failure must never
+        disturb the stream.
+
+        getattr default guards ``__new__`` test stubs that bypass ``__init__``
+        (and never set the per-stream guard / callback attributes)."""
+        if getattr(self, "_reasoning_pulsed_this_stream", False):
+            return
+        self._reasoning_pulsed_this_stream = True
+        cb = getattr(self, "on_thinking_active", None)
+        if cb is None:
+            return
+        try:
+            await cb()
+        except Exception as e:
+            logger.debug("on_thinking_active callback failed (ignored): %s", e)
+
     async def _astream_with_tools(self, messages, **overrides):
         """Polymorphic streaming entry point. Yields ``LLMStreamChunk``
         objects (text + finish_reason); tool calls are intercepted and
@@ -1004,6 +1035,9 @@ class OmniOfflineClient:
                     and not chunk.finish_reason
                     and not chunk.usage_metadata
                 ):
+                    # Surface "model is thinking" (boolean only, text stays
+                    # filtered) so the bubble pulses on ANY reasoning turn.
+                    await self._notify_reasoning_active()
                     continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
@@ -1099,6 +1133,8 @@ class OmniOfflineClient:
                 and not chunk.finish_reason
                 and not chunk.usage_metadata
             ):
+                # Same boolean thinking pulse on the forced-finalize path.
+                await self._notify_reasoning_active()
                 continue
             if getattr(chunk, "content", None) and tool_leak_filter is not None:
                 chunk.content = self._filter_tool_leak_content(
@@ -1223,8 +1259,13 @@ class OmniOfflineClient:
                     cand_content = getattr(cand, "content", None)
                     parts = getattr(cand_content, "parts", None) or []
                     for part in parts:
-                        # Skip thinking parts (Gemini 2.5+ thinking models).
+                        # Skip thinking parts (Gemini 2.5+ thinking models) — but
+                        # surface the boolean "is thinking" pulse first so the
+                        # bubble shows on genai reasoning turns too (dual with the
+                        # OpenAI-compat reasoning_content path). The thought TEXT
+                        # itself is still dropped.
                         if getattr(part, "thought", False):
+                            await self._notify_reasoning_active()
                             continue
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
@@ -1829,6 +1870,10 @@ class OmniOfflineClient:
                 text = "请分析这些图片。"
             else:
                 return
+
+        # Fresh stream: re-arm the per-stream reasoning-pulse guard so this
+        # turn's first reasoning chunk re-pulses the thinking bubble.
+        self._reasoning_pulsed_this_stream = False
 
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0

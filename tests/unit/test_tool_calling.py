@@ -546,6 +546,80 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
+    """A reasoning-only chunk (thinking model) must fire ``on_thinking_active``
+    exactly ONCE per stream — even on a non-Focus turn — so the chat thinking-dots
+    bubble reflects the real reasoning stream, decoupled from the Focus decision.
+    The reasoning TEXT itself is still filtered out (not yielded downstream)."""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    chunks = [
+        LLMStreamChunk(content="", reasoning_content="先想想……"),
+        LLMStreamChunk(content="", reasoning_content="再想想……"),
+        LLMStreamChunk(content="答案是 42。", finish_reason="stop"),
+    ]
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = _FakeLLM([chunks])
+    client._tool_definitions = []
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client.on_tool_call = None
+    # _astream_with_tools doesn't reset the guard (stream_text does) — arm it here.
+    client._reasoning_pulsed_this_stream = False
+
+    pulses = []
+
+    async def on_thinking_active():
+        pulses.append(True)
+
+    client.on_thinking_active = on_thinking_active
+
+    out = []
+    async for ch in client._astream_with_tools([{"role": "user", "content": "hi"}]):
+        out.append(ch)
+
+    assert len(pulses) == 1, "两个 reasoning chunk 只应 pulse 一次（per-stream 幂等）"
+    # 推理文本仍被过滤，不向下游 yield。
+    assert not any(
+        getattr(ch, "reasoning_content", None) and not getattr(ch, "content", None)
+        for ch in out
+    )
+    assert any(getattr(ch, "content", None) == "答案是 42。" for ch in out)
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
+    """非 thinking 端点（delta 全无 reasoning_content）不应触发 on_thinking_active，
+    免得普通轮也莫名其妙弹思考气泡。"""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    chunks = [LLMStreamChunk(content="直接答。", finish_reason="stop")]
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = _FakeLLM([chunks])
+    client._tool_definitions = []
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client.on_tool_call = None
+    client._reasoning_pulsed_this_stream = False
+
+    pulses = []
+
+    async def on_thinking_active():
+        pulses.append(True)
+
+    client.on_thinking_active = on_thinking_active
+
+    async for _ in client._astream_with_tools([{"role": "user", "content": "hi"}]):
+        pass
+
+    assert pulses == [], "无 reasoning chunk 时不应 pulse 思考气泡"
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_omits_reasoning_when_absent():
     """非 thinking 端点（delta 不带 reasoning_content）时，assistant tool_calls
     消息不应凭空塞入 reasoning_content 字段，免得污染普通会话 / 触发某些 provider

@@ -2719,6 +2719,18 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
 
+    async def handle_thinking_active(self) -> None:
+        """Session callback: the model just emitted a reasoning/thinking chunk
+        (the text is filtered out upstream; only this boolean pulse reaches us).
+        Drives the chat thinking-dots bubble for ANY reasoning turn — decoupled
+        from the Focus inline decision. A Focus turn pre-pulses the bubble before
+        streaming (still works, idempotent); a non-Focus turn whose provider
+        reasons internally pulses here on its first reasoning chunk. The bubble
+        is cleared on the first visible token (send_lanlan_response) or when the
+        turn ends (the unconditional finally in the text path). Best-effort —
+        idempotent via ``_push_focus_thinking``'s cached state."""
+        await self._push_focus_thinking(True)
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -6164,6 +6176,7 @@ class LLMSessionManager:
                         provider_type=conversation_config.get('provider_type'),
                         vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
+                        on_thinking_active=self.handle_thinking_active,
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -6649,6 +6662,7 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
+                    on_thinking_active=self.handle_thinking_active,
                     on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -9529,16 +9543,24 @@ class LLMSessionManager:
                     if memory_text:
                         stream_text_kwargs["history_replacement_text"] = memory_text
                     if _focus_thinking:
-                        # 凝神 turn runs thinking-on: pulse the frontend so the chat
-                        # history shows a thinking-dots bubble until the first visible
-                        # token lands (cleared in send_lanlan_response) or the turn
-                        # ends (the finally below covers tool-only / empty / error turns).
+                        # 凝神 turn runs thinking-on: pre-pulse the frontend so the
+                        # bubble shows up the instant the turn starts (immediate
+                        # feedback), before any reasoning chunk arrives. Idempotent
+                        # and harmless — a non-Focus turn instead pulses lazily from
+                        # OmniOfflineClient.on_thinking_active on its first reasoning
+                        # chunk (handle_thinking_active). Either way the bubble clears
+                        # on the first visible token (send_lanlan_response) or in the
+                        # unconditional finally below.
                         await self._push_focus_thinking(True)
                     try:
                         await self.session.stream_text(data, **stream_text_kwargs)
                     finally:
-                        if _focus_thinking:
-                            await self._push_focus_thinking(False)
+                        # Clear unconditionally: a non-Focus turn may have pulsed the
+                        # bubble True via the reasoning callback, so gating the clear
+                        # on _focus_thinking would leave it stuck on tool-only / empty
+                        # / error turns. _push_focus_thinking is idempotent, so a no-op
+                        # clear when nothing pulsed costs nothing.
+                        await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
