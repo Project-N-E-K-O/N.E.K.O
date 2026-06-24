@@ -410,6 +410,10 @@ def test_vulnerability_profanity_avoids_short_substring_false_positives():
     for clean in [
         "please pass the class", "let me assume the worst",
         "我先操作一下电脑", "去操场跑步", "他幹活很认真", "shell command",
+        # reviewer-flagged neutral substrings we deliberately dropped:
+        "垃圾桶在哪", "垃圾分类怎么做",          # bare 垃圾 removed
+        "找 tmdb 上的评分", "tmdb 这部电影",      # bare tmd removed (TMDB)
+        "застрахуй меня", "надо страхуй оформить",  # bare хуй removed (insurance)
     ]:
         assert scan_vulnerability_keywords(clean) == 0, clean
 
