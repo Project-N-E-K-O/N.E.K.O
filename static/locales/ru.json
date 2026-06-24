@@ -971,7 +971,7 @@
         "openaiCore": "OpenAI: Высочайший интеллект, но дорого",
         "geminiCore": "Gemini: Отличный интеллект и соотношение цена/качество",
         "assistApiTitle": "Вспомогательный API для памяти, текстового чата и Агента:",
-        "freeVersionAssist": "Бесплатная версия: Бесплатно, без пользовательского голоса",
+        "freeVersionAssist": "Бесплатная версия: Бесплатно, без режима Агента",
         "aliAssist": "Alibaba: Рекомендуется, наиболее полный функционал, поддерживает Агента",
         "glmAssist": "GLM: Строгие лимиты, не рекомендуется",
         "stepAssist": "StepFun: Недорого, строгие лимиты, не рекомендуется",
@@ -1088,12 +1088,12 @@
         "openaiRecommendation": "При OpenAI как основном API, если нужен пользовательский голос, достаточно сохранить ключ Alibaba в справочнике API",
         "stepRecommendation": "При StepFun как основном API, если нужен пользовательский голос, достаточно сохранить ключ Alibaba в справочнике API",
         "geminiRecommendation": "При Gemini как основном API, если нужен пользовательский голос, достаточно сохранить ключ Alibaba в справочнике API",
-        "assistApiTooltipTitle": "Вспомогательный API для памяти и текстового чата:",
+        "assistApiTooltipTitle": "Вспомогательный API для памяти, текстового чата и режима Агента:",
         "currentSuggestion": "Текущая рекомендация:",
         "configSuggestionFull": "Рекомендации по конфигурации:",
         "freeVersionSuggestionFull": "Бесплатно, без API Key, для начинающих",
         "coreApiSuggestionFull": "Для разговоров (выбирайте по бюджету)",
-        "assistApiSuggestionFull": "Для памяти и текстового чата (пользовательский голос достаточно включить, сохранив ключ Alibaba в справочнике API)",
+        "assistApiSuggestionFull": "Для памяти, текстового чата и режима Агента (пользовательский голос достаточно включить, сохранив ключ Alibaba в справочнике API)",
         "assistApiKeyRequiredHint": "Введите API в соответствующее поле, прежде чем выбрать поставщика",
         "mcpRouterToken": "Токен MCP Router",
         "mcpRouterTokenDesc": "Описание токена MCP Router:",
@@ -3253,7 +3253,7 @@
             },
             "step5": {
                 "title": "🔧 Auxiliary API Provider",
-                "desc": "Auxiliary API handles memory management, text chat and Agent mode.\n\n• Free: Completely free, no API Key required\n• Alibaba: Recommended, most complete feature set\n• Zhipu: Supports Agent mode\n• OpenAI: Strong memory management\n\nNote: Custom voice (voice cloning) only needs Alibaba's key saved in the API keybook to enable — no need to switch the auxiliary API to Alibaba."
+                "desc": "Вспомогательный API отвечает за управление памятью, текстовый чат и режим Агента.\n\n• Бесплатно: Полностью бесплатно, API Key не требуется\n• Alibaba: Рекомендуется, наиболее полный функционал\n• Zhipu: Поддерживает режим Агента\n• OpenAI: Мощное управление памятью\n\nПримечание: пользовательский голос (клонирование голоса) достаточно включить, сохранив ключ Alibaba в справочнике API — переключать вспомогательный API на Alibaba не нужно."
             },
             "step6": {
                 "title": "🔑 Auxiliary API Key",
