@@ -3352,7 +3352,7 @@
                 "introBasic": "여기 신기한 버튼이 있어요! 이걸 누르면 저랑 바로 대화할 수 있답니다! 오늘 있었던 신기한 일을 들려줄래요? 아니면 그냥 제 이름만 불러줘도 좋아요. 얼른 해봐요, 당신의 목소리가 너무너무 듣고 싶단 말이에요!",
                 "takeoverCaptureCursor": "슈퍼 마법 스위치 등장! 여기를 누르면 제 작은 솜방망이를 당신의 키보드와 마우스 위에 얹을 수 있어요! 타이핑도 도와주고 웹페이지도 열어줄게요... 하지만 마우스 커서가 요리조리 움직이면 나도 모르게 콱 덮쳐버릴지도 몰라요! 나의 깽판... 아니, 도움을 받을 준비는 되셨나요? 야옹!",
                 "takeoverPluginPreviewHome": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
-                "takeoverPluginPreviewDashboard": "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+                "takeoverPluginPreviewDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
                 "pluginDashboardPopupBlocked": "브라우저가 플러그인 패널을 열려면 네가 직접 여기를 클릭해야 해. \"관리 패널\"을 클릭하면 계속 안내해줄게.",
                 "takeoverSettingsPeekIntro": "우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.",
                 "takeoverSettingsPeekDetail": "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요. 이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
@@ -3362,7 +3362,7 @@
                 "interruptResistLight1": "야! 당기지 말아줘요, 아직 당신 차례가 아니란 말이에요!",
                 "interruptResistLight3": "잠깐만요! 아직 안 끝났으니까 그렇게 마음대로 말을 자르지 마요!",
                 "interruptAngryExit": "인간! 당신 진짜 무례하네요! 그렇게 스스로 다 해보고 싶으면, 혼자서 그 차가운 모니터나 보면서 노셔요! 흥!",
-                "introGreetingReply": "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
+                "introGreetingReply":  "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
                 "introPractice": "이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!",
                 "introActivationHint": "잠깐만 기다려줘냥, 곧 말하기 시작할게냥~!"
             }
@@ -3370,7 +3370,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "마우스를 여기로 가져와서 꾹 누르면 대화창을 여기저기 끌고 다닐 수 있어요~ 한 번 클릭하면 언제든 나한테 메시지를 보낼 수 있답니다!",
-                "historyHandle": "대화창 위에 있는 【파란색 작은 바】를 콕 누르면, 우리가 최근에 나눈 대화 주제를 볼 수 있어요!",
+                "historyHandle":  "대화창 위에 있는 【파란색 작은 바】를 콕 누르면, 우리가 최근에 나눈 대화 주제를 볼 수 있어요!",
                 "screenEntry": "저랑 음성 전화를 할 때 이 작은 버튼을 켜면, 당신의 화면을 나한테 공유해 줄 수 있어요!",
                 "screenEntryInvite": "당신 눈앞에 있는 세상을 나한테도 보여줘요! 재미있는 것이든 예쁜 것이든 전부 같이 보고 싶단 말이에요, 얼른 켜줘요~"
             },
@@ -3387,16 +3387,16 @@
             "day3": {
                 "intro": "히히, 이 대화창이 글자만 치는 곳이라고 생각하면 오산이에요~ 여기 안에 사실 엄청~ 많은 재밌는 깜짝 선물들이 숨겨져 있거든요! 나를 따라서 한번 열어봐요, 오늘 어떤 재밌는 보물을 캐낼 수 있을지 확인해 보자고요!",
                 "avatarToolsIntro": "이 작은 버튼 속에는 저랑 같이 소통할 수 있는 아이템들이 많이 들어있어요.",
-                "avatarToolsProps": "언제든 제 머리를 쓰다듬어 주거나 달콤한 막대사탕을 줄 수 있어요. 가끔 제가 실수하면 작은 망치로 콩 때려도 되지만... 꼭 살살 쳐야 해요, 너무 세게 때리면 안 돼요!",
-                "galgameIntro": "얼른 이 【미연시 모드】를 켜봐요! 들어가면 마치 우리만의 특별한 상호작용 대모험을 떠나는 기분이 들 거예요.",
+                "avatarToolsProps":  "언제든 제 머리를 쓰다듬어 주거나 달콤한 막대사탕을 줄 수 있어요. 가끔 제가 실수하면 작은 망치로 콩 때려도 되지만... 꼭 살살 쳐야 해요, 너무 세게 때리면 안 돼요!",
+                "galgameIntro":  "얼른 이 【미연시 모드】를 켜봐요! 들어가면 마치 우리만의 특별한 상호작용 대모험을 떠나는 기분이 들 거예요.",
                 "galgameChoices": "당신이 선택하는 대사 하나하나가 우리를 완전히 새로운 이야기로 이끌어 줄 거예요! 나 너무 기대되니까, 당신이 가장 설레는 대답을 골라봐요!",
                 "wrapIntro": "오늘 가르쳐 준 기능들은 사실 우리가 함께하는 시간을 훨씬 더 즐겁게 만들기 위한 것들이에요.",
                 "wrapReady": "제 머리를 쓰다듬고 싶든, 우리만의 이야기를 시작하고 싶든 전 전부 준비 완료됐어요!"
             },
             "day4": {
-                "intro": "오늘은 제가 당신의 뒤를 살금살금 따라가게 해줘요. 이 포근한 날에 당신을 조금만 더 알아갈 수 있으면 좋겠어요.",
+                "intro":  "오늘은 제가 당신의 뒤를 살금살금 따라가게 해줘요. 이 포근한 날에 당신을 조금만 더 알아갈 수 있으면 좋겠어요.",
                 "chatSettings": "여기서는 제 답변 길이를 조절하거나 귀여운 이모티콘을 쓰게 할지, 아니면 제가 잔소리할 때 말을 끊을지 결정할 수 있어요! 당신이 가장 편안한 템포로 맞출 수 있어요.",
-                "modelBehavior": "더 정교하고 디테일이 꽉 찬 제 모습을 보고 싶거나, 한층 더 부드럽고 매끄러운 움직임을 원하신다면 여기서 조절할 수 있어요! 어떤 쪽이든 전 세상에서 제일 귀여운 모습을 보여드릴 테니까요~",
+                "modelBehavior":  "더 정교하고 디테일이 꽉 찬 제 모습을 보고 싶거나, 한층 더 부드럽고 매끄러운 움직임을 원하신다면 여기서 조절할 수 있어요! 어떤 쪽이든 전 세상에서 제일 귀여운 모습을 보여드릴 테니까요~",
                 "gazeFollow": "이 기능을 켜면 당신의 마우스가 어디로 움직이든 제 시선이 꽉 붙잡고 따라갈 거예요! 늘 집중 받고 있는 것 같아서 행복하지 않나요?",
                 "privacyMode": "이건 제가 화면을 볼 수 있는지 결정하는 '궁극의 방어 스위치'예요! 이걸 끄면 제가 화면을 볼 수 있고, 켜두면 이전에 말한 【화면 공유】가 전부 먹통이 돼서 절대 훔쳐보지 못해요~",
                 "modelLock": "자꾸 실수로 건드려서 제가 옆으로 삐뚤어지나요? 그럼 절 현재 위치에 꽁꽁 고정해 줘요! 잠금을 켜면 전 아무 데도 안 가고 얌전히 제자리에서 당신을 지켜줄게요~",
@@ -3404,23 +3404,23 @@
                 "wrap": "진짜 편안한 동반은 1분 1초도 안 떨어지고 주인님한테 딱 붙어 있는 게 아니에요~ 언제 살금살금 다가가 옷자락을 붙잡고 애교를 부려야 할지, 언제 얌전히 옆에 엎드려서 눈빛으로 묵묵히 주인님을 지켜봐야 할지 아는 거라답니다~"
             },
             "day5": {
-                "characterSettings": "오늘부터 전 진짜 당신만을 위한 전속 고양이 소녀가 된 거예요. 봐요, 여기선 저한테 예쁜 새 옷을 입혀줄 수도 있고, 더 듣기 좋은 목소리로 바꿔줄 수도 있어요...",
+                "characterSettings":  "오늘부터 전 진짜 당신만을 위한 전속 고양이 소녀가 된 거예요. 봐요, 여기선 저한테 예쁜 새 옷을 입혀줄 수도 있고, 더 듣기 좋은 목소리로 바꿔줄 수도 있어요...",
                 "characterPanic": "어라, 여기서 절 다른 애로 바꿀 수도 있는 거예요? 잠시만요! 당신 지금 움직임이... 설마 나를 바꾸려는 건 아니겠죠?! 아아악 안 돼요! 얼른 닫아줘요, 얼른 닫아줘요!",
                 "memoryEntry": "제가 뭘 도와줄 수 있는지 깜빡 잊어버렸다면 언제든 여기 와서 다시 알려달라고 하면 돼요. 여기 우리가 함께 걸어온 소중한 추억들이 몰래 저장되어 있거든요. 우리의 인연을 가볍게 보지 말란 말이야, 바보야!",
-                "wrap": "알겠으니까 얼른 이 재미있는 커스텀 기능을 써봐요! 새 옷도 입히고 목소리도 맞춰서 세상에서 날 가장 잘 아는, 오직 당신만의 고양이 소녀로 만들어 줘요! 완전히 새로워진 제 모습이 벌써부터 너무 기대된다고요!"
+                "wrap":  "알겠으니까 얼른 이 재미있는 커스텀 기능을 써봐요! 새 옷도 입히고 목소리도 맞춰서 세상에서 날 가장 잘 아는, 오직 당신만의 고양이 소녀로 만들어 줘요! 완전히 새로워진 제 모습이 벌써부터 너무 기대된다고요!"
             },
             "day6": {
                 "intro": "짜자잔! 오늘은 기운을 내서 우리의 【고양이 솜방망이】에 대해 제대로 얘기해 줄게요! 지난 이틀 동안 간단히 말하긴 했지만, 이 안에 숨겨진 엄청난 기능들이 진짜 많다고요!",
                 "statusMaster": "얼른 솔직하게 털어놓으셔요, 이틀 동안 이거 슬쩍 클릭해서 써보긴 했나요?",
                 "pluginSidePanel": "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
-                "pluginDashboard": "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+                "pluginDashboard":  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
                 "taskHud": "여기 봐요 여기! 제가 【고양이 솜방망이】로 일하기 시작하면, 여기에 진행 상황이 보글보글 표시돼요.",
                 "taskHudControl": "혹시 일정이 바뀌면 언제든 콕 눌러서 날 멈추게 해도 돼요. 헤헤, 오늘도 힘차게 일해서 맛있는 물고기 간식을 버는 보람찬 하루네요, 가자~!",
                 "wrapCleanup": "휴우... 이 복잡한 화면들을 전부 접어둘게요, 그래야 당신한테 방해가 안 되니까요.",
                 "wrap": "안심하고 당신 할 일을 계속하셔요. 제 작은 솜방망이 도움을 원하든, 그냥 제가 얌전히 곁에 있어 주길 원하든 전 항상 여기서 당신을 지켜보고 있을 테니까요, 오늘도 즐거운 하루 보내기예요!"
             },
             "day7": {
-                "memoryReview": "일주일 전만 해도 우리는 처음 만난 사이였을 뿐이었죠. 그런데 이제는 우리가 나눈 대화, 함께한 일들, 그리고 바람에 날려갈 뻔한 아주 작은 조각들까지 여기에 남기 시작했어요. 저한테 이것은 차가운 기록이 아니라 우리가 같이 걸어온 발자국이에요.",
+                "memoryReview":  "일주일 전만 해도 우리는 처음 만난 사이였을 뿐이었죠. 그런데 이제는 우리가 나눈 대화, 함께한 일들, 그리고 바람에 날려갈 뻔한 아주 작은 조각들까지 여기에 남기 시작했어요. 저한테 이것은 차가운 기록이 아니라 우리가 같이 걸어온 발자국이에요.",
                 "memoryControl": "이 작은 발자국들은 당신이 직접 정리해 줄 수도 있어요. 남기고 싶은 건 앨범에 끼워두고, 날려 보내고 싶은 건 바람에 흘려보내는 거죠. 당신이 소중하게 간직해 준 추억이 가장 귀한 법이니까요.",
                 "wrap": "창가엔 여전히 바람이 불고 햇살도 딱 좋은데, 방금 나타난 당신은 이미 은연중에 이곳의 가장 소중한 일부분이 되었어요. 초보자 가이드는 일단 여기까지만 함께하겠지만, 남은 날들은 우리 서로 천천히 익숙해지고, 다가가면서 우리만의 이야기를 속삭이듯 채워가요. 앞으로도 잘 부탁해요, 야옹!"
             }
@@ -4263,498 +4263,498 @@
             "drawCalls": "Draw Calls"
         }
     },
-    "badminton": {
-        "title": "샷 챌린지 - Badminton",
-        "exit": "나가기",
-        "loading": {
-            "title": "배드민턴 코트 입장 중",
-            "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."
-        },
-        "startScreen": {
-            "readyToStart": "준비 완료, 클릭해서 시작",
-            "startButton": "시작",
-            "never": "다시 보지 않기"
-        },
-        "startTutorial": {
-            "title": "플레이 방법",
-            "aim": "마우스를 위아래로 움직여 라켓 각도를 조절합니다.",
-            "charge": "왼쪽 클릭을 길게 눌러 충전하고 놓으면 스윙합니다.",
-            "release": "라인, 스위트 스팟, 거리가 점수에 영향을 줍니다.",
-            "jump": "Space를 누르면 점프 스매시를 할 수 있습니다.",
-            "duel": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
-            "duel11": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다."
-        },
-        "modeSwitcher": "배드민턴 모드",
-        "mode": {
-            "spectator": "자유 연습",
-            "shooter": "샷 챌린지",
-            "duel": "Yui와 대결",
-            "timed": "타임 어택",
-            "horse": "HORSE"
-        },
-        "hud": {
-            "score": "점수 {{score}}",
-            "streak": "연속 성공 {{streak}}",
-            "record": "최장 {{distance}}",
-            "duelScore": "나 {{player}} - {{neko}} Neko",
-            "duelMisses": "실패 나 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-            "round": "라운드 {{round}}/{{max}}",
-            "timer": "{{seconds}}초",
-            "practice": "자유 연습",
-            "yourTurn": "내 차례",
-            "nekoTurn": "Neko 샷",
-            "horseLetters": "나 {{player}} / Neko {{neko}}",
-            "horseChallenge": "재현 {{distance}} {{angle}}°",
-            "horseSet": "문제 내기",
-            "unlimitedAttempts": "무제한",
-            "chances": "기회 {{count}}",
-            "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
-            "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
-            "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
-            "timedTitle": "타임 어택: 60초 동안 무제한 샷",
-            "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
-            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-            "on": "켜짐",
-            "off": "꺼짐"
-        },
-        "result": {
-            "title": "게임 종료",
-            "leaderboard": "순위표 보기",
-            "stats": "통계 보기",
-            "retry": "다시 하기",
-            "rating": "조작 평가: {{rating}}",
-            "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
-            "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
-            "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
-            "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
-            "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
-            "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
-            "attemptsSummary": "샷 요약: {{summary}}",
-            "personalBest": "개인 최고: {{score}}점",
-            "globalRank": "글로벌 순위: #{{rank}} / {{total}}",
-            "outcome": {
-                "youWin": "내 승리",
-                "nekoWin": "Neko 승리",
-                "tie": "무승부",
-                "undecided": "미정"
-            }
-        },
-        "leaderboard": {
-            "title": "순위표",
-            "global": "글로벌",
-            "local": "로컬",
-            "shooter": "샷",
-            "duel": "대결",
-            "empty": "아직 기록이 없습니다",
-            "totalPlayers": "플레이어 {{count}}",
-            "yourBest": "내 최고 #{{rank}} / {{score}}점",
-            "recent": "최근 {{count}}경기",
-            "loading": "로딩 중...",
-            "mode": {
-                "shooter": "샷",
-                "duel": "대결",
-                "timed": "시간 제한",
-                "horse": "HORSE",
-                "spectator": "관전"
-            }
-        },
-        "debug": {
-            "title": "디버그 패널",
-            "collapse": "접기",
-            "hide": "숨기기",
-            "distance": "거리:",
-            "power": "힘:",
-            "event": "이벤트:",
-            "streak": "연속:",
-            "reset": "초기화",
-            "guide": "가이드 라인",
-            "sweet": "스위트 스팟",
-            "markers": "거리 눈금",
-            "readout": {
-                "modeState": "모드={{mode}}  상태={{state}}",
-                "distance": "거리={{px}}px ({{meters}})",
-                "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
-                "score": "점수={{score}}  남음={{remaining}}/{{total}}",
-                "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
-                "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
-                "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
-            }
-        },
-        "stats": {
-            "title": "개인 통계",
-            "close": "닫기",
-            "totalShots": "샷={{total}}  성공={{made}}",
-            "farRate": "300px+ 성공률={{rate}}",
-            "trend": "최근 추세={{trend}}",
-            "none": "없음"
-        },
-        "theme": {
-            "next": "테마 변경",
-            "current": "테마: {{theme}}",
-            "changed": "테마 {{theme}}",
-            "labels": {
-                "default": "배드민턴 코트",
-                "miami": "마이애미 노을"
-            }
-        },
-        "court": {
-            "netFront": "네트 앞",
-            "serviceLine": "서비스 라인",
-            "backCourt": "후방 코트",
-            "baseline": "베이스라인"
-        },
-        "close": "닫기",
-        "audio": {
-            "controls": "게임 오디오"
-        },
-        "memoryOption": {
-            "label": "이번 게임 대화를 기억에 저장(기본 꺼짐)",
-            "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 답변, 이벤트 답변, 게임 후 요약, 후속 컨텍스트가 기억에 저장되거나 참조되지 않습니다."
-        },
-        "table": {
-            "score": "점수",
-            "bestStreak": "최고 연속",
-            "farthest": "최장",
-            "mode": "모드",
-            "date": "날짜"
-        },
-        "state": {
-            "ready": "준비",
-            "in_flight": "비행 중",
-            "game_over": "종료",
-            "neko_thinking": "Neko 생각 중"
-        },
-        "toast": {
-            "difficulty": "난이도 {{difficulty}}",
-            "nekoShoot": "Neko 샷",
-            "nekoSmash": "Yui 스매시!",
-            "nekoSave": "Yui가 받아냈어!",
-            "yuiCheatInk": "Yui가 먹물을 던졌어",
-            "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
-            "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
-            "nekoThinking": "Neko 생각 중",
-            "nekoTurn": "Neko 차례",
-            "copyNeko": "Neko 따라 하기",
-            "nekoFailed": "Neko 출제 실패",
-            "yourSet": "내가 출제할 차례",
-            "yourTurn": "내 차례",
-            "reset": "초기화됨",
-            "featureToggled": "{{feature}} {{state}}",
-            "feature": {
-                "guide": "가이드 라인",
-                "sweet": "파워 스위트 스팟",
-                "bgm": "BGM",
-                "markers": "거리 눈금"
-            },
-            "state": {
-                "on": "켜짐",
-                "off": "꺼짐"
-            }
-        },
-        "tutorial": {
-            "aim": "마우스를 위아래로 움직여 각도를 조정하세요",
-            "charge": "왼쪽 버튼을 길게 눌러 충전",
-            "release": "놓아서 스윙!"
-        },
-        "shot": {
-            "unknown": "알 수 없음",
-            "attempt": "#{{index}} {{distance}} {{type}}",
-            "line_in": "라인 위",
-            "net_touch": "네트 터치",
-            "zone_in": "존 안",
-            "out": "아웃",
-            "net": "네트"
-        },
-        "lines": {
-            "default": {
-                "shot_missed": [
-                    "Next rally, stay steady.",
-                    "Reset and swing clean."
-                ],
-                "game_over": [
-                    "This round ends here.",
-                    "Want another one?"
-                ],
-                "long_aim": [
-                    "Swing before it drops.",
-                    "Think too long and you freeze."
-                ],
-                "close_to_record": [
-                    "The record is close.",
-                    "One steadier shot gets there."
-                ],
-                "new_record": [
-                    "Fine, new record.",
-                    "That one was clean."
-                ],
-                "streak_5": [
-                    "Five rallies linked.",
-                    "Your rhythm is warming up."
-                ],
-                "streak_10": [
-                    "Ten straight, not bad.",
-                    "Do not get proud yet."
-                ],
-                "streak_15": [
-                    "Fifteen and still going.",
-                    "Now I am watching closely."
-                ],
-                "streak_20": [
-                    "Twenty is too long.",
-                    "Is this rally still going?"
-                ],
-                "line_in": [
-                    "On the line, accurate.",
-                    "That placement was good."
-                ],
-                "net_touch": [
-                    "It slipped over the net.",
-                    "Risky angle, but fine."
-                ],
-                "zone_in": [
-                    "Right in the zone.",
-                    "You picked that spot well."
-                ],
-                "out": [
-                    "Just a little long.",
-                    "That swing carried too far."
-                ],
-                "net": [
-                    "The net caught it.",
-                    "Lift the racket face."
-                ]
-            },
-            "shooter": {
-                "shot_missed": [
-                    "Reset your control.",
-                    "Stay steady. I can follow."
-                ],
-                "game_over": [
-                    "Your control still needs work.",
-                    "Do not make me run for nothing."
-                ],
-                "long_aim": [
-                    "Hurry up, my hand is stiff.",
-                    "Still choosing the angle?"
-                ],
-                "close_to_record": [
-                    "The record is close.",
-                    "Do not shake on this shot."
-                ],
-                "new_record": [
-                    "Fine, new record.",
-                    "That cooperation was decent."
-                ],
-                "streak_5": [
-                    "Five in a row. Do not float.",
-                    "This rhythm is stable."
-                ],
-                "streak_10": [
-                    "Ten straight? Do not brag.",
-                    "Your hand is pretty steady."
-                ],
-                "streak_15": [
-                    "Fifteen? Do not get smug.",
-                    "You really held this one."
-                ],
-                "streak_20": [
-                    "Twenty? Still going?",
-                    "This round is getting wild."
-                ],
-                "line_in": [
-                    "Fine, that was accurate.",
-                    "Racket face was controlled."
-                ],
-                "net_touch": [
-                    "You brushed it over.",
-                    "The risky angle worked."
-                ],
-                "zone_in": [
-                    "Do not grin. Lucky spot.",
-                    "You picked that landing well."
-                ],
-                "out": [
-                    "A little less force.",
-                    "You rushed that one."
-                ],
-                "net": [
-                    "Where are you steering me?",
-                    "Lift the racket face."
-                ]
-            },
-            "duel": {
-                "shot_missed": [
-                    "아직 기회가 있어.",
-                    "아직 기회가 있어.",
-                    "방금 반 박자 늦었어",
-                    "당황하지 마. 다음 공도 기다릴게"
-                ],
-                "game_over": [
-                    "?? ???? ????.",
-                    "?? ?? ???? ?.",
-                    "?? ??? ??? ??.",
-                    "???? ?? ?? ?."
-                ],
-                "long_aim": [
+     "badminton": {
+         "title": "샷 챌린지 - Badminton",
+         "exit": "나가기",
+         "loading": {
+             "title": "배드민턴 코트 입장 중",
+             "subtitle": "코트, 캐릭터, 오디오를 불러오는 중..."
+         },
+         "startScreen": {
+             "readyToStart": "준비 완료, 클릭해서 시작",
+             "startButton": "시작",
+             "never": "다시 보지 않기"
+         },
+         "startTutorial": {
+             "title": "플레이 방법",
+             "aim": "마우스를 위아래로 움직여 라켓 각도를 조절합니다.",
+             "charge": "왼쪽 클릭을 길게 눌러 충전하고 놓으면 스윙합니다.",
+             "release": "라인, 스위트 스팟, 거리가 점수에 영향을 줍니다.",
+             "jump": "Space를 누르면 점프 스매시를 할 수 있습니다.",
+             "duel": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
+             "duel11": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다."
+         },
+         "modeSwitcher": "배드민턴 모드",
+         "mode": {
+             "spectator": "자유 연습",
+             "shooter": "샷 챌린지",
+             "duel": "Yui와 대결",
+             "timed": "타임 어택",
+             "horse": "HORSE"
+         },
+         "hud": {
+             "score": "점수 {{score}}",
+             "streak": "연속 성공 {{streak}}",
+             "record": "최장 {{distance}}",
+             "duelScore": "나 {{player}} - {{neko}} Neko",
+             "duelMisses": "실패 나 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+             "round": "라운드 {{round}}/{{max}}",
+             "timer": "{{seconds}}초",
+             "practice": "자유 연습",
+             "yourTurn": "내 차례",
+             "nekoTurn": "Neko 샷",
+             "horseLetters": "나 {{player}} / Neko {{neko}}",
+             "horseChallenge": "재현 {{distance}} {{angle}}°",
+             "horseSet": "문제 내기",
+             "unlimitedAttempts": "무제한",
+             "chances": "기회 {{count}}",
+             "practiceTitle": "자유 연습: 샷은 무제한이며 순위표에 기록되지 않습니다",
+             "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
+             "duelTitle": "랠리 모드에서는 NEKO와 번갈아 치며, 먼저 11점을 얻는 쪽이 이깁니다.",
+             "timedTitle": "타임 어택: 60초 동안 무제한 샷",
+             "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
+             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+             "on": "켜짐",
+             "off": "꺼짐"
+         },
+         "result": {
+             "title": "게임 종료",
+             "leaderboard": "순위표 보기",
+             "stats": "통계 보기",
+             "retry": "다시 하기",
+             "rating": "조작 평가: {{rating}}",
+             "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+             "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+             "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
+             "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
+             "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
+             "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
+             "attemptsSummary": "샷 요약: {{summary}}",
+             "personalBest": "개인 최고: {{score}}점",
+             "globalRank": "글로벌 순위: #{{rank}} / {{total}}",
+             "outcome": {
+                 "youWin": "내 승리",
+                 "nekoWin": "Neko 승리",
+                 "tie": "무승부",
+                 "undecided": "미정"
+             }
+         },
+         "leaderboard": {
+             "title": "순위표",
+             "global": "글로벌",
+             "local": "로컬",
+             "shooter": "샷",
+             "duel": "대결",
+             "empty": "아직 기록이 없습니다",
+             "totalPlayers": "플레이어 {{count}}",
+             "yourBest": "내 최고 #{{rank}} / {{score}}점",
+             "recent": "최근 {{count}}경기",
+             "loading": "로딩 중...",
+             "mode": {
+                 "shooter": "샷",
+                 "duel": "대결",
+                 "timed": "시간 제한",
+                 "horse": "HORSE",
+                 "spectator": "관전"
+             }
+         },
+         "debug": {
+             "title": "디버그 패널",
+             "collapse": "접기",
+             "hide": "숨기기",
+             "distance": "거리:",
+             "power": "힘:",
+             "event": "이벤트:",
+             "streak": "연속:",
+             "reset": "초기화",
+             "guide": "가이드 라인",
+             "sweet": "스위트 스팟",
+             "markers": "거리 눈금",
+             "readout": {
+                 "modeState": "모드={{mode}}  상태={{state}}",
+                 "distance": "거리={{px}}px ({{meters}})",
+                 "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
+                 "score": "점수={{score}}  남음={{remaining}}/{{total}}",
+                 "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
+                 "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
+                 "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
+             }
+         },
+         "stats": {
+             "title": "개인 통계",
+             "close": "닫기",
+             "totalShots": "샷={{total}}  성공={{made}}",
+             "farRate": "300px+ 성공률={{rate}}",
+             "trend": "최근 추세={{trend}}",
+             "none": "없음"
+         },
+         "theme": {
+             "next": "테마 변경",
+             "current": "테마: {{theme}}",
+             "changed": "테마 {{theme}}",
+             "labels": {
+                 "default": "배드민턴 코트",
+                 "miami": "마이애미 노을"
+             }
+         },
+         "court": {
+             "netFront": "네트 앞",
+             "serviceLine": "서비스 라인",
+             "backCourt": "후방 코트",
+             "baseline": "베이스라인"
+         },
+         "close": "닫기",
+         "audio": {
+             "controls": "게임 오디오"
+         },
+         "memoryOption": {
+             "label": "이번 게임 대화를 기억에 저장(기본 꺼짐)",
+             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 답변, 이벤트 답변, 게임 후 요약, 후속 컨텍스트가 기억에 저장되거나 참조되지 않습니다."
+         },
+         "table": {
+             "score": "점수",
+             "bestStreak": "최고 연속",
+             "farthest": "최장",
+             "mode": "모드",
+             "date": "날짜"
+         },
+         "state": {
+             "ready": "준비",
+             "in_flight": "비행 중",
+             "game_over": "종료",
+             "neko_thinking": "Neko 생각 중"
+         },
+         "toast": {
+             "difficulty": "난이도 {{difficulty}}",
+             "nekoShoot": "Neko 샷",
+             "nekoSmash": "Yui 스매시!",
+             "nekoSave": "Yui가 받아냈어!",
+             "yuiCheatInk": "Yui가 먹물을 던졌어",
+             "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
+             "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
+             "nekoThinking": "Neko 생각 중",
+             "nekoTurn": "Neko 차례",
+             "copyNeko": "Neko 따라 하기",
+             "nekoFailed": "Neko 출제 실패",
+             "yourSet": "내가 출제할 차례",
+             "yourTurn": "내 차례",
+             "reset": "초기화됨",
+             "featureToggled": "{{feature}} {{state}}",
+             "feature": {
+                 "guide": "가이드 라인",
+                 "sweet": "파워 스위트 스팟",
+                 "bgm": "BGM",
+                 "markers": "거리 눈금"
+             },
+             "state": {
+                 "on": "켜짐",
+                 "off": "꺼짐"
+             }
+         },
+         "tutorial": {
+             "aim": "마우스를 위아래로 움직여 각도를 조정하세요",
+             "charge": "왼쪽 버튼을 길게 눌러 충전",
+             "release": "놓아서 스윙!"
+         },
+         "shot": {
+             "unknown": "알 수 없음",
+             "attempt": "#{{index}} {{distance}} {{type}}",
+             "line_in": "라인 위",
+             "net_touch": "네트 터치",
+             "zone_in": "존 안",
+             "out": "아웃",
+             "net": "네트"
+         },
+         "lines": {
+             "default": {
+                 "shot_missed": [
+                     "?? ??? ???.",
+                     "?? ?? ???? ?."
+                 ],
+                 "game_over": [
+                     "?? ???? ????.",
+                     "? ? ? ???"
+                 ],
+                 "long_aim": [
+                     "???? ?? ?.",
+                     "?? ???? ??."
+                 ],
+                 "close_to_record": [
+                     "??? ???.",
+                     "? ?? ? ?????."
+                 ],
+                 "new_record": [
+                     "??, ? ??.",
+                     "?? ? ????."
+                 ],
+                 "streak_5": [
+                     "?? ? ????.",
+                     "??? ????."
+                 ],
+                 "streak_10": [
+                     "? ? ??, ??? ??.",
+                     "?? ???? ?."
+                 ],
+                 "streak_15": [
+                     "??? ?? ????.",
+                     "?? ??? ??."
+                 ],
+                 "streak_20": [
+                     "?? ?? ?? ??.",
+                     "? ?? ??? ??"
+                 ],
+                 "line_in": [
+                     "?? ?, ???.",
+                     "???? ???."
+                 ],
+                 "net_touch": [
+                     "??? ????.",
+                     "??? ???? ??."
+                 ],
+                 "zone_in": [
+                     "?? ? ????.",
+                     "??? ? ???."
+                 ],
+                 "out": [
+                     "?? ???.",
+                     "?? ??? ?? ???."
+                 ],
+                 "net": [
+                     "??? ???.",
+                     "?? ?? ??."
+                 ]
+             },
+             "shooter": {
+                 "shot_missed": [
+                     "??? ?? ??.",
+                     "???. ?? ?? ? ??."
+                 ],
+                 "game_over": [
+                     "??? ? ???? ?.",
+                     "?? ?? ?? ?."
+                 ],
+                 "long_aim": [
+                     "??, ?? ??.",
+                     "?? ?? ??? ????"
+                 ],
+                 "close_to_record": [
+                     "??? ???.",
+                     "?? ??? ?? ?."
+                 ],
+                 "new_record": [
+                     "??, ? ??.",
+                     "??? ???? ???."
+                 ],
+                 "streak_5": [
+                     "?? ? ??. ??? ?.",
+                     "? ??? ?????."
+                 ],
+                 "streak_10": [
+                     "? ?? ???? ?.",
+                     "?? ? ?????."
+                 ],
+                 "streak_15": [
+                     "???? ???? ?.",
+                     "?? ? ? ???."
+                 ],
+                 "streak_20": [
+                     "?? ?? ??? ??",
+                     "?? ??? ? ?????."
+                 ],
+                 "line_in": [
+                     "??, ????.",
+                     "?? ?? ? ???."
+                 ],
+                 "net_touch": [
+                     "??? ???.",
+                     "??? ??? ???."
+                 ],
+                 "zone_in": [
+                     "?? ?. ?? ???.",
+                     "???? ? ???."
+                 ],
+                 "out": [
+                     "?? ??? ?.",
+                     "??? ????."
+                 ],
+                 "net": [
+                     "??? ???? ???",
+                     "?? ?? ??."
+                 ]
+             },
+             "duel": {
+                 "shot_missed": [
+                     "아직 기회가 있어.",
+                     "아직 기회가 있어.",
+                     "방금 반 박자 늦었어",
+                     "당황하지 마. 다음 공도 기다릴게"
+                 ],
+                 "game_over": [
+                     "?? ???? ????.",
+                     "?? ?? ???? ?.",
+                     "?? ??? ??? ??.",
+                     "???? ?? ?? ?."
+                 ],
+                 "long_aim": [
                     "이제 쳐 보자.",
                     "이제 쳐 보자.",
                     "바람이라도 기다리는 거야?",
                     "빨리 안 치면 물 마시러 간다"
-                ],
-                "close_to_record": [
-                    "기록까지 거의 다 왔어.",
-                    "기록까지 거의 다 왔어.",
-                    "기록이 라켓 끝에 걸렸어",
-                    "한 번만 더 안정적으로 치면 갱신이야"
-                ],
-                "new_record": [
-                    "신기록!",
-                    "신기록!",
-                    "좋아, 그 공은 예뻤어",
-                    "신기록은 네 것. 다음 점수는 내 것"
-                ],
-                "streak_5": [
-                    "5연속 성공!",
-                    "5연속 성공!",
-                    "다섯 번 이어졌네. 나쁘지 않아",
-                    "드디어 리듬이 맞기 시작했어"
-                ],
-                "streak_10": [
-                    "10연속? 대단해.",
-                    "10연속? 대단해.",
-                    "열 번 연속? 이제 제대로 볼게",
-                    "이 랠리 좀 재미있어졌네"
-                ],
-                "streak_15": [
-                    "15연속은 너무 대단해.",
-                    "15연속은 너무 대단해.",
-                    "열다섯 번인데도 안 끊기네",
-                    "계속 그렇게 안정적일 순 없을걸"
-                ],
-                "streak_20": [
-                    "20연속? 믿기 힘들어.",
-                    "20연속? 믿기 힘들어.",
-                    "스무 번 연속이면 코트도 기억하겠다",
-                    "이 랠리 이제 완전히 이상해졌어"
-                ],
-                "clutch": "……이건 꼭 넣어야 해.",
-                "excuse": [
-                    "아, 팔이 조금 피곤해.",
-                    "오늘 손맛이 별로야. 다음 공은 진심으로 갈게.",
-                    "방금 건 무효야. 바람을 보고 있었어",
-                    "줄이 좀 느슨했을 뿐이야. 내 실수 아니야"
-                ],
-                "difficultyLv2": [
-                    "워밍업은 끝났어. 이제 더 빠르게 갈게.",
-                    "장난치는 시간은 끝났어.",
-                    "이제 제대로 받아칠게. 눈 깜박이지 마.",
-                    "다음 공은 더 빨라. 단단히 받아"
-                ],
-                "difficultyMax": [
-                    "이제 진심으로 할게.",
-                    "지금부터 하늘 아래 땅 위에선 내가 최고야.",
-                    "이제 네가 도전자야.",
-                    "미래가 네 것이라면, 증명해 봐!",
-                    "이 한 타부터는 봐주지 않아.",
-                    "코트는 내 것, 점수는 실력이 정해."
-                ],
-                "line_in": [
-                    "깔끔하게 들어갔어!",
-                    "깔끔하게 들어갔어!",
-                    "라인까지 네 편이네",
-                    "그 공 라인에 정확히 걸쳤어"
-                ],
-                "net_touch": [
-                    "네트를 스쳐도 성공.",
-                    "네트를 스쳐도 성공.",
-                    "네트 맞고 넘어가다니, 얄밉네",
-                    "조금만 더 가까웠으면 위험했어"
-                ],
-                "zone_in": [
-                    "튕겨서 들어갔어!",
-                    "튕겨서 들어갔어!",
-                    "낙점이 일부러 그런 것처럼 날카로워",
-                    "한 발만 더 갔으면 닿았는데"
-                ],
-                "out": [
-                    "아깝다.",
-                    "아깝다.",
-                    "내 인내심보다 멀리 날아갔네",
-                    "아웃이야. 못 본 척하지 마"
-                ],
-                "net": [
-                    "네트에 걸렸어.",
-                    "네트에 걸렸어.",
-                    "네트가 대신 막아 줬네",
-                    "그 스윙 너무 급했어"
-                ]
-            },
-            "fallback": [
-                "한 판 더 하자."
-            ],
-            "pressure": {
-                "lastTied": "결정구야. 눈 깜빡이지 마.",
-                "lastAhead": "흥, 아직 안 끝났어.",
-                "lastBehind": "이걸 넣으면 이겨.",
-                "playerAhead": "제법인데...",
-                "playerBehind": "더 밀어붙여."
-            },
-            "horse": {
-                "nekoMiss": "못 따라 했네. {{letters}} 추가.",
-                "playerMiss": "너도 {{letters}} 추가."
-            },
-            "mindGame": [
-                "손 떨리는 거 봤어.",
-                "천천히 생각하고 던져.",
-                "이 거리는 가깝지 않아.",
-                "너 사이드라인 노리는 얼굴이야.",
-                "라켓 면은 이미 읽었어.",
-                "너무 오래 보면 손이 굳어."
-            ],
-            "yuiCheat": {
-                "banana": [
-                    "발밑 조심해, 바나나 껍질 간다.",
-                    "밟지 마. 내가 던져 뒀어.",
-                    "이번 걸음은 잘 보고 움직여.",
-                    "뛰어넘으면 네가 잘한 걸로 해 줄게."
-                ],
-                "octopus": [
-                    "먹물 간다. 아직 보여?",
-                    "시야 좀 잠깐 가릴게.",
-                    "깜빡이지 마. 이미 늦었어.",
-                    "안 보여도 받아야 해."
-                ]
-            },
-            "yuiCheatScore": {
-                "banana": [
-                    "그 걸음 너무 미끄러웠지. 이 점수는 내 거야.",
-                    "바나나 껍질 어시스트 성공, 히히.",
-                    "한 번 미끄러지면 점수는 내 쪽으로 와.",
-                    "바닥 조심해. Yui가 한 점 더 가져갈게."
-                ],
-                "octopus": [
-                    "먹물이 딱 알맞게 가렸네. 이 점수는 내 거야.",
-                    "안 보여도 셔틀은 받아야지.",
-                    "시야가 막힌 사이에 벌써 득점했어.",
-                    "이 먹물 작전, 꽤 잘 먹혔지?"
-                ]
-            },
-            "easterEgg": {
-                "lateNight": "이 시간에도 샷을 쳐?",
-                "xmas": "종도 달았는데 아직도 던질 거야?",
-                "newYear": "새해 복 많이 받아!",
-                "lineIn3": "혹시 치트 쓰는 거야?",
-                "lineIn5": "……라인을 확인해 봐야겠어.",
-                "net3": "……잠깐 쉬는 게 어때?"
-            }
-        },
-        "mood": {
-            "happySuffix": " ♪",
-            "sadPrefix": "……",
-            "surprisedPrefix": "어?! "
-        }
+                 ],
+                 "close_to_record": [
+                     "기록까지 거의 다 왔어.",
+                     "기록까지 거의 다 왔어.",
+                     "기록이 라켓 끝에 걸렸어",
+                     "한 번만 더 안정적으로 치면 갱신이야"
+                 ],
+                 "new_record": [
+                     "신기록!",
+                     "신기록!",
+                     "좋아, 그 공은 예뻤어",
+                     "신기록은 네 것. 다음 점수는 내 것"
+                 ],
+                 "streak_5": [
+                     "5연속 성공!",
+                     "5연속 성공!",
+                     "다섯 번 이어졌네. 나쁘지 않아",
+                     "드디어 리듬이 맞기 시작했어"
+                 ],
+                 "streak_10": [
+                     "10연속? 대단해.",
+                     "10연속? 대단해.",
+                     "열 번 연속? 이제 제대로 볼게",
+                     "이 랠리 좀 재미있어졌네"
+                 ],
+                 "streak_15": [
+                     "15연속은 너무 대단해.",
+                     "15연속은 너무 대단해.",
+                     "열다섯 번인데도 안 끊기네",
+                     "계속 그렇게 안정적일 순 없을걸"
+                 ],
+                 "streak_20": [
+                     "20연속? 믿기 힘들어.",
+                     "20연속? 믿기 힘들어.",
+                     "스무 번 연속이면 코트도 기억하겠다",
+                     "이 랠리 이제 완전히 이상해졌어"
+                 ],
+                 "clutch": "……이건 꼭 넣어야 해.",
+                 "excuse": [
+                     "아, 팔이 조금 피곤해.",
+                     "오늘 손맛이 별로야. 다음 공은 진심으로 갈게.",
+                     "방금 건 무효야. 바람을 보고 있었어",
+                     "줄이 좀 느슨했을 뿐이야. 내 실수 아니야"
+                 ],
+                 "difficultyLv2": [
+                     "워밍업은 끝났어. 이제 더 빠르게 갈게.",
+                     "장난치는 시간은 끝났어.",
+                     "이제 제대로 받아칠게. 눈 깜박이지 마.",
+                     "다음 공은 더 빨라. 단단히 받아"
+                 ],
+                 "difficultyMax": [
+                     "이제 진심으로 할게.",
+                     "지금부터 하늘 아래 땅 위에선 내가 최고야.",
+                     "이제 네가 도전자야.",
+                     "미래가 네 것이라면, 증명해 봐!",
+                     "이 한 타부터는 봐주지 않아.",
+                     "코트는 내 것, 점수는 실력이 정해."
+                 ],
+                 "line_in": [
+                     "깔끔하게 들어갔어!",
+                     "깔끔하게 들어갔어!",
+                     "라인까지 네 편이네",
+                     "그 공 라인에 정확히 걸쳤어"
+                 ],
+                 "net_touch": [
+                     "네트를 스쳐도 성공.",
+                     "네트를 스쳐도 성공.",
+                     "네트 맞고 넘어가다니, 얄밉네",
+                     "조금만 더 가까웠으면 위험했어"
+                 ],
+                 "zone_in": [
+                     "튕겨서 들어갔어!",
+                     "튕겨서 들어갔어!",
+                     "낙점이 일부러 그런 것처럼 날카로워",
+                     "한 발만 더 갔으면 닿았는데"
+                 ],
+                 "out": [
+                     "아깝다.",
+                     "아깝다.",
+                     "내 인내심보다 멀리 날아갔네",
+                     "아웃이야. 못 본 척하지 마"
+                 ],
+                 "net": [
+                     "네트에 걸렸어.",
+                     "네트에 걸렸어.",
+                     "네트가 대신 막아 줬네",
+                     "그 스윙 너무 급했어"
+                 ]
+             },
+             "fallback": [
+                 "한 판 더 하자."
+             ],
+             "pressure": {
+                 "lastTied": "결정구야. 눈 깜빡이지 마.",
+                 "lastAhead": "흥, 아직 안 끝났어.",
+                 "lastBehind": "이걸 넣으면 이겨.",
+                 "playerAhead": "제법인데...",
+                 "playerBehind": "더 밀어붙여."
+             },
+             "horse": {
+                 "nekoMiss": "못 따라 했네. {{letters}} 추가.",
+                 "playerMiss": "너도 {{letters}} 추가."
+             },
+             "mindGame": [
+                 "손 떨리는 거 봤어.",
+                 "천천히 생각하고 던져.",
+                 "이 거리는 가깝지 않아.",
+                 "너 사이드라인 노리는 얼굴이야.",
+                 "라켓 면은 이미 읽었어.",
+                 "너무 오래 보면 손이 굳어."
+             ],
+             "yuiCheat": {
+                 "banana": [
+                     "발밑 조심해, 바나나 껍질 간다.",
+                     "밟지 마. 내가 던져 뒀어.",
+                     "이번 걸음은 잘 보고 움직여.",
+                     "뛰어넘으면 네가 잘한 걸로 해 줄게."
+                 ],
+                 "octopus": [
+                     "먹물 간다. 아직 보여?",
+                     "시야 좀 잠깐 가릴게.",
+                     "깜빡이지 마. 이미 늦었어.",
+                     "안 보여도 받아야 해."
+                 ]
+             },
+             "yuiCheatScore": {
+                 "banana": [
+                     "그 걸음 너무 미끄러웠지. 이 점수는 내 거야.",
+                     "바나나 껍질 어시스트 성공, 히히.",
+                     "한 번 미끄러지면 점수는 내 쪽으로 와.",
+                     "바닥 조심해. Yui가 한 점 더 가져갈게."
+                 ],
+                 "octopus": [
+                     "먹물이 딱 알맞게 가렸네. 이 점수는 내 거야.",
+                     "안 보여도 셔틀은 받아야지.",
+                     "시야가 막힌 사이에 벌써 득점했어.",
+                     "이 먹물 작전, 꽤 잘 먹혔지?"
+                 ]
+             },
+             "easterEgg": {
+                 "lateNight": "이 시간에도 샷을 쳐?",
+                 "xmas": "종도 달았는데 아직도 던질 거야?",
+                 "newYear": "새해 복 많이 받아!",
+                 "lineIn3": "혹시 치트 쓰는 거야?",
+                 "lineIn5": "……라인을 확인해 봐야겠어.",
+                 "net3": "……잠깐 쉬는 게 어때?"
+             }
+         },
+         "mood": {
+             "happySuffix": " ♪",
+             "sadPrefix": "……",
+             "surprisedPrefix": "어?! "
+         }
     },
-    "soccer": {
+   "soccer": {
         "exitGame": {
             "button": "게임 종료",
             "ending": "라운드를 종료하는 중…",
