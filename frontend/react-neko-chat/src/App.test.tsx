@@ -8272,6 +8272,103 @@ describe('App', () => {
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
   });
 
+  it('expands the desktop avatar tool overlay when the pointer enters the avatar range', async () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      renderInputApp();
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      const overlay = queryAvatarCursorOverlay();
+      expect(overlay).not.toBeNull();
+      expect(overlay).toHaveClass('is-compact');
+      expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1_cursor.png');
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(overlay).not.toHaveClass('is-compact');
+        expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+      });
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    try {
+      renderInputApp();
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      expect(queryHammerCursorCompactImage()).not.toBeNull();
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+      });
+    } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {
     const { rerender } = renderInputApp();
 
