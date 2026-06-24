@@ -7606,6 +7606,14 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
+        # 只要本轮后端拿到了截图、且有可用 vision 模型（phase2_use_vision 同时
+        # 蕴含 screenshot_b64_for_phase2 非空），就缓存最后这张主动搭话截图，等
+        # 用户下一条 text 回复时注入——不按最终投递通道筛（哪怕这轮文案落到了
+        # music/web，屏幕仍是这轮看过的画面，留着供用户追问）。截图在
+        # finish_proactive_delivery 内 commit 成功后才真正落 session：新一轮主动
+        # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
+        # 分钟 TTL 兜底过期。
+        _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
@@ -7613,6 +7621,7 @@ async def proactive_chat(request: Request):
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
                 source_tag=_delivered_tag,
+                vision_screenshot_b64=_stage_vision_screenshot,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)

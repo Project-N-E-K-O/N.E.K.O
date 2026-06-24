@@ -155,12 +155,12 @@
       "name": "Gemini（Google）",
       "description": "智能和性价比极高的辅助模型，国内版不支持",
       "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-      "conversation_model": "gemini-3-flash-preview",
+      "conversation_model": "gemini-3.1-flash-lite",
       "summary_model": "gemini-2.5-flash",
       "correction_model": "gemini-3-flash-preview",
       "emotion_model": "gemini-2.5-flash-lite",
-      "vision_model": "gemini-3-flash-preview",
-      "agent_model": "gemini-3-flash-preview"
+      "vision_model": "gemini-3.1-flash-lite",
+      "agent_model": "gemini-3.5-flash"
     },
     "kimi": {
       "key": "kimi",
@@ -205,11 +205,11 @@
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-seed-2-0-lite-260428",
+      "conversation_model": "doubao-seed-character-260628",
       "summary_model": "doubao-seed-2-0-lite-260428",
-      "correction_model": "doubao-seed-2-0-lite-260428",
+      "correction_model": "doubao-seed-character-260628",
       "emotion_model": "doubao-seed-2-0-mini-260428",
-      "vision_model": "doubao-seed-2-0-lite-260428",
+      "vision_model": "doubao-seed-character-260628",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {

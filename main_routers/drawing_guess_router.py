@@ -26,7 +26,7 @@ from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Request
 
-from config.prompts.prompts_game import (
+from config.prompts.prompts_drawing_guess import (
     DRAWING_GUESS_WORD_DATA,
     get_drawing_guess_direct_hint_template,
 )

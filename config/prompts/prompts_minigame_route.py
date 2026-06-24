@@ -13,15 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prompt templates for the game routing layer (module-agnostic).
+"""Prompt templates for the minigame routing layer (module-agnostic).
 
-Soccer-specific prompt fragments stay in config/prompts/prompts_game.py. This file
-holds prompts reused by any game route: the in-session context organizer,
-postgame archive highlighter, chat-memory archive summary, realtime context
-bridge, and label dictionaries used by those builders.
+Game-specific prompt fragments stay in their own modules (config/prompts/
+prompts_soccer.py, prompts_badminton.py). This file holds prompts reused by any
+minigame route: the in-session context organizer, postgame archive highlighter,
+chat-memory archive summary, realtime context bridge, and label dictionaries
+used by those builders.
 """
 
-from config.prompts.prompts_game import _localized_template, _normalize_prompt_lang
+from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
 
 
 GAME_CONTEXT_SIGNAL_GROUP_KEYS = (

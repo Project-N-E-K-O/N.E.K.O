@@ -2555,10 +2555,16 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-history-system-bubble-max-ratio: 94%;
   --compact-export-preview-bubble-max-ratio: 90%;
   --compact-export-preview-system-bubble-max-ratio: 95%;
+  --compact-export-preview-min-height: 360px;
+  --compact-export-preview-max-height: 78vh;
+  --compact-export-preview-region-height: min(
+    max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height)),
+    var(--compact-export-preview-max-height)
+  );
   width: var(--compact-export-history-inline-size);
   /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
      否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
-  max-height: 78vh;
+  max-height: var(--compact-export-preview-max-height);
   transform: translateX(-50%);
   z-index: 100001;
   pointer-events: none;
@@ -2583,7 +2589,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-export-history-max-inline-size: calc(
     var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
   );
-  max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+  --compact-export-preview-max-height: min(
+    calc(var(--compact-export-surface-width) * 1.46),
+    calc(var(--compact-desktop-workarea-height, 900px) * 0.78)
+  );
+  max-height: var(--compact-export-preview-max-height);
 }
 
 .compact-export-history-panel {
@@ -3474,8 +3484,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   align-items: stretch;
   gap: 8px;
   width: 100%;
-  height: var(--compact-export-history-region-height);
-  max-height: var(--compact-export-history-region-height);
+  height: var(--compact-export-preview-region-height);
+  max-height: var(--compact-export-preview-region-height);
   border-radius: 18px;
   padding: 9px;
   overflow: hidden;

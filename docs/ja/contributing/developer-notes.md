@@ -61,6 +61,15 @@ await window.unlockAchievement('ACH_NAME');
 window.getAchievementStats();
 ```
 
+### 6. ミニゲーム prompt は2つの locale 正規化を意図的に併存させている
+
+`config/prompts` はミニゲーム prompt 向けに **2 つの異なる locale 正規化** を意図的に使い分けており、統一してはいけません：
+
+- **バドミントンのクイック台詞** は `normalize_badminton_prompt_locale`（`prompts_badminton.py`）を使う **フルロケール** 方式で、`zh-CN` と `zh-TW` を区別します。テーブル `BADMINTON_QUICK_LINES_PROMPTS` / `BADMINTON_QUICK_LINES_FALLBACKS` はフルロケールをキーにしているため、繁体字のフォールバック台詞が保持されます。
+- **それ以外**（サッカー、および `BADMINTON_SYSTEM_PROMPTS` を含むすべての system / pregame prompt）は `_normalize_prompt_lang`（`prompts_minigame_common.py`）を使う **ショートロケール** 方式で、中国語の派生をすべて `zh` に畳み込みます。
+
+バドミントンのクイック台詞をショート方式に畳み込むと `zh-TW` が `zh-CN` に戻り、PR #2000 の繁体字フォールバック修正が退行します。各正規化関数が自分のテーブルを管轄します。整理のために統合しないでください。
+
 ## フロントエンドの注意点
 
 ### i18n が HTML アイコンを破壊する

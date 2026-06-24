@@ -3693,6 +3693,13 @@ class LLMSessionManager:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 走 magic-command 等绕过 stream_text 的 text 输入时，主动搭话暂存的屏幕
+        # 截图也不再是"下一条回复的背景"——这些路径不经 stream_text 消费它，残留
+        # 会被注进后续不相关消息。一并清掉（与 _pending_images 同为"用户做了别的
+        # 动作 → 失效待发视觉上下文"的对偶 choke point，Codex P2）。
+        clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+        if callable(clear_shot):
+            clear_shot(None)
 
     async def _publish_openclaw_magic_command(self, command: str) -> None:
         try:
@@ -7032,6 +7039,7 @@ class LLMSessionManager:
         expected_speech_id: str | None = None,
         action_note: str | None = None,
         source_tag: str | None = None,
+        vision_screenshot_b64: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -7052,6 +7060,19 @@ class LLMSessionManager:
         now" the AI isn't clueless — remembering only what it said but not what
         it did. Construction logic in
         ``config.prompts.prompts_proactive.build_proactive_action_note``.
+
+        vision_screenshot_b64: optional; the screen this proactive round obtained
+        when a vision model was available (the caller passes it whenever a
+        screenshot was captured, regardless of which channel the talk landed on).
+        Staged onto the session (NOT committed into history as an image) only on a
+        genuine commit, so the user's NEXT text reply folds it in as leading
+        visual context — the conversation model otherwise sees only the proactive
+        text and can't tell what was on screen. Passing None clears any previously
+        staged screenshot, so a new proactive round always discards the prior
+        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
+        staged screenshot at injection time. Staging happens inside the sid-guard
+        below, so a user takeover (sid change → early return) never stages a
+        screenshot for an undelivered turn.
 
         Returns True when genuinely persisted, False when skipped due to a sid
         change. The caller uses this to short-circuit downstream side effects
@@ -7094,7 +7115,15 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
-                # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
+                # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
+                # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
+                # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
+                # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
+                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 绝不会为未投递的轮次暂存截图。
+                if hasattr(self.session, "set_proactive_screenshot"):
+                    self.session.set_proactive_screenshot(vision_screenshot_b64)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
