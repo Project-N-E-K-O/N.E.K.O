@@ -257,6 +257,13 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "body.yui-guide-live2d-preparing #live2d-return-button-container" in css_source
 
     assert "hideYuiGuideLive2DPreparingControls()" in app_ui_source
+    restore_controls_block = app_ui_source.split("function restoreYuiGuideLive2DPreparingControls()", 1)[1].split(
+        "function restoreLive2DDisplaySurface",
+        1,
+    )[0]
+    assert "'live2d-floating-buttons'" in restore_controls_block
+    assert "'live2d-lock-icon'" in restore_controls_block
+    assert "'live2d-return-button-container'" not in restore_controls_block
     assert "if (!preserveYuiGuidePreparing && floatingButtons) {" in app_ui_source
     assert "if (!preserveYuiGuidePreparing && lockIcon) {" in app_ui_source
 
@@ -271,6 +278,14 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "const fadeOutMs = 900;" in manager_source
     assert "opacity 900ms ease-in-out" in manager_source
     assert "'live2d-floating-buttons'," in manager_source
+    clear_prepare_block = manager_source.split("clearTutorialLive2dPreparingStyles() {", 1)[1].split(
+        "restoreTutorialLive2dDisplayState",
+        1,
+    )[0]
+    display_restore_block = clear_prepare_block.split("element.style.removeProperty('display');", 1)[0]
+    assert "id === 'live2d-floating-buttons'" in display_restore_block
+    assert "id === 'live2d-lock-icon'" in display_restore_block
+    assert "id === 'live2d-return-button-container'" not in display_restore_block
     assert "if (preparing === true) {" in manager_source
 
     assert "this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;" in reload_controller_source

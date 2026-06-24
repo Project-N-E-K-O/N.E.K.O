@@ -2079,7 +2079,6 @@ class UniversalTutorialManager {
             if (
                 id === 'live2d-floating-buttons'
                 || id === 'live2d-lock-icon'
-                || id === 'live2d-return-button-container'
             ) {
                 element.style.removeProperty('display');
             }
