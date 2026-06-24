@@ -51,7 +51,6 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from config.prompts.prompts_badminton import get_badminton_quick_lines_fallback
 from config.prompts.prompts_minigame_common import PREGAME_CONTEXT_INPUT_WATERMARK
 from config.prompts.prompts_soccer import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
@@ -66,6 +65,7 @@ from config.prompts.prompts_soccer import (
 from config.prompts.prompts_badminton import (
     get_badminton_pregame_context_formatter_labels,
     get_badminton_pregame_context_prompt,
+    get_badminton_quick_lines_fallback,
     get_badminton_quick_lines_prompt,
     get_badminton_quick_lines_user_prompt,
     get_badminton_system_prompt,
