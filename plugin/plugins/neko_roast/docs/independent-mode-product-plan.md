@@ -341,9 +341,10 @@ Validated:
 - Idle Hosting produced real output once (`idle_hosting -> pushed`), proving the cold-room path can speak in a real room.
 - `cooldown`, `recently_spoke`, `quiet`, and `manual_paused` states were observable during the run.
 
-Gift / fan-club signal note:
+Gift / fan-club / guard signal note:
 
 - A fan-club medal event was observed as text similar to "sent 1 fan-club medal" and was pushed through the current `live_danmaku` path.
+- Gift, fan-club, and guard events should be observable as signal labels before full Gift / SC / Guard behavior exists.
 - This proves the ingest side can see the signal, but it is not yet a Gift module. Gift / SC / Guard should remain future event modules and should not be treated as Independent Mode prerequisites.
 
 Product findings:
@@ -363,9 +364,9 @@ Implemented before the next live test (offline verified; live feel still needs t
    - Streamer relationship labels must come from the current user/profile memory. Do not hard-code labels such as "older brother" or "owner"; if no label is available, use a neutral label or avoid naming the streamer.
 3. Reply Length Contract: first-appearance roast is at most one or two short lines; follow-up danmaku, warmup hosting, idle hosting, and active engagement should each be one short TTS-friendly line. Short danmaku should get short replies.
 4. Active Engagement Pacing: make automatic Active Engagement more conservative after recent danmaku replies. It should not fire in `engaged` state and should wait longer after successful live danmaku output.
-5. Result Labels: validation and dashboard output should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club signal capture instead of showing all ordinary live input as `live_danmaku`.
+5. Result Labels: validation and dashboard output should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club/guard signal capture instead of showing all ordinary live input as `live_danmaku`.
 6. Warmup Hosting Testability: the next live test should make the opening moment observable so the team can tell whether `warmup_hosting` fired, whether it spoke only one natural opening line, and whether it was not mistaken for idle hosting.
-7. Gift Signal v0: if a gift or fan-club medal appears again, capture it as a gift/fan-club signal. Do not build full Gift / SC / Guard behavior before the live pacing issues are fixed.
+7. Gift Signal v0: if a gift, fan-club medal, or guard event appears again, capture it as a gift/fan-club/guard signal. Do not build full Gift / SC / Guard behavior before the live pacing issues are fixed.
 
 ## Next Live Test Checklist
 
@@ -406,9 +407,9 @@ Goal: verify whether the offline fixes after the 2026-06-24 run improved the liv
 
 ### Signal observation
 
-- Recent results should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club signal capture.
-- If a gift or fan-club medal appears, record whether it is captured as `gift_signal`.
-- Do not treat gift/fan-club observation as full Gift / SC / Guard behavior.
+- Recent results should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club/guard signal capture.
+- If a gift, fan-club medal, or guard event appears, record whether it is captured as `gift_signal`.
+- Do not treat gift/fan-club/guard observation as full Gift / SC / Guard behavior.
 
 ### Pass / fail decision
 

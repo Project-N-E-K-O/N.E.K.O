@@ -39,7 +39,7 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 4. Danmaku Response / 后续弹幕接话：作为 Active Engagement 前的过渡 Slice，已在当前开发分支接入。同一 UID 首次出场仍走 `avatar_roast`，后续普通弹幕走 `danmaku_response`。
 5. Active Engagement / 主动营业：已接入保守 v0，只在猫猫独播的安静状态下触发一次轻话题；支持自动触发与手动触发，不接 Gift / SC / Guard。
 6. Warmup Hosting / 开场暖场：已接入猫猫独播开场状态，避免开播第一句被当成冷场陪播。
-7. 2026-06-24 已完成一轮真实猫猫独播验证：真实直播间连接、真实输出、后续弹幕接话、主动营业和冷场陪播均跑通；礼物 / 灯牌类信号已被 ingest 捕获但仍走普通弹幕路径。已离线补齐短回复约束、弹幕后主动营业等待、首评 / 接话 / 冷场 / 主动营业结果标签和 Gift Signal v0 标记；下一步按 `independent-mode-product-plan.md` 的 `Next Live Test Checklist` 做第二轮真实直播体感验证。
+7. 2026-06-24 已完成一轮真实猫猫独播验证：真实直播间连接、真实输出、后续弹幕接话、主动营业和冷场陪播均跑通；礼物 / 灯牌 / 上舰类信号已被 ingest 捕获但仍走普通弹幕路径。已离线补齐短回复约束、弹幕后主动营业等待、首评 / 接话 / 冷场 / 主动营业结果标签和 Gift Signal v0 标记；下一步按 `independent-mode-product-plan.md` 的 `Next Live Test Checklist` 做第二轮真实直播体感验证。
 
 Gift / SC / Guard 专属行为先视为增强项，不作为 Independent Mode 成立条件。
 
