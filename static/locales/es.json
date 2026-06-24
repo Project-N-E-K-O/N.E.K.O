@@ -4738,6 +4738,9 @@
                      "La táctica de tinta funcionó bastante bien."
                  ]
              },
+             "playerIceScore": [
+                 "Mmm, eso no cuenta. ¡Otra vez!"
+             ],
              "easterEgg": {
                  "lateNight": "¿Sigues golpeando tan tarde?",
                  "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
