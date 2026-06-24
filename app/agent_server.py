@@ -1867,13 +1867,17 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
         await _maybe_restore_agent_intent()
-        # greeting_check marks a session start → reset the per-session proactive
-        # analyze budget so each new conversation gets a fresh cap. (Restore is
-        # once-guarded; this reset is intentionally per-signal.)
-        _key = _normalize_lanlan_key((event or {}).get("lanlan_name"))
-        if _key:
-            Modules.proactive_analyze_count.pop(_key, None)
-            Modules.last_proactive_assistant_fingerprint.pop(_key, None)
+        # Reset the per-session proactive-analyze budget ONLY on a genuine new
+        # session (character switch or a real gap) — never on a refresh/reconnect,
+        # which also fires greeting_check. Otherwise a user could refresh the
+        # window to farm a fresh cap mid-conversation, defeating the per-session
+        # bound. ``new_session`` is decided by websocket_router (is_switch or
+        # >15s since disconnect).
+        if (event or {}).get("new_session"):
+            _key = _normalize_lanlan_key((event or {}).get("lanlan_name"))
+            if _key:
+                Modules.proactive_analyze_count.pop(_key, None)
+                Modules.last_proactive_assistant_fingerprint.pop(_key, None)
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         _create_tracked_task(_handle_voice_transcript_request(event))
@@ -2270,7 +2274,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         # 而非 raw —— analyzer 实际看到的最新 user 才是该任务的真触发者；
         # 正常场景下 raw-latest 是 first-time bypass、没被 redact，两个签名
         # 一致，区别仅在 raw-latest 已经被 redact 的边界 case。
-        trigger_user_msg_sig = _last_user_message_signature(redacted_messages)
+        # 主动搭话轮没有触发它的 user 消息：绝不把它绑到窗口里那条陈旧 user 签名上，
+        # 否则用户取消这条主动任务会误把那条旧 user turn 标记为 cancelled、下一轮被
+        # redact 掉。proactive → 不绑 user 触发签名。
+        trigger_user_msg_sig = None if proactive else _last_user_message_signature(redacted_messages)
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行

@@ -547,8 +547,15 @@ class DirectTaskExecutor:
         except RuntimeError:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
-    def _format_messages(self, messages: List[Dict[str, str]]) -> str:
-        """Format conversation messages"""
+    def _format_messages(self, messages: List[Dict[str, str]], *, proactive: bool = False) -> str:
+        """Format conversation messages.
+
+        ``proactive`` marks a self-initiated turn with no new user request: the
+        ``LATEST_USER_REQUEST`` marker (which both the unified and plugin
+        assessors key on) is taken from lanlan's own latest utterance instead of
+        the stale prior user line, so the assessment is driven by the proactive
+        intent rather than the old request.
+        """
         def _extract_text(m: dict) -> str:
             return str(m.get('text') or m.get('content') or '').strip()
 
@@ -578,11 +585,20 @@ class DirectTaskExecutor:
             return ""
 
         latest_user_text = ""
-        for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
-            if m.get('role') == 'user':
-                latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
-                if latest_user_text:
-                    break
+        if proactive:
+            # Self-initiated turn → the actionable "request" is lanlan's own
+            # latest utterance, not the (stale) latest user line.
+            for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
+                if str(m.get('role') or '').lower() == 'assistant':
+                    latest_user_text = _extract_text(m)
+                    if latest_user_text:
+                        break
+        else:
+            for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
+                if m.get('role') == 'user':
+                    latest_user_text = _describe_user_message(_extract_text(m), _extract_attachments(m))
+                    if latest_user_text:
+                        break
         lines = []
         if latest_user_text:
             lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
@@ -658,21 +674,6 @@ class DirectTaskExecutor:
                     user_intent = line[5:].strip()
                     break
         return user_intent
-
-    def _extract_latest_assistant_intent(self, messages: List[Dict[str, Any]]) -> str:
-        """Latest assistant utterance — the actionable intent on a proactive turn.
-
-        A proactive (self-initiated) turn has no new user request, so lanlan's
-        own most recent line is what should drive the assessment.
-        """
-        if not isinstance(messages, list):
-            return ""
-        for message in reversed(messages):
-            if isinstance(message, dict) and str(message.get("role") or "").lower() == "assistant":
-                text = self._message_text(message)
-                if text:
-                    return text
-        return ""
 
     @staticmethod
     def _message_text(message: Dict[str, Any]) -> str:
@@ -1915,18 +1916,13 @@ class DirectTaskExecutor:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
-        # 格式化对话
-        conversation = self._format_messages(messages)
+        # 格式化对话。主动搭话轮把 LATEST_USER_REQUEST 设为猫娘自己最近这句主动
+        # 台词（而非上一轮旧用户请求），让 unified / plugin 两路评估都对着主动意图
+        # 跑——两者都从 conversation 的 LATEST_USER_REQUEST 取意图。
+        conversation = self._format_messages(messages, proactive=proactive)
         if not conversation.strip():
             return None
         latest_user_request = self._extract_latest_user_intent(conversation)
-        if proactive:
-            # 主动搭话：没有新 user 行，conversation 里的「最后 user 行」是上一轮的
-            # 旧请求。改用猫娘自己最近这句主动台词当意图（"我帮你查下天气" → 评估
-            # 天气工具），否则评估会去对着旧用户请求空跑。
-            proactive_intent = self._extract_latest_assistant_intent(messages)
-            if proactive_intent:
-                latest_user_request = proactive_intent
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
 

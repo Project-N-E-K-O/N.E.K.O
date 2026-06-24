@@ -130,25 +130,46 @@ def test_proactive_cap_is_per_lanlan(monkeypatch):
     assert a.Modules.proactive_analyze_count["lanB"] == 1
 
 
-# ── greeting_check resets the per-session budget ─────────────────────
-def test_greeting_check_resets_budget(monkeypatch):
+# ── greeting_check resets the budget only on a genuine new session ───
+def test_genuine_new_session_resets_budget(monkeypatch):
     _reset_state()
     async def _noop():
         return
     monkeypatch.setattr(a, "_maybe_restore_agent_intent", _noop)
     a.Modules.proactive_analyze_count["lan"] = 2
     a.Modules.last_proactive_assistant_fingerprint["lan"] = "deadbeef"
-    asyncio.run(a._on_session_event({"event_type": "agent_intent_restore_signal", "lanlan_name": "lan"}))
+    asyncio.run(a._on_session_event({
+        "event_type": "agent_intent_restore_signal", "lanlan_name": "lan", "new_session": True,
+    }))
     assert "lan" not in a.Modules.proactive_analyze_count
     assert "lan" not in a.Modules.last_proactive_assistant_fingerprint
 
 
-# ── executor uses the assistant utterance as intent on proactive ─────
-def test_executor_extracts_latest_assistant_intent():
+def test_refresh_does_not_reset_budget(monkeypatch):
+    # A refresh/reconnect (new_session falsey) must NOT reset the budget — else a
+    # user could refresh to farm a fresh cap mid-conversation.
+    _reset_state()
+    async def _noop():
+        return
+    monkeypatch.setattr(a, "_maybe_restore_agent_intent", _noop)
+    a.Modules.proactive_analyze_count["lan"] = 2
+    asyncio.run(a._on_session_event({
+        "event_type": "agent_intent_restore_signal", "lanlan_name": "lan",  # no new_session
+    }))
+    assert a.Modules.proactive_analyze_count.get("lan") == 2
+
+
+# ── executor uses the assistant utterance as LATEST_USER_REQUEST on proactive ─
+def test_executor_format_messages_proactive_intent():
     ex = DirectTaskExecutor(computer_use=object())
     msgs = [
         {"role": "user", "content": "旧请求"},
         {"role": "assistant", "content": "我帮你查下天气吧"},
     ]
-    assert ex._extract_latest_assistant_intent(msgs) == "我帮你查下天气吧"
-    assert ex._extract_latest_assistant_intent([{"role": "user", "content": "x"}]) == ""
+    # proactive: LATEST_USER_REQUEST is lanlan's own utterance, not the old user line
+    conv_p = ex._format_messages(msgs, proactive=True)
+    assert "LATEST_USER_REQUEST: 我帮你查下天气吧" in conv_p
+    assert ex._extract_latest_user_intent(conv_p) == "我帮你查下天气吧"
+    # ordinary turn: LATEST_USER_REQUEST is the user line
+    conv_u = ex._format_messages(msgs, proactive=False)
+    assert "LATEST_USER_REQUEST: 旧请求" in conv_u

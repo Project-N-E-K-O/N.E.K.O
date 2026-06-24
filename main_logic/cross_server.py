@@ -1046,12 +1046,19 @@ async def run_sync_connector(
                                             f"agent_callback_turn={is_agent_callback_turn_end}"
                                         )
                                         if recent and not is_agent_callback_turn_end:
+                                            # had_user_input gates the proactive marking: a turn with no
+                                            # user text but WITH a fresh user image (screenshot/camera) is
+                                            # still a user turn — count its attachments as input so it is
+                                            # NOT mis-marked proactive (which, with the feature off, would
+                                            # drop the image task). Only a genuinely self-initiated turn
+                                            # (no text, no image) is proactive.
+                                            _turn_had_user_input = had_user_input_this_turn or bool(selected_pending_user_images)
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=had_user_input_this_turn,
+                                                had_user_input=_turn_had_user_input,
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -1145,7 +1152,9 @@ async def run_sync_connector(
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=had_user_input_this_turn,
+                                                # session_end is terminal — never treated as proactive
+                                                # (had_user_input defaults True), so it always takes the
+                                                # ordinary user-turn path.
                                             )
                                             if sent:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")
