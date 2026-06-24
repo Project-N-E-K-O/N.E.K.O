@@ -1866,18 +1866,20 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # and plugin lifecycle startup during the cold-start window
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
-        await _maybe_restore_agent_intent()
         # Reset the per-session proactive-analyze budget ONLY on a genuine new
-        # session (character switch or a real gap) — never on a refresh/reconnect,
-        # which also fires greeting_check. Otherwise a user could refresh the
-        # window to farm a fresh cap mid-conversation, defeating the per-session
-        # bound. ``new_session`` is decided by websocket_router (is_switch or
-        # >15s since disconnect).
+        # session (character switch or a real gap) — never on a refresh/reconnect
+        # or a concurrent second window, which also fire greeting_check. Otherwise
+        # a user could refresh/parallel-open to farm a fresh cap mid-conversation,
+        # defeating the per-session bound. ``new_session`` is decided by
+        # websocket_router (is_switch or >15s gap, AND sole active connection).
+        # Done BEFORE the restore await so a restore failure can't leave a genuine
+        # new session stuck on the old cap / fingerprint.
         if (event or {}).get("new_session"):
             _key = _normalize_lanlan_key((event or {}).get("lanlan_name"))
             if _key:
                 Modules.proactive_analyze_count.pop(_key, None)
                 Modules.last_proactive_assistant_fingerprint.pop(_key, None)
+        await _maybe_restore_agent_intent()
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         _create_tracked_task(_handle_voice_transcript_request(event))
