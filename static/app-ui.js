@@ -1178,7 +1178,8 @@
     function hideYuiGuideLive2DPreparingControls() {
         [
             'live2d-floating-buttons',
-            'live2d-lock-icon'
+            'live2d-lock-icon',
+            'live2d-return-button-container'
         ].forEach((id) => {
             const element = document.getElementById(id);
             if (!element || !element.style || typeof element.style.removeProperty !== 'function') {
