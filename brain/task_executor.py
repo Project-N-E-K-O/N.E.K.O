@@ -659,6 +659,21 @@ class DirectTaskExecutor:
                     break
         return user_intent
 
+    def _extract_latest_assistant_intent(self, messages: List[Dict[str, Any]]) -> str:
+        """Latest assistant utterance — the actionable intent on a proactive turn.
+
+        A proactive (self-initiated) turn has no new user request, so lanlan's
+        own most recent line is what should drive the assessment.
+        """
+        if not isinstance(messages, list):
+            return ""
+        for message in reversed(messages):
+            if isinstance(message, dict) and str(message.get("role") or "").lower() == "assistant":
+                text = self._message_text(message)
+                if text:
+                    return text
+        return ""
+
     @staticmethod
     def _message_text(message: Dict[str, Any]) -> str:
         return str(message.get("text") or message.get("content") or "").strip()
@@ -1779,11 +1794,17 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         lang: str = "en",
         action_intent: Optional[float] = None,
+        proactive: bool = False,
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
         Plugin is judged separately; qwenpaw/openfang/browser/computer are merged into one LLM call.
         Actual execution is dispatched uniformly by agent_server.
+
+        ``proactive`` marks a self-initiated turn (lanlan spoke with no fresh user
+        input). There is no new user request, so the actionable intent is taken
+        from lanlan's own latest utterance instead of the (stale) latest user
+        line.
         """
         # Bind active character for {MASTER_NAME}/{LANLAN_NAME} substitution
         # in any LLM call made under this analyze_and_execute (assess_user_plugin
@@ -1800,6 +1821,7 @@ class DirectTaskExecutor:
                 conversation_id=conversation_id,
                 lang=lang,
                 action_intent=action_intent,
+                proactive=proactive,
             )
         finally:
             reset_active_character(char_token)
@@ -1871,6 +1893,7 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         lang: str = "en",
         action_intent: Optional[float] = None,
+        proactive: bool = False,
     ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
@@ -1897,6 +1920,13 @@ class DirectTaskExecutor:
         if not conversation.strip():
             return None
         latest_user_request = self._extract_latest_user_intent(conversation)
+        if proactive:
+            # 主动搭话：没有新 user 行，conversation 里的「最后 user 行」是上一轮的
+            # 旧请求。改用猫娘自己最近这句主动台词当意图（"我帮你查下天气" → 评估
+            # 天气工具），否则评估会去对着旧用户请求空跑。
+            proactive_intent = self._extract_latest_assistant_intent(messages)
+            if proactive_intent:
+                latest_user_request = proactive_intent
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
 
