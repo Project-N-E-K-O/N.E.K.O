@@ -393,6 +393,27 @@ def test_vulnerability_cross_locale_mixed_language():
     assert scan_vulnerability_keywords("exhausted and so alone") >= 2
 
 
+def test_vulnerability_profanity_counts_as_cue():
+    # Profanity/venting is part of the vulnerability lexicon now — swearing is
+    # a strong distress tell. Sampled across every locale.
+    for msg in [
+        "卧槽这也太难了", "靠北喔", "fuck this", "this is bullshit",
+        "もうくそだ", "씨발 진짜", "блять как же тяжело", "joder qué mierda",
+        "que merda, caralho",
+    ]:
+        assert scan_vulnerability_keywords(msg) >= 1, msg
+
+
+def test_vulnerability_profanity_avoids_short_substring_false_positives():
+    # The risky short forms (ass / 操 / 幹 / hell) must NOT match ordinary words
+    # — we only ship the longer, non-embedding profanity forms.
+    for clean in [
+        "please pass the class", "let me assume the worst",
+        "我先操作一下电脑", "去操场跑步", "他幹活很认真", "shell command",
+    ]:
+        assert scan_vulnerability_keywords(clean) == 0, clean
+
+
 def test_topic_switch_anchored_at_start():
     assert detect_topic_switch("对了，今天天气怎么样") is True
     assert detect_topic_switch("by the way, did you eat") is True
