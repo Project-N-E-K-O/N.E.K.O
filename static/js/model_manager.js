@@ -5390,9 +5390,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
                     const savedAnimation = await getSavedVrmAnimationUrl();
                     if (savedAnimation) {
-                        const matched = Array.from(vrmAnimationSelect.options).find(option =>
+                        let matched = Array.from(vrmAnimationSelect.options).find(option =>
                             option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
-                        if (matched) resolvedValue = matched.value;
+                        if (!matched) {
+                            // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
+                            // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
+                            // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
+                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
+                            matched = document.createElement('option');
+                            matched.value = savedAnimation;
+                            matched.setAttribute('data-path', savedAnimation);
+                            matched.setAttribute('data-filename', label);
+                            matched.textContent = label;
+                            vrmAnimationSelect.appendChild(matched);
+                        }
+                        resolvedValue = matched.value;
                     }
                 }
                 vrmAnimationSelect.value = resolvedValue;
