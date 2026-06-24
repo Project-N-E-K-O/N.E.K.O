@@ -84,6 +84,7 @@ def _normalize_choice(raw_choice: Any) -> dict[str, Any] | None:
         "choice": choice,
         "label": _clean_str(raw_choice.get("label"), limit=_LABEL_LIMIT),
         "handoff": bool(raw_choice.get("handoff")),
+        "session_id": _clean_str(raw_choice.get("session_id"), limit=_SESSION_LIMIT),
         "at": _clamp_int(raw_choice.get("at")),
     }
 
@@ -168,14 +169,17 @@ def save_tutorial_choices_state(state: dict[str, Any], config_manager=None) -> d
 
 
 def _is_duplicate_choice(existing: list[dict[str, Any]], candidate: dict[str, Any], session_id: str) -> bool:
-    # 一棵分支树在同一 session 里不会重复经过同一节点，但网络重试 / 重复事件可能把
-    # 同一次点击重发。按 (session_id, node_id, choice, handoff) 去重，挡掉精确重放，
-    # 同时仍允许重定向后在同一节点改投另一个选项。
+    # 只挡「同一 session 内的精确重放」（网络重试 / 重复事件把同一次点击重发）：
+    # 按 (session_id, node_id, choice, handoff) 比较。session_id 入了比较键，所以
+    # 用户刷新后用新 session 重走同一天会照常落盘（视作新信号，不静默丢弃），而同一
+    # session 改投不同选项也不受影响（choice 字段不同）。session_id 为空则不去重，
+    # 让无 session 的调用方无损写入。
     if not session_id:
         return False
     for item in existing:
         if (
-            item.get("node_id") == candidate["node_id"]
+            item.get("session_id") == session_id
+            and item.get("node_id") == candidate["node_id"]
             and item.get("choice") == candidate["choice"]
             and bool(item.get("handoff")) == candidate["handoff"]
         ):
@@ -194,11 +198,13 @@ def record_tutorial_choice(
 
     lanlan_name = _clean_str(payload.get("lanlan_name"), limit=_NAME_LIMIT)
     day_key = _clean_str(payload.get("day"), limit=_DAY_LIMIT)
+    session_id = _clean_str(payload.get("session_id"), limit=_SESSION_LIMIT)
     candidate = _normalize_choice({
         "node_id": payload.get("node_id"),
         "choice": payload.get("choice"),
         "label": payload.get("label"),
         "handoff": payload.get("handoff"),
+        "session_id": session_id,
         "at": now_ms,
     })
 
@@ -209,7 +215,6 @@ def record_tutorial_choice(
     if candidate is None:
         return {"ok": False, "reason": "invalid_choice"}
 
-    session_id = _clean_str(payload.get("session_id"), limit=_SESSION_LIMIT)
     source = _clean_str(payload.get("source"), limit=_SOURCE_LIMIT)
     completed = bool(payload.get("completed"))
 
@@ -239,7 +244,7 @@ def record_tutorial_choice(
             day["first_recorded_at"] = now_ms
         day["updated_at"] = now_ms
 
-        state = save_tutorial_choices_state(state, config_manager)
+        save_tutorial_choices_state(state, config_manager)
 
     return {
         "ok": True,
@@ -255,6 +260,9 @@ def get_tutorial_choices_for_character(
     config_manager=None,
 ) -> dict[str, Any]:
     name = _clean_str(lanlan_name, limit=_NAME_LIMIT)
-    state = load_tutorial_choices_state(config_manager)
+    # 持锁读：load→save 在写路径里是临界区，atomic_write_json 已保证读不到撕裂的
+    # JSON，但持锁能让读到的恒为最近一次完整提交后的快照，未来消费侧上线也不必再补。
+    with _STATE_LOCK:
+        state = load_tutorial_choices_state(config_manager)
     character = state["characters"].get(name) if name else None
     return character if isinstance(character, dict) else {"days": {}}
