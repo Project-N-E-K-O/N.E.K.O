@@ -3692,6 +3692,13 @@ class LLMSessionManager:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 走 magic-command 等绕过 stream_text 的 text 输入时，主动搭话暂存的屏幕
+        # 截图也不再是"下一条回复的背景"——这些路径不经 stream_text 消费它，残留
+        # 会被注进后续不相关消息。一并清掉（与 _pending_images 同为"用户做了别的
+        # 动作 → 失效待发视觉上下文"的对偶 choke point，Codex P2）。
+        clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+        if callable(clear_shot):
+            clear_shot(None)
 
     async def _publish_openclaw_magic_command(self, command: str) -> None:
         try:

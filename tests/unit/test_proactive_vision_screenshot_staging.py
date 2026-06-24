@@ -412,6 +412,23 @@ async def test_finish_clears_stale_screenshot_when_none():
     assert mgr.session._proactive_image_to_inject is None
 
 
+def test_clear_text_pending_images_also_clears_proactive_slot():
+    """Magic-command bypasses (OpenClaw/Qwenpaw) go through _clear_text_pending_images
+    instead of stream_text, so that hook must also drop the staged screenshot —
+    otherwise it survives and injects into a later unrelated message (Codex P2)."""
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.session = _real_session()
+    mgr.session._pending_images = ["user-frame"]
+    mgr.session.set_proactive_screenshot("SCREEN_B64")
+    assert mgr.session._proactive_image_to_inject == "SCREEN_B64"
+
+    LLMSessionManager._clear_text_pending_images(mgr)
+
+    assert mgr.session._pending_images == []
+    assert mgr.session._proactive_image_to_inject is None
+    assert mgr.session._proactive_image_staged_at == 0.0
+
+
 @pytest.mark.asyncio
 async def test_finish_does_not_stage_on_sid_mismatch():
     """sid mismatch (user already took over this turn) → finish short-circuits
