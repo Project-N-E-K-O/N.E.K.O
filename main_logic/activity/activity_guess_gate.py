@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Adaptive-backoff gate for the ``activity_guess`` emotion-tier loop.
+"""Adaptive-backoff gate + per-signature narration cache for ``activity_guess``.
 
-Pure decision logic, extracted from ``UserActivityTracker._activity_guess_loop``
+Pure data/decision logic, extracted from ``UserActivityTracker._activity_guess_loop``
 so the firing policy can be unit-tested without spinning up the tracker, the
-collector, or a live LLM (same split rationale as ``focus_scorer.py``).
+collector, or a live LLM (same split rationale as ``focus_scorer.py``). It owns
+no clock and performs no I/O — the tracker passes ``now``.
 
 Problem it solves
 -----------------
@@ -36,28 +37,35 @@ The refresh interval becomes *adaptive to how novel the activity is*:
 * **Coarsened signature** — callers pass ``(state, window-category)`` instead of
   the exact app, so flicking between two same-category apps is a no-op and even
   cross-category flicker only registers at the category level.
-* **Per-signature exponential backoff** — each distinct signature is re-narrated
-  on an interval that grows while the recent activity set stays stable (no
-  genuinely new signature): ``BASE → 2·BASE → …`` capped at ``CAP``. Oscillating
-  between already-narrated signatures therefore decays from "every BASE" toward
-  "every CAP".
+* **Per-signature exponential backoff** — each distinct signature carries its
+  OWN streak and is re-narrated on an interval that grows with each of *its*
+  re-narrations: ``BASE → 2·BASE → …`` capped at ``CAP``. Oscillating between
+  already-narrated signatures therefore decays from "every BASE" toward "every
+  CAP", and a one-off new activity does NOT reset the backoff a separate,
+  still-oscillating signature has accumulated.
 * **Novelty bypass** — a signature not in the small recently-narrated cache, or a
-  new conversation turn (``conv_seq`` advanced), fires immediately and resets the
-  backoff. Switching to a genuinely different activity (work → game) re-narrates
-  at once; only re-describing the *same* activities backs off. Because staleness
-  only ever accrues on an activity that hasn't changed, the proactive prompt
-  never reads a narration that is wrong — just one that is unchanged.
+  new conversation turn (``conv_seq`` advanced), fires immediately and restarts
+  that signature's backoff. Switching to a genuinely different activity
+  (work → game) re-narrates at once; only re-describing the *same* activity backs
+  off.
+
+Per-signature narration cache
+-----------------------------
+The gate also stores the last narration (scores + guess text) **per signature**,
+not as one global slot. This is what keeps "staleness never makes it wrong"
+honest: when the backoff suppresses a re-narration, the consumer asks
+``cached(current_signature)`` and gets the narration for *the activity the user
+is in right now* — never a leftover narration for whichever signature happened to
+fire last. (Within a coarse bucket the narration stays at category granularity by
+design — two same-category apps share one entry; the exact app/title is carried
+by other snapshot fields, not this hint.)
 
 The hard ``BASE`` floor is always respected (no two calls closer than ``BASE``),
 preserving the old anti-thrash guarantee during rapid flicker. The novelty check
 deliberately sits *above* the backoff interval so a genuinely new activity is
 never delayed by a grown interval — the cap only governs re-narrating something
-already seen.
-
-This object is **decision-only**: it owns no clock and performs no I/O. The
-tracker passes ``now`` (monotonic-ish wall time) and calls ``record_fired`` only
-after a narration LLM call actually succeeds, so failed/discarded calls do not
-advance the backoff.
+already seen. ``record_fired`` is called only after a narration LLM call actually
+succeeds, so failed/discarded calls do not advance the backoff or the cache.
 """
 
 from __future__ import annotations
@@ -67,31 +75,42 @@ from collections.abc import Hashable
 
 
 class ActivityGuessGate:
-    """Decide whether the activity_guess loop should issue an LLM call this tick.
+    """Per-signature activity-narration cache with adaptive backoff.
 
     Usage (per tick, after the loop's privacy/away/proactive/goodbye bails)::
 
         if not gate.should_fire(sig, conv_seq, now):
             continue
-        ... run the emotion-tier LLM, guard against conv_seq advancing ...
-        gate.record_fired(sig, conv_seq, now)   # only on success
+        result = await run_emotion_tier_llm(...)         # guard conv_seq advance
+        gate.record_fired(sig, conv_seq, now, scores, guess)   # only on success
+
+    and at snapshot time the consumer reads the narration for the *current*
+    activity::
+
+        scores, guess = gate.cached(current_sig)
     """
 
     def __init__(self, *, base_seconds: float, cap_seconds: float, cache_size: int):
         if base_seconds <= 0:
             raise ValueError('base_seconds must be > 0')
         self._base = float(base_seconds)
-        # A cap below base is meaningless; clamp so the interval is always >= base.
+        # ``cap`` is a soft ceiling, not load-bearing like ``base``: a bad value
+        # (0 / negative / below base) is clamped up to ``base`` rather than
+        # raising, so a misconfigured config knob degrades to "no backoff beyond
+        # base" instead of crashing tracker/session init. (``base`` must raise —
+        # base <= 0 would zero out the floor and the ``2**streak`` interval.)
         self._cap = max(float(cap_seconds), self._base)
         self._cache_size = max(1, int(cache_size))
-        # signature -> last fire timestamp (LRU; most-recently fired at the end).
-        self._narrated: "OrderedDict[Hashable, float]" = OrderedDict()
-        # Consecutive non-novel fires; grows the backoff interval, reset by novelty.
-        self._streak = 0
+        # signature -> (last_fire_ts, streak, scores, guess), LRU (most-recently
+        # fired at the end). The streak AND the narration are stored PER
+        # SIGNATURE: a one-off novel activity never resets a separate signature's
+        # backoff, and the consumer always reads the narration matching the
+        # current activity rather than whichever signature fired last.
+        self._narrated: "OrderedDict[Hashable, tuple[float, int, dict, str]]" = OrderedDict()
         self._last_fire_ts: float | None = None
         self._last_fire_conv_seq: int | None = None
-        # Cap the streak so ``base * 2**streak`` can't grow without bound — once
-        # the interval reaches CAP, a larger streak changes nothing.
+        # Cap the per-signature streak so ``base * 2**streak`` can't grow without
+        # bound — once the interval reaches CAP, a larger streak changes nothing.
         self._max_streak = 0
         eff = self._base
         while eff < self._cap and self._max_streak < 32:
@@ -105,34 +124,54 @@ class ActivityGuessGate:
             and conv_seq != self._last_fire_conv_seq
         )
 
-    def _effective_interval(self) -> float:
-        return min(self._base * (2 ** self._streak), self._cap)
-
     def should_fire(self, sig: Hashable, conv_seq: int, now: float) -> bool:
         # Hard floor: never two calls closer than BASE — even on novelty or a new
         # conversation turn (preserves the old anti-thrash behaviour during rapid
         # window flicker).
         if self._last_fire_ts is not None and now - self._last_fire_ts < self._base:
             return False
-        last_ts = self._narrated.get(sig)
-        if last_ts is None or self._conv_advanced(conv_seq):
+        rec = self._narrated.get(sig)
+        if rec is None or self._conv_advanced(conv_seq):
             # Genuinely new activity, or new conversation → refresh immediately,
-            # bypassing whatever backoff the stable period had accumulated.
+            # bypassing whatever backoff this signature had accumulated.
             return True
-        # Same activity, no new conversation → re-narrate only after the grown
-        # interval has elapsed for this signature.
-        return (now - last_ts) >= self._effective_interval()
+        # Same activity, no new conversation → re-narrate only after this
+        # signature's own grown interval has elapsed.
+        last_ts, streak = rec[0], rec[1]
+        return (now - last_ts) >= min(self._base * (2 ** streak), self._cap)
 
-    def record_fired(self, sig: Hashable, conv_seq: int, now: float) -> None:
-        """Record a *successful* narration; advances backoff + the LRU cache."""
-        is_novel = (sig not in self._narrated) or self._conv_advanced(conv_seq)
-        if is_novel:
-            self._streak = 0
+    def record_fired(
+        self,
+        sig: Hashable,
+        conv_seq: int,
+        now: float,
+        scores: dict | None = None,
+        guess: str = '',
+    ) -> None:
+        """Record a *successful* narration; advances THIS signature's backoff
+        and stores its narration (scores + guess) for ``cached`` to serve."""
+        rec = self._narrated.get(sig)
+        if rec is None or self._conv_advanced(conv_seq):
+            # New signature (or evicted), or fresh conversation context → restart
+            # this signature's backoff at streak 0. Other signatures are untouched.
+            streak = 0
         else:
-            self._streak = min(self._streak + 1, self._max_streak)
-        self._narrated[sig] = now
+            streak = min(rec[1] + 1, self._max_streak)
+        self._narrated[sig] = (now, streak, scores if scores is not None else {}, guess)
         self._narrated.move_to_end(sig)
         while len(self._narrated) > self._cache_size:
             self._narrated.popitem(last=False)
         self._last_fire_ts = now
         self._last_fire_conv_seq = conv_seq
+
+    def cached(self, sig: Hashable) -> tuple[dict, str]:
+        """The last narration recorded for ``sig`` as ``(scores, guess)``.
+
+        Returns ``({}, '')`` when this signature has never been narrated (or was
+        evicted) — an honest "no narration yet" rather than a leftover narration
+        for a different activity. The caller should copy ``scores`` before
+        exposing it (the stored dict is shared)."""
+        rec = self._narrated.get(sig)
+        if rec is None:
+            return {}, ''
+        return rec[2], rec[3]

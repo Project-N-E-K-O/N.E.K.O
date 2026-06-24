@@ -1019,14 +1019,20 @@ def test_activity_guess_signature_excludes_idle_bucket():
     """
     from main_logic.activity.tracker import UserActivityTracker
 
-    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    loop_source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    sig_source = inspect.getsource(UserActivityTracker._coarse_activity_sig)
     # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
     # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
     # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
     # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
-    assert "idle_bucket" not in source
-    assert "coarse_sig = (" in source
-    assert "self._activity_guess_gate.should_fire(" in source
+    assert "idle_bucket" not in loop_source
+    assert "idle_bucket" not in sig_source
+    # The coarse signature keys on (state, window-category) — not the exact app
+    # (canonical) / subcategory, and not idle seconds.
+    assert "category" in sig_source
+    assert "canonical" not in sig_source
+    assert "subcategory" not in sig_source
+    assert "self._activity_guess_gate.should_fire(" in loop_source
 
 
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():

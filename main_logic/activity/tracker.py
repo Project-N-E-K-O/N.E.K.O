@@ -265,14 +265,14 @@ class UserActivityTracker:
         self._open_threads_computed_at_seq: int = -1
         self._open_threads_task: asyncio.Task | None = None
 
-        # activity_guess cache + adaptive-backoff gate. The gate decides when
-        # the heartbeat may pay for an emotion-tier narration call: a coarse
-        # (state, window-category) signature with per-signature exponential
-        # backoff and a novelty bypass (see ActivityGuessGate). Replaces the
-        # old flat 30s floor + exact-app signature, which let window flicker
-        # burn one (silent) call every ~40s. The caches hold the last result.
-        self._activity_scores_cache: dict[str, float] = {}
-        self._activity_guess_cache: str = ''
+        # adaptive-backoff gate + per-signature narration cache. The gate
+        # decides when the heartbeat may pay for an emotion-tier narration call
+        # (coarse (state, window-category) signature, per-signature exponential
+        # backoff, novelty bypass — see ActivityGuessGate) AND stores the last
+        # narration per signature, so get_snapshot always serves the narration
+        # for the activity the user is in right now. Replaces the old flat 30s
+        # floor + exact-app signature + single global narration cache, which let
+        # window flicker burn one (silent) call every ~40s.
         self._activity_guess_gate = ActivityGuessGate(
             base_seconds=ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
             cap_seconds=ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
@@ -549,10 +549,18 @@ class UserActivityTracker:
         # Patch in emotion-tier enrichment caches. ``snap`` is a frozen
         # dataclass; ``replace`` returns a new instance without mutating
         # the original. Callers always get a self-consistent snapshot.
+        # Serve the narration for the activity the user is in RIGHT NOW, not
+        # whichever signature fired last: with the per-signature backoff a
+        # re-narration can be suppressed, so a single global slot could hand the
+        # proactive prompt a narration for a different activity. cached() returns
+        # ('', {}) for a not-yet-narrated signature — honest, not stale-wrong.
+        cur_scores, cur_guess = self._activity_guess_gate.cached(
+            self._coarse_activity_sig(snap)
+        )
         return dc_replace(
             snap,
-            activity_scores=dict(self._activity_scores_cache),
-            activity_guess=self._activity_guess_cache,
+            activity_scores=dict(cur_scores),
+            activity_guess=cur_guess,
             open_threads=list(self._open_threads_cache),
             work_break_pending=self._build_work_break_pending(),
             anti_slack_pending=self._build_anti_slack_pending(),
@@ -590,10 +598,18 @@ class UserActivityTracker:
                 work_break_pending=None,
                 anti_slack_pending=None,
             )
+        # Serve the narration for the activity the user is in RIGHT NOW, not
+        # whichever signature fired last: with the per-signature backoff a
+        # re-narration can be suppressed, so a single global slot could hand the
+        # proactive prompt a narration for a different activity. cached() returns
+        # ('', {}) for a not-yet-narrated signature — honest, not stale-wrong.
+        cur_scores, cur_guess = self._activity_guess_gate.cached(
+            self._coarse_activity_sig(snap)
+        )
         return dc_replace(
             snap,
-            activity_scores=dict(self._activity_scores_cache),
-            activity_guess=self._activity_guess_cache,
+            activity_scores=dict(cur_scores),
+            activity_guess=cur_guess,
             open_threads=list(self._open_threads_cache),
             work_break_pending=self._build_work_break_pending(),
             anti_slack_pending=self._build_anti_slack_pending(),
@@ -1065,6 +1081,21 @@ class UserActivityTracker:
 
     # ── activity_guess background loop ──────────────────────────
 
+    @staticmethod
+    def _coarse_activity_sig(snap: ActivitySnapshot) -> tuple:
+        """Coarse ``(state, window-category)`` key for the activity_guess gate.
+
+        Deliberately coarser than the exact app: flicking between two
+        same-category apps (two IM clients, two browsers) is the same activity
+        as far as the narration is concerned, so it must not re-narrate. Shared
+        by the heartbeat loop (deciding when to fire) and ``get_snapshot``
+        (reading the narration for the current activity), so both agree on the
+        key for the same snapshot."""
+        return (
+            snap.state,
+            snap.active_window.category if snap.active_window else None,
+        )
+
     async def _activity_guess_loop(self) -> None:
         """20s tick. Recomputes activity_guess when the activity is fresh.
 
@@ -1178,11 +1209,7 @@ class UserActivityTracker:
                 # fires now. The narration only describes *what* the user is
                 # doing, so a stale narration of an unchanged activity is still
                 # accurate — staleness never makes it wrong. See ActivityGuessGate.
-                coarse_sig = (
-                    rule_snap.state,
-                    (rule_snap.active_window.category
-                        if rule_snap.active_window else None),
-                )
+                coarse_sig = self._coarse_activity_sig(rule_snap)
                 if not self._activity_guess_gate.should_fire(
                     coarse_sig, self._conv_seq, ts,
                 ):
@@ -1215,9 +1242,11 @@ class UserActivityTracker:
                         self.lanlan_name, seen_conv_seq, self._conv_seq,
                     )
                     continue
-                self._activity_scores_cache = result.get('scores', {}) or {}
-                self._activity_guess_cache = result.get('guess', '') or ''
-                self._activity_guess_gate.record_fired(coarse_sig, seen_conv_seq, ts)
+                self._activity_guess_gate.record_fired(
+                    coarse_sig, seen_conv_seq, ts,
+                    scores=result.get('scores', {}) or {},
+                    guess=result.get('guess', '') or '',
+                )
             except asyncio.CancelledError:
                 return
             except Exception as e:

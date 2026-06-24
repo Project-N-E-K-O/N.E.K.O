@@ -90,11 +90,11 @@ def test_oscillation_between_two_sigs_decays():
         i += 1
     # Old behaviour: a fire roughly every other 5s tick over 600s ≈ 60. The
     # backoff must cut that to a small bounded count and stretch the cadence.
-    assert len(fired) < 25
-    intervals = [b - a for a, b in zip(fired, fired[1:])]
-    # Late cadence has clearly backed off well above the BASE (10s) floor
-    # (converges to ~25s combined for two capped signatures).
-    assert intervals[-1] >= 20.0
+    assert len(fired) < 30
+    # Cadence clearly decays: fewer fires in a late window than in an early one.
+    early = sum(1 for t in fired if t < 150.0)
+    late = sum(1 for t in fired if t >= 450.0)
+    assert late < early
 
 
 def test_new_conversation_turn_resets_backoff():
@@ -134,3 +134,37 @@ def test_rejects_nonpositive_base():
     import pytest
     with pytest.raises(ValueError):
         ActivityGuessGate(base_seconds=0.0, cap_seconds=600.0, cache_size=8)
+
+
+def test_novel_sig_does_not_reset_other_sigs_backoff():
+    """Per-signature streak: a one-off new activity must not re-open the backoff
+    that a separate, still-oscillating signature has accumulated."""
+    gate = _gate(base=10.0, cap=80.0, cache=8)
+    # Grow 'A' to its CAP interval (80) via repeated re-narration.
+    _fire_times(gate, 'A', conv_seq=0, start=0.0, end=400.0, step=5.0)
+    # 'A' last fired at 390. A one-off NEW activity 'C' fires (past the floor).
+    assert gate.should_fire('C', 0, 405.0) is True
+    gate.record_fired('C', 0, 405.0)
+    # 'A' must still be on its grown (CAP) interval — NOT reset to BASE. With a
+    # single global streak, C's fire would have reset it and A would fire here.
+    assert gate.should_fire('A', 0, 415.0) is False   # 415-390=25 < CAP(80)
+    assert gate.should_fire('A', 0, 475.0) is True     # 475-390=85 >= 80
+
+
+def test_cached_serves_per_signature_narration():
+    """The narration is stored per signature, so a suppressed re-narration never
+    leaves the consumer reading another activity's guess (Codex P2)."""
+    gate = _gate()
+    gate.record_fired('work', 0, 0.0, scores={'focused_work': 0.9}, guess='deep in code')
+    gate.record_fired('chat', 0, 30.0, scores={'chatting': 0.8}, guess='chatting on IM')
+    # 'chat' fired last, but asking for 'work' returns work's own narration.
+    assert gate.cached('work') == ({'focused_work': 0.9}, 'deep in code')
+    assert gate.cached('chat') == ({'chatting': 0.8}, 'chatting on IM')
+
+
+def test_cached_unknown_signature_is_empty():
+    gate = _gate()
+    assert gate.cached('never-seen') == ({}, '')
+    gate.record_fired('A', 0, 0.0, scores={'x': 1.0}, guess='g')
+    # A different, not-yet-narrated signature stays empty (honest, not stale).
+    assert gate.cached('B') == ({}, '')
