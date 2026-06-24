@@ -30,9 +30,12 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     ]
 
     assert "normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);" in normalize_block
+    assert "normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;" in normalize_block
+    assert "normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;" in normalize_block
     assert "normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));" in normalize_block
-    assert "normalized.mobile_offset_x = centerPreview ? 0" in normalize_block
-    assert "normalized.mobile_offset_y = centerPreview ? 0" in normalize_block
+    assert "normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;" in normalize_block
+    assert "normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;" in normalize_block
+    assert "centerPreview ? 0" not in normalize_block
 
 
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
@@ -60,9 +63,10 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
 
     assert "getActiveLayoutFields()" in transform_block
     assert "getActivePlacement()" in transform_block
-    assert "placement.scale" in transform_block
-    assert "placement.offsetX" in transform_block
-    assert "placement.offsetY + bounce.y" in transform_block
+    assert "const renderPlacement = this.getRenderPlacement(placement);" in transform_block
+    assert "renderPlacement.scale" in transform_block
+    assert "renderPlacement.offsetX" in transform_block
+    assert "renderPlacement.offsetY + bounce.y" in transform_block
     assert "this.config.offset_x}px" not in transform_block
     assert "this.config.scale * bounce" not in transform_block
 
@@ -75,6 +79,23 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "this.config.mobile_offset_x" in save_block
     assert "this.config.mobile_offset_y" in save_block
     assert "this.config.mobile_scale" in save_block
+
+
+def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    render_block = source[
+        source.index("getRenderPlacement(placement)"):
+        source.index("        setActiveScale(nextScale)")
+    ]
+
+    assert "isModelManagerPage()" in render_block
+    assert "!this.config.preserve_model_manager_position" in render_block
+    assert "offsetX: 0" in render_block
+    assert "offsetY: 0" in render_block
+    assert "this.config.offset_x = 0" not in source
+    assert "this.config.offset_y = 0" not in source
+    assert "this.config.mobile_offset_x = 0" not in source
+    assert "this.config.mobile_offset_y = 0" not in source
 
 
 def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():

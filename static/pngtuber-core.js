@@ -80,12 +80,11 @@
         normalized.drag_image = normalized.drag_image || normalized.idle_image;
         normalized.click_image = normalized.click_image || normalized.talking_image;
         normalized.scale = clampNumber(source.scale, SCALE_MIN, SCALE_MAX, 1);
-        const centerPreview = isModelManagerPage() && !source.preserve_model_manager_position;
-        normalized.offset_x = centerPreview ? 0 : (Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0);
-        normalized.offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0);
+        normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;
+        normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;
         normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));
-        normalized.mobile_offset_x = centerPreview ? 0 : (Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0);
-        normalized.mobile_offset_y = centerPreview ? 0 : (Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0);
+        normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;
+        normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
         normalized.mirror = !!source.mirror;
         normalized.adapter = sanitizePath(source.adapter);
         const layeredMetadata = normalizeAssetPath(source.layered_metadata || source.metadata);
@@ -734,9 +733,10 @@
             if (!this.image) return;
             const bounce = this.currentSpeakingBounceTransform();
             const placement = this.getActivePlacement();
-            const scaleX = this.config.mirror ? -placement.scale : placement.scale;
+            const renderPlacement = this.getRenderPlacement(placement);
+            const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
             const finalScaleX = scaleX * bounce.scaleX;
-            const finalScaleY = placement.scale * bounce.scaleY;
+            const finalScaleY = renderPlacement.scale * bounce.scaleY;
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (this.container) {
@@ -759,7 +759,7 @@
             const anchorTranslate = modelManagerPage
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
-            this.image.style.transform = `${anchorTranslate} translate(${placement.offsetX}px, ${placement.offsetY + bounce.y}px) scale(${finalScaleX}, ${finalScaleY})`;
+            this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX}px, ${renderPlacement.offsetY + bounce.y}px) scale(${finalScaleX}, ${finalScaleY})`;
         }
 
         getActiveLayoutFields() {
@@ -783,6 +783,16 @@
                 offsetX: this.readConfigNumber(fields.offsetX, 0),
                 offsetY: this.readConfigNumber(fields.offsetY, 0)
             };
+        }
+
+        getRenderPlacement(placement) {
+            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+                return Object.assign({}, placement, {
+                    offsetX: 0,
+                    offsetY: 0
+                });
+            }
+            return placement;
         }
 
         setActiveScale(nextScale) {

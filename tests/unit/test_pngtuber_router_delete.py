@@ -49,6 +49,22 @@ def test_normalize_pngtuber_config_defaults_mobile_scale_from_desktop_scale_stri
     assert result["mobile_offset_y"] == 0
 
 
+@pytest.mark.parametrize("scale", ["nan", "inf", "-inf"])
+def test_normalize_pngtuber_config_defaults_mobile_scale_for_non_finite_desktop_scale(scale):
+    result = pngtuber_router._normalize_pngtuber_config(
+        "avatar",
+        {
+            "model_type": "pngtuber",
+            "pngtuber": {
+                "idle_image": "idle.png",
+                "scale": scale,
+            },
+        },
+    )
+
+    assert result["mobile_scale"] == 1
+
+
 @pytest.mark.parametrize(
     "payload",
     [
