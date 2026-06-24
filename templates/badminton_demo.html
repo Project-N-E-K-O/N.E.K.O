@@ -1387,6 +1387,17 @@
   // /api/game/badminton/character
   // /api/game/badminton/leaderboard
 
+  function encodeBadmintonStorageScopeName(value) {
+    var raw = String(value || '').trim();
+    if (!raw) return 'default';
+    try {
+      return encodeURIComponent(raw.toLowerCase())
+        .replace(/%/g, '~')
+        .replace(/[^a-z0-9_~-]+/g, '_') || 'default';
+    } catch (_) {
+      return 'default';
+    }
+  }
   function getBadmintonStorageScope() {
     var name = '';
     try { name = (window.lanlan_config && window.lanlan_config.lanlan_name) || ''; } catch (_) {}
@@ -1396,8 +1407,7 @@
         name = params.get('lanlan_name') || params.get('name') || '';
       } catch (_) {}
     }
-    name = String(name || 'default').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
-    return name || 'default';
+    return encodeBadmintonStorageScopeName(name || 'default');
   }
   function badmintonStorageKey(key) {
     var normalized = String(key || '');
@@ -5214,7 +5224,12 @@
     }
     var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;
     if (shouldRestartRoute) {
-      var restartAfterRouteEnd = shouldRestartRoute && !endedRoute ? endRoute(false) : Promise.resolve();
+      var pendingRouteStart = routeStartPromise;
+      var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();
+      var restartAfterRouteEnd = routeReadyForEnd.then(function () {
+        if (endedRoute) return routeEndPromise || Promise.resolve();
+        return endRoute(false);
+      });
       routeActive = false;
       resetVoiceArbiter();
       Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {

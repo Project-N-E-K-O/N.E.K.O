@@ -1598,12 +1598,17 @@ def test_badminton_reset_abandons_active_route_before_rotating_session():
     end_route_section = html[end_route_start:html.index("function cycleTheme()", end_route_start)]
 
     assert "var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;" in reset_section
-    assert "var restartAfterRouteEnd = shouldRestartRoute && !endedRoute ? endRoute(false) : Promise.resolve();" in reset_section
+    assert "var pendingRouteStart = routeStartPromise;" in reset_section
+    assert "var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();" in reset_section
+    assert "var restartAfterRouteEnd = routeReadyForEnd.then(function () {" in reset_section
+    assert "if (endedRoute) return routeEndPromise || Promise.resolve();" in reset_section
+    assert "return endRoute(false);" in reset_section
     assert "sessionId = createBadmintonSessionId();" in reset_section
     assert "Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {" in reset_section
     assert "badmintonGameDisposed" in reset_section
     assert "startRoute();" in reset_section
-    assert reset_section.index("var restartAfterRouteEnd") < reset_section.index("sessionId = createBadmintonSessionId();")
+    assert reset_section.index("var pendingRouteStart") < reset_section.index("return endRoute(false);")
+    assert reset_section.index("return endRoute(false);") < reset_section.index("sessionId = createBadmintonSessionId();")
     assert "routeActive = false;" in end_route_section
     assert "heartbeatTimer = 0;" in end_route_section
     assert "drainTimer = 0;" in end_route_section
@@ -3367,9 +3372,13 @@ def test_badminton_leaderboard_mode_and_post_errors_are_explicit():
 def test_badminton_game_storage_is_scoped_per_lanlan_with_legacy_fallback():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
+    assert "function encodeBadmintonStorageScopeName(value) {" in html
+    assert "encodeURIComponent(raw.toLowerCase())" in html
+    assert ".replace(/%/g, '~')" in html
     assert "function getBadmintonStorageScope() {" in html
     assert "function badmintonStorageKey(key) {" in html
     assert "return 'bd:' + scope + ':' + key;" in html
+    assert "replace(/[^a-z0-9_-]+/g, '_')" not in html
     assert "function readBadmintonStorage(key) {" in html
     assert "var scopedKey = badmintonStorageKey(key);" in html
     assert "if (scopedValue != null) return scopedValue;" in html
