@@ -803,6 +803,53 @@ class ContextAppendResult:
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
+def _purge_closed_tool_calls(history: list) -> int:
+    """Remove every CLOSED tool-call pair from the conversation history: an
+    assistant message (role=assistant, carrying tool_calls) plus the tool-result
+    messages immediately following it whose tool_call_id matches. Any
+    reasoning_content (the thinking model's chain, parked on that assistant
+    message for provider replay) is dropped together with it — deleting the
+    whole pair, NOT just the field, since a thinking endpoint rejects a
+    tool_calls turn whose reasoning_content went missing on replay.
+
+    "Closed" = every tool_call id on the assistant message is answered by a
+    following contiguous tool message. Unclosed calls (a call with no result —
+    an interrupted / in-flight turn) are kept so live state is never corrupted.
+    Plain Human / AI / System (BaseMessage) entries are never touched. Returns
+    the number of messages deleted.
+    """
+    if not history:
+        return 0
+    n = len(history)
+    remove: set[int] = set()
+    for i, msg in enumerate(history):
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant"):
+            continue
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            continue
+        call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
+        if not call_ids:
+            continue
+        # execute 路径原子追加 assistant + 紧随其后的各 tool result，所以闭合的
+        # 结果消息是「连续」的；遇到非 tool 消息即停止该 assistant 的结果收集。
+        result_idx: list[int] = []
+        covered: set = set()
+        for j in range(i + 1, n):
+            rj = history[j]
+            if isinstance(rj, dict) and rj.get("role") == "tool":
+                result_idx.append(j)
+                covered.add(rj.get("tool_call_id"))
+            else:
+                break
+        if call_ids <= covered:  # 每个 call 都有结果 → 已闭合，整对删
+            remove.add(i)
+            remove.update(result_idx)
+    for idx in sorted(remove, reverse=True):
+        del history[idx]
+    return len(remove)
+
+
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
         self.websocket = None
@@ -1072,6 +1119,9 @@ class LLMSessionManager:
         # cadence 基线滚动 buffer。两条触发路径（inline stream_text / idle
         # proactive）共用同一个 scorer，保证行为不分裂。
         self._focus_scorer = FocusScorer(lanlan_name)
+        # 凝神退出时清理历史 thinking/已闭合 tool call 残留的边沿标志：进入 FOCUS
+        # 时 arm，退出并清理后 disarm（见 _maybe_purge_focus_artifacts）。
+        self._focus_artifacts_pending = False
 
         # Master 情绪画像（基建，docs 见 config MASTER_EMOTION_*）：异步分析「用户
         # 说的话」的 valence-arousal，单一权威源。凝神是第一个消费者（_focus_scorer
@@ -2415,6 +2465,9 @@ class LLMSessionManager:
             mode = await self.state.update_focus(
                 scored.score, topic_changed=topic_changed,
             )
+            if mode is CognitionMode.FOCUS:
+                # arm：本 episode 的 thinking/tool 残留，退出时要清（见下）。
+                self._focus_artifacts_pending = True
             # Log every turn (incl. REGULAR) so tuning can watch the charge
             # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
             logger.info(
@@ -2424,6 +2477,10 @@ class LLMSessionManager:
             )
             # Stream the post-turn charge for the frontend edge glow.
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
+            # 退出边沿同步清理（此刻在 stream_text 之前、无并发）：inline 自然退出
+            # （decayed / hard_cap / topic_switch）都在此命中并清；FOCUS 维持时是
+            # no-op（仍在 episode 内）。silent early-return 路径由 reconcile 兜底。
+            await self._maybe_purge_focus_artifacts()
             return mode is CognitionMode.FOCUS
         except Exception as e:
             logger.warning("[%s] focus inline decision failed (degrading to regular): %s",
@@ -2465,17 +2522,64 @@ class LLMSessionManager:
 
     async def _on_focus_transition(self, event: SessionEvent, payload: dict) -> None:
         """SM subscriber for FOCUS_ENTER / FOCUS_EXIT — immediate badge update on
-        the normal hysteresis path. Delegates to the idempotent push."""
+        the normal hysteresis path. Delegates to the idempotent push.
+
+        NB: history artifact arm/purge is deliberately NOT done here.
+        ``_dispatch_subscribers`` fires async callbacks fire-and-forget
+        (``ensure_future``), so a FOCUS_EXIT-driven purge could race the reply
+        stream. Arming + purging happen SYNCHRONOUSLY on the inline decision path
+        and the per-turn reconcile instead (see ``_maybe_purge_focus_artifacts``)."""
         await self._push_focus_indicator(event is SessionEvent.FOCUS_ENTER)
+
+    async def _maybe_purge_focus_artifacts(self) -> None:
+        """On the edge where 凝神 (Focus) turns OFF, wipe the thinking + closed
+        tool-call traces the just-ended episode left in history, so they can't
+        bias the REGULAR reply that follows (or a fresh session).
+
+        Called SYNCHRONOUSLY from two places (NOT the async FOCUS_EXIT event,
+        which fires fire-and-forget and could race the stream):
+          - the inline decision, right after update_focus and BEFORE stream_text
+            — catches inline exits (decayed / hard_cap / topic_switch);
+          - the per-turn _reconcile_focus_indicator — catches the silent exits
+            (master switch / per-user setting / privacy self-clear / clear_focus)
+            and a proactive-cooldown exit on the next inline turn.
+
+        Idempotent: runs once per episode, only when Focus was actually entered
+        (``_focus_artifacts_pending``) AND the mode has dropped back to REGULAR.
+        All call sites sit OUTSIDE the stream boundary, so there is no concurrent
+        history mutation. Only text sessions (OmniOfflineClient) keep history.
+        """
+        if not self._focus_artifacts_pending:
+            return
+        if self.state.mode is CognitionMode.FOCUS:
+            return  # 仍在 focus，残留还在用，不能清
+        self._focus_artifacts_pending = False
+        sess = self.session
+        if not isinstance(sess, OmniOfflineClient):
+            return
+        history = getattr(sess, "_conversation_history", None)
+        if not history:
+            return
+        try:
+            removed = _purge_closed_tool_calls(history)
+            if removed:
+                logger.info(
+                    "[%s] 凝神退出：从历史清除 thinking/已闭合 tool call 残留 %d 条",
+                    self.lanlan_name, removed,
+                )
+        except Exception as e:
+            logger.warning("[%s] 凝神退出历史清理失败(忽略): %s", self.lanlan_name, e)
 
     async def _reconcile_focus_indicator(self) -> None:
         """Catch Focus states dropped WITHOUT a FOCUS_EXIT event (clear_focus
         history-wipe, master-switch / privacy self-clear in update_focus) so the
         badge AND the charge glow can't get stuck on. Called once per turn. The
         charge push reads the (now-cleared → 0) snapshot, so a silent exit that
-        only reconciles the binary state still tells the glow to fade out."""
+        only reconciles the binary state still tells the glow to fade out. Also
+        the catch-all purge point for silent Focus exits (no FOCUS_EXIT event)."""
         await self._push_focus_indicator(self.state.mode is CognitionMode.FOCUS)
         await self._push_focus_charge()
+        await self._maybe_purge_focus_artifacts()
 
     async def resync_focus_for_new_window(self) -> None:
         """Re-emit ALL focus signals to a freshly-connected window (greeting_check):

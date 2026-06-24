@@ -556,6 +556,7 @@ def _bare_mgr():
     mgr.state = SessionStateMachine(lanlan_name="x")
     mgr.lanlan_name = "x"
     mgr._focus_scorer = FocusScorer("x")
+    mgr._focus_artifacts_pending = False
     # Deliberately NO _activity_tracker: the inline path must not touch it
     # (Focus scores the message, not the screen — privacy-independent).
     return mgr
@@ -803,3 +804,142 @@ async def test_update_focus_retention_override_and_count_turn(monkeypatch):
     await sm.update_focus(0.0, retention_override=0.9, count_turn=False)
     assert abs(sm.snapshot()["focus_charge"] - 0.9) < 1e-9  # override applied
     assert sm.snapshot()["focus_turn_count"] == tc_before    # not bumped
+
+
+# ── 8. 凝神退出：历史 thinking + 已闭合 tool call 清理 ─────────────────────
+# 凝神退出(任何路径)时，把上一个 episode 留在历史里的 reasoning_content + 已闭合
+# tool call 配对清掉，防止带偏退出后的 REGULAR 对话乃至新 session。
+def _tool_pair(call_id="c1", *, reasoning=None, name="t"):
+    """构造一条 assistant tool_calls 消息 + 紧随的 tool result（已闭合配对）。"""
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": call_id, "type": "function",
+                        "function": {"name": name, "arguments": "{}"}}],
+    }
+    if reasoning is not None:
+        assistant["reasoning_content"] = reasoning
+    result = {"role": "tool", "tool_call_id": call_id, "name": name, "content": "ok"}
+    return assistant, result
+
+
+def test_purge_closed_tool_calls():
+    """已闭合 tool-call 配对(assistant tool_calls + tool result)连同寄生其上的
+    reasoning_content 一并整对删除；普通 Human/AI/System 消息保留。"""
+    from main_logic.core import _purge_closed_tool_calls
+    from utils.llm_client import SystemMessage, HumanMessage, AIMessage
+
+    a, r = _tool_pair("c1", reasoning="让我想想要不要调工具…")
+    history = [SystemMessage(content="sys"), HumanMessage(content="查天气"), a, r,
+               AIMessage(content="今天晴")]
+    removed = _purge_closed_tool_calls(history)
+    assert removed == 2
+    # 只剩 system / human / ai，dict(tool 配对)及 reasoning_content 全没了
+    assert all(not isinstance(m, dict) for m in history)
+    assert [type(m).__name__ for m in history] == ["SystemMessage", "HumanMessage", "AIMessage"]
+
+
+def test_purge_keeps_unclosed_and_empty():
+    from main_logic.core import _purge_closed_tool_calls
+    from utils.llm_client import HumanMessage
+    # 未闭合：assistant 有 call 但没有对应 tool result → 保留(不破坏在途状态)
+    a, _ = _tool_pair("c9")
+    history = [HumanMessage(content="hi"), a]
+    assert _purge_closed_tool_calls(history) == 0
+    assert len(history) == 2
+    assert _purge_closed_tool_calls([]) == 0
+
+
+def test_purge_multiple_calls_one_turn():
+    from main_logic.core import _purge_closed_tool_calls
+    # 一个 assistant 两个 call + 两条 result → 全闭合，删 3 条
+    history = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "g", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "a", "name": "f", "content": "1"},
+        {"role": "tool", "tool_call_id": "b", "name": "g", "content": "2"},
+    ]
+    assert _purge_closed_tool_calls(history) == 3
+    assert history == []
+
+
+def _purge_mgr(monkeypatch, history):
+    """裸 LLMSessionManager + 携带 _conversation_history 的假 OmniOfflineClient。"""
+    from main_logic.core import LLMSessionManager
+    from main_logic.omni_offline_client import OmniOfflineClient
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "x"
+    mgr.state = SessionStateMachine(lanlan_name="x")
+    mgr._focus_artifacts_pending = False
+    sess = OmniOfflineClient.__new__(OmniOfflineClient)
+    sess._conversation_history = history
+    mgr.session = sess
+
+    async def _noop(*a, **k):
+        return None
+    mgr._push_focus_indicator = _noop
+    mgr._push_focus_charge = _noop
+    return mgr, sess
+
+
+async def test_maybe_purge_only_after_exit(monkeypatch):
+    """_maybe_purge 只在「曾进入 FOCUS(armed) 且已回到 REGULAR」时清一次；未 arm /
+    仍在 FOCUS 时不动；清后 disarm 且幂等。"""
+    _patch_charge(monkeypatch, enter=1.0, exit=0.3)
+    a, r = _tool_pair("c1", reasoning="…")
+    mgr, sess = _purge_mgr(monkeypatch, [a, r])
+
+    # 没进过 focus（未 arm）→ 不清
+    await mgr._maybe_purge_focus_artifacts()
+    assert len(sess._conversation_history) == 2
+
+    # arm 且仍在 FOCUS → 不清（残留还在用）
+    mgr._focus_artifacts_pending = True
+    await mgr.state.update_focus(1.0)
+    assert mgr.state.mode is CognitionMode.FOCUS
+    await mgr._maybe_purge_focus_artifacts()
+    assert len(sess._conversation_history) == 2
+
+    # silent 退出回 REGULAR → 清 + disarm
+    await mgr.state.clear_focus()
+    assert mgr.state.mode is CognitionMode.REGULAR
+    await mgr._maybe_purge_focus_artifacts()
+    assert sess._conversation_history == []
+    assert mgr._focus_artifacts_pending is False
+    # 幂等：再调不报错、无副作用
+    await mgr._maybe_purge_focus_artifacts()
+    assert sess._conversation_history == []
+
+
+async def test_inline_decision_purges_history_on_exit(monkeypatch):
+    """inline 路径端到端：vulnerable 消息进 FOCUS(arm)、历史保留；neutral 消息衰减
+    退出时，在 stream_text 之前同步把已闭合 tool call(含 reasoning_content)清掉。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1), exit=0.3, retention=0.5)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=True)
+
+    a, r = _tool_pair("c1", reasoning="思考链…")
+    mgr = _bare_mgr()
+    sess = OmniOfflineClient.__new__(OmniOfflineClient)
+    sess._conversation_history = [a, r]
+    mgr.session = sess
+
+    async def _noop(*x, **k):
+        return None
+    mgr._push_focus_indicator = _noop
+    mgr._push_focus_charge = _noop
+
+    # vulnerable message → enter FOCUS, arm；episode 进行中历史不动
+    assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
+    assert mgr.state.mode is CognitionMode.FOCUS
+    assert mgr._focus_artifacts_pending is True
+    assert len(sess._conversation_history) == 2
+
+    # neutral message → charge 衰减出 FOCUS → REGULAR → stream 前同步清历史
+    assert await mgr._focus_inline_decision("嗯那个文件改好了发你了") is False
+    assert mgr.state.mode is CognitionMode.REGULAR
+    assert sess._conversation_history == []
+    assert mgr._focus_artifacts_pending is False

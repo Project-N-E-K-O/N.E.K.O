@@ -53,6 +53,14 @@ def _stub(mode=CognitionMode.REGULAR):
     stub._push_focus_thinking = LLMSessionManager._push_focus_thinking.__get__(
         stub, LLMSessionManager
     )
+    # _reconcile also calls _maybe_purge_focus_artifacts (history cleanup on a
+    # silent Focus exit). Not armed here → it's a no-op, but must resolve on the
+    # bare stub. session absent → the no-op returns before touching it.
+    stub._focus_artifacts_pending = False
+    stub.session = None
+    stub._maybe_purge_focus_artifacts = (
+        LLMSessionManager._maybe_purge_focus_artifacts.__get__(stub, LLMSessionManager)
+    )
     return stub
 
 
