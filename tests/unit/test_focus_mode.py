@@ -547,6 +547,11 @@ async def test_focus_override_threads_through_visible_stream():
     captured = []
 
     class _FakeLLM:
+        # Mirror the real ChatOpenAI contract: the stream_text call site reads
+        # ``self.llm.max_completion_tokens`` to compute the Focus token bump's
+        # base, so the fake must carry it (else a full-path test AttributeErrors).
+        max_completion_tokens = 500
+
         async def astream(self, messages, **overrides):
             captured.append(overrides)
             return
@@ -576,10 +581,15 @@ async def test_focus_override_threads_through_visible_stream():
     assert "extra_body" not in captured[-1]
 
     # focus turn with a base ceiling: the max_completion_tokens bump must reach
-    # astream too (same per-call path as extra_body)
+    # astream too (same per-call path as extra_body). Read the base off the llm
+    # the SAME way the stream_text call site does, so this also exercises the
+    # ``self.llm.max_completion_tokens`` wiring (not just the helper in isolation).
     from config import FOCUS_THINKING_EXTRA_TOKENS
     c3 = _make_client()
-    overrides3 = OmniOfflineClient._focus_stream_overrides(True, c3.model, base_max_tokens=500)
+    overrides3 = OmniOfflineClient._focus_stream_overrides(
+        True, c3.model,
+        base_max_tokens=c3.llm.max_completion_tokens if c3.llm else None,
+    )
     await _drain(c3._astream_visible_with_tools(["m"], **overrides3))
     assert captured[-1]["max_completion_tokens"] == 500 + FOCUS_THINKING_EXTRA_TOKENS
 
