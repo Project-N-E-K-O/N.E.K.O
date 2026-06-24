@@ -1933,6 +1933,16 @@
                         detail: { charge: Number(response.charge) || 0, atMs: Number(response.at_ms) || 0 },
                     }));
 
+                // -------- focus_thinking (凝神 model-thinking pulse) --------
+                // True while a Focus turn runs thinking-on but hasn't emitted
+                // visible content yet; cleared once it speaks or the turn ends.
+                // The React chat window shows a thinking-dots bubble at the tail
+                // of the history while active. Inert unless Focus is engaged.
+                } else if (response.type === 'focus_thinking') {
+                    window.dispatchEvent(new CustomEvent('neko-focus-thinking', {
+                        detail: { active: !!response.active },
+                    }));
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;

@@ -36,6 +36,7 @@ global settings. The activity sub-dict lives there:
         "focused_work_min_dwell_seconds": 90,
         "focused_work_recent_input_seconds": 300,
         "casual_browsing_min_dwell_seconds": 30,
+        "focused_video_min_dwell_seconds": 120,
         "window_switch_transition_threshold": 5,
         "window_history_lookback_seconds": 300,
         "transition_recent_window_seconds": 30,

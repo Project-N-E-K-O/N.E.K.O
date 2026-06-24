@@ -4,8 +4,8 @@ Coverage:
 1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
    scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
    hard-cap exit / topic-switch exit-and-clear.
-2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, weight
-   renormalisation, cadence baseline roll.
+2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, direct
+   weighted-sum scoring (no denominator), cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
    retention override, reset clearing, master-switch-off degradation.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
@@ -526,7 +526,15 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # snapshot. _bare_mgr has no _activity_tracker — if the inline path tried
     # to read the screen it would AttributeError. A strongly vulnerable message
     # still enters FOCUS regardless of any privacy state.
-    _patch_charge(monkeypatch, enter=1.0)
+    # A keyword-only message saturates at score = FOCUS_SIGNAL_WEIGHTS["keyword"]
+    # (weighted SUM, no denominator). At the PRODUCTION enter (0.6) that would NOT
+    # enter single-turn — an accepted trade-off (the lexicon is a cheap signal, must
+    # stack with emotion or accumulate). This test only asserts the inline path is
+    # privacy-independent (never reads the screen / AttributeErrors), so it pins
+    # enter just below the keyword saturation — derived from config so a future
+    # weight tweak can't silently break it — to isolate that wiring from the bar.
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
     mgr = _bare_mgr()
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
@@ -591,6 +599,59 @@ async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
     charge_now = mgr.state.snapshot()["focus_charge"]
     await mgr._focus_idle_cooldown(replied=True, episode_token="stale-other-episode")
     assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+
+
+# ── 7. per-user master switch (对话设置 → focusCognitionEnabled) ─────────────
+# A new conversation setting gates 凝神 entirely: off ⇒ never enters Focus and any
+# residual charge is cleared, exactly like the global FOCUS_MODE_ENABLED flag.
+# Defaults to on when unset. master emotion read is independent (not gated here).
+def _stub_user_focus_setting(monkeypatch, *, enabled):
+    settings = {} if enabled is None else {"focusCognitionEnabled": enabled}
+
+    async def _aload():
+        return settings
+
+    # String targets so we don't import main_logic.core a second way (the module
+    # is already pulled in via `from main_logic.core import ...` in _bare_mgr).
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", _aload)
+    monkeypatch.setattr("main_logic.core.load_global_conversation_settings", lambda: settings)
+
+
+async def test_inline_gate_user_setting_off_blocks_and_clears(monkeypatch):
+    # Global flag on, but the user turned the per-user 凝神 switch off → a strongly
+    # vulnerable message must NOT enter Focus, and residual charge is cleared.
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=False)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)  # build some charge first
+    assert mgr.state.snapshot()["focus_charge"] > 0
+    assert await mgr._focus_inline_decision("好累，一个人，撑不住了") is False
+    assert mgr.state.mode is CognitionMode.REGULAR
+    assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_inline_gate_user_setting_default_on_allows(monkeypatch):
+    # Setting absent ⇒ defaults to on, so the global flag alone governs entry.
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=None)  # key absent
+    mgr = _bare_mgr()
+    assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
+    assert mgr.state.mode is CognitionMode.FOCUS
+
+
+async def test_idle_thinking_honors_user_setting(monkeypatch):
+    # Even while state.mode is still FOCUS, a proactive turn must not run
+    # thinking-on once the user switched 凝神 off (defense in depth).
+    _patch_charge(monkeypatch, enter=1.0)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
+    _stub_user_focus_setting(monkeypatch, enabled=True)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS
+    assert mgr._focus_idle_thinking() is True
+    _stub_user_focus_setting(monkeypatch, enabled=False)
+    assert mgr._focus_idle_thinking() is False
 
 
 async def test_idle_cooldown_skips_when_no_episode_observed(monkeypatch):

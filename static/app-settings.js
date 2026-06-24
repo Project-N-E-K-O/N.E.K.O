@@ -34,6 +34,7 @@
         'proactiveMiniGameInviteEnabled',
         'mergeMessagesEnabled',
         'focusModeEnabled',
+        'focusCognitionEnabled',
         'avatarReactionBubbleEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
@@ -63,6 +64,7 @@
             proactiveMiniGameInviteEnabled: S.proactiveMiniGameInviteEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
+            focusCognitionEnabled: S.focusCognitionEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
@@ -287,6 +289,9 @@
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : S.focusModeEnabled;
+        const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
+            ? window.focusCognitionEnabled
+            : S.focusCognitionEnabled;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -354,6 +359,7 @@
             proactiveMiniGameInviteEnabled: currentMiniGameInviteChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
+            focusCognitionEnabled: currentFocusCognition,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
@@ -381,6 +387,7 @@
         S.proactiveMiniGameInviteEnabled = currentMiniGameInviteChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
+        S.focusCognitionEnabled = currentFocusCognition;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
@@ -472,6 +479,7 @@
                 S.proactiveMiniGameInviteEnabled = settings.proactiveMiniGameInviteEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
+                S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
@@ -586,6 +594,12 @@
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
 
+        // 凝神总开关镜像到 window：设置弹窗（avatar-ui-popup.js）只读 window 全局，
+        // 而 window.focusCognitionEnabled 否则仅在 server-merge 命中时才赋值——用户存了
+        // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
+        // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
+        window.focusCognitionEnabled = S.focusCognitionEnabled;
+
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
         const subtitleState = subtitleStore && typeof subtitleStore.getSettings === 'function'
@@ -652,6 +666,7 @@
                     window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
+                    window.focusCognitionEnabled = S.focusCognitionEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;

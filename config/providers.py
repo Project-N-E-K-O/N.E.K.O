@@ -99,10 +99,14 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
+    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 

@@ -161,7 +161,7 @@ _BREAK_REMINDER_TICK_MAX_DELTA_SECONDS = 30.0
 # thinking, not slacking — as are voice_engaged / chatting (they are
 # producing). transitioning is excluded because it's not an end state.
 _ANTI_SLACK_LEISURE_STATES: frozenset[str] = frozenset({
-    'casual_browsing', 'gaming',
+    'casual_browsing', 'focused_video', 'gaming',
 })
 
 

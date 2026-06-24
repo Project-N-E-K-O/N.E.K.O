@@ -1316,6 +1316,8 @@ export default function FullChatSurface({
   // reads the flag and reuses the shared `data-focus-active`/.chat-window glow
   // CSS, touching no other legacy logic.
   const [focusActive, setFocusActive] = useState(false);
+  // 凝神 thinking-dots pulse — mirrors the compact surface (App.tsx).
+  const [focusThinking, setFocusThinking] = useState(false);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
@@ -2082,6 +2084,25 @@ export default function FullChatSurface({
     };
     window.addEventListener('neko-focus-state', handleFocusState);
     return () => {
+      window.removeEventListener('neko-focus-state', handleFocusState);
+    };
+  }, []);
+
+  // 凝神 thinking-dots: show a "…" bubble at the tail of the history while a
+  // Focus turn is thinking-on but hasn't emitted visible content yet.
+  useEffect(() => {
+    const handleThinking = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFocusThinking(Boolean(detail && detail.active));
+    };
+    const handleFocusState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      if (!(detail && detail.active)) setFocusThinking(false);
+    };
+    window.addEventListener('neko-focus-thinking', handleThinking);
+    window.addEventListener('neko-focus-state', handleFocusState);
+    return () => {
+      window.removeEventListener('neko-focus-thinking', handleThinking);
       window.removeEventListener('neko-focus-state', handleFocusState);
     };
   }, []);
@@ -4470,6 +4491,7 @@ export default function FullChatSurface({
       messages={messages}
       ariaLabel={messageListAriaLabel}
       failedStatusLabel={failedStatusLabel}
+      thinking={focusThinking}
       onAction={onMessageAction}
     />
   );

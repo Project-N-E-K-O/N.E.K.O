@@ -13,6 +13,7 @@ import {
 } from 'react';
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
+import ThinkingDots from './ThinkingDots';
 import { type ChatMessage, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
@@ -70,6 +71,7 @@ type CompactExportHistoryPanelProps = {
   controlsOpen: boolean;
   choiceLayerAbove: boolean;
   visibilityState?: 'open' | 'closing';
+  thinking?: boolean;
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
   onToggleMessage: (messageId: string) => void;
@@ -221,6 +223,7 @@ export default function CompactExportHistoryPanel({
   controlsOpen,
   choiceLayerAbove,
   visibilityState = 'open',
+  thinking = false,
   failedStatusLabel,
   onAutoScrollToBottomChange,
   onToggleMessage,
@@ -482,7 +485,7 @@ export default function CompactExportHistoryPanel({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [autoScrollToBottom, messages, previewOpen, visibilityState]);
+  }, [autoScrollToBottom, messages, previewOpen, visibilityState, thinking]);
 
   // 拖动开始/结束两个边界：content 的布局高度在 resizing 切换瞬间从 100% ↔ max 跳变（见 styles.css），
   // 若用户停在底部需同步把可视窗口重新锚定到下端，否则开始拖时内容会因 content 突然撑高而相对上移、
@@ -935,7 +938,7 @@ export default function CompactExportHistoryPanel({
             onWheel={handleWheel}
             onTouchMove={(event) => event.stopPropagation()}
           >
-            {messages.length > 0 ? (
+            {(messages.length > 0 || thinking) ? (
               <div className="compact-export-history-scroll-content">
                 {messages.map((message, index) => {
                   const selectable = isCompactExportMessageSelectable(message);
@@ -997,6 +1000,21 @@ export default function CompactExportHistoryPanel({
                     </article>
                   );
                 })}
+                {thinking ? (
+                  <article
+                    className="compact-export-history-message is-assistant focus-thinking-history-row"
+                    style={{ '--compact-history-bubble-max-ratio': 'calc(100% - 48px)' } as CSSProperties}
+                    role="listitem"
+                    data-message-role="assistant"
+                    data-focus-thinking="true"
+                  >
+                    <div className="compact-export-history-bubble focus-thinking-history-bubble">
+                      <div className="compact-export-history-content">
+                        <ThinkingDots />
+                      </div>
+                    </div>
+                  </article>
+                ) : null}
               </div>
             ) : null}
           </div>

@@ -2203,6 +2203,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'model': conversation_config.get('model', ''),
         'base_url': conversation_config.get('base_url', ''),
         'api_type': conversation_config.get('api_type', ''),
+        'provider_type': conversation_config.get('provider_type', ''),
         'api_key': conversation_config.get('api_key', ''),
         'user_language': _resolve_game_prompt_language(current_name),
     }
@@ -2229,6 +2230,7 @@ def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str
         "model": model,
         "base_url": base_url,
         "api_type": summary_config.get("api_type") or info.get("api_type", ""),
+        "provider_type": summary_config.get("provider_type") or info.get("provider_type", ""),
         "api_key": api_key,
     })
     return info
@@ -2285,6 +2287,7 @@ async def _run_pregame_context_ai(
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
+            provider_type=char_info.get("provider_type"),
             max_completion_tokens=900,
             timeout=20,
         )
@@ -2930,6 +2933,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
+            provider_type=char_info.get("provider_type"),
             max_completion_tokens=900,
             timeout=20,
         )
@@ -3735,6 +3739,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
             char_info["model"],
             char_info["base_url"],
             char_info["api_key"],
+            provider_type=char_info.get("provider_type"),
             max_completion_tokens=700,
             timeout=20,
         )
@@ -8762,6 +8767,7 @@ async def game_quick_lines(game_type: str, request: Request):
             char_info['model'],
             char_info['base_url'],
             char_info['api_key'],
+            provider_type=char_info.get('provider_type'),
             max_completion_tokens=800,
             timeout=20,
         )

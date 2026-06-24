@@ -527,6 +527,43 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   }
 }
 
+/* --- 凝神 thinking-dots: a "…" bubble at the tail of the chat history while a
+   Focus turn thinks-on but hasn't spoken yet. Three dots ripple one→two→three
+   and back. Tinted to the same soft blue as the Focus edge glow so it reads as
+   part of the same 凝神 visual language. --- */
+.focus-thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
+}
+.focus-thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(120, 170, 255, 0.9);
+  opacity: 0.35;
+  animation: focus-thinking-dot-pulse 1.25s ease-in-out infinite;
+}
+.focus-thinking-dot:nth-child(2) { animation-delay: 0.18s; }
+.focus-thinking-dot:nth-child(3) { animation-delay: 0.36s; }
+@keyframes focus-thinking-dot-pulse {
+  0%, 75%, 100% { opacity: 0.3; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-2px); }
+}
+/* Full surface: the trailing assistant row reuses the assistant bubble look; just
+   keep the dots vertically centered. */
+.focus-thinking-row .focus-thinking-bubble {
+  display: inline-flex;
+  align-items: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .focus-thinking-dot {
+    animation: none;
+    opacity: 0.75;
+  }
+}
+
 .window-topbar {
   display: flex;
   align-items: center;

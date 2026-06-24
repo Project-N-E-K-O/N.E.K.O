@@ -1826,10 +1826,10 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             conversation_id = event.get("conversation_id")
             # Cheap pre-gate hint from the input-time master-emotion call (rides
             # the analyze_request payload). Absent → None → the gate fails open.
-            action_intent = event.get("action_intent")
+            external_intent = event.get("external_intent")
             _create_tracked_task(_background_analyze_and_plan(
                 messages, lanlan_name, conversation_id=conversation_id,
-                action_intent=action_intent,
+                external_intent=external_intent,
             ))
 
 
@@ -2137,7 +2137,7 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, action_intent: Optional[float] = None):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None):
     """
     [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
     
@@ -2163,10 +2163,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, action_intent=action_intent)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, action_intent: Optional[float] = None):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -2190,7 +2190,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
-            action_intent=action_intent,
+            external_intent=external_intent,
         )
 
         if result is None:

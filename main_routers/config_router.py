@@ -731,6 +731,7 @@ async def get_core_config_api():
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', '') or _fb('silicon'),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', '') or _fb('gemini'),
             "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', '') or _fb('kimi'),
+            "assistApiKeyKimiCode": core_cfg.get('assistApiKeyKimiCode', '') or _fb('kimi_code'),
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
             # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
@@ -887,7 +888,7 @@ async def update_core_config(request: Request):
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
             'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
             'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
-            'assistApiKeyClaude', 'assistApiKeyOpenrouter',
+            'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
@@ -1494,6 +1495,73 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
     return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
+async def _test_anthropic(url: str, api_key: str, model: str = "", is_free: bool = False) -> dict:
+    """Test an Anthropic Messages API endpoint (Kimi Code / Anthropic)."""
+    from utils.llm_client import ChatAnthropic as _ChatAnthropic, _is_kimi_code_anthropic_base_url
+    from config import CONNECTIVITY_TEST_MAX_TOKENS
+
+    try:
+        test_model = str(model or "").strip()
+        if not test_model:
+            if _is_kimi_code_anthropic_base_url(url):
+                test_model = "kimi-for-coding"
+            else:
+                return {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+        default_headers = (
+            {"User-Agent": "claude-code/0.1.0"}
+            if _is_kimi_code_anthropic_base_url(url)
+            else None
+        )
+        client = _ChatAnthropic(
+            model=test_model,
+            base_url=url,
+            api_key=api_key or "sk-placeholder",
+            max_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
+            timeout=10.0,
+            max_retries=0,
+            default_headers=default_headers,
+        )
+        try:
+            await client.ainvoke([{"role": "user", "content": "hi"}])
+            return {"success": True}
+        finally:
+            await client.aclose()
+    except Exception as e:
+        return _classify_anthropic_error(e, is_free=is_free)
+
+
+def _classify_anthropic_error(e: Exception, is_free: bool = False) -> dict:
+    """Classify an Anthropic SDK exception into a connectivity test result."""
+    try:
+        from anthropic import AuthenticationError, APITimeoutError, APIConnectionError, APIStatusError, RateLimitError
+    except Exception:
+        return {"success": False, "error": str(e), "error_code": "unknown"}
+
+    if isinstance(e, AuthenticationError):
+        return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+    if isinstance(e, RateLimitError):
+        return {"success": True}
+    if isinstance(e, (APITimeoutError, TimeoutError, asyncio.TimeoutError)):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    if isinstance(e, APIConnectionError):
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "connection refused" in err_str or "connect call failed" in err_str:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+        return {"success": False, "error": f"连接失败: {e}", "error_code": "connection_refused"}
+    if isinstance(e, ssl.SSLError):
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    if isinstance(e, APIStatusError):
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if is_free and status == 400:
+            return {"success": True}
+        return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
+    return {"success": False, "error": str(e), "error_code": "unknown"}
+
+
 async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
     """Test a WebSocket endpoint by performing a handshake AND a minimal session.update.
 
@@ -1679,6 +1747,29 @@ def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: s
     return result
 
 
+def _looks_like_anthropic_messages_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/").lower()
+    if host == "api.anthropic.com":
+        return True
+    return host == "api.kimi.com" and path == "/coding"
+
+
+def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
+    provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
+    if provider_type not in ("openai_compatible", "anthropic", "websocket"):
+        return "openai_compatible"
+    if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
+        return "anthropic"
+    return provider_type
+
+
 async def _test_connectivity_candidates(
     urls: list[str],
     api_key: str,
@@ -1704,6 +1795,8 @@ async def _test_connectivity_candidates(
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)
+        elif provider_type == "anthropic":
+            result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return candidate_url, result
@@ -1794,7 +1887,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 return
             urls = _normalize_provider_url_candidates(profile, "openrouter_url")
             model = profile.get("conversation_model", "")
-            provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile, urls[0] if urls else profile.get("openrouter_url", ""))
 
         # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
         if len(urls) < 2:
@@ -1972,6 +2065,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     The test strategy is chosen by provider_type:
     - openai_compatible (default): send a minimal chat completion request via ChatOpenAI (max_completion_tokens governed by CONNECTIVITY_TEST_MAX_TOKENS)
     - websocket: WebSocket handshake, closed immediately on success
+    - anthropic: send a minimal Anthropic Messages request
 
     All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
@@ -2002,7 +2096,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
-            provider_type = "openai_compatible"
+            provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         else:
@@ -2019,7 +2113,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = fallback_url
                 url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
-                provider_type = "openai_compatible"
+                provider_type = _normalize_provider_type(assist_profile, url_stripped)
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
@@ -2039,7 +2133,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
-        provider_type = (req.provider_type or "openai_compatible").strip().lower()
+        provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url_stripped)
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
@@ -2087,6 +2181,7 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "api.siliconflow.cn": "硅基流动",
         "generativelanguage.googleapis.com": "Gemini",
         "api.moonshot.cn": "Kimi",
+        "api.kimi.com": "Kimi Code",
         "api.xiaomimimo.com": "MiMo",
         "token-plan-cn.xiaomimimo.com": "MiMo Token Plan",
         "token-plan-sgp.xiaomimimo.com": "MiMo Token Plan",

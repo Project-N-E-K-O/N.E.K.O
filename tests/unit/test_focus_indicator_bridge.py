@@ -49,6 +49,10 @@ def _stub(mode=CognitionMode.REGULAR):
     stub._push_focus_charge = LLMSessionManager._push_focus_charge.__get__(
         stub, LLMSessionManager
     )
+    stub._focus_thinking_active = False
+    stub._push_focus_thinking = LLMSessionManager._push_focus_thinking.__get__(
+        stub, LLMSessionManager
+    )
     return stub
 
 
@@ -109,3 +113,44 @@ def test_reconcile_clears_badge_after_silent_focus_drop():
     stub.state.mode = CognitionMode.REGULAR       # silent clear happened
     asyncio.run(reconcile())
     assert _pushed_states(stub) == [{"type": "focus_state", "active": False}]
+
+
+def _pushed_thinking(stub):
+    return [m for m in _pushed(stub) if m.get("type") == "focus_thinking"]
+
+
+def test_thinking_pulse_on_off_and_idempotent():
+    # _push_focus_thinking mirrors a transient "model is thinking" pulse and is
+    # idempotent on its cached state, so per-chunk callers can clear blindly.
+    stub = _stub()
+    push = _bind(stub, "_push_focus_thinking")
+    asyncio.run(push(True))
+    asyncio.run(push(True))   # no change → no second push
+    asyncio.run(push(False))
+    asyncio.run(push(False))  # no change → no second push
+    assert _pushed_thinking(stub) == [
+        {"type": "focus_thinking", "active": True},
+        {"type": "focus_thinking", "active": False},
+    ]
+
+
+def test_thinking_message_shape_only_type_and_active():
+    stub = _stub()
+    asyncio.run(_bind(stub, "_push_focus_thinking")(True))
+    msg = _pushed_thinking(stub)[0]
+    assert set(msg.keys()) == {"type", "active"}
+    assert msg["active"] is True
+
+
+def test_thinking_force_re_pushes_for_new_window():
+    # resync_focus_for_new_window replays the thinking pulse with force=True so a
+    # window opened mid-thinking lands on the current bubble — the idempotent
+    # guard must NOT swallow the re-push even though the cached state is unchanged.
+    stub = _stub()
+    push = _bind(stub, "_push_focus_thinking")
+    asyncio.run(push(True))            # mid-thinking
+    asyncio.run(push(True, force=True))  # new window connects → forced replay
+    assert _pushed_thinking(stub) == [
+        {"type": "focus_thinking", "active": True},
+        {"type": "focus_thinking", "active": True},
+    ]

@@ -101,6 +101,7 @@ from utils.cloudsave_runtime import (
 )
 from utils.config_manager import get_config_manager
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from pydantic import BaseModel
 import re
 import asyncio
@@ -175,6 +176,13 @@ async def storage_limited_mode_guard(request: Request, call_next):
             "error": "Memory server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
         },
     )
+
+
+# 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
+# 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
+# agent_server 因 /openfang-llm-proxy 透明转发大 LLM 请求（vision/长上下文 JSON
+# 可超 16M）有意不装，见 PR 说明。
+app.add_middleware(InboundBodySizeLimitMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)

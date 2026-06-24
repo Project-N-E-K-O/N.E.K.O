@@ -1261,6 +1261,48 @@ def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
     assert "function setChoicePrompt(payload)" in react_host
     assert "setChoicePrompt: setChoicePrompt" in react_host
     assert "setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt" in react_host
+    # 揭示延迟「只扣视觉」：prompt 立刻入 state（绑定输入路由），按 revealDelayMs
+    # 记下 revealAt 并交给计时器延后露出按钮。
+    assert "var revealDelayMs = Number(payload.revealDelayMs) || 0;" in prompt_block
+    assert "revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0" in prompt_block
+    assert "scheduleChoicePromptReveal();" in prompt_block
+
+
+def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
+    # 揭示延迟必须只藏按钮、不扣 state.choicePrompt——否则间隙内的自由文本会绕过
+    # icebreaker free-text 路由落到普通聊天。
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    # 渲染层走 getRevealedChoicePrompt（揭示未到点返回 null 藏按钮）；输入路由仍直接
+    # 读 state.choicePrompt，所以间隙内打字会被判为 icebreaker free-text。
+    assert "function getRevealedChoicePrompt()" in react_host
+    assert "choicePrompt: getRevealedChoicePrompt()," in react_host
+    reveal_block = react_host.split("function getRevealedChoicePrompt()", 1)[1].split(
+        "function setNewUserIcebreakerPrompt",
+        1,
+    )[0]
+    assert "if (prompt.revealAt && Date.now() < prompt.revealAt) return null;" in reveal_block
+
+    submit_block = react_host.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker')" in submit_block
+
+    # 计时器只在同一个 prompt 仍在台上时才揭示，避免延迟期间被覆盖/清空后揭示过期选项。
+    schedule_block = react_host.split("function scheduleChoicePromptReveal()", 1)[1].split(
+        "function getRevealedChoicePrompt",
+        1,
+    )[0]
+    assert "if (state.choicePrompt === prompt)" in schedule_block
+
+    # galgame 选项拉取必须在 icebreaker prompt 激活（含揭示延迟内已就位但未露出）时让位，
+    # 否则 turn-end 会把 galgame A/B/C 挤进尚未露出 icebreaker 选项的同一槽位（Codex P2）。
+    galgame_fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
+        "function ",
+        1,
+    )[0]
+    assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;" in galgame_fetch_block
 
 
 def test_new_user_icebreaker_choice_listener_posts_context():

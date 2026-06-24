@@ -25,7 +25,7 @@ import asyncio
 from functools import partial
 from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_DEFAULT_MODEL, ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT, normalize_elevenlabs_voice_id
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -122,6 +122,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         resampler = None
         pending_text: list[str] = []
         pending_text_sid: str | None = None
+        # 与 step/qwen 对偶：ElevenLabs 流式音频首包后第一个 inter-chunk gap 偏大，
+        # 用共享 jitter buffer 攒首包领先量盖过开头几个字的 jitter。
+        audio_jitter = make_audio_jitter_buffer(response_queue)
 
         def _reset_session_metrics() -> None:
             nonlocal response_finished, text_done_sent, resampler
@@ -132,6 +135,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 if pcm_sample_rate != 48000
                 else None
             )
+            # 在新会话开 ws、建 receive_task 之前重置（_open_ws 已先 _close_ws 停掉旧
+            # receive_task），避免上一轮残留音频串入新轮次首包。
+            audio_jitter.reset()
 
         async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
             nonlocal ws, receive_task, text_done_sent
@@ -247,8 +253,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         if usable_len < len(audio_bytes):
                             audio_bytes = audio_bytes[:usable_len]
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                        response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
+                        audio_jitter.append(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
                     if is_final:
+                        audio_jitter.flush()  # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
                         response_finished.set()
                         break
             except websockets.exceptions.ConnectionClosed as exc:
@@ -329,6 +336,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                     current_speech_id = None
                     pending_text.clear()
                     pending_text_sid = None
+                    audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
                     continue
 
                 if sid is None:

@@ -80,6 +80,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             # 绝望 / 自我怀疑
             "好绝望", "绝望", "坚持不下去", "不想努力了", "想放弃", "快崩溃",
             "要崩溃", "崩溃", "没希望", "好无助", "无助", "活不下去", "撑不住了",
+            # 求安慰 / 渴望被安抚
+            "安慰",
         ]
     ),
     "en": frozenset(
@@ -116,6 +118,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "had enough", "sick of it", "sick of this", "losing my temper",
             # Pain / hurt
             "hurts so much", "heartbroken", "in so much pain", "so upset",
+            # Seeking comfort
+            "comfort me", "need comfort",
         ]
     ),
     "ja": frozenset(
@@ -144,6 +148,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "もう嫌", "うんざり", "キレそう", "イラつく", "ムカムカ", "頭にくる",
             # 痛み
             "胸が痛い", "心が痛い", "苦しい", "苦しすぎ", "せつない", "胸が苦しい",
+            # 慰めてほしい
+            "慰めて",
         ]
     ),
     "ko": frozenset(
@@ -173,6 +179,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             # 아픔
             "마음이 아파", "가슴이 아파", "괴로워", "괴롭", "마음이 너무 아파",
             "가슴이 미어",
+            # 위로받고 싶다
+            "위로해", "위로받고 싶",
         ]
     ),
     "ru": frozenset(
@@ -205,6 +213,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "сил нет это терпеть",
             # Боль
             "так больно", "сердце болит", "душа болит", "невыносимо больно",
+            # Хочется утешения
+            "утешь меня", "нужно утешение",
         ]
     ),
     "es": frozenset(
@@ -241,6 +251,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             # Dolor
             "me duele mucho", "con el corazón roto", "destrozado", "destrozada",
             "me duele el alma",
+            # Busco consuelo
+            "consuélame", "necesito consuelo",
         ]
     ),
     "pt": frozenset(
@@ -277,6 +289,8 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             # Dor
             "dói muito", "de coração partido", "arrasado", "arrasada",
             "dói demais",
+            # Em busca de conforto
+            "me consola", "preciso de consolo",
         ]
     ),
 }

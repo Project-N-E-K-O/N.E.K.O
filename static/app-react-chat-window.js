@@ -2572,7 +2572,7 @@
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
-            choicePrompt: state.choicePrompt || null,
+            choicePrompt: getRevealedChoicePrompt(),
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -3414,19 +3414,31 @@
         }
     }
 
-    function setGalgameModeTemporarilyDisabled(disabled) {
+    function setGalgameModeTemporarilyDisabled(disabled, options) {
+        var requestOptions = options || {};
         var next = !!disabled;
         var changed = state.galgameTemporarilyDisabled !== next;
         state.galgameTemporarilyDisabled = next;
 
         if (next) {
-            setGalgameModeEnabled(false, { persist: false });
+            setGalgameModeEnabled(false, {
+                persist: false,
+                skipRender: requestOptions.skipRender === true
+            });
         } else if (changed) {
             setGalgameModeEnabled(readGalgameModePreference(), {
                 persist: false,
-                suppressRefetch: true
+                suppressRefetch: true,
+                skipRender: requestOptions.skipRender === true
             });
         }
+    }
+
+    function syncTutorialGalgameSuppression() {
+        setGalgameModeTemporarilyDisabled(
+            state.homeTutorialInputLocked || isHomeTutorialInteractionLocked(),
+            { skipRender: true }
+        );
     }
 
     function setGalgameModeEnabled(enabled, options) {
@@ -3450,7 +3462,9 @@
         if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
             persistGalgameModePreference(next);
         }
-        renderWindow();
+        if (!requestOptions.skipRender) {
+            renderWindow();
+        }
         if (changed) {
             // 派发 effective 值（与 body class 一致）：composer 隐藏期间即使
             // setGalgameModeEnabled(true) 也广播 enabled=false，避免监听器
@@ -3545,6 +3559,12 @@
     function fetchGalgameOptionsForLatestTurn() {
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
+        // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
+        // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
+        // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
+        // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
+        // 此时并不覆盖它，故须单独按 choicePrompt 拦。
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
@@ -3985,6 +4005,44 @@
         renderWindow();
     }
 
+    var choicePromptRevealTimer = null;
+
+    // icebreaker choicePrompt 的「视觉揭示」延迟：state.choicePrompt 一旦设置就立刻生效
+    // （handleComposerSubmit 据此把间隙内的自由文本判为 icebreaker free-text 而非普通
+    // 聊天），但带 revealAt 时，按钮要等到该时刻才传给 React 组件（见 getRevealedChoicePrompt
+    // + buildRenderProps）。延迟只藏按钮、不扣状态，这样既保留「选项晚于台词露出」的观感，
+    // 又不会重新打开间隙内输入落到普通聊天的窗口。
+    function scheduleChoicePromptReveal() {
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
+        var prompt = state.choicePrompt;
+        if (!prompt || !prompt.revealAt) return;
+        var remaining = prompt.revealAt - Date.now();
+        if (remaining <= 0) {
+            prompt.revealAt = 0;
+            return;
+        }
+        choicePromptRevealTimer = window.setTimeout(function () {
+            choicePromptRevealTimer = null;
+            // 仅当同一个 prompt 仍在台上才揭示——期间被新 prompt 覆盖或清空则什么都不做。
+            if (state.choicePrompt === prompt) {
+                prompt.revealAt = 0;
+                renderWindow();
+            }
+        }, remaining);
+    }
+
+    // 渲染层取用的 choicePrompt：揭示时刻未到的 icebreaker prompt 先把按钮藏起来（返回
+    // null，视觉等同于尚未下发），其他 source 或已到点的照常返回。
+    function getRevealedChoicePrompt() {
+        var prompt = state.choicePrompt;
+        if (!prompt) return null;
+        if (prompt.revealAt && Date.now() < prompt.revealAt) return null;
+        return prompt;
+    }
+
     function setNewUserIcebreakerPrompt(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
@@ -4002,13 +4060,16 @@
             console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
             return;
         }
+        var revealDelayMs = Number(payload.revealDelayMs) || 0;
         state.choicePrompt = {
             source: 'new_user_icebreaker',
             sessionId: sessionId,
             gameType: String(payload.gameType || 'new_user_icebreaker'),
-            options: cleanedOptions
+            options: cleanedOptions,
+            revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0
         };
         invalidatePendingGalgameRequest();
+        scheduleChoicePromptReveal();
         renderWindow();
     }
 
@@ -4032,6 +4093,10 @@
         if (!state.choicePrompt || state.choicePrompt.source !== 'new_user_icebreaker') return false;
         if (sessionId && state.choicePrompt.sessionId !== String(sessionId)) return false;
         state.choicePrompt = null;
+        if (choicePromptRevealTimer) {
+            window.clearTimeout(choicePromptRevealTimer);
+            choicePromptRevealTimer = null;
+        }
         renderWindow();
         return true;
     }
@@ -4299,6 +4364,7 @@
             compactChatState: getCurrentCompactChatState(),
             composerDisabled: !!next
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 
@@ -4316,6 +4382,7 @@
             compactInputLocked: next,
             composerDisabled: !!state.homeTutorialInteractionLocked
         });
+        syncTutorialGalgameSuppression();
         renderWindow();
     }
 

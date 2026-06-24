@@ -174,6 +174,20 @@
       "vision_model": "kimi-k2.5",
       "agent_model": "kimi-k2.5"
     },
+    "kimi_code": {
+      "key": "kimi_code",
+      "name": "Kimi Code（月之暗面）",
+      "description": "Kimi Code 编程助手 API，使用 Anthropic Messages 兼容格式，不支持自定义语音",
+      "openrouter_url": "https://api.kimi.com/coding",
+      "provider_type": "anthropic",
+      "fixed_model": true,
+      "conversation_model": "kimi-for-coding",
+      "summary_model": "kimi-for-coding",
+      "correction_model": "kimi-for-coding",
+      "emotion_model": "kimi-for-coding",
+      "vision_model": "kimi-for-coding",
+      "agent_model": "kimi-for-coding"
+    },
     "deepseek": {
       "key": "deepseek",
       "name": "DeepSeek",
@@ -245,6 +259,7 @@
       "name": "Claude（Anthropic）",
       "description": "Anthropic的强力模型，国内无法使用，不支持自定义语音",
       "openrouter_url": "https://api.anthropic.com/v1",
+      "provider_type": "anthropic",
       "conversation_model": "claude-sonnet-4-6",
       "summary_model": "claude-sonnet-4-6",
       "correction_model": "claude-sonnet-4-6",
@@ -316,6 +331,7 @@
     "silicon": "ASSIST_API_KEY_SILICON",
     "gemini": "ASSIST_API_KEY_GEMINI",
     "kimi": "ASSIST_API_KEY_KIMI",
+    "kimi_code": "ASSIST_API_KEY_KIMI_CODE",
     "deepseek": "ASSIST_API_KEY_DEEPSEEK",
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
@@ -361,6 +377,10 @@
     },
     "kimi": {
       "config_field": "assistApiKeyKimi",
+      "restricted": false
+    },
+    "kimi_code": {
+      "config_field": "assistApiKeyKimiCode",
       "restricted": false
     },
     "doubao": {

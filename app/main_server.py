@@ -101,6 +101,7 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
 from utils.asyncio_executor import configure_default_executor # noqa: E402
+from utils.asgi_body_limit import InboundBodySizeLimitMiddleware # noqa: E402
 
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
@@ -1600,6 +1601,14 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
             "error": "Main server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
         },
     )
+
+
+# 全局入站 body 体积守门（issue #1586）：在 router 的 request.json()/form()
+# 解析之前，按 Content-Length 拒收超大「非 multipart」请求体，跨所有 router
+# 统一生效，与各 router 的业务校验（如 validate_chat_payload）正交。multipart
+# 文件上传（模型/音乐/角色卡等）一律放行，交给各上传 router 自带的流式分块守门。
+# add_middleware 后注册即处于最外层，最先执行——解析前拒收，不浪费后续处理。
+app.add_middleware(InboundBodySizeLimitMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)
