@@ -37,6 +37,7 @@ router = APIRouter(tags=["icebreaker"], prefix="/api/icebreaker")
 
 ICEBREAKER_SOURCE = "new_user_icebreaker"
 MAX_ICEBREAKER_CONTEXT_TEXT_LENGTH = 2000
+ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS = 10.0
 _SSML_TAG_PATTERN = re.compile(
     r"</?(?:[a-z][\w-]*:)?(?:"
     r"speak|p|s|break|say-as|phoneme|sub|prosody|emphasis|voice|audio|mark|lang|w|token|express-as|effect"
@@ -99,6 +100,37 @@ def _coerce_payload_bool(value: Any) -> bool | None:
         if normalized in {"0", "false", "no", "n", "off"}:
             return False
     return None
+
+
+def _build_icebreaker_memory_message(role: str, text: str) -> dict | None:
+    normalized_role = str(role or "").strip().lower()
+    if normalized_role not in {"assistant", "user"}:
+        return None
+    content = str(text or "").strip()
+    if not content:
+        return None
+    return {
+        "role": normalized_role,
+        "content": [{"type": "text", "text": content}],
+    }
+
+
+async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text: str) -> tuple[bool, str]:
+    message = _build_icebreaker_memory_message(role, text)
+    if message is None:
+        return False, "invalid_memory_message"
+    try:
+        from main_logic.cross_server import _post_memory_server
+
+        ok, err_detail, _ = await _post_memory_server(
+            "cache",
+            lanlan_name,
+            [message],
+            timeout_s=ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+        )
+        return bool(ok), str(err_detail or "")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def _stale_icebreaker_session_response(state: dict | None, session_id: str, *, lanlan_name: str, method: str) -> dict | None:
@@ -318,6 +350,7 @@ async def icebreaker_context(request: Request):
             "lanlan_name": lanlan_name,
             "source": ICEBREAKER_SOURCE,
             "session_id": session_id,
+            "memory_cached": False,
         }
     ok = getattr(append_result, "appended", False)
     if not ok:
@@ -329,14 +362,30 @@ async def icebreaker_context(request: Request):
             "session_id": session_id,
         }
 
+    memory_cached, memory_cache_error = await _cache_icebreaker_context_memory(
+        lanlan_name=lanlan_name,
+        role=role,
+        text=text,
+    )
+    if not memory_cached:
+        logger.warning(
+            "icebreaker memory cache failed for %s role=%s session=%s: %s",
+            lanlan_name,
+            role,
+            session_id,
+            memory_cache_error,
+        )
+
     touch_icebreaker_route(state)
-    return {
+    result = {
         "ok": True,
         "method": "project_session_history",
         "lanlan_name": lanlan_name,
         "source": ICEBREAKER_SOURCE,
         "session_id": session_id,
+        "memory_cached": memory_cached,
     }
+    return result
 
 
 @router.post("/speak")
