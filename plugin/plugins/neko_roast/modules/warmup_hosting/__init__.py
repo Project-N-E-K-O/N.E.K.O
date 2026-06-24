@@ -48,6 +48,7 @@ class WarmupHostingModule(BaseModule):
             "Do not pretend a viewer sent a message.",
             "Do not use generic slogans, attendance checks, or customer-service wording.",
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
+            "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it TTS-friendly and easy to continue from.",
             "Output only NEKO's line.",
         ]

@@ -93,7 +93,45 @@ def test_danmaku_response_prompt_includes_recent_interaction_context():
     assert "Recent live context:" in request.prompt_text
     assert "avatar_roast / live_danmaku from viewer: 第一次来" in request.prompt_text
     assert "idle_hosting / idle_hosting: solo quiet-room host beat" in request.prompt_text
-    assert "Do not reuse the same opening, punchline shape, or host beat" in request.prompt_text
+    assert "Use recent context only to avoid repetition" in request.prompt_text
+    assert "Do not continue the previous reply" in request.prompt_text
+    assert "The current danmaku is always the primary target" in request.prompt_text
+    assert "Short danmaku should receive a short reply" in request.prompt_text
+
+
+def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+
+    solo = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="solo_stream"),
+        identity,
+        profile,
+    )
+    co_stream = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="co_stream"),
+        identity,
+        profile,
+    )
+
+    assert "only on-stage host" in solo.prompt_text
+    assert "low-interrupt partner" in co_stream.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in solo.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in co_stream.prompt_text
+
+
+def test_avatar_roast_prompt_does_not_hard_code_streamer_relationship_labels():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku", live_mode="solo_stream")
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+
+    request = module.build_request(event, identity, profile)
+
+    assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
 
 
 def test_idle_hosting_prompt_includes_recent_interaction_context_without_metrics():
@@ -154,6 +192,7 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "one concrete, low-pressure question" in request.prompt_text
     assert "Do not pretend a viewer sent a message" in request.prompt_text
     assert "Do not use generic host slogans" in request.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
     assert "Continuity rule" in request.prompt_text
 
 
@@ -171,6 +210,7 @@ def test_warmup_hosting_prompt_is_opening_not_idle_filler():
     assert "opening a solo_stream" in request.prompt_text
     assert "not a cold-room filler" in request.prompt_text
     assert "Do not pretend a viewer sent a message" in request.prompt_text
+    assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
     assert "Output only NEKO's line" in request.prompt_text
 
 

@@ -359,13 +359,21 @@ def _created_at_age(seconds: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
-def _record_result_at(runtime: RoastRuntime, *, age_seconds: int, status: str = "pushed") -> None:
-    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi", source="live_danmaku")
+def _record_result_at(
+    runtime: RoastRuntime,
+    *,
+    age_seconds: int,
+    status: str = "pushed",
+    source: str = "live_danmaku",
+    steps: list[PipelineStep] | None = None,
+) -> None:
+    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi", source=source)  # type: ignore[arg-type]
     runtime.record_result(
         InteractionResult(
             accepted=status == "pushed",
             status=status,
             event=event,
+            steps=steps or [],
             created_at=_created_at_age(age_seconds),
         )
     )
@@ -398,6 +406,27 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
         "idle_hosting / idle_hosting: solo quiet-room host beat",
         "avatar_roast / live_danmaku from viewer: 第一次来",
     ]
+
+def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="赠送 1 个 粉丝团灯牌",
+        source="live_danmaku",
+    )
+
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+    assert latest["response_module"] == "danmaku_response"
+    assert latest["event_signal"] == "gift_signal"
 
 
 @pytest.mark.asyncio
@@ -723,7 +752,7 @@ async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runti
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=160)
 
     state = await runtime.dashboard_state()
 
@@ -734,6 +763,31 @@ async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runti
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(
+        runtime,
+        age_seconds=120,
+        steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+    )
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["active_engagement_status"]["candidate"] is True
+    assert state["active_engagement_status"]["eligible"] is False
+    assert state["active_engagement_status"]["reason"] == "recent_danmaku_output"
+    assert state["live_director_status"]["next_auto_action"] == "active_engagement"
+    assert state["live_director_status"]["eligible"] is False
+    assert state["live_director_status"]["reason"] == "recent_danmaku_output"
+
+
+@pytest.mark.asyncio
 async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -741,7 +795,7 @@ async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: R
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=160)
 
     result = await runtime.trigger_active_engagement()
 
@@ -759,7 +813,7 @@ async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: Roast
     runtime.config.live_mode = "co_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=160)
 
     result = await runtime.trigger_active_engagement()
 
@@ -775,7 +829,7 @@ async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=160)
 
     result = await runtime.maybe_trigger_active_engagement()
 
@@ -860,7 +914,7 @@ async def test_live_director_status_picks_active_engagement_for_solo_quiet(runti
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=160)
 
     state = await runtime.dashboard_state()
 

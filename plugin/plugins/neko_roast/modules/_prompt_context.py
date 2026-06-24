@@ -24,5 +24,8 @@ def recent_context_block(ctx: Any, *, limit: int = 3) -> str:
         "Recent live context:\n"
         + "\n".join(f"- {line}" for line in lines[:limit])
         + "\n\n"
-        + "Continuity rule: Do not reuse the same opening, punchline shape, or host beat from the recent context.\n"
+        + "Continuity rule: Use recent context only to avoid repetition.\n"
+        + "Do not continue the previous reply, inherit the previous topic, or reuse the same opening, punchline shape, or host beat.\n"
+        + "Do not reuse the same opening, punchline shape, or host beat from the recent context.\n"
+        + "The current danmaku is always the primary target. Short danmaku should receive a short reply.\n"
     )

@@ -1,6 +1,6 @@
 # NEKO Live Independent Mode Product Plan
 
-> Updated: 2026-06-23
+> Updated: 2026-06-24
 >
 > This document is the canonical product plan for Independent Mode. It describes product priorities, MVP scope, validation sequence, and non-goals. It does not define internal architecture, runtime observability, or implementation details.
 
@@ -50,6 +50,19 @@ Independent Mode is now past the first implementation and acceptance check and s
   - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
   - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
   - if Active Engagement feels too pushy, raise its minimum interval or turn it back into manual-only validation.
+
+## Current UI Direction
+
+The UI should keep the existing plugin-panel visual language: light gray page background, white cards, blue capsule tabs, status badges, and compact dashboard cards. Do not introduce a separate product shell, OBS dock layout, or a new visual system until the Independent Mode behavior is stable.
+
+Inside the plugin-center hosted panel, the first viewport is limited. The console should prioritize streamer decisions over module inventory:
+
+1. whether NEKO can stream now;
+2. why NEKO is quiet;
+3. what NEKO is likely to do next;
+4. the smallest set of live actions: refresh, manual test, pause/resume, and pacing controls.
+
+Module details, account setup, health rows, readiness checklist, and advanced diagnostics may remain in the same panel format, but they should sit below the first decision area or in the existing secondary tabs.
 
 ## Current Development Split
 
@@ -308,6 +321,56 @@ Use this checklist before a controlled solo-stream test. It is for product valid
 - Lines are short enough for live TTS.
 - NEKO leaves viewers a natural reply point.
 - Failed lines should be judged by live feel first: generic, pushy, repetitive, too quiet, or too noisy.
+
+## Live Validation Record - 2026-06-24
+
+Scope: one real Bilibili solo-stream validation run with `solo_stream`, `dry_run=false`, cleared viewer profiles, live danmaku, Active Engagement, and Idle Hosting enabled.
+
+Validated:
+
+- NEKO Live connected to a real Bilibili live room and stayed in `live=receiving`.
+- `solo_stream` could run with real output after `dry_run` was turned off.
+- Clearing `viewer_profiles.json` gave a clean test baseline; new viewers were persisted again during the run.
+- Real danmaku was ingested and pushed to NEKO.
+- Later danmaku from the same UID continued to produce output instead of being blocked by the first-appearance once gate.
+- Active Engagement produced real output during quiet moments.
+- Idle Hosting produced real output once (`idle_hosting -> pushed`), proving the cold-room path can speak in a real room.
+- `cooldown`, `recently_spoke`, `quiet`, and `manual_paused` states were observable during the run.
+
+Gift / fan-club signal note:
+
+- A fan-club medal event was observed as text similar to "sent 1 fan-club medal" and was pushed through the current `live_danmaku` path.
+- This proves the ingest side can see the signal, but it is not yet a Gift module. Gift / SC / Guard should remain future event modules and should not be treated as Independent Mode prerequisites.
+
+Product findings:
+
+- Some replies were too long for live pacing. Danmaku replies, Active Engagement, and Idle Hosting should prefer short TTS-friendly lines.
+- Active Engagement fired too soon after some danmaku replies, which made the experience feel like NEKO was repeating or continuing the same reply. Increase the minimum interval after recent danmaku output or make Active Engagement more conservative.
+- Dashboard / monitoring still exposes ordinary live input as `live_danmaku`; it does not clearly distinguish `avatar_roast` from `danmaku_response`. This made validation harder even though the user-visible reply path worked.
+- Natural long-idle observation was limited because viewers kept entering or sending danmaku. The idle path was validated, but longer no-danmaku live feel still needs a quieter test window.
+- Observed logs showed low response latency, but streamer-perceived delay still needs separate timing because the live feel depends on the full viewer-message-to-NEKO-speech path.
+
+Implemented before the next live test (offline verified; live feel still needs the next run):
+
+1. Prompt Context Isolation: recent context should only prevent repetition. It must not make NEKO continue the previous reply, inherit the previous topic, reuse the previous joke shape, or treat Active Engagement as the current danmaku context. The current danmaku is always the primary target.
+2. Live Mode Prompt Polish: split prompt behavior by `live_mode`.
+   - `solo_stream`: NEKO is the only on-stage host. She receives viewers, replies to danmaku, controls pacing, and fills dead air.
+   - `co_stream`: the human streamer is the main host. NEKO is a low-interrupt partner who catches jokes, supports the streamer, and avoids taking over the room.
+   - Streamer relationship labels must come from the current user/profile memory. Do not hard-code labels such as "older brother" or "owner"; if no label is available, use a neutral label or avoid naming the streamer.
+3. Reply Length Contract: first-appearance roast is at most one or two short lines; follow-up danmaku, warmup hosting, idle hosting, and active engagement should each be one short TTS-friendly line. Short danmaku should get short replies.
+4. Active Engagement Pacing: make automatic Active Engagement more conservative after recent danmaku replies. It should not fire in `engaged` state and should wait longer after successful live danmaku output.
+5. Result Labels: validation and dashboard output should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club signal capture instead of showing all ordinary live input as `live_danmaku`.
+6. Warmup Hosting Testability: the next live test should make the opening moment observable so the team can tell whether `warmup_hosting` fired, whether it spoke only one natural opening line, and whether it was not mistaken for idle hosting.
+7. Gift Signal v0: if a gift or fan-club medal appears again, capture it as a gift/fan-club signal. Do not build full Gift / SC / Guard behavior before the live pacing issues are fixed.
+
+Out of scope before the next live test:
+
+- full Gift / SC / Guard behavior;
+- private messages;
+- automation;
+- major UI redesign;
+- long-term memory;
+- multi-persona configuration.
 
 ### 2. One Friendly Streamer Shadow Test
 

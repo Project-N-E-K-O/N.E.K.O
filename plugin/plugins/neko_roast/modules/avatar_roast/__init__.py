@@ -88,6 +88,7 @@ class AvatarRoastModule(BaseModule):
             "Do not pretend a viewer sent a message.",
             "Do not use generic welcome slogans, direct interaction requests, or attendance-check lines.",
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
+            "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
             "Output only the line NEKO should say.",
         ]
@@ -123,6 +124,7 @@ class AvatarRoastModule(BaseModule):
             "抓一个具体细节切入并给个有依据的小判断，别泛泛说“好可爱”，别逐字复述上面的字段。",
             avatar_rule,
             "别和你最近几条锐评用同样的开头和句式。",
+            "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             f"一句话，短、有包袱、能直接 TTS 播出；强度{strength_zh}；{pace}。",
             "只输出这一句锐评本身，不要解释、不要加前后缀、不要复述这些规则。",
         ]

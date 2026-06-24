@@ -137,6 +137,8 @@ function formatLatencyMs(value: any): string {
 }
 
 function interactionRoute(result: any): string {
+  const responseModule = String((result && result.response_module) || "")
+  if (responseModule) return responseModule
   const source = String((result && result.event && result.event.source) || "")
   if (source === "warmup_hosting") return "warmup_hosting"
   if (source === "idle_hosting") return "idle_hosting"
@@ -893,6 +895,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }, {})
   const latestResult = results.length ? results[0] : null
   const latestRoute = latestResult ? interactionRoute(latestResult) : "-"
+  const latestEventSignal = latestResult ? String(latestResult.event_signal || "-") : "-"
   const latestResultStatus = latestResult ? String(latestResult.status || "-") : "-"
   const latestResultReason = latestResult ? String(latestResult.reason || "") : ""
   const latestLatency = latestResult ? formatLatencyMs(latestResult.response_latency_ms) : "-"
@@ -920,9 +923,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     <Card title={t("panel.interaction.currentDecision.title")}>
       <Stack gap={12}>
         <Text>{t("panel.interaction.currentDecision.subtitle")}</Text>
-        <Grid cols={3}>
+        <Grid cols={4}>
           <StatCard label={t("panel.interaction.currentDecision.latestEvent")} value={latestResult ? latestEventLabel(latestResult) : t("panel.interaction.currentDecision.noResult")} />
           <StatCard label={t("panel.interaction.currentDecision.route")} value={<StatusBadge tone={interactionRouteTone(latestRoute)} label={latestRoute} />} />
+          <StatCard label={t("panel.interaction.currentDecision.eventSignal")} value={latestEventSignal} />
           <StatCard label={t("panel.interaction.currentDecision.lastResult")} value={`${latestResultStatus} / ${latestLatency}`} />
         </Grid>
         <Grid cols={3}>

@@ -52,6 +52,9 @@ def test_panel_renders_interaction_module_split_and_speaking_decision():
     assert "panel.interaction.currentDecision.title" in source
     assert "panel.interaction.currentDecision.latestEvent" in source
     assert "panel.interaction.currentDecision.route" in source
+    assert "response_module" in source
+    assert "event_signal" in source
+    assert "panel.interaction.currentDecision.eventSignal" in source
     assert "panel.interaction.currentDecision.lastResult" in source
     assert "avatar_roast" in source
     assert "danmaku_response" in source
@@ -226,6 +229,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.interaction.currentDecision.subtitle",
         "panel.interaction.currentDecision.latestEvent",
         "panel.interaction.currentDecision.route",
+        "panel.interaction.currentDecision.eventSignal",
         "panel.interaction.currentDecision.lastResult",
         "panel.interaction.currentDecision.skipReason",
         "panel.interaction.currentDecision.noResult",
@@ -244,6 +248,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveDirector.reason.solo_warmup",
         "panel.liveDirector.reason.solo_idle",
         "panel.liveDirector.reason.minimum_interval",
+        "panel.liveDirector.reason.recent_danmaku_output",
         "panel.liveDirector.reason.not_candidate",
         "panel.liveDirector.reason.auto_disabled",
         "panel.liveDirector.reason.active_engagement_not_ready",

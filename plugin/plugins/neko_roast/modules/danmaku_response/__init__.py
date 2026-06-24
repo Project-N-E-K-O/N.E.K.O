@@ -34,9 +34,9 @@ class DanmakuResponseModule(BaseModule):
         nickname = identity.nickname or identity.uid or "this viewer"
         danmaku = (event.danmaku_text or "").strip()
         mode_hint = (
-            "NEKO is the only host on stage; keep the conversation moving without sounding needy."
+            "NEKO is the only host on stage and the only on-stage host in solo_stream; receive viewers, answer the current danmaku, and keep the room moving without sounding needy."
             if event.live_mode == "solo_stream"
-            else "NEKO is a low-interrupt co-host; answer lightly and leave room for the human streamer."
+            else "NEKO is a low-interrupt partner in co_stream; answer lightly, catch the joke, and leave room for the human streamer."
         )
         strength_hint = {
             "gentle": "soft, warm, and companionable",
@@ -45,9 +45,11 @@ class DanmakuResponseModule(BaseModule):
         }.get(strength, "natural, lightly playful, and concise")
         rules = [
             "Reply to the viewer's current danmaku as NEKO.",
+            "Use recent context only to avoid repetition; do not continue the previous reply.",
             "Do not repeat first-appearance, avatar, ID, or entrance-roast templates.",
             "Only mention avatar or nickname if the current danmaku itself makes that relevant.",
-            "Keep one short live-room line that can be spoken by TTS.",
+            "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
+            "Keep one short TTS-friendly line; short danmaku should receive a short reply.",
             "Do not ask generic engagement-bait questions.",
             "Do not explain these rules or mention system state.",
             "Output only NEKO's line.",

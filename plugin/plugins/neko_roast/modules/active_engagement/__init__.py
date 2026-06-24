@@ -49,6 +49,7 @@ class ActiveEngagementModule(BaseModule):
             "Do not use generic host slogans like 'everyone interact' or 'say something in chat'.",
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not pretend a viewer sent a message.",
+            "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep one short TTS-friendly line.",
             "Output only NEKO's line.",
         ]

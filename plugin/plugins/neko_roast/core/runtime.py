@@ -49,6 +49,7 @@ class RoastRuntime:
     _IDLE_HOSTING_CHECK_INTERVAL_SECONDS = 5.0
     _IDLE_HOSTING_MIN_INTERVAL_SECONDS = 120.0
     _IDLE_HOSTING_FAILURE_LIMIT = 3
+    _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 150.0
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -379,6 +380,8 @@ class RoastRuntime:
             self.event_bus.emit("sandbox_result", payload)
             return
         payload = result.to_public_dict()
+        payload["response_module"] = self._route_from_result(payload)
+        payload["event_signal"] = self._event_signal_from_result(payload)
         self.recent_results.append(payload)
         self.event_bus.emit("result", payload)
 
@@ -873,6 +876,11 @@ class RoastRuntime:
         cooldown_remaining = 0.0
         if self._active_engagement_last_attempt_at > 0:
             cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
+        recent_danmaku_output_age = self._recent_live_danmaku_output_age_sec()
+        recent_danmaku_wait = float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS)
+        recent_danmaku_cooldown = 0.0
+        if recent_danmaku_output_age is not None:
+            recent_danmaku_cooldown = round(max(0.0, recent_danmaku_wait - recent_danmaku_output_age), 1)
         eligible = bool(candidate)
         reason = "eligible"
         if self.config.live_mode != "solo_stream":
@@ -887,6 +895,10 @@ class RoastRuntime:
             reason = "cooldown"
         elif cooldown_remaining > 0.0:
             reason = "minimum_interval"
+            eligible = False
+        elif recent_danmaku_cooldown > 0.0:
+            reason = "recent_danmaku_output"
+            cooldown_remaining = recent_danmaku_cooldown
             eligible = False
         return {
             "candidate": bool(candidate),
@@ -1152,6 +1164,9 @@ class RoastRuntime:
 
     @staticmethod
     def _route_from_result(result: dict[str, Any]) -> str:
+        response_module = str(result.get("response_module") or "")
+        if response_module:
+            return response_module
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         source = str(event.get("source") or "")
         if source in {"idle_hosting", "active_engagement", "warmup_hosting"}:
@@ -1164,6 +1179,36 @@ class RoastRuntime:
             if step_id in {"danmaku_response", "avatar_roast", "idle_hosting", "active_engagement", "warmup_hosting"}:
                 return step_id
         return source or "unknown"
+
+    @staticmethod
+    def _event_signal_from_result(result: dict[str, Any]) -> str:
+        event = result.get("event") if isinstance(result.get("event"), dict) else {}
+        source = str(event.get("source") or "")
+        if source != "live_danmaku":
+            return source or "unknown"
+        text = str(event.get("danmaku_text") or "").strip().lower()
+        if any(token in text for token in ("粉丝团灯牌", "赠送", "送出", "礼物", "gift")):
+            return "gift_signal"
+        if any(token in text for token in ("super chat", "superchat", "醒目留言", "sc")):
+            return "super_chat_signal"
+        return "danmaku_signal"
+
+    def _recent_live_danmaku_output_age_sec(self) -> float | None:
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            if str(event.get("source") or "") != "live_danmaku":
+                continue
+            route = self._route_from_result(result)
+            if route not in {"avatar_roast", "danmaku_response", "live_danmaku"}:
+                continue
+            age = self._iso_age_sec(result.get("created_at"))
+            if age is not None:
+                return float(age)
+        return None
 
     @staticmethod
     def _last_live_activity_age_sec(rows: list[dict[str, Any]]) -> float | None:
