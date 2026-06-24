@@ -721,6 +721,72 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_records_idle_hosting_as_own_route():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            return None
+
+    class Dispatcher:
+        async def push_roast(self, _request):
+            return "queued_to_neko(idle_hosting)"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="idle hosting prompt",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+
+    result = await RoastPipeline(ctx).handle_event(
+        ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream")
+    )
+
+    assert result.status == "pushed"
+    assert any(step.id == "idle_hosting" and step.status == "ok" for step in result.steps)
+    assert not any(step.id == "avatar_roast" for step in result.steps)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_mark_roasted_failure_keeps_success_result():
     class Audit:
         def __init__(self):

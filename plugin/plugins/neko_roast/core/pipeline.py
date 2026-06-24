@@ -80,6 +80,11 @@ class RoastPipeline:
                     request = self.ctx.active_engagement.build_request(event, identity, profile)
                     should_mark_roasted = False
                     response_module_id = "active_engagement"
+                elif event.source == "idle_hosting":
+                    steps.append(PipelineStep("viewer_gate", "ok", "idle_hosting"))
+                    request = self.ctx.avatar_roast.build_request(event, identity, profile)
+                    should_mark_roasted = False
+                    response_module_id = "idle_hosting"
                 elif is_repeat_live_danmaku:
                     steps.append(PipelineStep("viewer_gate", "ok", "repeat_danmaku"))
                     request = self.ctx.danmaku_response.build_request(event, identity, profile)
