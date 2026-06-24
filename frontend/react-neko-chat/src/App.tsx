@@ -1238,7 +1238,7 @@ function getCompactToolWheelAudioSystem(): NekoGameAudioSystemInstance | null {
       config: {
         audioMix: {
           sfx: {
-            baseVolume: 1,
+            baseVolume: 0.5,
             maxVolume: 1,
           },
         },
