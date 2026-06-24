@@ -262,6 +262,41 @@ def test_stream_text_drops_screenshot_superseded_by_later_ai_turn():
     c.switch_model.assert_not_awaited()
 
 
+def test_proactive_injected_image_evicts_through_normal_keep_turns():
+    """Once injected, the proactive screenshot is a normal list-content image turn
+    and occupies a history image slot governed by the SAME _evict_old_images
+    (keep_turns=2) as user frames — no special-casing, no exemption. With two
+    newer image turns, the proactive turn's image is stripped (text kept) just
+    like any older user image would be."""
+    c = _bare_offline()
+
+    def _img_turn(url_tag: str, text: str) -> HumanMessage:
+        return HumanMessage(content=[
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{url_tag}"}},
+            {"type": "text", "text": text},
+        ])
+
+    # Oldest image turn = the proactive-injected reply (image leads, then text),
+    # exactly the shape stream_text builds. Then two newer user image turns.
+    proactive_turn = _img_turn("PROACTIVE", "这是什么")
+    c._conversation_history = [
+        SystemMessage(content="sys"),
+        proactive_turn,
+        AIMessage(content="ai-1"),
+        _img_turn("USER1", "看这个"),
+        AIMessage(content="ai-2"),
+        _img_turn("USER2", "还有这个"),
+    ]
+
+    c._evict_old_images()  # keep_turns=2 → keep the two newest image turns
+
+    # Proactive turn is the oldest image turn → image stripped, collapses to text.
+    assert c._conversation_history[1].content == "这是什么"
+    # The two newer image turns keep their images.
+    assert _image_urls(c._conversation_history[3].content) == ["data:image/jpeg;base64,USER1"]
+    assert _image_urls(c._conversation_history[5].content) == ["data:image/jpeg;base64,USER2"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2b. prompt_ephemeral —— a visible ephemeral reply supersedes the staged screen
 #     (covers persist_response=False replies the history-len marker can't see)
