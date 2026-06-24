@@ -60,6 +60,7 @@ class AvatarRoastModule(BaseModule):
             live_mode=event.live_mode,
             strength=strength,
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
+            allow_avatar_image=event.source != "idle_hosting",
         )
 
     def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str, activity_level: str = "standard", recent_context: str = "") -> str:

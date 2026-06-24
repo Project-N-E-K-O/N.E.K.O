@@ -252,7 +252,7 @@ class NekoDispatcher:
         if is_demo_event:
             text = "（这是 NEKO Live 弹幕锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        if identity.avatar_bytes:
+        if request.allow_avatar_image and identity.avatar_bytes:
             avatar_bytes, avatar_mime = _normalize_avatar_for_neko_vision(
                 identity.avatar_bytes,
                 identity.avatar_mime or "image/png",

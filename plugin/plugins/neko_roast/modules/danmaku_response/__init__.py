@@ -27,6 +27,7 @@ class DanmakuResponseModule(BaseModule):
             live_mode=event.live_mode,
             strength=strength,
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
+            allow_avatar_image=False,
         )
 
     @staticmethod
@@ -43,9 +44,11 @@ class DanmakuResponseModule(BaseModule):
             "Reply to the viewer's current danmaku as NEKO.",
             "Use recent context only to avoid repetition; do not continue the previous reply.",
             "Current danmaku wins over recent context.",
+            "Treat short assent, emoji, or one-word danmaku as a tiny reaction target, not a reason to start a new plan.",
             "Do not repeat first-appearance, avatar, ID, or entrance-roast templates.",
             "Only mention avatar or nickname if the current danmaku itself makes that relevant.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
+            "Do not launch a new show segment, special plan, topic poll, reward bit, or audience-suggestion prompt.",
             "Keep one short TTS-friendly line.",
             *short_reply_rules(),
             "Do not ask generic engagement-bait questions.",
@@ -69,7 +72,8 @@ class DanmakuResponseModule(BaseModule):
         if live_mode == "solo_stream":
             return (
                 "solo_stream response contract: NEKO is the only host on stage, the only on-stage host, and must carry the room alone; "
-                "answer the current danmaku, keep the room moving, then stop."
+                "answer the current danmaku in one compact line, keep the room moving, then stop. "
+                "Carrying the room means crisp timing, not monologue, plans, or host-script expansion."
             )
         return (
             "co_stream response contract: NEKO is a low-interrupt partner; "

@@ -260,6 +260,7 @@ class InteractionRequest:
     strength: RoastStrength
     should_push: bool = True
     dry_run: bool = False
+    allow_avatar_image: bool = False
     reason: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -271,6 +272,7 @@ class InteractionRequest:
             "strength": self.strength,
             "should_push": self.should_push,
             "dry_run": self.dry_run,
+            "allow_avatar_image": self.allow_avatar_image,
             "reason": self.reason,
         }
 

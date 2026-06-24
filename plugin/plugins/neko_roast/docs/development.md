@@ -495,7 +495,7 @@ danmaku_core on_event(cmd, 富模型)
   5. **简洁 + 节奏**：一句话、有包袱、适合 TTS；强度由 `roast_strength`（gentle/normal/sharp）决定；独播（`solo_stream`）提示更主动撑场，同播（`co_stream`）低打断。
   6. 只输出锐评本身，不解释、不复述规则。
 
-`build_request()` 只构造请求、不触发 NEKO；强度取 `ctx.config.roast_strength`。`dispatcher.push_roast()` 直接用 `request.prompt_text` 作为文本 part，按 `avatar_vision_ok` / 压缩结果决定是否附加头像 image part（详见「输出边界」「Message Plane 预算」）。
+`build_request()` 只构造请求、不触发 NEKO；强度取 `ctx.config.roast_strength`。`avatar_roast` 会显式设置 `allow_avatar_image=True`，因此 `dispatcher.push_roast()` 才会按 `avatar_vision_ok` / 压缩结果附加头像 image part（详见「输出边界」「Message Plane 预算」）。
 
 > 已知限制：自适应焦点由 LLM 依据 prompt 判断，非确定性；`pendant` 依赖 `bilibili_api` 返回 `pendant` 字段，缺失则无该 META；`co_stream_output_policy` / `solo_output_policy` 目前仅作语义占位，投递节奏的差异化尚未接入（当前只用 `live_mode` 给 prompt 节奏提示）。
 
@@ -518,9 +518,11 @@ danmaku_core on_event(cmd, 富模型)
 
 `danmaku_response` 的 prompt 只围绕当前弹幕接话：不能重复首次出场、头像、ID 或进场锐评模板；除非当前弹幕本身相关，否则不主动评价头像或昵称；独播（`solo_stream`）提示 NEKO 是台前唯一主播，需要自然接住话题；同播（`co_stream`）提示低打断，给主播留空间。
 
+**2026-06-25 长直播发现的输入隔离缺口**：路由已经能把同 UID 后续弹幕送进 `danmaku_response`，但 dispatcher 曾经在 `identity.avatar_bytes` 存在时无条件附加头像 image part。结果是后续接话虽然没有走 `avatar_roast`，模型仍然看到头像，容易再次评价同一观众头像。当前修复是把头像视觉输入限制在显式 opt-in 的请求：`avatar_roast`（以及显式的开发者 demo / 未来明确声明需要视觉输入的模块）可以带头像；`danmaku_response`、`idle_hosting`、`active_engagement`、`warmup_hosting` 默认是纯文本输出请求。这个问题是输入边界污染，不是 `roast_once_per_uid` 失效。
+
 `recent_interaction_context()` 会从最近成功投递或 dry_run 的互动结果中提取轻量上下文（路由、事件来源、观众弹幕或 idle hosting beat），供 `danmaku_response` 和 `idle_hosting` prompt 使用。它不假装掌握猫猫最终 TTS 文本，也不把完整历史 prompt 塞回模型；目标只是让下一次接话知道刚发生过什么，并明确避免复用同一个开场、包袱形状或主持节拍。
 
-NEKO 输出由 `adapters/neko_dispatcher.py` 中的 `NekoDispatcher.push_roast()` 统一负责，pipeline 通过 `self.ctx.dispatcher.push_roast(request)` 进入。`push_roast()` 直接使用 `request.prompt_text` 作为文本 part，再按可见性附加头像 image part（压缩后超预算则省略并在文本里说明降级），不再自行拼装字段；然后调用：
+NEKO 输出由 `adapters/neko_dispatcher.py` 中的 `NekoDispatcher.push_roast()` 统一负责，pipeline 通过 `self.ctx.dispatcher.push_roast(request)` 进入。`push_roast()` 直接使用 `request.prompt_text` 作为文本 part；只有 `request.allow_avatar_image=True` 时才会按可见性附加头像 image part（压缩后超预算则省略并在文本里说明降级），不再自行拼装字段；然后调用：
 
 ```python
 plugin.push_message(
@@ -601,9 +603,11 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-24：`uv run pytest plugin/plugins/neko_roast/tests -q` → **164 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-25：`uv run pytest plugin/plugins/neko_roast/tests -q` → **172 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
+
+若直播体验修复触碰 N.E.K.O 主前端播放门（例如 `static/app-audio-playback.js` 的 `voice_play_start` / `voice_play_end` 行为），必须额外运行对应主仓静态契约测试；当前播放门修复的最小回归命令是 `uv run pytest tests/unit/test_app_audio_playback_static.py -q`。
 
 ## 文档更新要求
 
@@ -645,4 +649,4 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 
 维护时不要只给字段说明。需要保留“猫猫是直播间同播伙伴，不是后台系统或插件播报员”的场景，让模型把弹幕当作直播现场互动来接话。即时事件提示词可以包含 UID、昵称、弹幕、强度、直播模式等结构化字段，但输出要求必须强调自然短句、不要复述字段、不要解释流程。
 
-直播输出 prompt 的短回复合约集中在 `modules/_prompt_context.py` 的 `short_reply_rules()`：所有会让 NEKO 开口的直播路径都应共享同一套约束，即一句话、不写段落、最多 35 个中文字符或 18 个英文词；短弹幕要更短地回，优先给一个紧凑的直播包袱，不展开解释或续写上一轮话题。当前已接入 `avatar_roast`、`danmaku_response`、`warmup_hosting`、`idle_hosting` 和 `active_engagement`。新增开口模块时必须复用该合约，并补契约测试锁住。
+直播输出 prompt 的短回复合约集中在 `modules/_prompt_context.py` 的 `short_reply_rules()`：所有会让 NEKO 开口的直播路径都应共享同一套约束，即一句话、不写段落、最多 18 个中文字符或 10 个英文词；短弹幕要更短地回，优先给一个紧凑的直播包袱，不解释、不铺垫、不写第二句，也不续写上一轮话题。当前已接入 `avatar_roast`、`danmaku_response`、`warmup_hosting`、`idle_hosting` 和 `active_engagement`。新增开口模块时必须复用该合约，并补契约测试锁住。

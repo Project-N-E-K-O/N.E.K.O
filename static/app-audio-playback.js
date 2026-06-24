@@ -680,6 +680,21 @@
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_completion_mismatch', {
                 requestedTurnId: normalizedTurnId
             });
+            if (normalizedTurnId &&
+                normalizeAssistantTurnId(S.assistantSpeechActiveTurnId) === normalizedTurnId &&
+                isAssistantTurnPlaybackDrained(normalizedTurnId)) {
+                // Playback is the contract the backend gate cares about. If
+                // turn-end/completion is late or dropped after the browser has
+                // already drained audio, release the voice_play gate now; the
+                // later turn-end path can still settle turn bookkeeping.
+                logAudioLifecycle('maybeFinalizeAssistantSpeech:playback_drained_before_completion', {
+                    requestedTurnId: normalizedTurnId
+                });
+                stopActiveLipSync();
+                S.isPlaying = false;
+                dispatchAssistantSpeechEnd(normalizedTurnId);
+                return true;
+            }
             return false;
         }
         if (!isAssistantTurnPlaybackDrained(normalizedTurnId)) {

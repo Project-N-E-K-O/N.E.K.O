@@ -147,14 +147,17 @@ def test_danmaku_response_prompt_blocks_previous_reply_pollution():
     request = module.build_request(event, identity, profile)
 
     assert "Do not inherit the previous answer's topic, rhythm, or sentence length." in request.prompt_text
+    assert "Do not continue prizes, plans, games, or audience-suggestion beats from the previous reply." in request.prompt_text
     assert "Current danmaku wins over recent context." in request.prompt_text
     assert "For one-word or very short danmaku, answer with a tiny reaction." in request.prompt_text
+    assert "Do not launch a new show segment, special plan, topic poll, reward bit, or audience-suggestion prompt." in request.prompt_text
+    assert "Carrying the room means crisp timing, not monologue, plans, or host-script expansion." in request.prompt_text
 
 
 def test_live_interaction_prompts_share_short_reply_contract():
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
-    short_contract = "Hard length limit: one sentence, no paragraph, at most 24 Chinese characters or 12 English words."
+    short_contract = "Hard length limit: one sentence, no paragraph, at most 18 Chinese characters or 10 English words."
 
     danmaku = DanmakuResponseModule()
     danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
@@ -196,7 +199,8 @@ def test_live_interaction_prompts_share_short_reply_contract():
     for request in [danmaku_request, avatar_request, idle_request, warmup_request, active_request]:
         assert short_contract in request.prompt_text
         assert "If the viewer's danmaku is short, answer even shorter." in request.prompt_text
-        assert "No explanation, no setup, no second sentence." in request.prompt_text
+        assert "Do not turn a reply into a host script, segment intro, plan, or audience survey." in request.prompt_text
+        assert "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one." in request.prompt_text
 
 
 def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
@@ -282,6 +286,8 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "one concrete, low-pressure question" in request.prompt_text
     assert "Do not pretend a viewer sent a message" in request.prompt_text
     assert "Do not use generic host slogans" in request.prompt_text
+    assert "Prefer one tiny observation over a plan, segment, or open-ended topic survey." in request.prompt_text
+    assert "Do not say special plan, everyone look, next let's, what should we talk about, or tell me what you want." in request.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
     assert "Continuity rule" in request.prompt_text
 
@@ -394,6 +400,98 @@ async def test_dispatcher_respects_non_deliverable_request():
     result = await NekoDispatcher(Plugin()).push_roast(request)
 
     assert result == "skipped_to_neko(reason=upstream skip)"
+
+
+def test_avatar_roast_is_the_default_visual_input_owner():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    request = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi", source="live_danmaku", live_mode="solo_stream"),
+        ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
+        ViewerProfile(uid="42", nickname="viewer"),
+    )
+
+    assert request.allow_avatar_image is True
+
+
+def test_danmaku_response_is_text_only_even_when_identity_has_avatar():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    request = module.build_request(
+        ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi again", source="live_danmaku", live_mode="solo_stream"),
+        ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert request.allow_avatar_image is False
+
+
+def test_idle_hosting_is_text_only_even_when_identity_has_avatar():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    request = module.build_request(
+        ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
+        ViewerIdentity(uid="__neko_idle__", nickname="NEKO", avatar_bytes=b"avatar", avatar_mime="image/png"),
+        ViewerProfile(uid="__neko_idle__", nickname="NEKO"),
+    )
+
+    assert request.allow_avatar_image is False
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_does_not_attach_avatar_image_without_visual_opt_in():
+    class Plugin:
+        def __init__(self):
+            self.parts = None
+
+        def push_message(self, **kwargs):
+            self.parts = kwargs["parts"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="live_danmaku", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+    )
+
+    result = await NekoDispatcher(plugin).push_roast(request)
+
+    assert "queued_to_neko(" in result
+    assert "image_part_bytes=0" in result
+    assert plugin.parts == [{"type": "text", "text": "reply"}]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_attaches_avatar_image_for_visual_opt_in():
+    class Plugin:
+        def __init__(self):
+            self.parts = None
+
+        def push_message(self, **kwargs):
+            self.parts = kwargs["parts"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="live_danmaku", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=True,
+    )
+
+    result = await NekoDispatcher(plugin).push_roast(request)
+
+    assert "queued_to_neko(" in result
+    assert "image_part_bytes=6" in result
+    assert plugin.parts == [
+        {"type": "text", "text": "reply"},
+        {"type": "image", "data": b"avatar", "mime": "image/png"},
+    ]
 
 
 @pytest.mark.asyncio
