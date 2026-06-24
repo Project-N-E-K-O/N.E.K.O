@@ -516,6 +516,10 @@
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
+                // keepalive：让本请求挺过页面卸载（reload/close），与 endIcebreakerRouteOnPageExit
+                // 用 beacon/keepalive 发 /route/end 对称，避免点完即关页时浏览器取消普通 fetch 致丢记。
+                // body 仅 ~200 字节，远低于 keepalive 的 64KB 上限。
+                keepalive: true,
                 body: JSON.stringify(body)
             }).then(function (response) {
                 if (allowRetry && response.status === 403) {
