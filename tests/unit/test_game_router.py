@@ -3105,7 +3105,7 @@ async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_pregame_context_ai_human_message_keeps_watermark(monkeypatch):
-    from config.prompts.prompts_game import PREGAME_CONTEXT_INPUT_WATERMARK
+    from config.prompts.prompts_minigame_common import PREGAME_CONTEXT_INPUT_WATERMARK
 
     captured = {}
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from config.prompts import prompts_game
+from config.prompts import prompts_badminton
 from main_routers import game_router, pages_router
 
 
@@ -1295,7 +1295,7 @@ def test_badminton_llm_control_contract_accepts_mood_and_difficulty():
 
 @pytest.mark.unit
 def test_badminton_duel_prompt_mentions_difficulty_control():
-    prompt = prompts_game.get_badminton_system_prompt("zh", mode="duel")
+    prompt = prompts_badminton.get_badminton_system_prompt("zh", mode="duel")
 
     assert "difficulty" in prompt
     assert "max, lv2, lv3, lv4" in prompt
@@ -1305,7 +1305,7 @@ def test_badminton_duel_prompt_mentions_difficulty_control():
 @pytest.mark.parametrize("mode", ("spectator", "shooter", "timed", "horse"))
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 def test_badminton_non_duel_prompts_do_not_advertise_difficulty_control(lang, mode):
-    prompt = prompts_game.get_badminton_system_prompt(lang, mode=mode)
+    prompt = prompts_badminton.get_badminton_system_prompt(lang, mode=mode)
 
     assert '"difficulty"' not in prompt
     assert "max, lv2, lv3, lv4" not in prompt
@@ -1313,8 +1313,8 @@ def test_badminton_non_duel_prompts_do_not_advertise_difficulty_control(lang, mo
 
 @pytest.mark.unit
 def test_badminton_spectator_prompt_matches_default_badminton_contract():
-    zh = prompts_game.get_badminton_system_prompt("zh", mode="spectator")
-    en = prompts_game.get_badminton_system_prompt("en", mode="spectator")
+    zh = prompts_badminton.get_badminton_system_prompt("zh", mode="spectator")
+    en = prompts_badminton.get_badminton_system_prompt("en", mode="spectator")
 
     assert "羽毛球小游戏" in zh
     assert "自由练习" not in zh
@@ -1330,8 +1330,8 @@ def test_badminton_spectator_prompt_matches_default_badminton_contract():
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 @pytest.mark.parametrize("removed_mode", ("shooter", "timed", "horse"))
 def test_badminton_removed_modes_use_spectator_prompt(lang, removed_mode):
-    spectator = prompts_game.get_badminton_system_prompt(lang, mode="spectator")
-    prompt = prompts_game.get_badminton_system_prompt(lang, mode=removed_mode)
+    spectator = prompts_badminton.get_badminton_system_prompt(lang, mode="spectator")
+    prompt = prompts_badminton.get_badminton_system_prompt(lang, mode=removed_mode)
 
     assert prompt == spectator
 
@@ -1339,9 +1339,9 @@ def test_badminton_removed_modes_use_spectator_prompt(lang, removed_mode):
 @pytest.mark.unit
 @pytest.mark.parametrize("lang", ("zh", "en", "ja", "ko", "ru", "es", "pt"))
 def test_badminton_quick_lines_mode_prompts_are_distinct_and_localized(lang):
-    spectator = prompts_game.get_badminton_quick_lines_prompt(lang, mode="spectator")
+    spectator = prompts_badminton.get_badminton_quick_lines_prompt(lang, mode="spectator")
 
-    prompt = prompts_game.get_badminton_quick_lines_prompt(lang, mode="duel")
+    prompt = prompts_badminton.get_badminton_quick_lines_prompt(lang, mode="duel")
     assert prompt != spectator
     if lang != "en":
         assert "Current mode is" not in prompt
@@ -1350,9 +1350,9 @@ def test_badminton_quick_lines_mode_prompts_are_distinct_and_localized(lang):
 @pytest.mark.unit
 @pytest.mark.parametrize("removed_mode", ("shooter", "timed", "horse"))
 def test_badminton_removed_modes_use_spectator_quick_lines_prompt(removed_mode):
-    spectator = prompts_game.get_badminton_quick_lines_prompt("zh", mode="spectator")
+    spectator = prompts_badminton.get_badminton_quick_lines_prompt("zh", mode="spectator")
 
-    assert prompts_game.get_badminton_quick_lines_prompt("zh", mode=removed_mode) == spectator
+    assert prompts_badminton.get_badminton_quick_lines_prompt("zh", mode=removed_mode) == spectator
 
 
 @pytest.mark.unit
@@ -1392,16 +1392,16 @@ def test_badminton_quick_lines_uses_dedicated_prompt_module_for_neko_core_locale
 
 @pytest.mark.unit
 def test_badminton_prompt_localizations_do_not_fallback_to_english():
-    english_spectator = prompts_game.get_badminton_system_prompt("en", mode="spectator")
-    english_duel = prompts_game.get_badminton_system_prompt("en", mode="duel")
-    english_quick = prompts_game.get_badminton_quick_lines_prompt("en", mode="spectator")
-    english_pregame = prompts_game.get_badminton_pregame_context_prompt("en")
+    english_spectator = prompts_badminton.get_badminton_system_prompt("en", mode="spectator")
+    english_duel = prompts_badminton.get_badminton_system_prompt("en", mode="duel")
+    english_quick = prompts_badminton.get_badminton_quick_lines_prompt("en", mode="spectator")
+    english_pregame = prompts_badminton.get_badminton_pregame_context_prompt("en")
 
     for lang in ("zh", "ja", "ko", "ru", "es", "pt"):
-        assert prompts_game.get_badminton_system_prompt(lang, mode="spectator") != english_spectator
-        assert prompts_game.get_badminton_system_prompt(lang, mode="duel") != english_duel
-        assert prompts_game.get_badminton_quick_lines_prompt(lang, mode="spectator") != english_quick
-        assert prompts_game.get_badminton_pregame_context_prompt(lang) != english_pregame
+        assert prompts_badminton.get_badminton_system_prompt(lang, mode="spectator") != english_spectator
+        assert prompts_badminton.get_badminton_system_prompt(lang, mode="duel") != english_duel
+        assert prompts_badminton.get_badminton_quick_lines_prompt(lang, mode="spectator") != english_quick
+        assert prompts_badminton.get_badminton_pregame_context_prompt(lang) != english_pregame
 
 
 @pytest.mark.unit
