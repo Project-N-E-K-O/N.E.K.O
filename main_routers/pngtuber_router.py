@@ -134,6 +134,13 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
     result["scale"] = raw.get("scale", 1)
     result["offset_x"] = raw.get("offset_x", 0)
     result["offset_y"] = raw.get("offset_y", 0)
+    try:
+        mobile_scale_default = min(float(result["scale"]), 1)
+    except (TypeError, ValueError):
+        mobile_scale_default = 1
+    result["mobile_scale"] = raw.get("mobile_scale", mobile_scale_default)
+    result["mobile_offset_x"] = raw.get("mobile_offset_x", 0)
+    result["mobile_offset_y"] = raw.get("mobile_offset_y", 0)
     result["mirror"] = bool(raw.get("mirror", False))
     result["source_type"] = raw.get("source_type") or "transparent_asset"
     result["source_format"] = model_json.get("source_format") or raw.get("source_format") or result["source_type"]

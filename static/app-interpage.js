@@ -1260,7 +1260,7 @@
                         restoredPngtuberContainer.classList.remove('hidden');
                         restoredPngtuberContainer.style.display = 'block';
                         restoredPngtuberContainer.style.visibility = 'visible';
-                        restoredPngtuberContainer.style.pointerEvents = 'auto';
+                        restoredPngtuberContainer.style.pointerEvents = 'none';
                         var restoredPngtuberImage = restoredPngtuberContainer.querySelector('.pngtuber-image');
                         if (restoredPngtuberImage) {
                             restoredPngtuberImage.style.visibility = 'visible';
@@ -1813,7 +1813,7 @@
                     pngtuberContainer.style.display = 'block';
                     pngtuberContainer.style.visibility = 'visible';
                     pngtuberContainer.classList.remove('hidden');
-                    pngtuberContainer.style.pointerEvents = 'auto';
+                    pngtuberContainer.style.pointerEvents = 'none';
                 }
                 var pngtuberImage = pngtuberContainer ? pngtuberContainer.querySelector('.pngtuber-image') : null;
                 if (pngtuberImage) {

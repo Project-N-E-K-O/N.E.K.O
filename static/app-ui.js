@@ -1544,7 +1544,7 @@
 
                 if (pngtuberContainer) {
                     prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');
+                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
                     const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
                     if (pngtuberImage) {
                         pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
