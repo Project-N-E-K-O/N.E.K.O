@@ -1,6 +1,6 @@
 param(
     [switch]$Once,
-    [string]$BaseUrl = "http://127.0.0.1:48911",
+    [string]$BaseUrl = "http://127.0.0.1:48916",
     [string]$ContextJsonPath = "",
     [int]$WarnLatencyMs = 5000,
     [int]$SlowLatencyMs = 10000

@@ -170,6 +170,13 @@ def _run_monitor_args(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_monitor_live_script_defaults_to_plugin_host_port() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tools" / "monitor_live.ps1"
+
+    assert '[string]$BaseUrl = "http://127.0.0.1:48916"' in script.read_text(encoding="utf-8")
+
+
 def test_monitor_live_script_reports_latest_response_latency(tmp_path: Path) -> None:
     completed = _run_monitor(tmp_path, _context_with_latency(3000))
 
