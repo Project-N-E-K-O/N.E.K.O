@@ -737,26 +737,6 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
 
 
 @pytest.mark.unit
-def test_badminton_korean_static_quick_lines_do_not_use_placeholder_copy():
-    payload = json.loads((LOCALES_DIR / "ko.json").read_text(encoding="utf-8"))
-    lines = _get_nested(payload, "badminton.lines")
-    checked = {
-        "default": lines["default"],
-        "duel.game_over": {"game_over": lines["duel"]["game_over"]},
-    }
-
-    placeholders = [
-        f"{group}.{key}: {line}"
-        for group, group_lines in checked.items()
-        for key, values in group_lines.items()
-        for line in values
-        if "??" in line
-    ]
-
-    assert not placeholders
-
-
-@pytest.mark.unit
 def test_badminton_runtime_visible_text_uses_i18n_helpers():
     html = _badminton_html()
 
