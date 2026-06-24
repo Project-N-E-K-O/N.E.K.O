@@ -258,21 +258,25 @@ def _infer_pngtuber_metadata_from_saved_image(idle_image: str, config_manager) -
     if len(parts) < 3:
         return ''
     source_prefix = parts[0]
-    model_folder = parts[1]
+    model_dir_parts = parts[1:-1]
     try:
         if source_prefix == 'static':
-            root = config_manager.project_root / 'static' / model_folder
+            root = config_manager.project_root / 'static'
             url_prefix = '/static'
         elif source_prefix == 'workshop':
-            root = config_manager.workshop_dir / model_folder
+            root = config_manager.workshop_dir
             url_prefix = '/workshop'
         else:
             return ''
+        for part in model_dir_parts:
+            root = root / part
+        if model_dir_parts:
+            url_prefix = f'{url_prefix}/{"/".join(model_dir_parts)}'
     except Exception:
         return ''
     for filename in PNGTUBER_METADATA_FILENAMES:
         if (root / filename).is_file():
-            return f'{url_prefix}/{model_folder}/{filename}'
+            return f'{url_prefix}/{filename}'
     return ''
 
 

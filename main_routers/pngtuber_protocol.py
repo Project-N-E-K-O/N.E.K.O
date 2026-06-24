@@ -114,10 +114,7 @@ def _validate_local_asset_ref(package_dir: Path, raw_path: str, *, label: str) -
 
 
 def _positive_int(value) -> bool:
-    try:
-        return int(value) > 0
-    except (TypeError, ValueError):
-        return False
+    return type(value) is int and value > 0
 
 
 def validate_neko_pngtuber_v2_package(package_dir: Path, model_json: dict) -> tuple[bool, str]:
@@ -298,10 +295,13 @@ def infer_pngtuber_metadata_from_idle(idle_path: str, config_manager) -> str:
     if len(parts) < 3 or parts[0] != PNGTUBER_USER_PATH.strip("/"):
         return ""
     model_folder = parts[1]
-    root = config_manager.pngtuber_dir / model_folder
+    safe_model_folder = safe_relative_path(model_folder)
+    if safe_model_folder is None:
+        return ""
+    root = config_manager.pngtuber_dir / safe_model_folder.as_posix()
     for filename in PNGTUBER_METADATA_FILENAMES:
         if (root / filename).is_file():
-            return f"{PNGTUBER_USER_PATH}/{model_folder}/{filename}"
+            return f"{PNGTUBER_USER_PATH}/{safe_model_folder.as_posix()}/{filename}"
     return ""
 
 

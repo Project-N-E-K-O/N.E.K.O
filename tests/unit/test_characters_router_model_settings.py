@@ -1,6 +1,7 @@
 import copy
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -376,6 +377,65 @@ async def test_pngtuber_save_infers_neko_v2_metadata_and_adapter(monkeypatch, tm
     assert pngtuber['adapter'] == 'neko_pngtuber_v2'
     assert pngtuber['protocol'] == 'neko.pngtuber.v2'
     assert get_reserved(catgirl, 'avatar', 'model_type') == 'pngtuber'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('source_prefix', 'root_attr', 'relative_dir'),
+    [
+        ('static', 'project_root', Path('static') / 'pngtuber' / 'nested'),
+        ('workshop', 'workshop_dir', Path('pack') / 'nested'),
+    ],
+)
+async def test_pngtuber_save_infers_metadata_from_idle_image_directory(
+    monkeypatch,
+    tmp_path,
+    source_prefix,
+    root_attr,
+    relative_dir,
+):
+    characters = _build_characters_fixture()
+    project_root = tmp_path / "project"
+    workshop_dir = tmp_path / "workshop"
+    model_dir = (project_root / relative_dir) if root_attr == 'project_root' else (workshop_dir / relative_dir)
+    model_dir.mkdir(parents=True)
+    (model_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
+
+    config_manager = DummyConfigManager(characters)
+    config_manager.project_root = project_root
+    config_manager.workshop_dir = workshop_dir
+
+    async def _noop_initialize():
+        return None
+
+    async def _noop_init_one(name, *, is_new=False):
+        return None
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
+
+    url_dir = f"/{source_prefix}/pngtuber/nested" if source_prefix == 'static' else f"/{source_prefix}/pack/nested"
+    response = await characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': f'{url_dir}/idle.png',
+                'talking_image': f'{url_dir}/talking.png',
+            },
+        }),
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = config_manager.saved_characters['猫娘']['测试角色']
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber', default={})
+    assert pngtuber['metadata'] == f'{url_dir}/metadata.neko-pngtuber.v2.json'
+    assert pngtuber['layered_metadata'] == f'{url_dir}/metadata.neko-pngtuber.v2.json'
+    assert pngtuber['adapter'] == 'neko_pngtuber_v2'
+    assert pngtuber['protocol'] == 'neko.pngtuber.v2'
 
 
 @pytest.mark.asyncio

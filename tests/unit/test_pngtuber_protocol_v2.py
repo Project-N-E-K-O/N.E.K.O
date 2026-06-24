@@ -5,6 +5,7 @@ from main_routers.pngtuber_protocol import (
     NEKO_PNGTUBER_ADAPTER,
     NEKO_PNGTUBER_METADATA_FORMAT,
     NEKO_PNGTUBER_PACKAGE_FORMAT,
+    infer_pngtuber_metadata_from_idle,
     is_neko_pngtuber_v2_model,
     validate_neko_pngtuber_v2_package,
 )
@@ -137,6 +138,54 @@ def test_neko_pngtuber_v2_validator_rejects_missing_layer_asset(tmp_path):
 
     assert ok is False
     assert "metadata.layers[4].image" in error
+
+
+def test_neko_pngtuber_v2_validator_rejects_non_integer_dimensions(tmp_path):
+    package_dir = tmp_path / "sample"
+    package_dir.mkdir()
+    model_json = _write_minimal_neko_pngtuber_v2_package(package_dir)
+    metadata_path = package_dir / "metadata.neko-pngtuber.v2.json"
+
+    invalid_values = [
+        ("canvas", "width", 1.5, "canvas"),
+        ("canvas", "height", "2", "canvas"),
+        ("root", "state_count", True, "state_count"),
+    ]
+    for section, key, value, expected_error in invalid_values:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if section == "canvas":
+            metadata["canvas"][key] = value
+        else:
+            metadata[key] = value
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
+
+        assert ok is False, f"{key} accepted invalid value {value!r}"
+        assert expected_error in error
+
+        _write_minimal_neko_pngtuber_v2_package(package_dir)
+
+
+def test_infer_pngtuber_metadata_rejects_unsafe_user_model_folder(tmp_path):
+    pngtuber_dir = tmp_path / "pngtuber"
+    outside_dir = tmp_path / "outside"
+    pngtuber_dir.mkdir()
+    outside_dir.mkdir()
+    (outside_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
+
+    class ConfigManager:
+        pass
+
+    config_manager = ConfigManager()
+    config_manager.pngtuber_dir = pngtuber_dir
+
+    inferred = infer_pngtuber_metadata_from_idle(
+        "/user_pngtuber/../outside/idle.png",
+        config_manager,
+    )
+
+    assert inferred == ""
 
 
 def test_neko_pngtuber_v2_validator_rejects_unsafe_package_paths(tmp_path):

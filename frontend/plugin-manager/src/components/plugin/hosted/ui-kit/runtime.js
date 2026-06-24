@@ -193,20 +193,29 @@ function isImageDataUrl(value) {
   return /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(String(value || ''));
 }
 function hostedAbsoluteUrl(href) {
-  const text = String(href || '').trim();
+  const text = String(href ?? '').trim();
   if (!text) return '';
+  if (!isSafeUrl(text)) return '';
   try {
-    return new URL(text).toString();
+    const absolute = new URL(text).toString();
+    return isSafeUrl(absolute) ? absolute : '';
   } catch (_) {}
   const payload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
   const host = payload.host && typeof payload.host === 'object' ? payload.host : {};
   const origin = typeof host.origin === 'string' ? host.origin : '';
   if (!origin) return text;
   try {
-    return new URL(text, origin).toString();
+    const absolute = new URL(text, origin).toString();
+    return isSafeUrl(absolute) ? absolute : '';
   } catch (_) {
-    return text;
+    return '';
   }
+}
+function hostedTargetOrigin() {
+  const payload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
+  const host = payload.host && typeof payload.host === 'object' ? payload.host : {};
+  const origin = typeof host.origin === 'string' ? host.origin.trim() : '';
+  return origin || '*';
 }
 function safeInsert(parentDom, node, anchor) {
   const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;
@@ -836,7 +845,7 @@ function Input(props) {
   return h('input', {
     className: 'neko-input ' + (props.className || ''),
     type: props.type || 'text',
-    value: props.value || '',
+    value: props.value ?? '',
     placeholder: props.placeholder || '',
     min: props.min,
     max: props.max,
@@ -880,10 +889,10 @@ function Slider(props) {
     props.showValue === false ? null : h('output', { className: 'neko-slider-value' }, String(value))
   );
 }
-function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value || '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value ?? '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
   const options = normalizeOptions(props.options);
-  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
+  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value ?? '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
     options.map((option) => {
       const value = optionValue(option);
       const label = optionLabel(option);
@@ -1051,10 +1060,11 @@ function FileDownload(props) {
   const label = props.label || props.children || props.filename || 'Download';
   const copyText = props.path || href;
   const openHref = () => {
+    if (!isSafeUrl(href)) return;
     const url = hostedAbsoluteUrl(href);
-    if (!url) return;
+    if (!url || !isSafeUrl(url)) return;
     try {
-      parent.postMessage({ type: 'neko-hosted-surface-open-external', payload: { url } }, '*');
+      parent.postMessage({ type: 'neko-hosted-surface-open-external', payload: { url } }, hostedTargetOrigin());
     } catch (error) {
       reportHostedRuntimeError('FileDownload.open', error);
     }
