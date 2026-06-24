@@ -174,7 +174,8 @@ def save_tutorial_choices_state(state: dict[str, Any], config_manager=None) -> d
 
 
 def _character_last_updated(character: Any) -> int:
-    """该角色所有天里最大的 updated_at，用于到角色上限时淘汰最久未更新的一个。"""
+    """Latest updated_at across the character's days; used to evict the
+    least-recently-updated character when the character cap is reached."""
     if not isinstance(character, dict):
         return 0
     days = character.get("days")
