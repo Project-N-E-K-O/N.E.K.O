@@ -4673,7 +4673,10 @@
                  ]
              },
              "playerIceScore": [
-                 "Mmph, that does not count. Do it over!"
+                 "Mmph, that does not count. Do it over!",
+                 "Wait, I was frozen. That point needs a replay!",
+                 "That ice helped too much. Run that one back!",
+                 "No fair, I could not move!"
              ],
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",

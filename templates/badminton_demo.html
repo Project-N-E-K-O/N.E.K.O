@@ -6332,7 +6332,10 @@
   }
   function maybeYuiReturnIncomingShuttle(ball) {
     if (!isDuelMode() || !ball || ball.resolved || game.pendingSwing) return false;
-    if (isYuiFrozen()) return false;
+    if (isYuiFrozen()) {
+      ball.scoredDuringYuiFreeze = true;
+      return false;
+    }
     if (ball.shooter !== 'player' || ball.direction !== 1 || !ball.crossedNet) return false;
     var contact = getYuiShotOrigin();
     var shuttleCourtY = getShuttleCourtY(ball, false);
@@ -6629,7 +6632,7 @@
     recordShotHistory(game.attemptsResults[game.attemptsResults.length - 1]);
     playShotResultSound(shotType, scored);
     showYuiDuelResultEmote(scored, shotType, ball, pointWinner);
-    var playerIceScore = pointWinner === 'player' && shooter === 'player' && isYuiFrozen();
+    var playerIceScore = pointWinner === 'player' && shooter === 'player' && !!(ball && ball.scoredDuringYuiFreeze);
     if (playerIceScore) showYuiPlayerIceScoreLine();
     var cheatScoreTauntKind = getYuiCheatScoreTauntKind(pointWinner);
     if (cheatScoreTauntKind) showYuiCheatScoreLine(cheatScoreTauntKind);
@@ -9058,6 +9061,8 @@
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     if (!isDuelMode() || !isYuiFrozen(t) || !isYuiFrozenCrystalSpriteReady()) {
       yuiFrozenCrystalOverlay.dataset.active = '0';
+      yuiFrozenCrystalOverlay.style.left = '-9999px';
+      yuiFrozenCrystalOverlay.style.top = '-9999px';
       yuiFrozenCrystalOverlay.style.transform = 'translate3d(-9999px, -9999px, 0)';
       return;
     }

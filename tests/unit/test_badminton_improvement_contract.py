@@ -741,7 +741,7 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         assert len(_get_nested(payload, "badminton.lines.yuiCheat.octopus")) >= 4
         assert len(_get_nested(payload, "badminton.lines.yuiCheatScore.banana")) >= 4
         assert len(_get_nested(payload, "badminton.lines.yuiCheatScore.octopus")) >= 4
-        assert len(_get_nested(payload, "badminton.lines.playerIceScore")) >= 1
+        assert len(_get_nested(payload, "badminton.lines.playerIceScore")) >= 4
         if locale_path.name == "zh-CN.json":
             assert "唔不算嘛不算嘛重来！" in _get_nested(payload, "badminton.lines.playerIceScore")
 
@@ -3060,6 +3060,8 @@ def test_badminton_player_ice_powerup_uses_preloaded_png_sprite():
     assert "ctx.drawImage(playerIcePowerupSpriteImage, -drawW / 2, -drawH * 0.86, drawW, drawH);" in draw_section
     assert "function updateYuiFrozenCrystalOverlay(now) {" in draw_section
     assert "if (!isDuelMode() || !isYuiFrozen(t) || !isYuiFrozenCrystalSpriteReady()) {" in draw_section
+    assert "yuiFrozenCrystalOverlay.style.left = '-9999px';" in draw_section
+    assert "yuiFrozenCrystalOverlay.style.top = '-9999px';" in draw_section
     assert "yuiFrozenCrystalOverlay.style.transform = 'translate(-50%, -82%) scale('" in draw_section
     assert "ctx.drawImage(yuiFrozenCrystalSpriteImage" not in draw_section
     assert "ctx.createLinearGradient" not in draw_section
@@ -3100,7 +3102,9 @@ def test_badminton_player_ice_powerup_freezes_yui():
 
     yui_return_start = html.index("function maybeYuiReturnIncomingShuttle(ball) {")
     yui_return_section = html[yui_return_start:html.index("function maybePlayerReceiveIncomingShuttle(ball)", yui_return_start)]
-    assert "if (isYuiFrozen()) return false;" in yui_return_section
+    assert "if (isYuiFrozen()) {" in yui_return_section
+    assert "ball.scoredDuringYuiFreeze = true;" in yui_return_section
+    assert "return false;" in yui_return_section
 
     neko_turn_start = html.index("function startNekoDuelTurn() {")
     neko_turn_section = html[neko_turn_start:html.index("function scheduleNekoDuelTurn()", neko_turn_start)]
@@ -3306,7 +3310,7 @@ def test_badminton_yui_cheat_items_warn_player_with_bubble_lines():
     assert "kind: 'yui_cheat_hit'," in html
     finish_start = html.index("function finishDuelShot(scored, shotType, ball) {")
     finish_section = html[finish_start:html.index("function finishShot(scored, shotType, ball) {", finish_start)]
-    assert "var playerIceScore = pointWinner === 'player' && shooter === 'player' && isYuiFrozen();" in finish_section
+    assert "var playerIceScore = pointWinner === 'player' && shooter === 'player' && !!(ball && ball.scoredDuringYuiFreeze);" in finish_section
     assert "if (playerIceScore) showYuiPlayerIceScoreLine();" in finish_section
     assert "var cheatScoreTauntKind = getYuiCheatScoreTauntKind(pointWinner);" in finish_section
     assert "if (cheatScoreTauntKind) showYuiCheatScoreLine(cheatScoreTauntKind);" in finish_section
@@ -3344,6 +3348,11 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
 
     assert "function maybeYuiReturnIncomingShuttle(ball) {" in html
+    yui_return_start = html.index("function maybeYuiReturnIncomingShuttle(ball) {")
+    yui_return_section = html[yui_return_start:html.index("function finishDuelShot(", yui_return_start)]
+    assert "if (isYuiFrozen()) {" in yui_return_section
+    assert "ball.scoredDuringYuiFreeze = true;" in yui_return_section
+    assert "return false;" in yui_return_section
     assert "if (ball.shooter !== 'player' || ball.direction !== 1 || !ball.crossedNet) return false;" in html
     assert "var contact = getYuiShotOrigin();" in html
     assert "var shuttleCourtY = getShuttleCourtY(ball, false);" in html

@@ -4673,7 +4673,10 @@
                  ]
              },
              "playerIceScore": [
-                 "Mmm, eso no cuenta. ¡Otra vez!"
+                 "Mmm, eso no cuenta. ¡Otra vez!",
+                 "Espera, estaba congelada. ¡Ese punto se repite!",
+                 "Ese hielo ayudó demasiado. ¡Otra vez!",
+                 "No vale, no podía moverme."
              ],
              "easterEgg": {
                  "lateNight": "¿Sigues golpeando tan tarde?",
