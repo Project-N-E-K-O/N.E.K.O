@@ -2511,7 +2511,15 @@ function CompactChatApp({
     for (let i = memeIdx + 1; i < messages.length; i += 1) {
       const later = messages[i];
       if (later?.role === 'user') return null;
-      if (memeTurnId && typeof later?.turnId === 'string' && later.turnId && later.turnId !== memeTurnId) {
+      // 仅「不同 turnId 的助手发言」算新一轮换场；tool/system 不是发言、且通常与 assistant 同轮，
+      // 不参与收起（更新的表情包另由上面「从尾部取最新 meme」自然替换，不走这里）。
+      if (
+        later?.role === 'assistant'
+        && memeTurnId
+        && typeof later.turnId === 'string'
+        && later.turnId
+        && later.turnId !== memeTurnId
+      ) {
         return null;
       }
     }

@@ -805,6 +805,23 @@ describe('App', () => {
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
   });
 
+  it('keeps the meme overlay when a non-assistant (tool/system) message with a different turnId follows', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    // 只有「不同 turnId 的助手发言」算换场；tool/system 不是发言，不该顶掉图。
+    const meme = parseChatMessage({
+      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
+    });
+    const toolMsg = parseChatMessage({
+      id: 'tool-x', role: 'tool', author: 'Tool', time: '10:01', createdAt: 2, turnId: 'turn-2',
+      blocks: [{ type: 'text', text: 'tool result' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, toolMsg]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
+  });
+
   it('hides the proactive meme overlay while compact history is open', () => {
     const meme = parseChatMessage({
       id: 'meme-visible-in-history',
