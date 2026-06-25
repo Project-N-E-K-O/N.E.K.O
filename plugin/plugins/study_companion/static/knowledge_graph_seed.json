@@ -6,7 +6,7 @@
     {
       "path": "knowledge_seeds/math.json",
       "subject": "math",
-      "topic_count": 403
+      "topic_count": 408
     },
     {
       "path": "knowledge_seeds/english.json",
@@ -58,5 +58,6 @@
       "subject": "economics",
       "topic_count": 30
     }
-  ]
+  ],
+  "total_topics": 771
 }

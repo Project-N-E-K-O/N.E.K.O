@@ -14,17 +14,35 @@
       "prerequisites": [
         {
           "id": "mathematical_modeling",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 数学建模与应用题审题 before 稀缺性与机会成本; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "mathematical_modeling",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "稀缺性与机会成本 and 数学建模与应用题审题 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_ppf",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 生产可能性边界 after 稀缺性与机会成本; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -78,7 +96,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_ppf",
@@ -92,17 +111,35 @@
       "prerequisites": [
         {
           "id": "college_econ_scarcity_opportunity_cost",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 稀缺性与机会成本 before 生产可能性边界; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_scarcity_opportunity_cost",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "生产可能性边界 and 稀缺性与机会成本 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_demand_supply",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 需求供给模型 after 生产可能性边界; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -156,7 +193,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_demand_supply",
@@ -170,17 +208,35 @@
       "prerequisites": [
         {
           "id": "college_econ_ppf",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 生产可能性边界 before 需求供给模型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_ppf",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "需求供给模型 and 生产可能性边界 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_elasticity",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 弹性分析 after 需求供给模型; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -234,7 +290,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_elasticity",
@@ -248,17 +305,35 @@
       "prerequisites": [
         {
           "id": "college_micro_demand_supply",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 需求供给模型 before 弹性分析; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_demand_supply",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "弹性分析 and 需求供给模型 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_consumer_choice",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 消费者选择 after 弹性分析; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -312,7 +387,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_consumer_choice",
@@ -326,17 +402,35 @@
       "prerequisites": [
         {
           "id": "college_micro_elasticity",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 弹性分析 before 消费者选择; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_elasticity",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "消费者选择 and 弹性分析 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_utility_marginal",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 边际效用递减 after 消费者选择; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -390,7 +484,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_utility_marginal",
@@ -404,17 +499,35 @@
       "prerequisites": [
         {
           "id": "college_micro_consumer_choice",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 消费者选择 before 边际效用递减; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_consumer_choice",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "边际效用递减 and 消费者选择 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_cost_short_run",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 短期成本曲线 after 边际效用递减; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -468,7 +581,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_cost_short_run",
@@ -482,17 +596,35 @@
       "prerequisites": [
         {
           "id": "college_micro_utility_marginal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 边际效用递减 before 短期成本曲线; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_utility_marginal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "短期成本曲线 and 边际效用递减 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_firm_profit",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 厂商利润最大化 after 短期成本曲线; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -546,7 +678,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_firm_profit",
@@ -560,17 +693,35 @@
       "prerequisites": [
         {
           "id": "college_micro_cost_short_run",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 短期成本曲线 before 厂商利润最大化; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_cost_short_run",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "厂商利润最大化 and 短期成本曲线 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_perfect_competition",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 完全竞争市场 after 厂商利润最大化; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -624,7 +775,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_perfect_competition",
@@ -638,17 +790,35 @@
       "prerequisites": [
         {
           "id": "college_micro_firm_profit",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 厂商利润最大化 before 完全竞争市场; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_firm_profit",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "完全竞争市场 and 厂商利润最大化 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_monopoly",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 垄断市场 after 完全竞争市场; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -702,7 +872,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_monopoly",
@@ -716,17 +887,35 @@
       "prerequisites": [
         {
           "id": "college_micro_perfect_competition",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 完全竞争市场 before 垄断市场; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_perfect_competition",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "垄断市场 and 完全竞争市场 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_externality",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 外部性与矫正政策 after 垄断市场; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -780,7 +969,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_externality",
@@ -794,17 +984,35 @@
       "prerequisites": [
         {
           "id": "college_micro_monopoly",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 垄断市场 before 外部性与矫正政策; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_monopoly",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "外部性与矫正政策 and 垄断市场 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_micro_public_goods",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 公共物品与搭便车 after 外部性与矫正政策; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -858,7 +1066,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_micro_public_goods",
@@ -872,17 +1081,35 @@
       "prerequisites": [
         {
           "id": "college_micro_externality",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 外部性与矫正政策 before 公共物品与搭便车; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_externality",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "公共物品与搭便车 and 外部性与矫正政策 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_gdp_accounting",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice GDP 核算 after 公共物品与搭便车; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -936,7 +1163,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_gdp_accounting",
@@ -950,17 +1178,35 @@
       "prerequisites": [
         {
           "id": "college_micro_public_goods",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 公共物品与搭便车 before GDP 核算; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_micro_public_goods",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "GDP 核算 and 公共物品与搭便车 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_cpi_inflation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice CPI 与通货膨胀 after GDP 核算; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1014,7 +1260,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_cpi_inflation",
@@ -1028,17 +1275,35 @@
       "prerequisites": [
         {
           "id": "college_macro_gdp_accounting",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master GDP 核算 before CPI 与通货膨胀; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_gdp_accounting",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "CPI 与通货膨胀 and GDP 核算 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_unemployment",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 失业类型 after CPI 与通货膨胀; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1092,7 +1357,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_unemployment",
@@ -1106,17 +1372,35 @@
       "prerequisites": [
         {
           "id": "college_macro_cpi_inflation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master CPI 与通货膨胀 before 失业类型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_cpi_inflation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "失业类型 and CPI 与通货膨胀 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_aggregate_demand_supply",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 总需求总供给模型 after 失业类型; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1170,7 +1454,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_aggregate_demand_supply",
@@ -1184,17 +1469,35 @@
       "prerequisites": [
         {
           "id": "college_macro_unemployment",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 失业类型 before 总需求总供给模型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_unemployment",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "总需求总供给模型 and 失业类型 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_multiplier",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 乘数效应 after 总需求总供给模型; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1248,7 +1551,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_multiplier",
@@ -1262,17 +1566,35 @@
       "prerequisites": [
         {
           "id": "college_macro_aggregate_demand_supply",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 总需求总供给模型 before 乘数效应; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_aggregate_demand_supply",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "乘数效应 and 总需求总供给模型 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_fiscal_policy",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 财政政策 after 乘数效应; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1326,7 +1648,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_fiscal_policy",
@@ -1340,17 +1663,35 @@
       "prerequisites": [
         {
           "id": "college_macro_multiplier",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 乘数效应 before 财政政策; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_multiplier",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "财政政策 and 乘数效应 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_money_banking",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 货币与银行体系 after 财政政策; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1404,7 +1745,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_money_banking",
@@ -1418,17 +1760,35 @@
       "prerequisites": [
         {
           "id": "college_macro_fiscal_policy",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 财政政策 before 货币与银行体系; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_fiscal_policy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "货币与银行体系 and 财政政策 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_monetary_policy",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 货币政策 after 货币与银行体系; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1482,7 +1842,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_monetary_policy",
@@ -1496,17 +1857,35 @@
       "prerequisites": [
         {
           "id": "college_macro_money_banking",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 货币与银行体系 before 货币政策; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_money_banking",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "货币政策 and 货币与银行体系 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_macro_exchange_rate",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 汇率与国际收支 after 货币政策; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1560,7 +1939,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_macro_exchange_rate",
@@ -1574,17 +1954,35 @@
       "prerequisites": [
         {
           "id": "college_macro_monetary_policy",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 货币政策 before 汇率与国际收支; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_monetary_policy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "汇率与国际收支 and 货币政策 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_growth_productivity",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 经济增长与生产率 after 汇率与国际收支; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1638,7 +2036,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_growth_productivity",
@@ -1652,17 +2051,35 @@
       "prerequisites": [
         {
           "id": "college_macro_exchange_rate",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 汇率与国际收支 before 经济增长与生产率; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_macro_exchange_rate",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "经济增长与生产率 and 汇率与国际收支 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_game_prisoner",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 博弈论囚徒困境 after 经济增长与生产率; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1716,7 +2133,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_game_prisoner",
@@ -1730,17 +2148,35 @@
       "prerequisites": [
         {
           "id": "college_econ_growth_productivity",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 经济增长与生产率 before 博弈论囚徒困境; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_growth_productivity",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "博弈论囚徒困境 and 经济增长与生产率 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_information_asymmetry",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 信息不对称 after 博弈论囚徒困境; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1794,7 +2230,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_information_asymmetry",
@@ -1808,17 +2245,35 @@
       "prerequisites": [
         {
           "id": "college_econ_game_prisoner",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 博弈论囚徒困境 before 信息不对称; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_game_prisoner",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "信息不对称 and 博弈论囚徒困境 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_cost_benefit",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 成本收益分析 after 信息不对称; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1872,7 +2327,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_cost_benefit",
@@ -1886,17 +2342,35 @@
       "prerequisites": [
         {
           "id": "college_econ_information_asymmetry",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 信息不对称 before 成本收益分析; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_information_asymmetry",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "成本收益分析 and 信息不对称 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_data_graph",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 经济数据图表解读 after 成本收益分析; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1950,7 +2424,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_data_graph",
@@ -1964,17 +2439,35 @@
       "prerequisites": [
         {
           "id": "college_econ_cost_benefit",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 成本收益分析 before 经济数据图表解读; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_cost_benefit",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "经济数据图表解读 and 成本收益分析 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_index_real_nominal",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 名义量与实际量 after 经济数据图表解读; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2028,7 +2521,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_index_real_nominal",
@@ -2042,17 +2536,35 @@
       "prerequisites": [
         {
           "id": "college_econ_data_graph",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 经济数据图表解读 before 名义量与实际量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_data_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "名义量与实际量 and 经济数据图表解读 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_policy_tradeoff",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 政策权衡分析 after 名义量与实际量; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2106,7 +2618,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_policy_tradeoff",
@@ -2120,17 +2633,35 @@
       "prerequisites": [
         {
           "id": "college_econ_index_real_nominal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 名义量与实际量 before 政策权衡分析; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_index_real_nominal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "政策权衡分析 and 名义量与实际量 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_market_failure_synthesis",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 市场失灵综合 after 政策权衡分析; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2184,7 +2715,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_market_failure_synthesis",
@@ -2198,17 +2730,35 @@
       "prerequisites": [
         {
           "id": "college_econ_policy_tradeoff",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 政策权衡分析 before 市场失灵综合; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_policy_tradeoff",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "市场失灵综合 and 政策权衡分析 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_econ_exam_model_answer",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 经济学规范作答 after 市场失灵综合; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2262,7 +2812,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     },
     {
       "id": "college_econ_exam_model_answer",
@@ -2276,13 +2827,26 @@
       "prerequisites": [
         {
           "id": "college_econ_market_failure_synthesis",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 市场失灵综合 before 经济学规范作答; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_econ_market_failure_synthesis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "经济学规范作答 and 市场失灵综合 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2336,7 +2900,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "economics"
     }
   ]
 }

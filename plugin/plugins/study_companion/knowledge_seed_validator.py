@@ -24,6 +24,38 @@ NON_EMPTY_LIST_FIELDS = (
 )
 RESERVED_CONTEXT_FIELDS = ("curriculum_version", "exam_region", "exam_type")
 TAXONOMY_FILE_NAME = "knowledge_seed_taxonomy.json"
+ALLOWED_EDGE_RELATIONS = {
+    "prerequisite",
+    "application",
+    "procedure_step",
+    "confusable",
+    "extends",
+    "analogy",
+    "co_occurs",
+    "supports",
+    # Legacy seed/UI values accepted during migration.
+    "related",
+    "similar",
+    "next",
+    "nearby",
+    "compare",
+}
+SEMANTIC_EDGE_RELATIONS = {
+    "application",
+    "procedure_step",
+    "confusable",
+    "co_occurs",
+    "supports",
+    "analogy",
+}
+TYPED_EDGE_REQUIRED_FIELDS = ("id", "relation", "reason")
+ALLOWED_EDGE_USE_CASES = {
+    "diagnosis",
+    "hint_generation",
+    "learning_path",
+    "practice_planning",
+    "review",
+}
 
 
 @dataclass(frozen=True)
@@ -46,6 +78,7 @@ class KnowledgeSeedTopic:
 class KnowledgeSeedValidationResult:
     topics: tuple[KnowledgeSeedTopic, ...]
     issues: tuple[KnowledgeSeedIssue, ...]
+    report: dict[str, Any] | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -380,8 +413,87 @@ def _validate_examples(
 
 def _ref_id(value: Any) -> str:
     if isinstance(value, dict):
-        return str(value.get("id") or "").strip()
+        return str(value.get("id") or value.get("topic_id") or "").strip()
     return str(value or "").strip()
+
+
+def _edge_relation(field: str, value: Any) -> str:
+    if isinstance(value, dict):
+        relation = str(value.get("relation") or "").strip()
+        if relation:
+            return relation
+    return "prerequisite" if field == "prerequisites" else "co_occurs"
+
+
+def _is_typed_edge(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    relation = str(value.get("relation") or "").strip()
+    return bool(
+        value.get("reason")
+        or value.get("use_cases")
+        or relation in SEMANTIC_EDGE_RELATIONS
+    )
+
+
+def _validate_typed_edge(
+    *,
+    field: str,
+    ref: Any,
+    topic: KnowledgeSeedTopic,
+    issues: list[KnowledgeSeedIssue],
+) -> None:
+    if not isinstance(ref, dict):
+        return
+    source_id = str(topic.data.get("id") or "").strip()
+    relation = _edge_relation(field, ref)
+    if relation not in ALLOWED_EDGE_RELATIONS:
+        issues.append(
+            KnowledgeSeedIssue(
+                "unknown_edge_relation",
+                f"{field} contains unknown relation: {relation}",
+                str(topic.path),
+                source_id,
+            )
+        )
+    if _is_typed_edge(ref):
+        for required_field in TYPED_EDGE_REQUIRED_FIELDS:
+            if required_field == "relation" and field == "prerequisites":
+                continue
+            if not str(ref.get(required_field) or "").strip():
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "invalid_typed_edge",
+                        f"{field} typed edge missing required field: {required_field}",
+                        str(topic.path),
+                        source_id,
+                    )
+                )
+    use_cases = ref.get("use_cases")
+    if use_cases is not None and not (
+        isinstance(use_cases, list)
+        and all(str(item).strip() for item in use_cases)
+    ):
+        issues.append(
+            KnowledgeSeedIssue(
+                "invalid_typed_edge",
+                f"{field} typed edge use_cases must be a non-empty string list",
+                str(topic.path),
+                source_id,
+            )
+        )
+    elif isinstance(use_cases, list):
+        for use_case in use_cases:
+            normalized = str(use_case).strip()
+            if normalized not in ALLOWED_EDGE_USE_CASES:
+                issues.append(
+                    KnowledgeSeedIssue(
+                        "unknown_edge_use_case",
+                        f"{field} typed edge contains unknown use_case: {normalized}",
+                        str(topic.path),
+                        source_id,
+                    )
+                )
 
 
 def _validate_references(
@@ -396,6 +508,7 @@ def _validate_references(
             if not isinstance(refs, list):
                 continue
             for ref in refs:
+                _validate_typed_edge(field=field, ref=ref, topic=topic, issues=issues)
                 target_id = _ref_id(ref)
                 if not target_id:
                     issues.append(
@@ -418,12 +531,150 @@ def _validate_references(
                     )
 
 
+def _find_prerequisite_cycle_nodes(prerequisite_edges: dict[str, set[str]]) -> set[str]:
+    cycle_nodes: set[str] = set()
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str, path: tuple[str, ...]) -> None:
+        if node in visiting:
+            cycle_nodes.update(path[path.index(node):])
+            return
+        if node in visited:
+            return
+        visiting.add(node)
+        for parent in prerequisite_edges.get(node, set()):
+            if parent in prerequisite_edges:
+                visit(parent, (*path, node))
+        visiting.discard(node)
+        visited.add(node)
+
+    for topic_id in prerequisite_edges:
+        visit(topic_id, ())
+    return cycle_nodes
+
+
+def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, Any]:
+    topic_ids = {str(topic.data.get("id") or "").strip() for topic in topics}
+    topic_ids.discard("")
+    inbound: dict[str, int] = {topic_id: 0 for topic_id in topic_ids}
+    outbound: dict[str, int] = {topic_id: 0 for topic_id in topic_ids}
+    stage_counts: dict[str, int] = {}
+    subject_counts: dict[str, int] = {}
+    edge_counts: dict[str, int] = {}
+    typed_edges = 0
+    legacy_edges = 0
+    missing_stage = 0
+    missing_college_course_family: list[str] = []
+    over_connected_topics: list[str] = []
+    duplicate_name_keys: dict[str, int] = {}
+    prerequisite_edges: dict[str, set[str]] = {}
+
+    for topic in topics:
+        topic_id = str(topic.data.get("id") or "").strip()
+        stage = topic.stage or "<missing>"
+        subject = topic.subject or "<missing>"
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        subject_counts[subject] = subject_counts.get(subject, 0) + 1
+        if not topic.stage:
+            missing_stage += 1
+        if topic.stage == "college" and not str(
+            topic.data.get("course_family") or ""
+        ).strip():
+            missing_college_course_family.append(topic_id)
+        name_key = "|".join(
+            [
+                subject,
+                stage,
+                str(topic.data.get("name") or "").strip(),
+            ]
+        )
+        duplicate_name_keys[name_key] = duplicate_name_keys.get(name_key, 0) + 1
+        local_edges = 0
+        for field in ("prerequisites", "related"):
+            refs = topic.data.get(field)
+            if not isinstance(refs, list):
+                continue
+            for ref in refs:
+                target_id = _ref_id(ref)
+                if not target_id:
+                    continue
+                relation = _edge_relation(field, ref)
+                edge_counts[relation] = edge_counts.get(relation, 0) + 1
+                local_edges += 1
+                if _is_typed_edge(ref):
+                    typed_edges += 1
+                else:
+                    legacy_edges += 1
+                if topic_id:
+                    outbound[topic_id] = outbound.get(topic_id, 0) + 1
+                if target_id in inbound:
+                    inbound[target_id] = inbound.get(target_id, 0) + 1
+                if field == "prerequisites" and topic_id:
+                    prerequisite_edges.setdefault(topic_id, set()).add(target_id)
+        if local_edges > 24 and topic_id:
+            over_connected_topics.append(topic_id)
+
+    isolated_topics = sorted(
+        topic_id
+        for topic_id in topic_ids
+        if inbound.get(topic_id, 0) == 0 and outbound.get(topic_id, 0) == 0
+    )
+    duplicate_names = sum(1 for count in duplicate_name_keys.values() if count > 1)
+
+    cycle_nodes = _find_prerequisite_cycle_nodes(prerequisite_edges)
+
+    return {
+        "topic_count": len(topics),
+        "edge_count": typed_edges + legacy_edges,
+        "typed_edges": typed_edges,
+        "legacy_edges": legacy_edges,
+        "missing_stage": missing_stage,
+        "missing_college_course_family": len(missing_college_course_family),
+        "isolated_nodes": len(isolated_topics),
+        "over_connected_nodes": len(over_connected_topics),
+        "duplicate_name_keys": duplicate_names,
+        "cycles_in_prerequisites": len(cycle_nodes),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "subject_counts": dict(sorted(subject_counts.items())),
+        "relation_counts": dict(sorted(edge_counts.items())),
+        "sample_isolated_nodes": isolated_topics[:10],
+        "sample_missing_college_course_family": sorted(missing_college_course_family)[:10],
+        "sample_over_connected_nodes": sorted(over_connected_topics)[:10],
+        "sample_prerequisite_cycle_nodes": sorted(cycle_nodes)[:10],
+    }
+
+
+def _validate_graph_quality(
+    topics: tuple[KnowledgeSeedTopic, ...],
+    report: dict[str, Any],
+    issues: list[KnowledgeSeedIssue],
+) -> None:
+    if not report.get("cycles_in_prerequisites"):
+        return
+    topic_by_id = {
+        str(topic.data.get("id") or "").strip(): topic
+        for topic in topics
+        if str(topic.data.get("id") or "").strip()
+    }
+    for topic_id in report.get("sample_prerequisite_cycle_nodes", []):
+        topic = topic_by_id.get(str(topic_id))
+        issues.append(
+            KnowledgeSeedIssue(
+                "prerequisite_cycle",
+                "prerequisites must not form a cycle",
+                str(topic.path if topic else ""),
+                str(topic_id),
+            )
+        )
+
+
 def validate_knowledge_seed_manifest(path: Path | str) -> KnowledgeSeedValidationResult:
     manifest_path = Path(path).resolve()
     issues: list[KnowledgeSeedIssue] = []
     manifest_payload = _read_json(manifest_path, issues)
     if manifest_payload is None:
-        return KnowledgeSeedValidationResult((), tuple(issues))
+        return KnowledgeSeedValidationResult((), tuple(issues), _build_quality_report(()))
     taxonomy = _load_taxonomy(manifest_path, issues)
 
     topics: list[KnowledgeSeedTopic] = []
@@ -495,7 +746,39 @@ def validate_knowledge_seed_manifest(path: Path | str) -> KnowledgeSeedValidatio
                     )
                 )
 
-    return KnowledgeSeedValidationResult(tuple(topics), tuple(issues))
+    topic_tuple = tuple(topics)
+    report = _build_quality_report(topic_tuple)
+    _validate_graph_quality(topic_tuple, report, issues)
+    return KnowledgeSeedValidationResult(
+        topic_tuple,
+        tuple(issues),
+        report,
+    )
+
+
+def _format_quality_report(report: dict[str, Any] | None) -> list[str]:
+    if not report:
+        return []
+    lines = ["Knowledge Seed Quality Report"]
+    for key in (
+        "topic_count",
+        "edge_count",
+        "typed_edges",
+        "legacy_edges",
+        "missing_stage",
+        "missing_college_course_family",
+        "isolated_nodes",
+        "over_connected_nodes",
+        "duplicate_name_keys",
+        "cycles_in_prerequisites",
+    ):
+        lines.append(f"{key}: {report.get(key, 0)}")
+    relation_counts = report.get("relation_counts")
+    if isinstance(relation_counts, dict) and relation_counts:
+        lines.append("relation_counts:")
+        for relation, count in relation_counts.items():
+            lines.append(f"  {relation}: {count}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -508,6 +791,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     result = validate_knowledge_seed_manifest(Path(args.path))
+    for line in _format_quality_report(result.report):
+        print(line)
     if result.is_valid:
         print(f"validated {len(result.topics)} knowledge seed topics")
         return 0

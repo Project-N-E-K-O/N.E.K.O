@@ -2062,10 +2062,22 @@ pre,
 }
 
 .knowledge-edge-row__target {
+  display: grid;
+  gap: 2px;
   min-width: 0;
   color: var(--muted);
   font-weight: 800;
   overflow-wrap: anywhere;
+}
+
+.knowledge-edge-row__reason {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .knowledge-edge-more {

@@ -274,8 +274,21 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
                 "subject": "math",
                 "chapter": "1",
                 "stage": "senior_high",
-                "prerequisites": [{"id": "topic-pre", "required_mastery": 0.7}],
-                "related": [{"topic_id": "topic-b", "relation": "similar"}],
+                "prerequisites": [
+                    {
+                        "id": "topic-pre",
+                        "required_mastery": 0.7,
+                        "reason": "Topic A builds on the prerequisite topic.",
+                    }
+                ],
+                "related": [
+                    {
+                        "topic_id": "topic-b",
+                        "relation": "application",
+                        "reason": "Topic B applies Topic A.",
+                        "use_cases": ["learning_path"],
+                    }
+                ],
             },
             {"id": ""},
         ],
@@ -295,5 +308,8 @@ def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
     topic_node = next(node for node in map_payload["nodes"] if node["id"] == "topic-a")
     assert topic_node["stage"] == "senior_high"
     assert map_payload["edges"][0]["required_mastery"] == 0.7
+    assert map_payload["edges"][0]["reason"] == "Topic A builds on the prerequisite topic."
+    assert map_payload["edges"][1]["relation"] == "application"
+    assert map_payload["edges"][1]["use_cases"] == ["learning_path"]
     assert contribution["preview"]["opt_in"] is True
     assert contribution["queue"] == [{"id": "q"}]

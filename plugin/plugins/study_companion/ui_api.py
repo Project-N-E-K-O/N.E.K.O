@@ -13,6 +13,34 @@ def _topic_ref_id(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _knowledge_edge_payload(
+    *,
+    source_id: str,
+    target_id: str,
+    relation: str,
+    ref: Any,
+) -> dict[str, Any]:
+    edge: dict[str, Any] = {
+        "from": source_id,
+        "to": target_id,
+        "relation": relation,
+    }
+    if not isinstance(ref, dict):
+        return edge
+    typed_relation = str(ref.get("relation") or "").strip()
+    if typed_relation:
+        edge["relation"] = typed_relation
+    reason = str(ref.get("reason") or "").strip()
+    if reason:
+        edge["reason"] = reason
+    use_cases = ref.get("use_cases")
+    if isinstance(use_cases, list):
+        edge["use_cases"] = [str(item).strip() for item in use_cases if str(item).strip()]
+    if ref.get("required_mastery") is not None:
+        edge["required_mastery"] = ref.get("required_mastery")
+    return edge
+
+
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
     path = (
         f"/plugin/{quote(plugin_id, safe='')}/ui/"
@@ -89,22 +117,25 @@ def build_knowledge_map_payload(
         for prereq in topic.get("prerequisites") or []:
             prereq_id = _topic_ref_id(prereq)
             if prereq_id:
-                edge = {"from": prereq_id, "to": topic_id, "relation": "prerequisite"}
-                if (
-                    isinstance(prereq, dict)
-                    and prereq.get("required_mastery") is not None
-                ):
-                    edge["required_mastery"] = prereq.get("required_mastery")
-                edges.append(edge)
+                edges.append(
+                    _knowledge_edge_payload(
+                        source_id=prereq_id,
+                        target_id=topic_id,
+                        relation="prerequisite",
+                        ref=prereq,
+                    )
+                )
         for related in topic.get("related") or []:
             related_id = _topic_ref_id(related)
             if related_id:
-                relation = (
-                    str(related.get("relation") or "related")
-                    if isinstance(related, dict)
-                    else "related"
+                edges.append(
+                    _knowledge_edge_payload(
+                        source_id=topic_id,
+                        target_id=related_id,
+                        relation="co_occurs",
+                        ref=related,
+                    )
                 )
-                edges.append({"from": topic_id, "to": related_id, "relation": relation})
     return {
         "nodes": nodes,
         "edges": edges,

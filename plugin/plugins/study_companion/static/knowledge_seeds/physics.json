@@ -11,7 +11,17 @@
       "depth": 2,
       "difficulty": 0.42,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "next",
+          "reason": "Practice 二力平衡 after 速度与运动图像; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -72,7 +82,17 @@
       "depth": 2,
       "difficulty": 0.48,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_pressure_buoyancy",
+          "relation": "next",
+          "reason": "Practice 压强与浮力 after 二力平衡; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -133,7 +153,17 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_work_power",
+          "relation": "next",
+          "reason": "Practice 功和功率 after 压强与浮力; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -194,7 +224,17 @@
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_circuit_recognition",
+          "relation": "next",
+          "reason": "Practice 串并联电路识别 after 功和功率; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -255,7 +295,17 @@
       "depth": 2,
       "difficulty": 0.46,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_ohm_law",
+          "relation": "next",
+          "reason": "Practice 欧姆定律 after 串并联电路识别; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -316,7 +366,17 @@
       "depth": 2,
       "difficulty": 0.56,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_electric_power",
+          "relation": "next",
+          "reason": "Practice 电功率 after 欧姆定律; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -377,7 +437,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_junior_experiment_resistance",
+          "relation": "next",
+          "reason": "Practice 测电阻实验 after 电功率; it is the next topic in the junior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -575,7 +645,17 @@
       "depth": 3,
       "difficulty": 0.76,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "next",
+          "reason": "Practice 圆周运动 after 动量能量综合; it is the next topic in the senior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -651,7 +731,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_senior_electric_magnetic_field",
+          "relation": "next",
+          "reason": "Practice 电场磁场综合 after 圆周运动; it is the next topic in the senior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -727,7 +817,17 @@
       "depth": 3,
       "difficulty": 0.78,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "next",
+          "reason": "Practice 高中物理实验数据处理 after 电场磁场综合; it is the next topic in the senior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -803,7 +903,17 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "physics_senior_ac_circuit_intro",
+          "relation": "next",
+          "reason": "Practice 交变电流初步 after 高中物理实验数据处理; it is the next topic in the senior_high physics learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "研究对象不清",
         "公式条件误用",
@@ -3596,17 +3706,35 @@
       "prerequisites": [
         {
           "id": "college_vector_space",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 向量空间 before 矢量与物理量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_vector_space",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "矢量与物理量 and 向量空间 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_kinematics_calculus",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 质点运动学微积分表述 after 矢量与物理量; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3660,7 +3788,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_kinematics_calculus",
@@ -3674,17 +3803,35 @@
       "prerequisites": [
         {
           "id": "college_physics_vector_calculus",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 矢量与物理量 before 质点运动学微积分表述; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_vector_calculus",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "质点运动学微积分表述 and 矢量与物理量 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_newton_laws_system",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 牛顿定律与参考系 after 质点运动学微积分表述; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3738,7 +3885,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_newton_laws_system",
@@ -3752,17 +3900,35 @@
       "prerequisites": [
         {
           "id": "college_physics_kinematics_calculus",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 质点运动学微积分表述 before 牛顿定律与参考系; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_kinematics_calculus",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "牛顿定律与参考系 and 质点运动学微积分表述 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_work_energy_theorem",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 功和动能定理 after 牛顿定律与参考系; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3816,7 +3982,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_work_energy_theorem",
@@ -3830,17 +3997,35 @@
       "prerequisites": [
         {
           "id": "college_physics_newton_laws_system",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 牛顿定律与参考系 before 功和动能定理; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_newton_laws_system",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "功和动能定理 and 牛顿定律与参考系 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_potential_energy_conservation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 势能与机械能守恒 after 功和动能定理; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3894,7 +4079,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_potential_energy_conservation",
@@ -3908,17 +4094,35 @@
       "prerequisites": [
         {
           "id": "college_physics_work_energy_theorem",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 功和动能定理 before 势能与机械能守恒; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_work_energy_theorem",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "势能与机械能守恒 and 功和动能定理 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_momentum_center_mass",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 动量与质心运动 after 势能与机械能守恒; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3972,7 +4176,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_momentum_center_mass",
@@ -3986,17 +4191,35 @@
       "prerequisites": [
         {
           "id": "college_physics_potential_energy_conservation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 势能与机械能守恒 before 动量与质心运动; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_potential_energy_conservation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "动量与质心运动 and 势能与机械能守恒 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_rigid_body_rotation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 刚体定轴转动 after 动量与质心运动; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4050,7 +4273,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_rigid_body_rotation",
@@ -4064,17 +4288,35 @@
       "prerequisites": [
         {
           "id": "college_physics_momentum_center_mass",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 动量与质心运动 before 刚体定轴转动; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_momentum_center_mass",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "刚体定轴转动 and 动量与质心运动 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_angular_momentum",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 角动量守恒 after 刚体定轴转动; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4128,7 +4370,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_angular_momentum",
@@ -4142,17 +4385,35 @@
       "prerequisites": [
         {
           "id": "college_physics_rigid_body_rotation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 刚体定轴转动 before 角动量守恒; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_rigid_body_rotation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "角动量守恒 and 刚体定轴转动 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_simple_harmonic_oscillation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 简谐振动微分方程 after 角动量守恒; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4206,7 +4467,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_simple_harmonic_oscillation",
@@ -4220,17 +4482,35 @@
       "prerequisites": [
         {
           "id": "college_physics_angular_momentum",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 角动量守恒 before 简谐振动微分方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_angular_momentum",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "简谐振动微分方程 and 角动量守恒 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_damped_forced_oscillation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 阻尼与受迫振动 after 简谐振动微分方程; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4284,7 +4564,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_damped_forced_oscillation",
@@ -4298,17 +4579,35 @@
       "prerequisites": [
         {
           "id": "college_physics_simple_harmonic_oscillation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 简谐振动微分方程 before 阻尼与受迫振动; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_simple_harmonic_oscillation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "阻尼与受迫振动 and 简谐振动微分方程 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_mechanical_wave_equation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 机械波与波动方程 after 阻尼与受迫振动; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4362,7 +4661,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_mechanical_wave_equation",
@@ -4376,17 +4676,35 @@
       "prerequisites": [
         {
           "id": "college_physics_damped_forced_oscillation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 阻尼与受迫振动 before 机械波与波动方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_damped_forced_oscillation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "机械波与波动方程 and 阻尼与受迫振动 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_interference_diffraction",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 干涉与衍射 after 机械波与波动方程; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4440,7 +4758,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_interference_diffraction",
@@ -4454,17 +4773,35 @@
       "prerequisites": [
         {
           "id": "college_physics_mechanical_wave_equation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 机械波与波动方程 before 干涉与衍射; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_mechanical_wave_equation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "干涉与衍射 and 机械波与波动方程 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_ideal_gas_state",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 理想气体状态方程 after 干涉与衍射; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4518,7 +4855,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_ideal_gas_state",
@@ -4532,17 +4870,35 @@
       "prerequisites": [
         {
           "id": "college_physics_interference_diffraction",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 干涉与衍射 before 理想气体状态方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_interference_diffraction",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "理想气体状态方程 and 干涉与衍射 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_thermo_first_law",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 热力学第一定律 after 理想气体状态方程; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4596,7 +4952,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_thermo_first_law",
@@ -4610,17 +4967,35 @@
       "prerequisites": [
         {
           "id": "college_physics_ideal_gas_state",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 理想气体状态方程 before 热力学第一定律; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_ideal_gas_state",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "热力学第一定律 and 理想气体状态方程 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_thermo_second_law_entropy",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 热力学第二定律与熵 after 热力学第一定律; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4674,7 +5049,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_thermo_second_law_entropy",
@@ -4688,17 +5064,35 @@
       "prerequisites": [
         {
           "id": "college_physics_thermo_first_law",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 热力学第一定律 before 热力学第二定律与熵; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_thermo_first_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "热力学第二定律与熵 and 热力学第一定律 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_coulomb_field",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 库仑定律与电场叠加 after 热力学第二定律与熵; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4752,7 +5146,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_coulomb_field",
@@ -4766,17 +5161,35 @@
       "prerequisites": [
         {
           "id": "college_physics_thermo_second_law_entropy",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 热力学第二定律与熵 before 库仑定律与电场叠加; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_thermo_second_law_entropy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "库仑定律与电场叠加 and 热力学第二定律与熵 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_gauss_law",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 高斯定理 after 库仑定律与电场叠加; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4830,7 +5243,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_gauss_law",
@@ -4844,17 +5258,35 @@
       "prerequisites": [
         {
           "id": "college_physics_coulomb_field",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 库仑定律与电场叠加 before 高斯定理; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_coulomb_field",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "高斯定理 and 库仑定律与电场叠加 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_electric_potential",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 电势与电势能 after 高斯定理; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4908,7 +5340,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_electric_potential",
@@ -4922,17 +5355,35 @@
       "prerequisites": [
         {
           "id": "college_physics_gauss_law",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 高斯定理 before 电势与电势能; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_gauss_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "电势与电势能 and 高斯定理 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_capacitance_dielectric",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 电容与介质 after 电势与电势能; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -4986,7 +5437,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_capacitance_dielectric",
@@ -5000,17 +5452,35 @@
       "prerequisites": [
         {
           "id": "college_physics_electric_potential",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电势与电势能 before 电容与介质; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_electric_potential",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "电容与介质 and 电势与电势能 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_current_circuit",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 稳恒电流与电路 after 电容与介质; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5064,7 +5534,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_current_circuit",
@@ -5078,17 +5549,35 @@
       "prerequisites": [
         {
           "id": "college_physics_capacitance_dielectric",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电容与介质 before 稳恒电流与电路; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_capacitance_dielectric",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "稳恒电流与电路 and 电容与介质 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_magnetic_field_biot_savart",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 毕奥-萨伐尔定律 after 稳恒电流与电路; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5142,7 +5631,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_magnetic_field_biot_savart",
@@ -5156,17 +5646,35 @@
       "prerequisites": [
         {
           "id": "college_physics_current_circuit",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 稳恒电流与电路 before 毕奥-萨伐尔定律; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_current_circuit",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "毕奥-萨伐尔定律 and 稳恒电流与电路 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_ampere_law",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 安培环路定理 after 毕奥-萨伐尔定律; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5220,7 +5728,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_ampere_law",
@@ -5234,17 +5743,35 @@
       "prerequisites": [
         {
           "id": "college_physics_magnetic_field_biot_savart",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 毕奥-萨伐尔定律 before 安培环路定理; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_magnetic_field_biot_savart",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "安培环路定理 and 毕奥-萨伐尔定律 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_lorentz_force",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 洛伦兹力与带电粒子运动 after 安培环路定理; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5298,7 +5825,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_lorentz_force",
@@ -5312,17 +5840,35 @@
       "prerequisites": [
         {
           "id": "college_physics_ampere_law",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 安培环路定理 before 洛伦兹力与带电粒子运动; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_ampere_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "洛伦兹力与带电粒子运动 and 安培环路定理 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_faraday_induction",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 法拉第电磁感应定律 after 洛伦兹力与带电粒子运动; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5376,7 +5922,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_faraday_induction",
@@ -5390,17 +5937,35 @@
       "prerequisites": [
         {
           "id": "college_physics_lorentz_force",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 洛伦兹力与带电粒子运动 before 法拉第电磁感应定律; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_lorentz_force",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "法拉第电磁感应定律 and 洛伦兹力与带电粒子运动 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_maxwell_equations_intro",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 麦克斯韦方程组初步 after 法拉第电磁感应定律; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5454,7 +6019,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_maxwell_equations_intro",
@@ -5468,17 +6034,35 @@
       "prerequisites": [
         {
           "id": "college_physics_faraday_induction",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 法拉第电磁感应定律 before 麦克斯韦方程组初步; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_faraday_induction",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "麦克斯韦方程组初步 and 法拉第电磁感应定律 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_geometric_optics",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 几何光学成像 after 麦克斯韦方程组初步; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5532,7 +6116,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_geometric_optics",
@@ -5546,17 +6131,35 @@
       "prerequisites": [
         {
           "id": "college_physics_maxwell_equations_intro",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 麦克斯韦方程组初步 before 几何光学成像; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_maxwell_equations_intro",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "几何光学成像 and 麦克斯韦方程组初步 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_polarization",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 光的偏振 after 几何光学成像; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5610,7 +6213,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_polarization",
@@ -5624,17 +6228,35 @@
       "prerequisites": [
         {
           "id": "college_physics_geometric_optics",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 几何光学成像 before 光的偏振; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_geometric_optics",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "光的偏振 and 几何光学成像 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_special_relativity_postulates",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 狭义相对论基本假设 after 光的偏振; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5688,7 +6310,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_special_relativity_postulates",
@@ -5702,17 +6325,35 @@
       "prerequisites": [
         {
           "id": "college_physics_polarization",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 光的偏振 before 狭义相对论基本假设; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_polarization",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "狭义相对论基本假设 and 光的偏振 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_photoelectric_effect",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 光电效应 after 狭义相对论基本假设; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5766,7 +6407,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_photoelectric_effect",
@@ -5780,17 +6422,35 @@
       "prerequisites": [
         {
           "id": "college_physics_special_relativity_postulates",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 狭义相对论基本假设 before 光电效应; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_special_relativity_postulates",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "光电效应 and 狭义相对论基本假设 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_physics_de_broglie_atom",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 德布罗意波与原子结构 after 光电效应; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5844,7 +6504,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     },
     {
       "id": "college_physics_de_broglie_atom",
@@ -5858,13 +6519,26 @@
       "prerequisites": [
         {
           "id": "college_physics_photoelectric_effect",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 光电效应 before 德布罗意波与原子结构; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_physics_photoelectric_effect",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "德布罗意波与原子结构 and 光电效应 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -5918,7 +6592,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "physics"
     }
   ]
 }

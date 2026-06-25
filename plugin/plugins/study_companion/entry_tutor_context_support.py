@@ -17,10 +17,53 @@ from .entry_common import (
     _detect_mastery_threshold_crossed,
     _plugin_lock,
 )
+from .knowledge_graph_guidance import build_knowledge_guidance_payload
 from .models import public_current_question_payload
 
 
 class _TutorContextSupportMixin:
+    async def _build_knowledge_guidance_context(
+        self,
+        operation: str,
+        *,
+        input_text: str = "",
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if operation in {
+            LLM_OPERATION_KNOWLEDGE_TRACK,
+            LLM_OPERATION_SUMMARIZE_SESSION,
+        }:
+            return {}
+        seed = dict(context or {})
+        query = str(
+            seed.get("source_text")
+            or seed.get("question")
+            or seed.get("topic_hint")
+            or seed.get("topic")
+            or input_text
+            or ""
+        ).strip()
+        topic_id = str(
+            seed.get("selected_topic_id")
+            or seed.get("topic_id")
+            or seed.get("target_topic_id")
+            or ""
+        ).strip()
+        if not query and not topic_id:
+            return {}
+        try:
+            topics = await asyncio.to_thread(self._store.list_topics, 5000, None, None)
+            return build_knowledge_guidance_payload(
+                topics=topics,
+                topic_id=topic_id,
+                query=query,
+                max_depth=3,
+                match_limit=5,
+            )
+        except Exception as exc:
+            self.logger.warning("study knowledge graph guidance failed: {}", exc)
+            return {}
+
     def _merge_session_summary_seed(
         self,
         operation: str,
@@ -147,6 +190,13 @@ class _TutorContextSupportMixin:
                     }
         if extra:
             context.update(extra)
+        guidance = await self._build_knowledge_guidance_context(
+            operation,
+            input_text=input_text,
+            context=context,
+        )
+        if guidance.get("summary", {}).get("matched"):
+            context["knowledge_guidance"] = guidance
         return context
 
     async def _record_tutor_result(
@@ -241,6 +291,17 @@ class _TutorContextSupportMixin:
             payload.setdefault("summary", reply.reply)
         else:
             payload = build_tutor_payload(reply)
+        guidance = (extra_context or {}).get("knowledge_guidance")
+        if isinstance(guidance, dict):
+            summary = guidance.get("summary")
+            if isinstance(summary, dict) and summary.get("matched"):
+                payload["knowledge_guidance"] = guidance
+                diagnosis_questions = guidance.get("diagnosis_questions")
+                payload["diagnosis_questions"] = (
+                    list(diagnosis_questions)
+                    if isinstance(diagnosis_questions, list)
+                    else []
+                )
         payload.update(tracking_enrichment)
         return payload
 

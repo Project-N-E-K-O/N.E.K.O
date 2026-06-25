@@ -11,7 +11,17 @@
       "depth": 1,
       "difficulty": 0.26,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_primary_sight_words",
+          "relation": "next",
+          "reason": "Practice 小学高频词 after 自然拼读; it is the next topic in the primary english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -69,7 +79,17 @@
       "depth": 1,
       "difficulty": 0.24,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_primary_daily_dialogue",
+          "relation": "next",
+          "reason": "Practice 日常交际用语 after 小学高频词; it is the next topic in the primary english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -127,7 +147,17 @@
       "depth": 1,
       "difficulty": 0.3,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_primary_picture_writing",
+          "relation": "next",
+          "reason": "Practice 看图写句 after 日常交际用语; it is the next topic in the primary english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -243,7 +273,17 @@
       "depth": 2,
       "difficulty": 0.48,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_junior_clause_intro",
+          "relation": "next",
+          "reason": "Practice 宾语从句与状语从句 after 初中时态体系; it is the next topic in the junior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -304,7 +344,17 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_junior_reading_detail",
+          "relation": "next",
+          "reason": "Practice 阅读细节定位 after 宾语从句与状语从句; it is the next topic in the junior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -365,7 +415,17 @@
       "depth": 2,
       "difficulty": 0.46,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_junior_cloze_context",
+          "relation": "next",
+          "reason": "Practice 完形填空语境推断 after 阅读细节定位; it is the next topic in the junior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -487,7 +547,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_grammar_filling",
+          "relation": "next",
+          "reason": "Practice 语法填空 after 长篇阅读篇章结构; it is the next topic in the senior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -639,7 +709,17 @@
       "depth": 2,
       "difficulty": 0.6,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_application_letter",
+          "relation": "next",
+          "reason": "Practice 应用文写作 after 语法填空; it is the next topic in the senior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -715,7 +795,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_continuation_writing",
+          "relation": "next",
+          "reason": "Practice 读后续写 after 应用文写作; it is the next topic in the senior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -791,7 +881,17 @@
       "depth": 3,
       "difficulty": 0.76,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_summary_writing",
+          "relation": "next",
+          "reason": "Practice 概要写作 after 读后续写; it is the next topic in the senior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -867,7 +967,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_listening_note",
+          "relation": "next",
+          "reason": "Practice 听力速记策略 after 概要写作; it is the next topic in the senior_high english learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离语境选词",
         "阅读答案没有证据",

@@ -11,7 +11,17 @@
       "depth": 2,
       "difficulty": 0.46,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_tang_song_change",
+          "relation": "next",
+          "reason": "Practice 唐宋社会变化 after 秦统一与中央集权; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -72,7 +82,17 @@
       "depth": 2,
       "difficulty": 0.52,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_mingqing_transition",
+          "relation": "next",
+          "reason": "Practice 明清强化君主专制 after 唐宋社会变化; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -133,7 +153,17 @@
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_opium_war",
+          "relation": "next",
+          "reason": "Practice 鸦片战争与近代开端 after 明清强化君主专制; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -194,7 +224,17 @@
       "depth": 2,
       "difficulty": 0.5,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_reform_revolution",
+          "relation": "next",
+          "reason": "Practice 戊戌变法与辛亥革命 after 鸦片战争与近代开端; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -255,7 +295,17 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_new_china",
+          "relation": "next",
+          "reason": "Practice 新中国建设道路 after 戊戌变法与辛亥革命; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -316,7 +366,17 @@
       "depth": 2,
       "difficulty": 0.56,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_world_ancient",
+          "relation": "next",
+          "reason": "Practice 世界古代文明 after 新中国建设道路; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -377,7 +437,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_senior_globalization",
+          "relation": "next",
+          "reason": "Practice 世界市场与全球化 after 史料实证方法; it is the next topic in the senior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -440,7 +510,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_senior_modernization_comparison",
+          "relation": "next",
+          "reason": "Practice 中西现代化比较 after 世界市场与全球化; it is the next topic in the senior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -503,7 +583,17 @@
       "depth": 3,
       "difficulty": 0.74,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_senior_institution_change",
+          "relation": "next",
+          "reason": "Practice 制度变迁与国家治理 after 中西现代化比较; it is the next topic in the senior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记结论，不说明时代背景和因果链",
         "材料题照抄原文，不结合所学知识",
@@ -566,7 +656,17 @@
       "depth": 2,
       "difficulty": 0.44,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_junior_industrial_revolution",
+          "relation": "next",
+          "reason": "Practice 工业革命 after 世界古代文明; it is the next topic in the junior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背结论不讲背景",
         "材料信息和所学知识割裂",
@@ -690,7 +790,17 @@
       "depth": 3,
       "difficulty": 0.7,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_senior_economic_history",
+          "relation": "next",
+          "reason": "Practice 经济史专题 after 制度变迁与国家治理; it is the next topic in the senior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背结论不讲背景",
         "材料信息和所学知识割裂",
@@ -754,7 +864,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "next",
+          "reason": "Practice 中外文化交流 after 经济史专题; it is the next topic in the senior_high history learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背结论不讲背景",
         "材料信息和所学知识割裂",

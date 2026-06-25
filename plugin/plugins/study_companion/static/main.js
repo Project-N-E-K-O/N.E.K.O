@@ -8,7 +8,7 @@ const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
-const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'postgraduate', 'custom'];
+const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
@@ -1479,7 +1479,13 @@ function knowledgeNodeLabel(node) {
 function knowledgeRelationLabel(relation) {
   const normalized = String(relation || 'related').trim().toLowerCase();
   if (normalized === 'prerequisite') return t('ui.knowledge.edge_relation.prerequisite', 'Prerequisite');
+  if (normalized === 'application') return t('ui.knowledge.edge_relation.application', 'Application');
+  if (normalized === 'procedure_step') return t('ui.knowledge.edge_relation.procedure_step', 'Procedure Step');
+  if (normalized === 'confusable') return t('ui.knowledge.edge_relation.confusable', 'Confusable');
   if (normalized === 'related') return t('ui.knowledge.edge_relation.related', 'Related');
+  if (normalized === 'co_occurs') return t('ui.knowledge.edge_relation.co_occurs', 'Co-occurs');
+  if (normalized === 'supports') return t('ui.knowledge.edge_relation.supports', 'Supports');
+  if (normalized === 'analogy') return t('ui.knowledge.edge_relation.analogy', 'Analogy');
   if (normalized === 'similar') return t('ui.knowledge.edge_relation.similar', 'Similar');
   if (normalized === 'extends') return t('ui.knowledge.edge_relation.extends', 'Extends');
   if (normalized === 'next') return t('ui.knowledge.edge_relation.next', 'Next');
@@ -1503,6 +1509,7 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
       to: labelById.get(toId) || toId || '-',
       relation: knowledgeRelationLabel(edge.relation),
       rawRelation: String(edge.relation || 'related').trim().toLowerCase(),
+      reason: String(edge.reason || '').trim(),
     });
     groups.set(groupKey, group);
   });
@@ -1527,7 +1534,12 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
       const row = drawerElement('div', 'knowledge-edge-row');
       row.dataset.relation = item.rawRelation || 'related';
       row.appendChild(drawerElement('span', 'knowledge-edge-row__relation', item.relation));
-      row.appendChild(drawerElement('span', 'knowledge-edge-row__target', item.to));
+      const target = drawerElement('span', 'knowledge-edge-row__target', item.to);
+      if (item.reason) {
+        target.title = item.reason;
+        target.appendChild(drawerElement('small', 'knowledge-edge-row__reason', item.reason));
+      }
+      row.appendChild(target);
       list.appendChild(row);
     });
     if (group.items.length > 6) {

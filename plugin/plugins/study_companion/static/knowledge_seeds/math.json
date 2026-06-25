@@ -61,7 +61,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "number_axis",
@@ -131,7 +132,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "absolute_value",
@@ -202,7 +204,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "scientific_notation",
@@ -272,7 +275,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "power_operation",
@@ -343,7 +347,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "monomial_polynomial",
@@ -413,7 +418,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "polynomial_operations",
@@ -484,7 +490,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "factorization_common",
@@ -554,7 +561,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "factorization_formula",
@@ -625,7 +633,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "fractional_expression",
@@ -695,7 +704,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_radical",
@@ -762,7 +772,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "equation_concept",
@@ -829,7 +840,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_equation",
@@ -900,7 +912,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_equation_application",
@@ -971,7 +984,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_system",
@@ -1042,7 +1056,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_system_application",
@@ -1113,7 +1128,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_equation_concept",
@@ -1184,7 +1200,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_equation_factoring",
@@ -1259,7 +1276,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_equation_formula",
@@ -1334,7 +1352,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_discriminant",
@@ -1404,7 +1423,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "vieta_theorem",
@@ -1474,7 +1494,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inequality_concept",
@@ -1544,7 +1565,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_inequality",
@@ -1619,7 +1641,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_inequality_system",
@@ -1690,7 +1713,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inequality_application",
@@ -1757,7 +1781,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_system",
@@ -1823,7 +1848,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "point_coordinates",
@@ -1893,7 +1919,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadrants",
@@ -1963,7 +1990,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_symmetry",
@@ -2034,7 +2062,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "midpoint_formula",
@@ -2105,7 +2134,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "distance_formula",
@@ -2176,7 +2206,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_concept",
@@ -2243,7 +2274,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "direct_proportion",
@@ -2313,7 +2345,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_concept",
@@ -2388,7 +2421,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_graph",
@@ -2463,7 +2497,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_kb",
@@ -2534,7 +2569,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_expression",
@@ -2609,7 +2645,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_intersection",
@@ -2684,7 +2721,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_application",
@@ -2755,7 +2793,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "piecewise_linear",
@@ -2822,7 +2861,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_function_concept",
@@ -2893,7 +2933,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_general_form",
@@ -2963,7 +3004,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_vertex_form",
@@ -3033,7 +3075,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_axis",
@@ -3103,7 +3146,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_vertex",
@@ -3173,7 +3217,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_opening",
@@ -3243,7 +3288,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_graph_translation",
@@ -3317,7 +3363,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_intercepts",
@@ -3391,7 +3438,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_roots_relation",
@@ -3465,7 +3513,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_max_min",
@@ -3535,7 +3584,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_expression_from_points",
@@ -3609,7 +3659,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_application_area",
@@ -3680,7 +3731,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_application_profit",
@@ -3747,7 +3799,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_concept",
@@ -3818,7 +3871,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_graph",
@@ -3893,7 +3947,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_k",
@@ -3964,7 +4019,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_area",
@@ -4035,7 +4091,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_application",
@@ -4106,7 +4163,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_linear_intersection",
@@ -4177,7 +4235,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "triangle_elements",
@@ -4244,7 +4303,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "triangle_angle_sum",
@@ -4315,7 +4375,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "triangle_inequality",
@@ -4386,7 +4447,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "congruent_triangles",
@@ -4457,7 +4519,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "congruence_criteria",
@@ -4527,7 +4590,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "isosceles_triangle",
@@ -4598,7 +4662,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "right_triangle",
@@ -4669,7 +4734,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "pythagorean_theorem",
@@ -4743,7 +4809,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similar_triangles",
@@ -4814,7 +4881,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similarity_criteria",
@@ -4884,7 +4952,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similarity_properties",
@@ -4954,7 +5023,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "right_triangle_solving",
@@ -5025,7 +5095,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadrilateral_concept",
@@ -5092,7 +5163,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "parallel_lines",
@@ -5163,7 +5235,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "parallelogram",
@@ -5237,7 +5310,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "parallelogram_properties",
@@ -5307,7 +5381,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "rectangle",
@@ -5378,7 +5453,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "rhombus",
@@ -5449,7 +5525,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "square",
@@ -5524,7 +5601,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trapezoid",
@@ -5599,7 +5677,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "midline_theorem",
@@ -5670,7 +5749,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadrilateral_proof",
@@ -5749,7 +5829,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_concept",
@@ -5816,7 +5897,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "central_angle_arc",
@@ -5887,7 +5969,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inscribed_angle",
@@ -5958,7 +6041,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "cyclic_quadrilateral",
@@ -6033,7 +6117,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "tangent_concept",
@@ -6107,7 +6192,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "tangent_properties",
@@ -6177,7 +6263,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_chord",
@@ -6252,7 +6339,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "arc_length",
@@ -6322,7 +6410,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "sector_area",
@@ -6393,7 +6482,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_comprehensive",
@@ -6468,7 +6558,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "data_collection",
@@ -6529,7 +6620,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "mean_median_mode",
@@ -6600,7 +6692,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "weighted_mean",
@@ -6671,7 +6764,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "variance",
@@ -6742,7 +6836,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "frequency_histogram",
@@ -6812,7 +6907,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "probability_concept",
@@ -6883,7 +6979,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "simple_probability",
@@ -6954,7 +7051,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "tree_diagram",
@@ -7020,7 +7118,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "translation",
@@ -7086,7 +7185,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "axis_symmetry",
@@ -7157,7 +7257,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "rotation",
@@ -7227,7 +7328,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "central_symmetry",
@@ -7298,7 +7400,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similar_transform",
@@ -7369,7 +7472,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "transformation_coordinates",
@@ -7444,7 +7548,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trig_function_concept",
@@ -7511,7 +7616,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "sine_cosine_tangent",
@@ -7581,7 +7687,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "special_angles",
@@ -7652,7 +7759,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trig_table_use",
@@ -7723,7 +7831,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trig_application_height",
@@ -7798,7 +7907,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trig_comprehensive",
@@ -7869,7 +7979,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "algebraic_identity_square",
@@ -7931,7 +8042,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "algebraic_identity_difference_square",
@@ -7993,7 +8105,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "fractional_equation",
@@ -8059,7 +8172,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "equation_parameter",
@@ -8125,7 +8239,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_area",
@@ -8191,7 +8306,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_inequality",
@@ -8257,7 +8373,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_monotonicity",
@@ -8322,7 +8439,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_parameter",
@@ -8388,7 +8506,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_parameter",
@@ -8450,7 +8569,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "angle_bisector",
@@ -8512,7 +8632,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "perpendicular_bisector",
@@ -8573,7 +8694,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "polygon_angle_sum",
@@ -8635,7 +8757,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_position_relation",
@@ -8701,7 +8824,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "compound_probability",
@@ -8763,7 +8887,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "transformation_comprehensive",
@@ -8829,7 +8954,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "trig_area",
@@ -8895,7 +9021,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "rational_number_operations",
@@ -8961,7 +9088,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "square_root_cube_root",
@@ -9027,7 +9155,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "irrational_number_estimation",
@@ -9093,7 +9222,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "approximation_significant_digits",
@@ -9159,7 +9289,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "algebraic_expression_value",
@@ -9225,7 +9356,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "whole_substitution",
@@ -9291,7 +9423,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "factorization_grouping",
@@ -9361,7 +9494,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "factorization_strategy",
@@ -9435,7 +9569,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "fraction_simplification",
@@ -9505,7 +9640,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "fraction_expression_value",
@@ -9571,7 +9707,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "radical_simplification",
@@ -9637,7 +9774,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "radical_operations",
@@ -9703,7 +9841,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "number_pattern",
@@ -9769,7 +9908,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "sequence_pattern",
@@ -9835,7 +9975,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "equation_check_solution",
@@ -9901,7 +10042,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_system_elimination",
@@ -9967,7 +10109,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "three_variable_linear_system",
@@ -10033,7 +10176,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_equation_completing_square",
@@ -10099,7 +10243,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_equation_application",
@@ -10165,7 +10310,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "growth_rate_problem",
@@ -10231,7 +10377,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "profit_discount_problem",
@@ -10297,7 +10444,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "engineering_problem",
@@ -10363,7 +10511,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "travel_problem",
@@ -10429,7 +10578,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inequality_integer_solution",
@@ -10495,7 +10645,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inequality_parameter",
@@ -10565,7 +10716,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_translation",
@@ -10635,7 +10787,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_rotation_symmetry",
@@ -10705,7 +10858,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_geometry_proof",
@@ -10775,7 +10929,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "coordinate_dynamic_point",
@@ -10845,7 +11000,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_domain_junior",
@@ -10911,7 +11067,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_graph_reading",
@@ -10977,7 +11134,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_parallel_perpendicular",
@@ -11043,7 +11201,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "linear_function_area",
@@ -11113,7 +11272,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_dynamic_point",
@@ -11183,7 +11343,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_parameter_range",
@@ -11253,7 +11414,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_dynamic_point",
@@ -11323,7 +11485,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadratic_existence_problem",
@@ -11393,7 +11556,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_composite_application",
@@ -11467,7 +11631,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "inverse_function_triangle_area",
@@ -11537,7 +11702,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "parallel_lines_criteria",
@@ -11603,7 +11769,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "angle_chasing",
@@ -11673,7 +11840,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "auxiliary_line_strategy",
@@ -11743,7 +11911,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "geometric_proof_strategy",
@@ -11813,7 +11982,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "pythagorean_converse",
@@ -11879,7 +12049,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "area_method_geometry",
@@ -11949,7 +12120,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similarity_basic_models",
@@ -12015,7 +12187,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "similarity_dynamic_geometry",
@@ -12085,7 +12258,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "right_triangle_median",
@@ -12151,7 +12325,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "special_quadrilateral_area",
@@ -12225,7 +12400,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "quadrilateral_midpoint_model",
@@ -12295,7 +12471,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "folding_geometry",
@@ -12365,7 +12542,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "shortest_path_geometry",
@@ -12435,7 +12613,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_tangent_length",
@@ -12501,7 +12680,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_power_basic",
@@ -12571,7 +12751,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_similarity",
@@ -12641,7 +12822,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "circle_dynamic_point",
@@ -12711,7 +12893,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "sample_survey",
@@ -12777,7 +12960,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "statistical_charts",
@@ -12847,7 +13031,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "sample_estimation",
@@ -12917,7 +13102,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "probability_fairness",
@@ -12983,7 +13169,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "probability_simulation",
@@ -13049,7 +13236,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "classification_discussion",
@@ -13119,7 +13307,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "number_shape_combination",
@@ -13189,7 +13378,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "equation_thinking",
@@ -13255,7 +13445,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "function_thinking",
@@ -13325,7 +13516,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "transformation_thinking",
@@ -13395,7 +13587,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "mathematical_modeling",
@@ -13465,7 +13658,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "proof_writing",
@@ -13531,7 +13725,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "exam_error_checklist",
@@ -13601,7 +13796,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "reading_comprehension_math",
@@ -13672,7 +13868,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "new_definition_operation",
@@ -13744,7 +13941,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "pattern_exploration_open",
@@ -13815,7 +14013,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "scheme_design_problem",
@@ -13887,7 +14086,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "measurement_practice_problem",
@@ -13958,7 +14158,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "geometric_experiment_conjecture",
@@ -14029,7 +14230,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "data_project_analysis",
@@ -14100,7 +14302,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "interdisciplinary_modeling",
@@ -14171,7 +14374,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "zhongkao_regional_style"
-      ]
+      ],
+      "stage": "cross_stage"
     },
     {
       "id": "primary_number_sense",
@@ -19755,7 +19959,28 @@
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_definition",
+          "relation": "extends",
+          "reason": "导数定义 extends 导数概念 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_tangent",
+          "relation": "application",
+          "reason": "导数与切线 is a typical application of 导数概念, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -19820,7 +20045,28 @@
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "extends",
+          "reason": "一元函数求导 extends 导数运算法则 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_tangent",
+          "relation": "application",
+          "reason": "导数与切线 is a typical application of 导数运算法则, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -19889,7 +20135,28 @@
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "procedure_step",
+          "reason": "Use 导数与单调性 as a procedure step when working through 导数与极值最值.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "extends",
+          "reason": "单调性极值与凹凸性 extends 导数与单调性 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -19958,6 +20225,26 @@
         {
           "id": "quadratic_max_min",
           "relation": "extends"
+        },
+        {
+          "id": "senior_derivative_monotonicity",
+          "relation": "procedure_step",
+          "reason": "Use 导数与极值最值 as a procedure step when working through 导数与单调性.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "extends",
+          "reason": "单调性极值与凹凸性 extends 导数与极值最值 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -20029,7 +20316,28 @@
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_derivative_concept",
+          "relation": "application",
+          "reason": "导数概念 is a typical application of 导数与切线, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "extends",
+          "reason": "一元函数求导 extends 导数与切线 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -20826,10 +21134,48 @@
       "prerequisites": [
         {
           "id": "senior_function_domain_range",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 函数定义域与值域 before 极限概念; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_limit_rules",
+          "relation": "procedure_step",
+          "reason": "Use 极限概念 as a procedure step when working through 极限运算法则.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_continuity",
+          "relation": "application",
+          "reason": "函数连续性 is a typical application of 极限概念, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 导数定义; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把 f(0) 的值当作极限",
         "只看右极限就下结论",
@@ -20871,7 +21217,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_limit_rules",
@@ -20884,10 +21231,38 @@
       "prerequisites": [
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 极限运算法则; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_important_limits",
+          "relation": "application",
+          "reason": "两个重要极限 is a typical application of 极限运算法则, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_equivalent_infinitesimal",
+          "relation": "procedure_step",
+          "reason": "Use 极限运算法则 as a procedure step when working through 等价无穷小替换.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -20929,7 +21304,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_important_limits",
@@ -20942,7 +21318,14 @@
       "prerequisites": [
         {
           "id": "college_limit_rules",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限运算法则 before 两个重要极限; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -20987,7 +21370,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_continuity",
@@ -21000,10 +21384,38 @@
       "prerequisites": [
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 函数连续性; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_definition",
+          "relation": "prerequisite",
+          "reason": "Master 函数连续性 before 导数定义; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_uniform_continuity_intro",
+          "relation": "extends",
+          "reason": "一致连续初步 extends 函数连续性 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21045,7 +21457,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_derivative_definition",
@@ -21058,14 +21471,49 @@
       "prerequisites": [
         {
           "id": "senior_derivative_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 导数概念 before 导数定义; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 导数定义; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "procedure_step",
+          "reason": "Use 导数定义 as a procedure step when working through 一元函数求导.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "reason": "单调性极值与凹凸性 is a typical application of 导数定义, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21107,7 +21555,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_derivative_calculation",
@@ -21120,14 +21569,89 @@
       "prerequisites": [
         {
           "id": "college_derivative_definition",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 导数定义 before 一元函数求导; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "senior_derivative_rules",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 导数运算法则 before 一元函数求导; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "reason": "单调性极值与凹凸性 is a typical application of 一元函数求导, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_tangent",
+          "relation": "application",
+          "reason": "导数与切线 is a typical application of 一元函数求导, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_partial_derivative",
+          "relation": "extends",
+          "reason": "偏导数 extends 一元函数求导 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_critical_points",
+          "relation": "application",
+          "reason": "求导后解 f'(x)=0 并检查不可导点，是寻找临界点的基本用法。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_stationary_points",
+          "relation": "application",
+          "reason": "驻点由 f'(x)=0 定位，是导数计算的直接应用。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "extends",
+          "reason": "二阶导数判别法在一元求导基础上进一步判断极值类型。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21169,7 +21693,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_differential",
@@ -21182,10 +21707,38 @@
       "prerequisites": [
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 微分; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "procedure_step",
+          "reason": "Use 微分 as a procedure step when working through 一元函数求导.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_total_differential",
+          "relation": "extends",
+          "reason": "全微分 extends 微分 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21227,7 +21780,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_mean_value_theorem",
@@ -21240,14 +21794,60 @@
       "prerequisites": [
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 微分中值定理; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_continuity",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 函数连续性 before 微分中值定理; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "prerequisite",
+          "reason": "Master 导数定义 before 微分中值定理; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "reason": "单调性极值与凹凸性 is a typical application of 微分中值定理, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_taylor_formula",
+          "relation": "extends",
+          "reason": "泰勒公式 extends 微分中值定理 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21289,7 +21889,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_taylor_formula",
@@ -21302,10 +21903,38 @@
       "prerequisites": [
         {
           "id": "college_mean_value_theorem",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 微分中值定理 before 泰勒公式; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_mean_value_theorem",
+          "relation": "extends",
+          "reason": "微分中值定理 extends 泰勒公式 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_lhopital_rule",
+          "relation": "application",
+          "reason": "洛必达法则 is a typical application of 泰勒公式, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21347,7 +21976,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_monotonic_extrema",
@@ -21360,13 +21990,139 @@
       "prerequisites": [
         {
           "id": "college_derivative_calculation",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 单调性极值与凹凸性; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "prerequisite",
+          "reason": "Master 函数单调性 before 单调性极值与凹凸性; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "prerequisite",
+          "reason": "Master 导数与极值最值 before 单调性极值与凹凸性; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        },
+        {
+          "id": "college_critical_points",
+          "relation": "prerequisite",
+          "reason": "求极值点需要先找出临界点，再判断这些候选点是否真正产生极值。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
       "related": [
         {
           "id": "senior_derivative_extrema",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "单调性极值与凹凸性 connects to 导数与极值最值 as a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "procedure_step",
+          "reason": "Use 单调性极值与凹凸性 as a procedure step when working through 一元函数求导.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_monotonicity",
+          "relation": "procedure_step",
+          "reason": "Use 单调性极值与凹凸性 as a procedure step when working through 导数与单调性.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "confusable",
+          "reason": "单调性极值与凹凸性 and 导数与极值最值 are easy to confuse, so guidance should contrast their conditions and conclusions.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_stationary_points",
+          "relation": "confusable",
+          "reason": "驻点只是导数为 0 的点，不一定是极值点；要结合左右单调性变化判断。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_critical_points",
+          "relation": "procedure_step",
+          "reason": "求极值点的第一步是列出临界点，包括导数为 0 和不可导的候选点。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "procedure_step",
+          "reason": "二阶导数判别法是判断驻点极大或极小的常用步骤。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_function_graph_analysis",
+          "relation": "supports",
+          "reason": "函数图像分析用上升、下降、峰谷和凹凸性帮助解释极值判断。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_optimization_applications",
+          "relation": "application",
+          "reason": "优化应用题通常把极值和最值判断用到实际建模中。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -21410,6 +22166,519 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "求极值点",
+        "极值点判断",
+        "驻点与极值点"
+      ]
+    },
+    {
+      "id": "college_critical_points",
+      "name": "临界点",
+      "subject": "math",
+      "stage": "college",
+      "chapter": "微积分",
+      "depth": 3,
+      "difficulty": 0.7,
+      "prerequisites": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "prerequisite",
+          "reason": "临界点需要先能求导，并找出导数为 0 或不可导的点。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        },
+        {
+          "id": "college_continuity",
+          "relation": "prerequisite",
+          "reason": "判断临界点时要关注函数在该点的定义和连续性。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.5
+        }
+      ],
+      "related": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "procedure_step",
+          "reason": "求极值点时先找临界点，再比较其两侧的导数符号或函数值变化。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_stationary_points",
+          "relation": "confusable",
+          "reason": "临界点包含导数为 0 和不可导的候选点，驻点只是导数为 0 的点。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "procedure_step",
+          "reason": "临界点中的驻点可以继续用二阶导数判别法分类。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "typical_misconceptions": [
+        "只找导数为 0 的点，忽略不可导点和端点。"
+      ],
+      "unit": "导数应用",
+      "skills": [
+        "找出导数为 0 或不可导的候选点",
+        "判断候选点是否可能产生极值"
+      ],
+      "question_types": [
+        "极值候选点",
+        "导数符号分析"
+      ],
+      "examples": [
+        {
+          "prompt": "找出一个分段函数可能产生极值的临界点。",
+          "answer_outline": [
+            "确认函数的定义域和题目目标。",
+            "先求导并找出导数为 0 或不可导的候选点。",
+            "分析候选点两侧的导数符号或单调性变化。",
+            "回到原题检查极值、最值或应用结论。"
+          ]
+        }
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_calculus"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ],
+      "curriculum_tags": [
+        "curriculum_context",
+        "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "极值候选点",
+        "不可导点",
+        "导数为0的点"
+      ]
+    },
+    {
+      "id": "college_stationary_points",
+      "name": "驻点",
+      "subject": "math",
+      "stage": "college",
+      "chapter": "微积分",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "prerequisite",
+          "reason": "驻点的判定依赖导数计算，需要先会求 f'(x) 并解 f'(x)=0。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        }
+      ],
+      "related": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "confusable",
+          "reason": "驻点只表示导数为 0，不一定是极值点；还要看左右单调性是否变化。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_critical_points",
+          "relation": "confusable",
+          "reason": "驻点是临界点的常见一类，但临界点还可以来自不可导点。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "procedure_step",
+          "reason": "找到驻点后，可以用二阶导数判别法快速判断极值类型。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "procedure_step",
+          "reason": "驻点需要回到单调性极值判断，看左右导数符号是否变号。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "typical_misconceptions": [
+        "把所有驻点都直接当成极值点。"
+      ],
+      "unit": "导数应用",
+      "skills": [
+        "解出 f'(x)=0 的驻点",
+        "用单调性或二阶导数区分驻点和极值点"
+      ],
+      "question_types": [
+        "概念辨析",
+        "极值判断"
+      ],
+      "examples": [
+        {
+          "prompt": "说明 y=x^3 在 x=0 的驻点为什么不是极值点。",
+          "answer_outline": [
+            "确认函数的定义域和题目目标。",
+            "先求导并找出导数为 0 或不可导的候选点。",
+            "分析候选点两侧的导数符号或单调性变化。",
+            "回到原题检查极值、最值或应用结论。"
+          ]
+        }
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_calculus"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ],
+      "curriculum_tags": [
+        "curriculum_context",
+        "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "导数为0",
+        "导数为0的点",
+        "驻点不一定极值"
+      ]
+    },
+    {
+      "id": "college_second_derivative_test",
+      "name": "二阶导数判别法",
+      "subject": "math",
+      "stage": "college",
+      "chapter": "微积分",
+      "depth": 3,
+      "difficulty": 0.74,
+      "prerequisites": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "prerequisite",
+          "reason": "二阶导数判别法需要先能求一阶和二阶导数。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.6
+        },
+        {
+          "id": "college_stationary_points",
+          "relation": "prerequisite",
+          "reason": "二阶导数判别法通常在驻点处判断极值类型。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        }
+      ],
+      "related": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "procedure_step",
+          "reason": "对驻点可以用二阶导数符号快速判断极大值或极小值。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_function_graph_analysis",
+          "relation": "supports",
+          "reason": "二阶导数同时帮助判断凹凸性，是函数图像分析的支撑。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "typical_misconceptions": [
+        "当二阶导数为 0 时仍然直接下结论。"
+      ],
+      "unit": "导数应用",
+      "skills": [
+        "在驻点处计算二阶导数",
+        "区分极大值和极小值"
+      ],
+      "question_types": [
+        "极值判断",
+        "凹凸性"
+      ],
+      "examples": [
+        {
+          "prompt": "用二阶导数判别法判断驻点处的极值类型。",
+          "answer_outline": [
+            "确认函数的定义域和题目目标。",
+            "先求导并找出导数为 0 或不可导的候选点。",
+            "分析候选点两侧的导数符号或单调性变化。",
+            "回到原题检查极值、最值或应用结论。"
+          ]
+        }
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_calculus"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ],
+      "curriculum_tags": [
+        "curriculum_context",
+        "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "二阶判别法",
+        "极大值极小值判断"
+      ]
+    },
+    {
+      "id": "college_function_graph_analysis",
+      "name": "函数图像分析",
+      "subject": "math",
+      "stage": "college",
+      "chapter": "微积分",
+      "depth": 3,
+      "difficulty": 0.76,
+      "prerequisites": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "prerequisite",
+          "reason": "函数图像分析需要综合单调性、极值和凹凸性等信息。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.6
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "prerequisite",
+          "reason": "二阶导数可以支撑凹凸性和拐点判断，帮助画出图像轮廓。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        }
+      ],
+      "related": [
+        {
+          "id": "college_optimization_applications",
+          "relation": "application",
+          "reason": "函数图像分析能把极值、最值和趋势转化为应用题结论。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "supports",
+          "reason": "图像上的上升下降和峰谷能帮助理解单调性与极值判断。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "typical_misconceptions": [
+        "只画极值点，忽略定义域、渐近线和凹凸性。"
+      ],
+      "unit": "导数应用",
+      "skills": [
+        "综合定义域、单调性、极值和凹凸性画出图像趋势"
+      ],
+      "question_types": [
+        "综合分析",
+        "图像题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据导数和二阶导数信息分析函数图像趋势。",
+          "answer_outline": [
+            "确认函数的定义域和题目目标。",
+            "先求导并找出导数为 0 或不可导的候选点。",
+            "分析候选点两侧的导数符号或单调性变化。",
+            "回到原题检查极值、最值或应用结论。"
+          ]
+        }
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_calculus"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ],
+      "curriculum_tags": [
+        "curriculum_context",
+        "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "函数作图",
+        "图像分析",
+        "极值与凹凸"
+      ]
+    },
+    {
+      "id": "college_optimization_applications",
+      "name": "优化应用题",
+      "subject": "math",
+      "stage": "college",
+      "chapter": "微积分",
+      "depth": 3,
+      "difficulty": 0.78,
+      "prerequisites": [
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "prerequisite",
+          "reason": "优化应用题通常要把实际问题建成函数，再用极值或最值来得出结论。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.6
+        },
+        {
+          "id": "college_function_graph_analysis",
+          "relation": "prerequisite",
+          "reason": "图像趋势可以帮助检查优化问题的结论是否合理。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.5
+        }
+      ],
+      "related": [
+        {
+          "id": "college_lagrange_multiplier",
+          "relation": "extends",
+          "reason": "单变量优化的思路可以扩展到多变量约束优化，对应拉格朗日乘数法。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "typical_misconceptions": [
+        "建模后忘记检查自变量范围和端点最值。"
+      ],
+      "unit": "导数应用",
+      "skills": [
+        "把实际条件转化为函数模型",
+        "用极值和端点比较寻找最值"
+      ],
+      "question_types": [
+        "建模应用",
+        "最值问题"
+      ],
+      "examples": [
+        {
+          "prompt": "将面积或成本问题建模为函数，并用导数求最值。",
+          "answer_outline": [
+            "确认函数的定义域和题目目标。",
+            "先求导并找出导数为 0 或不可导的候选点。",
+            "分析候选点两侧的导数符号或单调性变化。",
+            "回到原题检查极值、最值或应用结论。"
+          ]
+        }
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_calculus"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ],
+      "curriculum_tags": [
+        "curriculum_context",
+        "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "最值应用题",
+        "优化问题",
+        "导数应用题"
       ]
     },
     {
@@ -21423,10 +22692,48 @@
       "prerequisites": [
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 不定积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_substitution_integration",
+          "relation": "procedure_step",
+          "reason": "Use 不定积分 as a procedure step when working through 换元积分法.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_integration_by_parts",
+          "relation": "procedure_step",
+          "reason": "Use 不定积分 as a procedure step when working through 分部积分法.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "extends",
+          "reason": "定积分 extends 不定积分 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21468,7 +22775,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_substitution_integration",
@@ -21481,10 +22789,38 @@
       "prerequisites": [
         {
           "id": "college_indefinite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 不定积分 before 换元积分法; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "analogy",
+          "reason": "换元积分法 and 一元函数求导 share a similar structure, so analogies can help transfer methods between them.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "reason": "定积分 is a typical application of 换元积分法, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21526,7 +22862,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_integration_by_parts",
@@ -21539,10 +22876,38 @@
       "prerequisites": [
         {
           "id": "college_indefinite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 不定积分 before 分部积分法; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_derivative_calculation",
+          "relation": "analogy",
+          "reason": "分部积分法 and 一元函数求导 share a similar structure, so analogies can help transfer methods between them.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "reason": "定积分 is a typical application of 分部积分法, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21584,7 +22949,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_definite_integral",
@@ -21597,10 +22963,59 @@
       "prerequisites": [
         {
           "id": "college_indefinite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 不定积分 before 定积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_continuity",
+          "relation": "prerequisite",
+          "reason": "Master 函数连续性 before 定积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.5
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_newton_leibniz",
+          "relation": "procedure_step",
+          "reason": "Use 定积分 as a procedure step when working through 牛顿-莱布尼茨公式.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_riemann_integral_definition",
+          "relation": "supports",
+          "reason": "定积分 supports understanding 黎曼积分定义 by explaining why the method or condition works.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_integral_application",
+          "relation": "application",
+          "reason": "定积分应用 is a typical application of 定积分, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21642,6 +23057,11 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "定积分怎么学",
+        "定积分计算"
       ]
     },
     {
@@ -21655,13 +23075,46 @@
       "prerequisites": [
         {
           "id": "college_definite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Master 定积分 before 定积分应用; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "area_method_geometry",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "定积分应用 connects to 面积法 as a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "reason": "定积分 is a typical application of 定积分应用, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_multiple_integral",
+          "relation": "extends",
+          "reason": "重积分 extends 定积分应用 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -21705,6 +23158,12 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
+      ],
+      "course_family": "calculus",
+      "aliases": [
+        "定积分应用",
+        "面积体积应用",
+        "积分应用题"
       ]
     },
     {
@@ -21718,10 +23177,38 @@
       "prerequisites": [
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 多元函数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_partial_derivative",
+          "relation": "procedure_step",
+          "reason": "Use 多元函数 as a procedure step when working through 偏导数.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_multiple_integral",
+          "relation": "application",
+          "reason": "重积分 is a typical application of 多元函数, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21763,7 +23250,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_partial_derivative",
@@ -21776,14 +23264,49 @@
       "prerequisites": [
         {
           "id": "college_multivariable_function",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 多元函数 before 偏导数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 偏导数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_gradient_directional_derivative",
+          "relation": "application",
+          "reason": "梯度与方向导数 is a typical application of 偏导数, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "analogy",
+          "reason": "偏导数 and 一元函数求导 share a similar structure, so analogies can help transfer methods between them.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21825,7 +23348,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_total_differential",
@@ -21838,10 +23362,28 @@
       "prerequisites": [
         {
           "id": "college_partial_derivative",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 偏导数 before 全微分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_gradient_directional_derivative",
+          "relation": "supports",
+          "reason": "全微分 supports understanding 梯度与方向导数 by explaining why the method or condition works.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21883,7 +23425,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_multiple_integral",
@@ -21896,14 +23439,60 @@
       "prerequisites": [
         {
           "id": "college_definite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 定积分 before 重积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_multivariable_function",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 多元函数 before 重积分; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_double_integral_region",
+          "relation": "prerequisite",
+          "reason": "Master 二重积分积分区域 before 重积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_integral_application",
+          "relation": "extends",
+          "reason": "定积分应用 extends 重积分 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_double_integral_region",
+          "relation": "procedure_step",
+          "reason": "Use 重积分 as a procedure step when working through 二重积分积分区域.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -21945,7 +23534,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_series",
@@ -21958,14 +23548,49 @@
       "prerequisites": [
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 级数; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "senior_sequence_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 数列概念 before 级数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_taylor_formula",
+          "relation": "application",
+          "reason": "泰勒公式 is a typical application of 级数, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_improper_integral",
+          "relation": "analogy",
+          "reason": "级数 and 反常积分 share a similar structure, so analogies can help transfer methods between them.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22007,7 +23632,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_matrix_operations",
@@ -22020,10 +23646,48 @@
       "prerequisites": [
         {
           "id": "senior_set_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 集合的概念与表示 before 矩阵运算; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_matrix_elementary_transform",
+          "relation": "procedure_step",
+          "reason": "Use 矩阵运算 as a procedure step when working through 矩阵初等变换.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_determinant",
+          "relation": "application",
+          "reason": "行列式 is a typical application of 矩阵运算, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_matrix_inverse",
+          "relation": "application",
+          "reason": "逆矩阵 is a typical application of 矩阵运算, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22065,7 +23729,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_determinant",
@@ -22078,10 +23743,38 @@
       "prerequisites": [
         {
           "id": "college_matrix_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 行列式; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_matrix_inverse",
+          "relation": "application",
+          "reason": "逆矩阵 is a typical application of 行列式, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_cramers_rule",
+          "relation": "application",
+          "reason": "克拉默法则 is a typical application of 行列式, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22123,7 +23816,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_matrix_inverse",
@@ -22136,10 +23830,35 @@
       "prerequisites": [
         {
           "id": "college_matrix_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 逆矩阵; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_determinant",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 行列式 before 逆矩阵; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_matrix_elementary_transform",
+          "relation": "prerequisite",
+          "reason": "Master 矩阵初等变换 before 逆矩阵; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
@@ -22185,7 +23904,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_linear_systems",
@@ -22198,14 +23918,60 @@
       "prerequisites": [
         {
           "id": "college_matrix_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.5,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 线性方程组; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "linear_system",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 二元一次方程组 before 线性方程组; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_matrix_elementary_transform",
+          "relation": "prerequisite",
+          "reason": "Master 矩阵初等变换 before 线性方程组; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_rank",
+          "relation": "application",
+          "reason": "矩阵的秩 is a typical application of 线性方程组, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_cramers_rule",
+          "relation": "confusable",
+          "reason": "线性方程组 and 克拉默法则 are easy to confuse, so guidance should contrast their conditions and conclusions.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22247,7 +24013,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_vector_space",
@@ -22260,14 +24027,49 @@
       "prerequisites": [
         {
           "id": "senior_plane_vector_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 平面向量概念 before 向量空间; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_linear_systems",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 线性方程组 before 向量空间; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_linear_independence",
+          "relation": "procedure_step",
+          "reason": "Use 向量空间 as a procedure step when working through 线性相关与线性无关.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_basis_dimension",
+          "relation": "application",
+          "reason": "基与维数 is a typical application of 向量空间, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22309,7 +24111,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_linear_independence",
@@ -22322,10 +24125,49 @@
       "prerequisites": [
         {
           "id": "college_vector_space",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 向量空间 before 线性相关与线性无关; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_linear_systems",
+          "relation": "prerequisite",
+          "reason": "Master 线性方程组 before 线性相关与线性无关; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_rank",
+          "relation": "application",
+          "reason": "矩阵的秩 is a typical application of 线性相关与线性无关, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_basis_dimension",
+          "relation": "procedure_step",
+          "reason": "Use 线性相关与线性无关 as a procedure step when working through 基与维数.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22367,7 +24209,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_rank",
@@ -22380,14 +24223,60 @@
       "prerequisites": [
         {
           "id": "college_linear_independence",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 线性相关与线性无关 before 矩阵的秩; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_matrix_operations",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 矩阵的秩; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_matrix_elementary_transform",
+          "relation": "prerequisite",
+          "reason": "Master 矩阵初等变换 before 矩阵的秩; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_linear_systems",
+          "relation": "application",
+          "reason": "线性方程组 is a typical application of 矩阵的秩, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_linear_independence",
+          "relation": "application",
+          "reason": "线性相关与线性无关 is a typical application of 矩阵的秩, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22429,7 +24318,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_eigenvalue",
@@ -22442,14 +24332,71 @@
       "prerequisites": [
         {
           "id": "college_matrix_inverse",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 逆矩阵 before 特征值与特征向量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_vector_space",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 向量空间 before 特征值与特征向量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_determinant",
+          "relation": "prerequisite",
+          "reason": "Master 行列式 before 特征值与特征向量; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        },
+        {
+          "id": "college_linear_systems",
+          "relation": "prerequisite",
+          "reason": "Master 线性方程组 before 特征值与特征向量; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_diagonalization",
+          "relation": "application",
+          "reason": "矩阵对角化 is a typical application of 特征值与特征向量, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_symmetric_matrix",
+          "relation": "extends",
+          "reason": "实对称矩阵与正交对角化 extends 特征值与特征向量 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把代数重数直接当作特征向量个数",
         "求特征向量时忘记解齐次方程组",
@@ -22492,6 +24439,12 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
+      ],
+      "course_family": "linear_algebra",
+      "aliases": [
+        "特征值怎么学",
+        "特征值特征向量",
+        "矩阵特征值"
       ]
     },
     {
@@ -22505,6 +24458,24 @@
       "prerequisites": [
         {
           "id": "college_eigenvalue",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Master 特征值与特征向量 before 矩阵对角化; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_linear_independence",
+          "relation": "prerequisite",
+          "reason": "Master 线性相关与线性无关 before 矩阵对角化; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
@@ -22550,7 +24521,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_quadratic_form",
@@ -22563,10 +24535,49 @@
       "prerequisites": [
         {
           "id": "college_eigenvalue",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 特征值与特征向量 before 二次型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_symmetric_matrix",
+          "relation": "prerequisite",
+          "reason": "Master 实对称矩阵与正交对角化 before 二次型; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_positive_definite",
+          "relation": "application",
+          "reason": "正定二次型 is a typical application of 二次型, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_eigenvalue",
+          "relation": "application",
+          "reason": "特征值与特征向量 is a typical application of 二次型, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22608,7 +24619,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_random_event",
@@ -22621,10 +24633,38 @@
       "prerequisites": [
         {
           "id": "senior_classical_probability",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 古典概型 before 随机事件与概率; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_conditional_probability",
+          "relation": "procedure_step",
+          "reason": "Use 随机事件与概率 as a procedure step when working through 条件概率与独立性.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_bayes_formula",
+          "relation": "application",
+          "reason": "贝叶斯公式 is a typical application of 随机事件与概率, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22666,7 +24706,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_conditional_probability",
@@ -22679,10 +24720,38 @@
       "prerequisites": [
         {
           "id": "college_random_event",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 随机事件与概率 before 条件概率与独立性; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_bayes_formula",
+          "relation": "application",
+          "reason": "贝叶斯公式 is a typical application of 条件概率与独立性, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_random_variable",
+          "relation": "extends",
+          "reason": "随机变量 extends 条件概率与独立性 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22724,7 +24793,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_random_variable",
@@ -22737,14 +24807,60 @@
       "prerequisites": [
         {
           "id": "college_conditional_probability",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 条件概率与独立性 before 随机变量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "senior_random_variable",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 随机变量及分布列 before 随机变量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_random_event",
+          "relation": "prerequisite",
+          "reason": "Master 随机事件与概率 before 随机变量; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_distribution_functions",
+          "relation": "procedure_step",
+          "reason": "Use 随机变量 as a procedure step when working through 分布函数与常见分布.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_expectation_variance",
+          "relation": "application",
+          "reason": "期望与方差 is a typical application of 随机变量, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22786,7 +24902,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_distribution_functions",
@@ -22799,10 +24916,38 @@
       "prerequisites": [
         {
           "id": "college_random_variable",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 随机变量 before 分布函数与常见分布; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_common_distributions",
+          "relation": "application",
+          "reason": "常见离散与连续分布 is a typical application of 分布函数与常见分布, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_expectation_variance",
+          "relation": "procedure_step",
+          "reason": "Use 分布函数与常见分布 as a procedure step when working through 期望与方差.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22844,7 +24989,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_expectation_variance",
@@ -22857,13 +25003,46 @@
       "prerequisites": [
         {
           "id": "college_distribution_functions",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 分布函数与常见分布 before 期望与方差; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "variance",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "期望与方差 connects to 方差 as a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_covariance_correlation",
+          "relation": "extends",
+          "reason": "协方差与相关系数 extends 期望与方差 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_law_large_numbers",
+          "relation": "application",
+          "reason": "大数定律与中心极限定理 is a typical application of 期望与方差, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -22907,6 +25086,13 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
+      ],
+      "course_family": "probability_statistics",
+      "aliases": [
+        "期望方差",
+        "期望与方差",
+        "数学期望",
+        "随机变量数字特征"
       ]
     },
     {
@@ -22920,10 +25106,38 @@
       "prerequisites": [
         {
           "id": "college_expectation_variance",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 期望与方差 before 大数定律与中心极限定理; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_confidence_interval",
+          "relation": "application",
+          "reason": "置信区间 is a typical application of 大数定律与中心极限定理, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_parameter_estimation",
+          "relation": "supports",
+          "reason": "大数定律与中心极限定理 supports understanding 参数估计 by explaining why the method or condition works.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -22965,7 +25179,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_parameter_estimation",
@@ -22978,14 +25193,60 @@
       "prerequisites": [
         {
           "id": "college_expectation_variance",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 期望与方差 before 参数估计; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "sample_estimation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 用样本估计总体 before 参数估计; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_common_distributions",
+          "relation": "prerequisite",
+          "reason": "Master 常见离散与连续分布 before 参数估计; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.5
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_confidence_interval",
+          "relation": "application",
+          "reason": "置信区间 is a typical application of 参数估计, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_hypothesis_testing",
+          "relation": "extends",
+          "reason": "假设检验 extends 参数估计 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -23027,7 +25288,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_hypothesis_testing",
@@ -23040,10 +25302,38 @@
       "prerequisites": [
         {
           "id": "college_parameter_estimation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 参数估计 before 假设检验; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_confidence_interval",
+          "relation": "confusable",
+          "reason": "假设检验 and 置信区间 are easy to confuse, so guidance should contrast their conditions and conclusions.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_chi_square_test",
+          "relation": "application",
+          "reason": "卡方检验 is a typical application of 假设检验, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把双侧检验误用到单侧问题",
         "总体方差未知时误用 z 检验",
@@ -23086,7 +25376,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_ode_first_order",
@@ -23099,7 +25390,14 @@
       "prerequisites": [
         {
           "id": "college_indefinite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 不定积分 before 一阶微分方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23144,7 +25442,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_ode_second_order",
@@ -23157,11 +25456,25 @@
       "prerequisites": [
         {
           "id": "college_ode_first_order",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一阶微分方程 before 二阶线性微分方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_linear_systems",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 线性方程组 before 二阶线性微分方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23206,7 +25519,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_discrete_logic",
@@ -23219,7 +25533,14 @@
       "prerequisites": [
         {
           "id": "senior_logic_proposition",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 命题与量词 before 命题逻辑与谓词逻辑; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23263,7 +25584,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "college_set_relation",
@@ -23276,7 +25598,14 @@
       "prerequisites": [
         {
           "id": "senior_set_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 集合运算 before 集合关系与映射; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23320,7 +25649,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "college_graph_theory_intro",
@@ -23333,7 +25663,14 @@
       "prerequisites": [
         {
           "id": "college_set_relation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 集合关系与映射 before 图论基础; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23377,7 +25714,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "college_combinatorics",
@@ -23390,7 +25728,14 @@
       "prerequisites": [
         {
           "id": "senior_probability_counting",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 排列组合初步 before 组合计数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23434,7 +25779,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "college_number_theory_intro",
@@ -23447,7 +25793,14 @@
       "prerequisites": [
         {
           "id": "primary_integer_multiply_divide",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 整数乘除法 before 初等数论基础; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -23491,7 +25844,8 @@
       "curriculum_tags": [
         "curriculum_context",
         "college_course_track"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "primary_place_value_decimal",
@@ -25388,7 +27742,14 @@
       "prerequisites": [
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before ε-δ 极限定义; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25434,7 +27795,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_equivalent_infinitesimal",
@@ -25447,7 +27809,14 @@
       "prerequisites": [
         {
           "id": "college_important_limits",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 两个重要极限 before 等价无穷小替换; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25493,7 +27862,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_lhopital_rule",
@@ -25506,14 +27876,60 @@
       "prerequisites": [
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 洛必达法则; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_limit_rules",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限运算法则 before 洛必达法则; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_limit_concept",
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 洛必达法则; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
           "required_mastery": 0.55
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_equivalent_infinitesimal",
+          "relation": "confusable",
+          "reason": "洛必达法则 and 等价无穷小替换 are easy to confuse, so guidance should contrast their conditions and conclusions.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_important_limits",
+          "relation": "supports",
+          "reason": "洛必达法则 supports understanding 两个重要极限 by explaining why the method or condition works.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -25556,7 +27972,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_uniform_continuity_intro",
@@ -25569,7 +27986,14 @@
       "prerequisites": [
         {
           "id": "college_continuity",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 函数连续性 before 一致连续初步; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25615,7 +28039,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_riemann_integral_definition",
@@ -25628,7 +28053,14 @@
       "prerequisites": [
         {
           "id": "college_definite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 定积分 before 黎曼积分定义; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25674,7 +28106,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_newton_leibniz",
@@ -25687,11 +28120,25 @@
       "prerequisites": [
         {
           "id": "college_definite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 定积分 before 牛顿-莱布尼茨公式; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_derivative_calculation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一元函数求导 before 牛顿-莱布尼茨公式; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25737,7 +28184,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_improper_integral",
@@ -25750,11 +28198,25 @@
       "prerequisites": [
         {
           "id": "college_definite_integral",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 定积分 before 反常积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_limit_concept",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 极限概念 before 反常积分; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -25800,7 +28262,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_gradient_directional_derivative",
@@ -25813,10 +28276,38 @@
       "prerequisites": [
         {
           "id": "college_partial_derivative",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 偏导数 before 梯度与方向导数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_partial_derivative",
+          "relation": "procedure_step",
+          "reason": "Use 梯度与方向导数 as a procedure step when working through 偏导数.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "reason": "单调性极值与凹凸性 is a typical application of 梯度与方向导数, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -25859,7 +28350,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_lagrange_multiplier",
@@ -25872,14 +28364,60 @@
       "prerequisites": [
         {
           "id": "college_partial_derivative",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 偏导数 before 拉格朗日乘数法; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_monotonic_extrema",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 单调性极值与凹凸性 before 拉格朗日乘数法; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_gradient_directional_derivative",
+          "relation": "prerequisite",
+          "reason": "Master 梯度与方向导数 before 拉格朗日乘数法; it supplies the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.6
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_gradient_directional_derivative",
+          "relation": "procedure_step",
+          "reason": "Use 拉格朗日乘数法 as a procedure step when working through 梯度与方向导数.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "extends",
+          "reason": "单调性极值与凹凸性 extends 拉格朗日乘数法 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -25922,7 +28460,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_double_integral_region",
@@ -25932,13 +28471,19 @@
       "chapter": "微积分",
       "depth": 3,
       "difficulty": 0.8,
-      "prerequisites": [
+      "prerequisites": [],
+      "related": [
         {
           "id": "college_multiple_integral",
-          "required_mastery": 0.55
+          "relation": "procedure_step",
+          "reason": "Use 二重积分积分区域 as a procedure step when working through 重积分.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -25981,7 +28526,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_matrix_elementary_transform",
@@ -25994,7 +28540,14 @@
       "prerequisites": [
         {
           "id": "college_matrix_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 矩阵初等变换; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26040,7 +28593,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_cramers_rule",
@@ -26053,11 +28607,25 @@
       "prerequisites": [
         {
           "id": "college_determinant",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 行列式 before 克拉默法则; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_linear_systems",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 线性方程组 before 克拉默法则; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26103,7 +28671,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_basis_dimension",
@@ -26116,11 +28685,25 @@
       "prerequisites": [
         {
           "id": "college_vector_space",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 向量空间 before 基与维数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_linear_independence",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 线性相关与线性无关 before 基与维数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26166,7 +28749,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_orthogonality_projection",
@@ -26179,14 +28763,49 @@
       "prerequisites": [
         {
           "id": "college_vector_space",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 向量空间 before 正交投影与最小二乘; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_matrix_operations",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵运算 before 正交投影与最小二乘; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_linear_systems",
+          "relation": "application",
+          "reason": "线性方程组 is a typical application of 正交投影与最小二乘, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_vector_space",
+          "relation": "extends",
+          "reason": "向量空间 extends 正交投影与最小二乘 with a broader or more advanced version of the same idea.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -26229,7 +28848,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_symmetric_matrix",
@@ -26242,11 +28862,25 @@
       "prerequisites": [
         {
           "id": "college_eigenvalue",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 特征值与特征向量 before 实对称矩阵与正交对角化; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_diagonalization",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 矩阵对角化 before 实对称矩阵与正交对角化; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26292,7 +28926,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_positive_definite",
@@ -26305,11 +28940,25 @@
       "prerequisites": [
         {
           "id": "college_quadratic_form",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 二次型 before 正定二次型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "college_eigenvalue",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 特征值与特征向量 before 正定二次型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26355,7 +29004,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "linear_algebra"
     },
     {
       "id": "college_bayes_formula",
@@ -26368,7 +29018,14 @@
       "prerequisites": [
         {
           "id": "college_conditional_probability",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 条件概率与独立性 before 贝叶斯公式; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26414,7 +29071,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_common_distributions",
@@ -26427,10 +29085,38 @@
       "prerequisites": [
         {
           "id": "college_distribution_functions",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 分布函数与常见分布 before 常见离散与连续分布; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "college_expectation_variance",
+          "relation": "application",
+          "reason": "期望与方差 is a typical application of 常见离散与连续分布, useful for diagnosis, learning paths, and hint generation.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_law_large_numbers",
+          "relation": "supports",
+          "reason": "常见离散与连续分布 supports understanding 大数定律与中心极限定理 by explaining why the method or condition works.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -26473,7 +29159,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_covariance_correlation",
@@ -26486,7 +29173,14 @@
       "prerequisites": [
         {
           "id": "college_expectation_variance",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 期望与方差 before 协方差与相关系数; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26532,7 +29226,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_confidence_interval",
@@ -26545,7 +29240,14 @@
       "prerequisites": [
         {
           "id": "college_parameter_estimation",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 参数估计 before 置信区间; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26591,7 +29293,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_chi_square_test",
@@ -26604,7 +29307,14 @@
       "prerequisites": [
         {
           "id": "college_hypothesis_testing",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 假设检验 before 卡方检验; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26650,7 +29360,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "probability_statistics"
     },
     {
       "id": "college_first_order_linear_ode",
@@ -26663,7 +29374,14 @@
       "prerequisites": [
         {
           "id": "college_ode_first_order",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一阶微分方程 before 一阶线性微分方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26709,7 +29427,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_separable_ode",
@@ -26722,7 +29441,14 @@
       "prerequisites": [
         {
           "id": "college_ode_first_order",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 一阶微分方程 before 可分离变量方程; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26768,7 +29494,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "calculus"
     },
     {
       "id": "college_graph_shortest_path",
@@ -26781,7 +29508,14 @@
       "prerequisites": [
         {
           "id": "college_graph_theory_intro",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 图论基础 before 图的最短路模型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26826,7 +29560,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "discrete_math"
     },
     {
       "id": "college_modular_arithmetic",
@@ -26839,7 +29574,14 @@
       "prerequisites": [
         {
           "id": "college_number_theory_intro",
-          "required_mastery": 0.55
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "reason": "Master 初等数论基础 before 同余与模运算; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [],
@@ -26884,7 +29626,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "discrete_math"
     }
   ],
   "grade_level": "junior_high"

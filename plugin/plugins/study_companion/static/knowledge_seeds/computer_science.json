@@ -14,17 +14,35 @@
       "prerequisites": [
         {
           "id": "college_discrete_logic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 命题逻辑与谓词逻辑 before C 程序结构; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_discrete_logic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "C 程序结构 and 命题逻辑与谓词逻辑 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_variables_types",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 变量与基本数据类型 after C 程序结构; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -77,7 +95,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_variables_types",
@@ -91,17 +110,35 @@
       "prerequisites": [
         {
           "id": "college_c_basic_program_structure",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master C 程序结构 before 变量与基本数据类型; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_basic_program_structure",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "变量与基本数据类型 and C 程序结构 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_expression_precedence",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 表达式与运算符优先级 after 变量与基本数据类型; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -154,7 +191,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_expression_precedence",
@@ -168,17 +206,35 @@
       "prerequisites": [
         {
           "id": "college_c_variables_types",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 变量与基本数据类型 before 表达式与运算符优先级; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_variables_types",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "表达式与运算符优先级 and 变量与基本数据类型 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_branch_control",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 条件分支结构 after 表达式与运算符优先级; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -231,7 +287,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_branch_control",
@@ -245,17 +302,35 @@
       "prerequisites": [
         {
           "id": "college_c_expression_precedence",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 表达式与运算符优先级 before 条件分支结构; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_expression_precedence",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "条件分支结构 and 表达式与运算符优先级 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_loop_invariant",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 循环与循环不变量 after 条件分支结构; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -308,7 +383,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_loop_invariant",
@@ -322,17 +398,35 @@
       "prerequisites": [
         {
           "id": "college_c_branch_control",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 条件分支结构 before 循环与循环不变量; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_branch_control",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "循环与循环不变量 and 条件分支结构 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_array_traversal",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 一维数组遍历 after 循环与循环不变量; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -385,7 +479,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_array_traversal",
@@ -399,17 +494,35 @@
       "prerequisites": [
         {
           "id": "college_c_loop_invariant",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 循环与循环不变量 before 一维数组遍历; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_loop_invariant",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "一维数组遍历 and 循环与循环不变量 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_2d_array_matrix",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 二维数组与矩阵操作 after 一维数组遍历; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -462,7 +575,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_2d_array_matrix",
@@ -476,17 +590,35 @@
       "prerequisites": [
         {
           "id": "college_c_array_traversal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 一维数组遍历 before 二维数组与矩阵操作; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_array_traversal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "二维数组与矩阵操作 and 一维数组遍历 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_string_char_array",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 字符串与字符数组 after 二维数组与矩阵操作; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -539,7 +671,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_string_char_array",
@@ -553,17 +686,35 @@
       "prerequisites": [
         {
           "id": "college_c_2d_array_matrix",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 二维数组与矩阵操作 before 字符串与字符数组; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_2d_array_matrix",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "字符串与字符数组 and 二维数组与矩阵操作 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_function_parameter",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 函数与参数传递 after 字符串与字符数组; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -616,7 +767,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_function_parameter",
@@ -630,17 +782,35 @@
       "prerequisites": [
         {
           "id": "college_c_string_char_array",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 字符串与字符数组 before 函数与参数传递; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_string_char_array",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "函数与参数传递 and 字符串与字符数组 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_recursion_basic",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 递归函数基础 after 函数与参数传递; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -693,7 +863,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_recursion_basic",
@@ -707,17 +878,35 @@
       "prerequisites": [
         {
           "id": "college_c_function_parameter",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 函数与参数传递 before 递归函数基础; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_function_parameter",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "递归函数基础 and 函数与参数传递 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_pointer_address",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 指针与地址 after 递归函数基础; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -770,7 +959,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_pointer_address",
@@ -784,17 +974,35 @@
       "prerequisites": [
         {
           "id": "college_c_recursion_basic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 递归函数基础 before 指针与地址; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_recursion_basic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "指针与地址 and 递归函数基础 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_pointer_array",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 指针与数组关系 after 指针与地址; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -847,7 +1055,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_pointer_array",
@@ -861,17 +1070,35 @@
       "prerequisites": [
         {
           "id": "college_c_pointer_address",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 指针与地址 before 指针与数组关系; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_pointer_address",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "指针与数组关系 and 指针与地址 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_struct_record",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 结构体与记录建模 after 指针与数组关系; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -924,7 +1151,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_struct_record",
@@ -938,17 +1166,35 @@
       "prerequisites": [
         {
           "id": "college_c_pointer_array",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 指针与数组关系 before 结构体与记录建模; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_pointer_array",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "结构体与记录建模 and 指针与数组关系 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_file_io",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 文件读写基础 after 结构体与记录建模; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1001,7 +1247,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_file_io",
@@ -1015,17 +1262,35 @@
       "prerequisites": [
         {
           "id": "college_c_struct_record",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 结构体与记录建模 before 文件读写基础; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_struct_record",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "文件读写基础 and 结构体与记录建模 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_c_debug_boundary",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice C 程序边界调试 after 文件读写基础; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1078,7 +1343,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_c_debug_boundary",
@@ -1092,17 +1358,35 @@
       "prerequisites": [
         {
           "id": "college_c_file_io",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 文件读写基础 before C 程序边界调试; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_file_io",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "C 程序边界调试 and 文件读写基础 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_algorithm_complexity",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 算法复杂度分析 after C 程序边界调试; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1155,7 +1439,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_ds_algorithm_complexity",
@@ -1169,17 +1454,35 @@
       "prerequisites": [
         {
           "id": "college_c_debug_boundary",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master C 程序边界调试 before 算法复杂度分析; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_c_debug_boundary",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "算法复杂度分析 and C 程序边界调试 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_linear_list",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 线性表顺序存储 after 算法复杂度分析; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1232,7 +1535,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_linear_list",
@@ -1246,17 +1550,35 @@
       "prerequisites": [
         {
           "id": "college_ds_algorithm_complexity",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 算法复杂度分析 before 线性表顺序存储; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_algorithm_complexity",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "线性表顺序存储 and 算法复杂度分析 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_linked_list",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 单链表操作 after 线性表顺序存储; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1309,7 +1631,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_linked_list",
@@ -1323,17 +1646,35 @@
       "prerequisites": [
         {
           "id": "college_ds_linear_list",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 线性表顺序存储 before 单链表操作; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_linear_list",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "单链表操作 and 线性表顺序存储 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_stack",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 栈与表达式求值 after 单链表操作; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1386,7 +1727,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_stack",
@@ -1400,17 +1742,35 @@
       "prerequisites": [
         {
           "id": "college_ds_linked_list",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 单链表操作 before 栈与表达式求值; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_linked_list",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "栈与表达式求值 and 单链表操作 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_queue_circular",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 循环队列 after 栈与表达式求值; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1463,7 +1823,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_queue_circular",
@@ -1477,17 +1838,35 @@
       "prerequisites": [
         {
           "id": "college_ds_stack",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 栈与表达式求值 before 循环队列; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_stack",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "循环队列 and 栈与表达式求值 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_tree_traversal",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 二叉树遍历 after 循环队列; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1540,7 +1919,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_tree_traversal",
@@ -1554,17 +1934,35 @@
       "prerequisites": [
         {
           "id": "college_ds_queue_circular",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 循环队列 before 二叉树遍历; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_queue_circular",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "二叉树遍历 and 循环队列 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_binary_search_tree",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 二叉搜索树 after 二叉树遍历; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1617,7 +2015,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_binary_search_tree",
@@ -1631,17 +2030,35 @@
       "prerequisites": [
         {
           "id": "college_ds_tree_traversal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 二叉树遍历 before 二叉搜索树; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_tree_traversal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "二叉搜索树 and 二叉树遍历 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_heap_priority_queue",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 堆与优先队列 after 二叉搜索树; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1694,7 +2111,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_heap_priority_queue",
@@ -1708,17 +2126,35 @@
       "prerequisites": [
         {
           "id": "college_ds_binary_search_tree",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 二叉搜索树 before 堆与优先队列; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_binary_search_tree",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "堆与优先队列 and 二叉搜索树 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_graph_representation",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 图的存储结构 after 堆与优先队列; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1771,7 +2207,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_graph_representation",
@@ -1785,17 +2222,35 @@
       "prerequisites": [
         {
           "id": "college_ds_heap_priority_queue",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 堆与优先队列 before 图的存储结构; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_heap_priority_queue",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "图的存储结构 and 堆与优先队列 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_graph_traversal",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 图的 BFS 与 DFS after 图的存储结构; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1848,7 +2303,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_graph_traversal",
@@ -1862,17 +2318,35 @@
       "prerequisites": [
         {
           "id": "college_ds_graph_representation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 图的存储结构 before 图的 BFS 与 DFS; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_graph_representation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "图的 BFS 与 DFS and 图的存储结构 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_shortest_path",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 最短路径算法 after 图的 BFS 与 DFS; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1925,7 +2399,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_shortest_path",
@@ -1939,17 +2414,35 @@
       "prerequisites": [
         {
           "id": "college_ds_graph_traversal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 图的 BFS 与 DFS before 最短路径算法; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_graph_traversal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "最短路径算法 and 图的 BFS 与 DFS are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_minimum_spanning_tree",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 最小生成树 after 最短路径算法; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2002,7 +2495,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_minimum_spanning_tree",
@@ -2016,17 +2510,35 @@
       "prerequisites": [
         {
           "id": "college_ds_shortest_path",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 最短路径算法 before 最小生成树; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_shortest_path",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "最小生成树 and 最短路径算法 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_sorting_basic",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 基础排序算法 after 最小生成树; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2079,7 +2591,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_sorting_basic",
@@ -2093,17 +2606,35 @@
       "prerequisites": [
         {
           "id": "college_ds_minimum_spanning_tree",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 最小生成树 before 基础排序算法; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_minimum_spanning_tree",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "基础排序算法 and 最小生成树 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_quick_merge_sort",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 快速排序与归并排序 after 基础排序算法; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2156,7 +2687,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_quick_merge_sort",
@@ -2170,17 +2702,35 @@
       "prerequisites": [
         {
           "id": "college_ds_sorting_basic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 基础排序算法 before 快速排序与归并排序; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_sorting_basic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "快速排序与归并排序 and 基础排序算法 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_hash_table",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 散列表与冲突处理 after 快速排序与归并排序; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2233,7 +2783,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_hash_table",
@@ -2247,17 +2798,35 @@
       "prerequisites": [
         {
           "id": "college_ds_quick_merge_sort",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 快速排序与归并排序 before 散列表与冲突处理; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_quick_merge_sort",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "散列表与冲突处理 and 快速排序与归并排序 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_search_binary",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 折半查找 after 散列表与冲突处理; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2310,7 +2879,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_search_binary",
@@ -2324,17 +2894,35 @@
       "prerequisites": [
         {
           "id": "college_ds_hash_table",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 散列表与冲突处理 before 折半查找; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_hash_table",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "折半查找 and 散列表与冲突处理 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_cs_memory_model_intro",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 程序内存模型初步 after 折半查找; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2387,7 +2975,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_cs_memory_model_intro",
@@ -2401,17 +2990,35 @@
       "prerequisites": [
         {
           "id": "college_ds_search_binary",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 折半查找 before 程序内存模型初步; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_search_binary",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "程序内存模型初步 and 折半查找 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_cs_bit_binary",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 二进制与位运算 after 程序内存模型初步; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2465,7 +3072,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "computer_science_foundations"
     },
     {
       "id": "college_cs_bit_binary",
@@ -2479,17 +3087,35 @@
       "prerequisites": [
         {
           "id": "college_cs_memory_model_intro",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 程序内存模型初步 before 二进制与位运算; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_cs_memory_model_intro",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "二进制与位运算 and 程序内存模型初步 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_cs_modular_design",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 模块化程序设计 after 二进制与位运算; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2542,7 +3168,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_cs_modular_design",
@@ -2556,17 +3183,35 @@
       "prerequisites": [
         {
           "id": "college_cs_bit_binary",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 二进制与位运算 before 模块化程序设计; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_cs_bit_binary",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "模块化程序设计 and 二进制与位运算 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_cs_test_cases",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 测试用例设计 after 模块化程序设计; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2619,7 +3264,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_cs_test_cases",
@@ -2633,17 +3279,35 @@
       "prerequisites": [
         {
           "id": "college_cs_modular_design",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 模块化程序设计 before 测试用例设计; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_cs_modular_design",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "测试用例设计 and 模块化程序设计 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_recursion_iteration",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 递归与迭代转换 after 测试用例设计; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2696,7 +3360,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "c_programming"
     },
     {
       "id": "college_ds_recursion_iteration",
@@ -2710,17 +3375,35 @@
       "prerequisites": [
         {
           "id": "college_cs_test_cases",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 测试用例设计 before 递归与迭代转换; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_cs_test_cases",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "递归与迭代转换 and 测试用例设计 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_dynamic_array",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 动态数组扩容 after 递归与迭代转换; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2773,7 +3456,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_dynamic_array",
@@ -2787,17 +3471,35 @@
       "prerequisites": [
         {
           "id": "college_ds_recursion_iteration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 递归与迭代转换 before 动态数组扩容; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_recursion_iteration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "动态数组扩容 and 递归与迭代转换 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_union_find",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 并查集 after 动态数组扩容; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2850,7 +3552,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_union_find",
@@ -2864,17 +3567,35 @@
       "prerequisites": [
         {
           "id": "college_ds_dynamic_array",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 动态数组扩容 before 并查集; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_dynamic_array",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "并查集 and 动态数组扩容 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_topological_sort",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 拓扑排序 after 并查集; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2927,7 +3648,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_topological_sort",
@@ -2941,17 +3663,35 @@
       "prerequisites": [
         {
           "id": "college_ds_union_find",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 并查集 before 拓扑排序; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_union_find",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "拓扑排序 and 并查集 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "college_ds_greedy_dp_intro",
-          "relation": "next"
+          "relation": "extends",
+          "reason": "Practice 贪心与动态规划初步 after 拓扑排序; it is the next topic in this course sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3004,7 +3744,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     },
     {
       "id": "college_ds_greedy_dp_intro",
@@ -3018,13 +3759,26 @@
       "prerequisites": [
         {
           "id": "college_ds_topological_sort",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 拓扑排序 before 贪心与动态规划初步; it provides the foundation used by later steps.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "college_ds_topological_sort",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "贪心与动态规划初步 and 拓扑排序 are often studied together, so guidance can compare their conditions and usage.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3077,7 +3831,8 @@
         "daily_practice",
         "unit_test",
         "college_course_exam"
-      ]
+      ],
+      "course_family": "data_structures"
     }
   ]
 }

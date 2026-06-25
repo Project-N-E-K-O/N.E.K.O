@@ -83,6 +83,10 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from plugin.plugins.study_companion.knowledge_graph_guidance import (
+    build_knowledge_guidance_payload,
+    match_topics,
+)
 from plugin.plugins.study_companion.knowledge_seed_validator import (
     validate_knowledge_seed_manifest,
 )
@@ -1552,6 +1556,12 @@ def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
     assert result.is_valid
     assert not result.issues
     assert len(result.topics) >= 650
+    assert result.report is not None
+    assert result.report["topic_count"] == len(result.topics)
+    assert result.report["missing_stage"] == 0
+    assert result.report["missing_college_course_family"] == 0
+    assert result.report["typed_edges"] > 0
+    assert "application" in result.report["relation_counts"]
 
 
 def test_study_knowledge_seed_validator_reports_schema_errors(
@@ -1595,7 +1605,20 @@ def test_study_knowledge_seed_validator_reports_schema_errors(
                         "chapter": "Bad Chapter",
                         "unit": "Bad Unit",
                         "prerequisites": [],
-                        "related": [],
+                        "related": [
+                            {"id": "duplicate_topic", "relation": "application"},
+                            {
+                                "id": "duplicate_topic",
+                                "relation": "mystery",
+                                "reason": "bad relation",
+                            },
+                            {
+                                "id": "duplicate_topic",
+                                "relation": "application",
+                                "reason": "bad use case",
+                                "use_cases": ["unsupported_case"],
+                            },
+                        ],
                         "skills": ["识别重复知识点"],
                         "question_types": ["综合题"],
                         "examples": [
@@ -1641,7 +1664,79 @@ def test_study_knowledge_seed_validator_reports_schema_errors(
         "empty_reserved_field",
         "manifest_topic_count_mismatch",
         "unknown_reserved_field_value",
+        "invalid_typed_edge",
+        "unknown_edge_relation",
+        "unknown_edge_use_case",
     }.issubset(issue_codes)
+
+
+def test_study_knowledge_seed_validator_reports_graph_quality_gaps(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "seed.json"
+    manifest = tmp_path / "knowledge_graph_seed.json"
+    manifest.write_text(
+        json.dumps({"files": [{"path": "seed.json", "topic_count": 2}]}),
+        encoding="utf-8",
+    )
+    common = {
+        "subject": "math",
+        "stage": "college",
+        "chapter": "Calculus",
+        "unit": "Derivatives",
+        "curriculum_version": "generic_college",
+        "exam_region": "college_course_generic",
+        "exam_type": "college_course_exam",
+        "skills": ["analyze prerequisite graph"],
+        "question_types": ["concept"],
+        "examples": [{"prompt": "Explain the dependency.", "answer_outline": ["A"]}],
+        "typical_misconceptions": ["cyclic dependencies hide true prerequisites"],
+        "related": [],
+    }
+    seed.write_text(
+        json.dumps(
+            {
+                "topics": [
+                    {
+                        **common,
+                        "id": "college_cycle_a",
+                        "name": "Cycle A",
+                        "prerequisites": [
+                            {
+                                "id": "college_cycle_b",
+                                "relation": "prerequisite",
+                                "reason": "A points to B.",
+                            }
+                        ],
+                    },
+                    {
+                        **common,
+                        "id": "college_cycle_b",
+                        "name": "Cycle B",
+                        "prerequisites": [
+                            {
+                                "id": "college_cycle_a",
+                                "relation": "prerequisite",
+                                "reason": "B points back to A.",
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(manifest)
+
+    assert "prerequisite_cycle" in {issue.code for issue in result.issues}
+    assert result.report is not None
+    assert result.report["cycles_in_prerequisites"] == 2
+    assert result.report["missing_college_course_family"] == 2
+    assert set(result.report["sample_prerequisite_cycle_nodes"]) == {
+        "college_cycle_a",
+        "college_cycle_b",
+    }
 
 
 def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
@@ -2399,9 +2494,21 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
                 "question_types": ["concept", "calculation"],
                 "examples": [{"prompt": "Place -2 on the number line."}],
                 "prerequisites": [
-                    {"id": "real_number_concept", "required_mastery": 0.55}
+                    {
+                        "id": "real_number_concept",
+                        "required_mastery": 0.55,
+                        "reason": "Number-axis work depends on real-number meaning.",
+                        "use_cases": ["learning_path"],
+                    }
                 ],
-                "related": [{"id": "absolute_value", "relation": "next"}],
+                "related": [
+                    {
+                        "id": "absolute_value",
+                        "relation": "application",
+                        "reason": "Absolute value is interpreted as distance on the number axis.",
+                        "use_cases": ["diagnosis", "hint_generation"],
+                    }
+                ],
             },
             {"id": "real_number_concept", "name": "Real Numbers"},
             {"id": "absolute_value", "name": "Absolute Value"},
@@ -2413,11 +2520,15 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         "to": "number_axis",
         "relation": "prerequisite",
         "required_mastery": 0.55,
+        "reason": "Number-axis work depends on real-number meaning.",
+        "use_cases": ["learning_path"],
     } in payload["edges"]
     assert {
         "from": "number_axis",
         "to": "absolute_value",
-        "relation": "next",
+        "relation": "application",
+        "reason": "Absolute value is interpreted as distance on the number axis.",
+        "use_cases": ["diagnosis", "hint_generation"],
     } in payload["edges"]
     assert payload["nodes"][0]["stage"] == "junior_high"
     assert payload["nodes"][0]["unit"] == "Number system"
@@ -2426,6 +2537,290 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
     assert payload["nodes"][0]["examples"] == [{"prompt": "Place -2 on the number line."}]
     assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
+
+
+def test_study_knowledge_guidance_payload_returns_path_applications_and_confusions() -> None:
+    topics = [
+        {
+            "id": "college_derivative",
+            "name": "导数",
+            "stage": "college",
+            "subject": "math",
+            "related": [
+                {
+                    "id": "college_extreme_points",
+                    "relation": "application",
+                    "reason": "求极值点通常要先求导。",
+                    "use_cases": ["diagnosis", "learning_path"],
+                }
+            ],
+        },
+        {
+            "id": "college_monotonicity",
+            "name": "函数单调性",
+            "stage": "college",
+            "subject": "math",
+            "related": [
+                {
+                    "id": "college_extreme_points",
+                    "relation": "procedure_step",
+                    "reason": "判断临界点两侧单调性是确认极值的关键步骤。",
+                }
+            ],
+        },
+        {
+            "id": "college_stationary_point",
+            "name": "驻点",
+            "stage": "college",
+            "subject": "math",
+        },
+        {
+            "id": "college_optimization",
+            "name": "优化应用题",
+            "stage": "college",
+            "subject": "math",
+        },
+        {
+            "id": "college_extreme_points",
+            "name": "求极值点",
+            "stage": "college",
+            "subject": "math",
+            "typical_misconceptions": ["导数为 0 不一定是极值点。"],
+            "prerequisites": [
+                {
+                    "id": "college_derivative",
+                    "relation": "prerequisite",
+                    "reason": "求极值点前要能计算导数。",
+                },
+                {
+                    "id": "college_monotonicity",
+                    "relation": "prerequisite",
+                    "reason": "需要看临界点两侧单调性是否变化。",
+                },
+            ],
+            "related": [
+                {
+                    "id": "college_optimization",
+                    "relation": "application",
+                    "reason": "优化题常把实际目标转化为极值问题。",
+                },
+                {
+                    "id": "college_stationary_point",
+                    "relation": "confusable",
+                    "reason": "驻点不一定是极值点，还要检查单调性变化。",
+                },
+            ],
+        },
+    ]
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        query="我不会求极值点",
+    )
+
+    assert payload["topic"]["id"] == "college_extreme_points"
+    assert {edge["from"] for edge in payload["learning_path"]} == {
+        "college_derivative",
+        "college_monotonicity",
+    }
+    assert payload["applications"][0]["to"] == "college_optimization"
+    assert payload["confusions"][0]["to"] == "college_stationary_point"
+    assert "导数为 0 不一定是极值点。" in payload["topic"]["typical_misconceptions"]
+    assert {
+        question["kind"] for question in payload["diagnosis_questions"]
+    } >= {"prerequisite_probe", "confusion_check", "next_step"}
+    assert payload["summary"]["matched"] is True
+    assert payload["summary"]["diagnosis_question_count"] >= 3
+
+
+def test_study_knowledge_guidance_treats_confusions_as_bidirectional() -> None:
+    topics = [
+        {
+            "id": "stationary_point",
+            "name": "Stationary point",
+            "subject": "math",
+            "stage": "college",
+            "related": [
+                {
+                    "id": "extreme_point",
+                    "relation": "confusable",
+                    "reason": "A stationary point is not always an extreme point.",
+                }
+            ],
+        },
+        {
+            "id": "extreme_point",
+            "name": "Extreme point",
+            "subject": "math",
+            "stage": "college",
+        },
+    ]
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        topic_id="extreme_point",
+    )
+
+    assert payload["topic"]["id"] == "extreme_point"
+    assert payload["confusions"][0]["from"] == "stationary_point"
+    assert payload["confusions"][0]["to"] == "extreme_point"
+    assert payload["summary"]["confusion_count"] == 1
+
+
+def test_study_knowledge_guidance_aliases_rank_natural_query_matches() -> None:
+    topics = [
+        {
+            "id": "senior_derivative_extrema",
+            "name": "导数与极值最值",
+            "subject": "math",
+            "stage": "senior_high",
+            "typical_misconceptions": ["只令 f'(x)=0 而忘记检查端点和极值点"],
+        },
+        {
+            "id": "college_monotonic_extrema",
+            "name": "单调性极值与凹凸性",
+            "subject": "math",
+            "stage": "college",
+            "course_family": "calculus",
+            "aliases": ["求极值点", "极值点判断", "驻点与极值点"],
+        },
+    ]
+
+    matches = match_topics(topics, query="我不会求极值点", limit=2)
+
+    assert matches[0]["id"] == "college_monotonic_extrema"
+    assert "求极值点" in matches[0]["matched_terms"]
+
+
+def test_study_knowledge_guidance_prefers_specific_topic_over_learning_intent() -> None:
+    topics = [
+        {
+            "id": "college_definite_integral",
+            "name": "\u5b9a\u79ef\u5206",
+            "subject": "math",
+            "stage": "college",
+            "course_family": "calculus",
+            "aliases": ["\u5b9a\u79ef\u5206\u600e\u4e48\u5b66"],
+        },
+        {
+            "id": "college_ds_linked_list",
+            "name": "\u5355\u94fe\u8868\u64cd\u4f5c",
+            "subject": "computer_science",
+            "stage": "college",
+            "course_family": "data_structures",
+        },
+    ]
+
+    matches = match_topics(topics, query="\u94fe\u8868\u600e\u4e48\u5b66", limit=2)
+
+    assert matches[0]["id"] == "college_ds_linked_list"
+
+
+def test_study_knowledge_guidance_real_seed_explains_stationary_point_confusion() -> None:
+    seed_root = Path("plugin/plugins/study_companion/static")
+    manifest = json.loads((seed_root / "knowledge_graph_seed.json").read_text(encoding="utf-8"))
+    topics = []
+    for item in manifest["files"]:
+        payload = json.loads((seed_root / item["path"]).read_text(encoding="utf-8"))
+        topics.extend(payload.get("topics", []))
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u5bfc\u6570\u4e3a0\u4e3a\u4ec0\u4e48\u4e0d\u662f\u6781\u503c\u70b9",
+    )
+
+    assert payload["topic"]["id"] == "college_stationary_points"
+    confusion_targets = {edge["to"] for edge in payload["confusions"]}
+    next_targets = {edge["to"] for edge in payload["next_practice_topics"]}
+    assert "college_monotonic_extrema" in confusion_targets
+    assert {
+        "college_monotonic_extrema",
+        "college_second_derivative_test",
+    }.issubset(next_targets)
+    diagnosis = payload["diagnosis_questions"]
+    assert any(
+        item["kind"] == "confusion_check"
+        and item["topic_id"] == "college_monotonic_extrema"
+        for item in diagnosis
+    )
+    assert any(
+        item["kind"] == "next_step"
+        and item["topic_id"] == "college_second_derivative_test"
+        for item in diagnosis
+    )
+
+
+@pytest.mark.asyncio
+async def test_study_knowledge_guidance_entry_uses_store_topics(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._store = store
+
+    try:
+        store.upsert_topic(
+            {
+                "id": "derivative",
+                "name": "导数",
+                "subject": "math",
+                "chapter": "微积分",
+                "stage": "college",
+                "unit": "导数",
+                "course_family": "calculus",
+                "related": [
+                    {
+                        "id": "extreme_points",
+                        "relation": "application",
+                        "reason": "导数用于定位极值候选点。",
+                    }
+                ],
+            }
+        )
+        store.upsert_topic(
+            {
+                "id": "extreme_points",
+                "name": "求极值点",
+                "subject": "math",
+                "chapter": "微积分",
+                "stage": "college",
+                "unit": "导数应用",
+                "course_family": "calculus",
+                "prerequisites": [
+                    {
+                        "id": "derivative",
+                        "relation": "prerequisite",
+                        "reason": "先会求导再判断极值。",
+                    }
+                ],
+            }
+        )
+        store.upsert_topic(
+            {
+                "id": "physics_power_extreme",
+                "name": "Power extreme value",
+                "subject": "physics",
+                "chapter": "Electricity",
+                "stage": "college",
+                "unit": "Circuits",
+                "course_family": "physics",
+            }
+        )
+
+        result = await plugin.study_knowledge_guidance(
+            query="求极值点",
+            stage="college",
+            course_family="calculus",
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["topic"]["id"] == "extreme_points"
+        assert result.value["topic"]["course_family"] == "calculus"
+        assert result.value["learning_path"][0]["from"] == "derivative"
+        assert result.value["diagnosis_questions"][0]["kind"] == "prerequisite_probe"
+        assert result.value["summary"]["topic_count"] == 2
+        assert result.value["summary"]["learning_path_count"] == 1
+    finally:
+        store.close()
 
 
 def test_study_knowledge_map_weak_topic_count_matches_visible_nodes() -> None:
@@ -5105,6 +5500,112 @@ async def test_learning_context_builds_question_params_off_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_learning_context_includes_knowledge_graph_guidance_for_explain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        plugin._store.upsert_topic(
+            {
+                "id": "derivative",
+                "name": "\u5bfc\u6570",
+                "subject": "math",
+                "stage": "college",
+                "course_family": "calculus",
+                "related": [
+                    {
+                        "id": "extrema",
+                        "relation": "application",
+                        "reason": "\u5bfc\u6570\u7528\u4e8e\u5224\u65ad\u6781\u503c\u5019\u9009\u70b9\u3002",
+                    }
+                ],
+            }
+        )
+        plugin._store.upsert_topic(
+            {
+                "id": "extrema",
+                "name": "\u6c42\u6781\u503c\u70b9",
+                "subject": "math",
+                "stage": "college",
+                "course_family": "calculus",
+                "aliases": ["\u6781\u503c\u70b9\u5224\u65ad"],
+                "prerequisites": [
+                    {
+                        "id": "derivative",
+                        "relation": "prerequisite",
+                        "reason": "\u6c42\u6781\u503c\u70b9\u524d\u8981\u5148\u80fd\u6c42\u5bfc\u3002",
+                    }
+                ],
+            }
+        )
+
+        context = await plugin._build_learning_context(
+            "concept_explain",
+            input_text="\u6211\u4e0d\u4f1a\u6c42\u6781\u503c\u70b9",
+            extra={
+                "source_text": "\u6211\u4e0d\u4f1a\u6c42\u6781\u503c\u70b9",
+                "selected_topic_id": "extrema",
+            },
+        )
+
+        guidance = context["knowledge_guidance"]
+        assert guidance["topic"]["id"] == "extrema"
+        assert guidance["learning_path"][0]["from"] == "derivative"
+        assert guidance["diagnosis_questions"][0]["kind"] == "prerequisite_probe"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text(
+            "\u5bfc\u6570\u4e3a0\u4e3a\u4ec0\u4e48\u4e0d\u662f\u6781\u503c\u70b9"
+        )
+
+        assert isinstance(explained, Ok)
+        context = fake_agent.inputs[-1][1]
+        guidance = context["knowledge_guidance"]  # type: ignore[index]
+        assert guidance["topic"]["id"] == "college_stationary_points"  # type: ignore[index]
+        assert guidance["diagnosis_questions"]  # type: ignore[index]
+        assert explained.value["knowledge_guidance"]["topic"]["id"] == "college_stationary_points"
+        assert explained.value["diagnosis_questions"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_custom_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5364,6 +5865,27 @@ async def test_tutor_agent_prompt_and_reply_contract(
     assert messages[0]["role"] == "system"
     assert "unit-test" in messages[1]["content"]
     assert "Mode: interactive" in messages[1]["content"]
+    guided_messages = build_concept_explain_messages(
+        text="\u6211\u4e0d\u4f1a\u6c42\u6781\u503c\u70b9",
+        language="zh-CN",
+        mode=MODE_COMPANION,
+        context={
+            "source": "unit-test",
+            "mode": MODE_COMPANION,
+            "knowledge_guidance": {
+                "topic": {"id": "extrema", "label": "\u6c42\u6781\u503c\u70b9"},
+                "diagnosis_questions": [
+                    {
+                        "kind": "prerequisite_probe",
+                        "question": "\u4f60\u662f\u4e0d\u4f1a\u6c42\u5bfc\u5417\uff1f",
+                    }
+                ],
+            },
+        },
+    )
+    assert "Knowledge graph guidance" in guided_messages[1]["content"]
+    assert "\u6c42\u6781\u503c\u70b9" in guided_messages[1]["content"]
+    assert "\u4f60\u662f\u4e0d\u4f1a\u6c42\u5bfc\u5417" in guided_messages[1]["content"]
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
@@ -6122,6 +6644,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_detect_mode_intent" in entries
     assert "study_export_notes" not in entries
     assert "study_knowledge_map" in entries
+    assert "study_knowledge_guidance" in entries
     assert "study_memory_card_upsert" in entries
     assert "study_memory_deck" in entries
     assert "study_memory_card_review" in entries

@@ -118,6 +118,10 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
                         if isinstance(item.get("typical_examples"), list)
                         else []
                     ),
+                    "course_family": str(item.get("course_family") or "").strip(),
+                    "aliases": item.get("aliases")
+                    if isinstance(item.get("aliases"), list)
+                    else [],
                     "source": "seed",
                 },
                 commit=False,
@@ -138,9 +142,9 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
             INSERT INTO topics (
                 id, name, subject, chapter, stage, unit, depth, difficulty,
                 prerequisites, related, typical_misconceptions, skills,
-                question_types, examples, source, updated_at
+                question_types, examples, course_family, aliases, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
@@ -174,6 +178,16 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                     WHEN topics.source = 'seed' AND topics.examples = '[]' AND excluded.examples != '[]' THEN excluded.examples
                     WHEN topics.source = 'seed' THEN topics.examples
                     ELSE excluded.examples
+                END,
+                course_family = CASE
+                    WHEN topics.source = 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
+                    WHEN topics.source = 'seed' THEN topics.course_family
+                    ELSE excluded.course_family
+                END,
+                aliases = CASE
+                    WHEN topics.source = 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
+                    WHEN topics.source = 'seed' THEN topics.aliases
+                    ELSE excluded.aliases
                 END,
                 source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
                 updated_at = datetime('now')
@@ -218,6 +232,10 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
                 ),
                 self._json_dumps(
                     topic.get("examples") if isinstance(topic.get("examples"), list) else []
+                ),
+                str(topic.get("course_family") or "").strip(),
+                self._json_dumps(
+                    topic.get("aliases") if isinstance(topic.get("aliases"), list) else []
                 ),
                 str(topic.get("source") or "runtime"),
             ),

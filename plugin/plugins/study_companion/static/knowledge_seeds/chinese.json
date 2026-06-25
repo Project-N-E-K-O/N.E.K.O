@@ -11,7 +11,17 @@
       "depth": 1,
       "difficulty": 0.22,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_primary_sentence_expansion",
+          "relation": "next",
+          "reason": "Practice 扩句缩句 after 拼音与识字; it is the next topic in the primary chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -69,7 +79,17 @@
       "depth": 1,
       "difficulty": 0.34,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_primary_paragraph_main_idea",
+          "relation": "next",
+          "reason": "Practice 段落主要内容 after 扩句缩句; it is the next topic in the primary chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -127,7 +147,17 @@
       "depth": 1,
       "difficulty": 0.38,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_primary_observation_writing",
+          "relation": "next",
+          "reason": "Practice 观察作文 after 段落主要内容; it is the next topic in the primary chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -243,7 +273,17 @@
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_junior_expository_reading",
+          "relation": "next",
+          "reason": "Practice 说明文阅读 after 记叙文阅读; it is the next topic in the junior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -304,7 +344,17 @@
       "depth": 2,
       "difficulty": 0.52,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_junior_argumentative_reading",
+          "relation": "next",
+          "reason": "Practice 议论文阅读 after 说明文阅读; it is the next topic in the junior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -365,7 +415,17 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_junior_classical_function_words",
+          "relation": "next",
+          "reason": "Practice 文言虚词 after 议论文阅读; it is the next topic in the junior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -563,7 +623,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_poetry_appreciation",
+          "relation": "next",
+          "reason": "Practice 古诗词鉴赏 after 实用类文本阅读; it is the next topic in the senior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -639,7 +709,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_composition_argument",
+          "relation": "next",
+          "reason": "Practice 议论文写作 after 古诗词鉴赏; it is the next topic in the senior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -715,7 +795,17 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_language_use",
+          "relation": "next",
+          "reason": "Practice 语言文字运用 after 议论文写作; it is the next topic in the senior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -791,7 +881,17 @@
       "depth": 2,
       "difficulty": 0.6,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_classical_translation",
+          "relation": "next",
+          "reason": "Practice 文言翻译 after 语言文字运用; it is the next topic in the senior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -867,7 +967,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_task_driven_writing",
+          "relation": "next",
+          "reason": "Practice 任务驱动作文 after 文言翻译; it is the next topic in the senior_high chinese learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈",
         "答题角度不全",

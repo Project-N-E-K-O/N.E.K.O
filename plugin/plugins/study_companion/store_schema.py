@@ -133,6 +133,8 @@ def _init_db(self) -> None:
             skills TEXT NOT NULL DEFAULT '[]',
             question_types TEXT NOT NULL DEFAULT '[]',
             examples TEXT NOT NULL DEFAULT '[]',
+            course_family TEXT NOT NULL DEFAULT '',
+            aliases TEXT NOT NULL DEFAULT '[]',
             source TEXT NOT NULL DEFAULT 'runtime',
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
@@ -336,6 +338,10 @@ def _init_db(self) -> None:
     conn.execute("UPDATE topics SET question_types = '[]' WHERE question_types IS NULL OR question_types = ''")
     self._ensure_column(conn, "topics", "examples", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("UPDATE topics SET examples = '[]' WHERE examples IS NULL OR examples = ''")
+    self._ensure_column(conn, "topics", "course_family", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE topics SET course_family = '' WHERE course_family IS NULL")
+    self._ensure_column(conn, "topics", "aliases", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute("UPDATE topics SET aliases = '[]' WHERE aliases IS NULL OR aliases = ''")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage, subject, chapter, unit, depth, id)"

@@ -17,6 +17,7 @@ from .knowledge_quality import (
     KnowledgeCandidateType,
     KnowledgeEvidenceType,
 )
+from .knowledge_graph_guidance import build_knowledge_guidance_payload
 
 
 class _KnowledgeEntriesMixin:
@@ -256,6 +257,75 @@ class _KnowledgeEntriesMixin:
             )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_knowledge_map")
+
+    @plugin_entry(
+        id="study_knowledge_guidance",
+        name=tr(
+            "entries.knowledge_guidance.name",
+            default="Study Knowledge Guidance",
+        ),
+        description=tr(
+            "entries.knowledge_guidance.description",
+            default="Use the typed knowledge graph to return prerequisites, applications, confusions, and next practice topics for a topic or query.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "topic_id": {"type": "string", "default": ""},
+                "query": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 500},
+                "stage": {"type": "string", "default": ""},
+                "course_family": {"type": "string", "default": ""},
+                "max_depth": {"type": "integer", "default": 3},
+            },
+        },
+        llm_result_fields=[
+            "topic",
+            "matches",
+            "learning_path",
+            "applications",
+            "confusions",
+            "next_practice_topics",
+            "diagnosis_questions",
+            "summary",
+        ],
+    )
+    async def study_knowledge_guidance(
+        self,
+        topic_id: str = "",
+        query: str = "",
+        limit: int = 500,
+        stage: str = "",
+        course_family: str = "",
+        max_depth: int = 3,
+        **_,
+    ):
+        try:
+            safe_limit = max(1, min(5000, int(limit or 500)))
+            stage_key = str(stage or "").strip()
+            course_family_key = str(course_family or "").strip()
+            topics = await asyncio.to_thread(
+                self._store.list_topics,
+                safe_limit,
+                None,
+                stage_key or None,
+            )
+            if course_family_key:
+                topics = [
+                    topic
+                    for topic in topics
+                    if str(topic.get("course_family") or "").strip() == course_family_key
+                ]
+            return Ok(
+                build_knowledge_guidance_payload(
+                    topics=topics,
+                    topic_id=str(topic_id or ""),
+                    query=str(query or ""),
+                    max_depth=max(1, min(5, int(max_depth or 3))),
+                )
+            )
+        except Exception as exc:
+            return _entry_exception_error(self, exc, operation="study_knowledge_guidance")
 
     @ui.action()
     @plugin_entry(

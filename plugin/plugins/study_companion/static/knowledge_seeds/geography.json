@@ -11,7 +11,17 @@
       "depth": 1,
       "difficulty": 0.34,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_climate_types",
+          "relation": "next",
+          "reason": "Practice 世界气候类型 after 地图三要素; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -72,7 +82,17 @@
       "depth": 2,
       "difficulty": 0.5,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_river_landform",
+          "relation": "next",
+          "reason": "Practice 河流与地形 after 世界气候类型; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -133,7 +153,17 @@
       "depth": 2,
       "difficulty": 0.52,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_population_city",
+          "relation": "next",
+          "reason": "Practice 人口与城市 after 河流与地形; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -194,7 +224,17 @@
       "depth": 2,
       "difficulty": 0.48,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "next",
+          "reason": "Practice 农业工业区位 after 人口与城市; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -255,7 +295,17 @@
       "depth": 2,
       "difficulty": 0.56,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_china_regions",
+          "relation": "next",
+          "reason": "Practice 中国区域差异 after 农业工业区位; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -316,7 +366,17 @@
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_natural_disaster",
+          "relation": "next",
+          "reason": "Practice 自然灾害与防灾减灾 after 中国区域差异; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -377,7 +437,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_senior_water_cycle",
+          "relation": "next",
+          "reason": "Practice 水循环与水资源 after 大气环流与天气系统; it is the next topic in the senior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -440,7 +510,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_senior_industrial_location",
+          "relation": "next",
+          "reason": "Practice 产业区位与区域发展 after 水循环与水资源; it is the next topic in the senior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -503,7 +583,17 @@
       "depth": 3,
       "difficulty": 0.7,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_senior_earth_movement",
+          "relation": "next",
+          "reason": "Practice 地球运动 after 产业区位与区域发展; it is the next topic in the senior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "读图不看图例、比例尺和方向",
         "只列自然因素，忽略人类活动或区域差异",
@@ -566,7 +656,17 @@
       "depth": 2,
       "difficulty": 0.52,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_transport_trade",
+          "relation": "next",
+          "reason": "Practice 交通运输与区域联系 after 自然灾害与防灾减灾; it is the next topic in the junior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "忽略图例比例尺方向",
         "原因和措施混写",
@@ -690,7 +790,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_senior_geomorphology",
+          "relation": "next",
+          "reason": "Practice 外力作用与地貌 after 地球运动; it is the next topic in the senior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "忽略图例比例尺方向",
         "原因和措施混写",
@@ -754,7 +864,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "next",
+          "reason": "Practice 区域可持续发展 after 外力作用与地貌; it is the next topic in the senior_high geography learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "忽略图例比例尺方向",
         "原因和措施混写",

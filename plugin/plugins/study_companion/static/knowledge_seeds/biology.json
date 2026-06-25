@@ -11,7 +11,17 @@
       "depth": 1,
       "difficulty": 0.36,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_junior_photosynthesis_respiration",
+          "relation": "next",
+          "reason": "Practice 光合作用与呼吸作用 after 细胞结构; it is the next topic in the junior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -72,7 +82,17 @@
       "depth": 2,
       "difficulty": 0.52,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_junior_human_body_systems",
+          "relation": "next",
+          "reason": "Practice 人体系统协调 after 光合作用与呼吸作用; it is the next topic in the junior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -133,7 +153,17 @@
       "depth": 2,
       "difficulty": 0.5,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_junior_ecology_food_chain",
+          "relation": "next",
+          "reason": "Practice 食物链与生态系统 after 人体系统协调; it is the next topic in the junior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -194,7 +224,17 @@
       "depth": 2,
       "difficulty": 0.48,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_junior_microscope",
+          "relation": "next",
+          "reason": "Practice 显微镜使用 after 食物链与生态系统; it is the next topic in the junior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -331,7 +371,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_homeostasis",
+          "relation": "next",
+          "reason": "Practice 稳态与调节 after DNA复制与基因表达; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -407,7 +457,17 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "next",
+          "reason": "Practice 生态系统能量流动 after 稳态与调节; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -483,7 +543,17 @@
       "depth": 2,
       "difficulty": 0.64,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_experiment_design",
+          "relation": "next",
+          "reason": "Practice 生物实验设计 after 生态系统能量流动; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -559,7 +629,17 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_meiosis",
+          "relation": "next",
+          "reason": "Practice 减数分裂 after 生物实验设计; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -635,7 +715,17 @@
       "depth": 1,
       "difficulty": 0.36,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_junior_inheritance_intro",
+          "relation": "next",
+          "reason": "Practice 性状遗传初步 after 显微镜使用; it is the next topic in the junior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "概念背诵和过程理解脱节",
         "实验变量与对照组不清",
@@ -759,7 +849,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_gene_frequency",
+          "relation": "next",
+          "reason": "Practice 种群基因频率 after 减数分裂; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "概念背诵和过程理解脱节",
         "实验变量与对照组不清",
@@ -836,7 +936,17 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_biotech_engineering",
+          "relation": "next",
+          "reason": "Practice 现代生物技术工程 after 种群基因频率; it is the next topic in the senior_high biology learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "概念背诵和过程理解脱节",
         "实验变量与对照组不清",

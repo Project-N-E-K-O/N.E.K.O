@@ -11,7 +11,17 @@
       "depth": 1,
       "difficulty": 0.34,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_junior_chemical_equation",
+          "relation": "next",
+          "reason": "Practice 化学方程式配平 after 物质分类; it is the next topic in the junior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -72,7 +82,17 @@
       "depth": 2,
       "difficulty": 0.48,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_junior_solution_solubility",
+          "relation": "next",
+          "reason": "Practice 溶液与溶解度 after 化学方程式配平; it is the next topic in the junior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -133,7 +153,17 @@
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_junior_acid_base_salt",
+          "relation": "next",
+          "reason": "Practice 酸碱盐基础 after 溶液与溶解度; it is the next topic in the junior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -194,7 +224,17 @@
       "depth": 2,
       "difficulty": 0.6,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_junior_gas_preparation",
+          "relation": "next",
+          "reason": "Practice 气体制取与检验 after 酸碱盐基础; it is the next topic in the junior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -255,7 +295,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_equilibrium",
+          "relation": "next",
+          "reason": "Practice 化学平衡移动 after 离子反应与离子方程式; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -407,7 +457,17 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_electrochemistry",
+          "relation": "next",
+          "reason": "Practice 原电池与电解池 after 化学平衡移动; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -483,7 +543,17 @@
       "depth": 3,
       "difficulty": 0.76,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_organic_functional_group",
+          "relation": "next",
+          "reason": "Practice 有机官能团 after 原电池与电解池; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -559,7 +629,17 @@
       "depth": 2,
       "difficulty": 0.66,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "next",
+          "reason": "Practice 物质的量计算 after 有机官能团; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -635,7 +715,17 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_junior_metal_activity",
+          "relation": "next",
+          "reason": "Practice 金属活动性顺序 after 气体制取与检验; it is the next topic in the junior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "方程式与实验条件混淆",
         "忽略守恒关系或离子共存限制",
@@ -759,7 +849,17 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_thermochemistry",
+          "relation": "next",
+          "reason": "Practice 反应热与盖斯定律 after 物质的量计算; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "方程式与实验条件混淆",
         "忽略守恒关系或离子共存限制",
@@ -836,7 +936,17 @@
       "depth": 3,
       "difficulty": 0.7,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_experiment_design",
+          "relation": "next",
+          "reason": "Practice 化学实验方案评价 after 反应热与盖斯定律; it is the next topic in the senior_high chemistry learning sequence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "方程式与实验条件混淆",
         "忽略守恒关系或离子共存限制",
