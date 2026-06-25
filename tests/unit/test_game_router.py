@@ -223,6 +223,86 @@ async def test_icebreaker_is_rejected_from_game_route_end(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_pushes_window_event_to_window_owner(monkeypatch):
+    owner_mgr = _FakeGameRouteManager()
+    game_mgr = _FakeGameRouteManager()
+    pushed = []
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {
+        "Owner": owner_mgr,
+        "Debug": game_mgr,
+    })
+
+    async def fake_push(mgr, **kwargs):
+        pushed.append((mgr, kwargs))
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+
+    with reset_game_route_state():
+        result = await game_router.game_route_start(
+            "drawing_guess",
+            _FakeRequest({
+                "lanlan_name": "Debug",
+                "window_lanlan_name": "Owner",
+                "session_id": "debug-switch",
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["state"]["lanlan_name"] == "Debug"
+    assert result["state"]["window_lanlan_name"] == "Owner"
+    assert pushed == [(
+        owner_mgr,
+        {
+            "action": "opened",
+            "lanlan_name": "Owner",
+            "game_type": "drawing_guess",
+            "session_id": "debug-switch",
+        },
+    )]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_end_can_suppress_window_and_status_for_debug_switch(monkeypatch):
+    owner_mgr = _FakeGameRouteManager()
+    game_mgr = _FakeGameRouteManager()
+    pushed = []
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {
+        "Owner": owner_mgr,
+        "Debug": game_mgr,
+    })
+
+    async def fake_push(mgr, **kwargs):
+        pushed.append((mgr, kwargs))
+
+    monkeypatch.setattr(game_router, "_push_game_window_state_change", fake_push)
+
+    with reset_game_route_state():
+        state = game_router._activate_game_route("drawing_guess", "debug-switch", "Debug")
+        state["window_lanlan_name"] = "Owner"
+        state["game_memory_archive_enabled"] = False
+        result = await game_router.game_route_end(
+            "drawing_guess",
+            _FakeRequest({
+                "lanlan_name": "Debug",
+                "window_lanlan_name": "Owner",
+                "session_id": "debug-switch",
+                "reason": "drawing_guess_debug_character_switch",
+                "suppressWindowStateChange": True,
+                "suppressRouteEndStatus": True,
+                "postgameProactive": False,
+            }),
+        )
+
+    assert result["ok"] is True
+    assert result["route_closed"] is True
+    assert pushed == []
+    assert game_mgr.statuses == []
+    assert state["game_route_active"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_game_debug_log_ingest_and_query():
     enable_result = await game_router.game_log_enable(
         _FakeRequest({
@@ -4580,6 +4660,7 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
         "mirror_text": True,
         "emit_turn_end_after": True,
         "interrupt_audio": False,
+        "suppress_primary_audio": False,
     })]
 
 
@@ -4613,6 +4694,7 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
         "mirror_text": False,
         "emit_turn_end_after": False,
         "interrupt_audio": False,
+        "suppress_primary_audio": False,
     })]
 
 
@@ -4647,6 +4729,40 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
         "mirror_text": False,
         "emit_turn_end_after": False,
         "interrupt_audio": True,
+        "suppress_primary_audio": False,
+    })]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_project_speak_can_suppress_primary_audio_for_game_window(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {"lanlan_name": "Lan"})
+
+    result = await game_router.game_project_speak(
+        "drawing_guess",
+        _FakeRequest({
+            "line": "game window only",
+            "session_id": "drawing-1",
+            "request_id": "req-game-audio",
+            "suppress_primary_audio": True,
+        }),
+    )
+
+    assert result["ok"] is True
+    assert mgr.spoken == [("game window only", {
+        "metadata": {
+            "source": "game_route",
+            "kind": "drawing_guess",
+            "session_id": "drawing-1",
+            "mirror": {"kind": "drawing_guess", "session_id": "drawing-1", "event": {}},
+        },
+        "request_id": "req-game-audio",
+        "mirror_text": True,
+        "emit_turn_end_after": True,
+        "interrupt_audio": False,
+        "suppress_primary_audio": True,
     })]
 
 

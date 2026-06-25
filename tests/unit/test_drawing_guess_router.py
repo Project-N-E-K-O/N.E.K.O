@@ -29,8 +29,9 @@ def _load_drawing_guess_context_payload(raw: str) -> dict:
 
 
 @pytest.mark.unit
-def test_drawing_guess_word_bank_has_40_easy_words_with_all_locales():
-    assert len(dgr.WORDS) == 40
+def test_drawing_guess_word_bank_has_60_easy_words_with_all_locales():
+    assert len(dgr.WORDS) == 60
+    assert dgr.VISION_GUESS_MAX_CANDIDATES == 60
     for word in dgr.WORDS:
         assert set(word.labels) == set(dgr.SUPPORTED_LOCALES)
         for locale in dgr.SUPPORTED_LOCALES:
@@ -92,16 +93,44 @@ def test_persona_game_line_prompt_marks_ai_guess_roles_unambiguously():
         master_name="Player",
         lanlan_prompt="Companion teases Player.",
         event="ai_guess_correct",
-        details={"guess_label": "苹果", "answer_label": "苹果", "allow_answer_reveal": True},
+        details={"guess_label": "apple", "allow_answer_reveal": False},
         character_profile_prompt="",
     )
     payload = json.loads(payload_raw)
 
     assert "Follow event_roles exactly" in system_prompt
-    assert payload["premise"].startswith("The character guessed the user's drawing correctly")
+    assert "current guess" in system_prompt
+    assert payload["premise"].startswith("The character is making a visual guess")
     assert payload["event_roles"]["character_role"] == "guesser"
     assert payload["event_roles"]["user_role"] == "drawer"
+    assert payload["public_details"]["guess_label"] == "apple"
+    assert "answer_label" not in payload["public_details"]
     assert "用户猜对了" in payload["event_roles"]["must_not_say"]
+
+
+@pytest.mark.unit
+def test_persona_game_line_prompt_marks_user_correct_as_user_draw_transition():
+    system_prompt, payload_raw = dgr._build_drawing_guess_game_line_prompts(
+        session={"phase": "word_picking", "game_chat_history": []},
+        locale="zh-CN",
+        lanlan_name="Companion",
+        master_name="Player",
+        lanlan_prompt="Companion teases Player.",
+        event="user_guess_correct",
+        details={"answer_label": "树", "allow_answer_reveal": True},
+        character_profile_prompt="",
+    )
+    payload = json.loads(payload_raw)
+    roles = payload["event_roles"]
+
+    assert "next drawing turn belongs to the user" in system_prompt
+    assert "transition to the next turn" in payload["premise"]
+    assert roles["completed_turn"]["character_role"] == "drawer"
+    assert roles["completed_turn"]["user_role"] == "guesser"
+    assert roles["next_turn"]["character_role"] == "guesser"
+    assert roles["next_turn"]["user_role"] == "drawer"
+    assert "轮到我画" in roles["must_not_say"]
+    assert "I will draw next" in roles["must_not_say"]
 
 
 @pytest.mark.unit
@@ -414,6 +443,118 @@ async def test_debug_round_start_can_begin_at_word_picking_without_hidden_ai_ans
     assert "aliases" not in payload_text
     assert "forbidden" not in payload_text
     assert "ai_word" not in payload_text
+
+
+@pytest.mark.unit
+def test_word_cycle_starts_with_two_random_pools_and_rolls_over_at_six_left():
+    cycle = dgr._new_word_cycle_state()
+    first_cycle_pool = set(cycle["pool1"])
+    second_cycle_pool = set(cycle["pool2"])
+
+    assert len(first_cycle_pool) == dgr.WORD_DEDUP_POOL_SIZE
+    assert len(second_cycle_pool) == len(dgr.WORDS) - dgr.WORD_DEDUP_POOL_SIZE
+    assert not first_cycle_pool & second_cycle_pool
+    assert first_cycle_pool | second_cycle_pool == {word.id for word in dgr.WORDS}
+    assert cycle["active_pool"] == "pool1"
+
+    first_draw_count = dgr.WORD_DEDUP_POOL_SIZE - dgr.WORD_DEDUP_ROLLOVER_REMAINING
+    first_drawn = dgr._draw_word_ids_from_cycle(cycle, first_draw_count)
+    first_leftovers = first_cycle_pool - set(first_drawn)
+    assert len(first_drawn) == first_draw_count
+    assert len(first_leftovers) == dgr.WORD_DEDUP_ROLLOVER_REMAINING
+    assert set(first_drawn) <= first_cycle_pool
+    assert set(cycle["pool1"]) == set(first_drawn)
+    assert first_leftovers <= set(cycle["pool2"])
+    assert second_cycle_pool <= set(cycle["pool2"])
+    assert cycle["active_pool"] == "pool2"
+
+    second_draw_count = len(cycle["pool2"]) - dgr.WORD_DEDUP_ROLLOVER_REMAINING
+    second_drawn = dgr._draw_word_ids_from_cycle(cycle, second_draw_count)
+    second_leftovers = (second_cycle_pool | first_leftovers) - set(second_drawn)
+    assert len(second_drawn) == second_draw_count
+    assert len(second_leftovers) == dgr.WORD_DEDUP_ROLLOVER_REMAINING
+    assert set(cycle["pool2"]) == set(second_drawn)
+    assert set(cycle["pool1"]) == set(first_drawn) | second_leftovers
+    assert cycle["active_pool"] == "pool1"
+
+    recycled = dgr._draw_word_ids_from_cycle(cycle, 1)
+    assert len(recycled) == 1
+    assert recycled[0] in set(first_drawn) | second_leftovers
+    assert cycle["active_pool"] == "pool1"
+
+
+@pytest.mark.unit
+def test_user_word_options_do_not_exclude_until_choice_is_confirmed():
+    cycle = dgr._new_word_cycle_state()
+    before_remaining = list(cycle["remaining_ids"])
+
+    options = dgr._pick_user_word_options(cycle)
+    option_ids = [word.id for word in options]
+
+    assert len(option_ids) == dgr.USER_DRAW_OPTION_COUNT
+    assert set(option_ids) <= set(before_remaining)
+    assert cycle["remaining_ids"] == before_remaining
+
+    chosen_id = option_ids[0]
+    dgr._exclude_word_id_from_cycle(cycle, chosen_id)
+
+    assert chosen_id not in cycle["remaining_ids"]
+    assert set(option_ids[1:]) <= set(cycle["remaining_ids"])
+
+
+@pytest.mark.unit
+def test_public_round_state_exposes_word_cycle_counts_without_word_ids():
+    cycle = dgr._new_word_cycle_state()
+    drawn_ids = dgr._draw_word_ids_from_cycle(cycle, 2)
+    session = {
+        "round_id": "round-1",
+        "phase": "ai_drawing",
+        "word_cycle": cycle,
+    }
+
+    public_state = dgr._public_round_state(session, "en")
+    word_cycle = public_state["word_cycle"]
+
+    assert word_cycle["active_pool"] == "pool1"
+    assert word_cycle["pools"]["pool1"] == {
+        "remaining_count": dgr.WORD_DEDUP_POOL_SIZE - len(drawn_ids),
+        "locked": False,
+    }
+    assert word_cycle["pools"]["pool2"] == {
+        "remaining_count": len(dgr.WORDS) - dgr.WORD_DEDUP_POOL_SIZE,
+        "locked": True,
+    }
+    assert word_cycle["request_locked"] is False
+    assert word_cycle["rollover_remaining"] == dgr.WORD_DEDUP_ROLLOVER_REMAINING
+    serialized = json.dumps(word_cycle)
+    assert "remaining_ids" not in serialized
+    assert all(word_id not in serialized for word_id in drawn_ids)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_public_round_state_marks_word_cycle_request_lock():
+    session = {
+        "round_id": "round-1",
+        "phase": "ai_drawing",
+        "word_cycle": dgr._new_word_cycle_state(),
+    }
+    lock = dgr._get_session_lock(session)
+    await lock.acquire()
+    try:
+        public_state = dgr._public_round_state(session, "en")
+        assert public_state["word_cycle"]["request_locked"] is True
+    finally:
+        lock.release()
+
+
+@pytest.mark.unit
+def test_every_drawing_guess_word_has_non_heart_static_fallback():
+    heart_svg = dgr._fallback_svg("heart")
+    for word in dgr.WORDS:
+        if word.id == "heart":
+            continue
+        assert dgr._fallback_svg(word.id) != heart_svg, word.id
 
 
 @pytest.mark.unit
@@ -1373,6 +1514,13 @@ async def test_vision_guess_uses_model_structured_guess(monkeypatch):
 
     async def fake_persona_line(**kwargs):
         assert kwargs["event"] == "ai_guess_correct"
+        details = kwargs["details"]
+        assert details["guess_label"] == "banana"
+        assert details["allow_answer_reveal"] is False
+        assert details["guess_is_correct"] is True
+        assert details["speak_as_visual_guess"] is True
+        assert details["do_not_imply_prior_knowledge"] is True
+        assert "answer_label" not in details
         return "I guessed banana from that curve.", "persona_model"
 
     async def fake_summary_evaluation(**kwargs):
@@ -1432,6 +1580,13 @@ async def test_vision_guess_uses_text_context_model_when_vision_unavailable(monk
 
     async def fake_persona_line(**kwargs):
         assert kwargs["event"] == "ai_guess_correct"
+        details = kwargs["details"]
+        assert details["guess_label"] == "banana"
+        assert details["allow_answer_reveal"] is False
+        assert details["guess_is_correct"] is True
+        assert details["speak_as_visual_guess"] is True
+        assert details["do_not_imply_prior_knowledge"] is True
+        assert "answer_label" not in details
         return "Then I will lock in banana.", "persona_model"
 
     async def fake_summary_evaluation(**kwargs):

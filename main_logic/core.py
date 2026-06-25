@@ -899,6 +899,7 @@ class LLMSessionManager:
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
         self._speech_taps: dict[str, Callable[[bytes, Optional[str]], Awaitable[bool] | bool]] = {}
+        self._speech_primary_suppressed_ids: set[str] = set()
         self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
@@ -4231,6 +4232,7 @@ class LLMSessionManager:
         mirror_text: bool = True,
         emit_turn_end_after: bool = True,
         interrupt_audio: bool = False,
+        suppress_primary_audio: bool = False,
     ) -> dict:
         """Mirror an assistant line + play it through the project TTS pipeline.
 
@@ -4274,6 +4276,15 @@ class LLMSessionManager:
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             turn_id = self.current_speech_id
+            if suppress_primary_audio:
+                suppressed_ids = getattr(self, "_speech_primary_suppressed_ids", None)
+                if not isinstance(suppressed_ids, set):
+                    suppressed_ids = set()
+                    self._speech_primary_suppressed_ids = suppressed_ids
+                suppressed_ids.add(turn_id)
+                if len(suppressed_ids) > 64:
+                    suppressed_ids.clear()
+                    suppressed_ids.add(turn_id)
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
 
@@ -4313,6 +4324,7 @@ class LLMSessionManager:
             "audio_queued": audio_queued,
             "turn_end_emitted": bool(emit_turn_end_after),
             "interrupt_audio": bool(interrupt_audio),
+            "suppress_primary_audio": bool(suppress_primary_audio),
             "voice_source": {
                 "provider": "project_tts",
                 "method": "project_tts",
@@ -10198,7 +10210,18 @@ class LLMSessionManager:
             if isinstance(effective_speech_id, str) and effective_speech_id.endswith(_RECALL_FILLER_SID_SUFFIX):
                 effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
             delivered = False
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            suppressed_ids = getattr(self, "_speech_primary_suppressed_ids", set())
+            suppress_primary = (
+                isinstance(suppressed_ids, set)
+                and effective_speech_id is not None
+                and str(effective_speech_id) in suppressed_ids
+            )
+            if (
+                not suppress_primary
+                and self.websocket
+                and hasattr(self.websocket, 'client_state')
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_json({
                         "type": "audio_chunk",

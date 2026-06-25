@@ -2574,6 +2574,7 @@ def _build_route_state(
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan_name,
+        "window_lanlan_name": lanlan_name,
         "before_game_external_mode": before_mode,
         "before_game_external_active": before_active,
         "game_route_active": True,
@@ -2637,6 +2638,19 @@ def _build_route_state(
         "page_visible": True,
         "visibility_state": "visible",
     }
+
+
+def _resolve_window_lanlan_name(data: dict, default_lanlan_name: str) -> str:
+    for key in (
+        "window_lanlan_name",
+        "windowLanlanName",
+        "route_owner_lanlan_name",
+        "routeOwnerLanlanName",
+    ):
+        raw = data.get(key)
+        if str(raw or "").strip():
+            return _resolve_lanlan_name(raw) or default_lanlan_name
+    return default_lanlan_name
 
 
 def _activate_game_route(
@@ -4700,6 +4714,8 @@ async def _finalize_game_route_state(
     reason: str,
     close_game_session: bool = False,
     close_debug_log: bool = True,
+    notify_window: bool = True,
+    notify_status: bool = True,
 ) -> dict:
     """Run the game route exit flow once, including archive submission.
 
@@ -4735,6 +4751,14 @@ async def _finalize_game_route_state(
         state["_exit_defer_debug_log_close"] = True
         if "_exit_close_debug_log_request" not in state:
             state["_exit_close_debug_log_request"] = False
+    if notify_window:
+        state.setdefault("_exit_suppress_window_state_change", False)
+    else:
+        state["_exit_suppress_window_state_change"] = True
+    if notify_status:
+        state.setdefault("_exit_suppress_status", False)
+    else:
+        state["_exit_suppress_status"] = True
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -4807,16 +4831,19 @@ async def _finalize_game_route_state_inner(
     state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    window_lanlan_name = str(state.get("window_lanlan_name") or lanlan_name or "")
+    window_mgr = get_session_manager().get(window_lanlan_name) if window_lanlan_name else mgr
     # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
     # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
     # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
-    await _push_game_window_state_change(
-        mgr,
-        action="closed",
-        lanlan_name=lanlan_name,
-        game_type=str(state.get("game_type") or ""),
-        session_id=str(state.get("session_id") or ""),
-    )
+    if not state.get("_exit_suppress_window_state_change"):
+        await _push_game_window_state_change(
+            window_mgr,
+            action="closed",
+            lanlan_name=window_lanlan_name or lanlan_name,
+            game_type=str(state.get("game_type") or ""),
+            session_id=str(state.get("session_id") or ""),
+        )
     # Release the SessionManager-level takeover so ordinary chat handlers come
     # back online; chat LLM may produce auto-replies again, but the player has
     # exited the game so that's the desired behavior.
@@ -4825,7 +4852,7 @@ async def _finalize_game_route_state_inner(
         mgr._takeover_input_dispatcher = None
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
-    if mgr and hasattr(mgr, "send_status"):
+    if mgr and hasattr(mgr, "send_status") and not state.get("_exit_suppress_status"):
         try:
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_ENDED",
@@ -6939,6 +6966,7 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
+    window_lanlan_name = _resolve_window_lanlan_name(data, lanlan_name)
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -7018,6 +7046,7 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
+            state["window_lanlan_name"] = window_lanlan_name
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -7055,7 +7084,7 @@ async def game_route_start(game_type: str, request: Request):
     # 让前端 UI 卡死收缩态再无 closed 抵消。recheck state 自身的 active 标志 +
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
-    mgr_for_ws = get_session_manager().get(lanlan_name)
+    mgr_for_ws = get_session_manager().get(window_lanlan_name)
     if (
         state.get("game_route_active")
         and str(state.get("session_id") or "") == session_id
@@ -7063,7 +7092,7 @@ async def game_route_start(game_type: str, request: Request):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
-            lanlan_name=lanlan_name,
+            lanlan_name=window_lanlan_name,
             game_type=game_type,
             session_id=session_id,
         )
@@ -7367,6 +7396,7 @@ async def _speak_game_line_via_project_tts(
     mirror_text: bool = True,
     emit_turn_end: bool = True,
     interrupt_audio: bool = False,
+    suppress_primary_audio: bool = False,
     event: dict | None = None,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "mirror_assistant_speech", None)
@@ -7387,6 +7417,7 @@ async def _speak_game_line_via_project_tts(
             mirror_text=mirror_text,
             emit_turn_end_after=emit_turn_end,
             interrupt_audio=interrupt_audio,
+            suppress_primary_audio=suppress_primary_audio,
         )
     except Exception as exc:
         return {
@@ -7573,6 +7604,7 @@ async def game_project_speak(game_type: str, request: Request):
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
+    suppress_primary_audio = _coerce_payload_bool(data.get("suppress_primary_audio")) is True
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state:
@@ -7613,6 +7645,7 @@ async def game_project_speak(game_type: str, request: Request):
             "request_id": str(data.get("request_id") or ""),
             "line_length": len(line),
             "interrupt_audio": interrupt_audio,
+            "suppress_primary_audio": suppress_primary_audio,
             "mirror_text": data.get("mirror_text", True) is not False,
             "emit_turn_end": data.get("emit_turn_end", True) is not False,
             "event_kind": data.get("event", {}).get("kind") if isinstance(data.get("event"), dict) else "",
@@ -7628,6 +7661,7 @@ async def game_project_speak(game_type: str, request: Request):
         mirror_text=data.get("mirror_text", True) is not False,
         emit_turn_end=data.get("emit_turn_end", True) is not False,
         interrupt_audio=interrupt_audio,
+        suppress_primary_audio=suppress_primary_audio,
         event=_attach_game_memory_flag_to_event(
             data.get("event") if isinstance(data.get("event"), dict) else {},
             state,
@@ -7653,6 +7687,7 @@ async def game_project_speak(game_type: str, request: Request):
             "speech_id": result.get("speech_id"),
             "turn_end_emitted": result.get("turn_end_emitted"),
             "interrupt_audio": result.get("interrupt_audio"),
+            "suppress_primary_audio": result.get("suppress_primary_audio"),
             "error_type": result.get("error_type"),
             "error": result.get("error"),
             "tts_pipeline": result.get("tts_pipeline"),
@@ -8378,6 +8413,12 @@ async def _complete_game_end_from_payload(
     _absorb_request_language(data, lanlan_name)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
+    suppress_window_state_change = _coerce_payload_bool(
+        data.get("suppressWindowStateChange", data.get("suppress_window_state_change"))
+    ) is True
+    suppress_route_end_status = _coerce_payload_bool(
+        data.get("suppressRouteEndStatus", data.get("suppress_route_end_status"))
+    ) is True
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     _append_game_session_debug_log(
         game_type,
@@ -8396,6 +8437,10 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        state["window_lanlan_name"] = _resolve_window_lanlan_name(
+            data,
+            str(state.get("window_lanlan_name") or lanlan_name),
+        )
         score_session_mode = _normalize_badminton_mode(state.get("mode")) if _is_badminton_game_type(game_type) else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
@@ -8428,6 +8473,8 @@ async def _complete_game_end_from_payload(
                         reason=exit_reason,
                         close_game_session=True,
                         close_debug_log=False,
+                        notify_window=not suppress_window_state_change,
+                        notify_status=not suppress_route_end_status,
                     )
             archive = finalized["archive"]
             archive_memory = finalized["archive_memory"]

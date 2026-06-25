@@ -19,7 +19,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import quoteattr
@@ -42,6 +42,8 @@ ROUND_DRAW_SECONDS = 5 * 60
 ROUND_AI_GUESS_SECONDS = 5 * 60
 MAX_AI_GUESS_ATTEMPTS = 3
 USER_DRAW_OPTION_COUNT = 3
+WORD_DEDUP_POOL_SIZE = 30
+WORD_DEDUP_ROLLOVER_REMAINING = 6
 SESSION_TTL_SECONDS = 60 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 5 * 60
 MODEL_SVG_TIMEOUT_SECONDS = 18.0
@@ -62,7 +64,7 @@ GAME_CHAT_MAX_TEXT_CHARS = 260
 MEMORY_SUMMARY_MAX_CHARS = 260
 MEMORY_SUMMARY_TIMEOUT_SECONDS = 8.0
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
-VISION_GUESS_MAX_CANDIDATES = 40
+VISION_GUESS_MAX_CANDIDATES = 60
 _DRAWING_GUESS_CONTEXT_BEGIN = "======以下为开启上下文输入======"
 _DRAWING_GUESS_CONTEXT_END = "======以上为开启上下文输入======"
 _SESSION_LOCK_KEY = "_request_lock"
@@ -135,6 +137,7 @@ WORDS: tuple[DrawingGuessWord, ...] = tuple(
 )
 
 _WORD_BY_ID = {word.id: word for word in WORDS}
+_WORD_IDS = tuple(word.id for word in WORDS)
 _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     "apple": (
         "red apple", "green apple", "\u82f9\u679c", "\u860b\u679c", "\u82f9\u679c\u513f",
@@ -309,6 +312,94 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
         "love", "heart shape", "\u5fc3", "\u5fc3\u5f62", "\u7231\u5fc3", "\u611b\u5fc3",
         "\u7ea2\u5fc3", "\u7d05\u5fc3", "\u30cf\u30fc\u30c8", "\ud558\ud2b8",
         "corazon", "coracao",
+    ),
+    "table": (
+        "desk", "dining table", "coffee table", "\u684c", "\u684c\u5b50", "\u9910\u684c",
+        "\u66f8\u684c", "\u4e66\u684c", "\u30c6\u30fc\u30d6\u30eb", "\ud0c1\uc790",
+        "mesa", "stol",
+    ),
+    "lamp": (
+        "desk lamp", "night lamp", "\u706f", "\u53f0\u706f", "\u6aaf\u71c8", "\u5c0f\u706f",
+        "\u30e9\u30f3\u30d7", "\ub7a8\ud504", "lampara", "lampada", "luminaria",
+    ),
+    "spoon": (
+        "spoons", "soup spoon", "\u52fa", "\u52fa\u5b50", "\u6c64\u5319", "\u6e6f\u5319",
+        "\u30b9\u30d7\u30fc\u30f3", "\uc22b\uac00\ub77d", "cuchara", "colher", "lozhka",
+    ),
+    "fork": (
+        "forks", "\u53c9", "\u53c9\u5b50", "\u9910\u53c9", "\u30d5\u30a9\u30fc\u30af",
+        "\ud3ec\ud06c", "tenedor", "garfo", "vilka",
+    ),
+    "bottle": (
+        "water bottle", "plastic bottle", "\u74f6", "\u74f6\u5b50", "\u6c34\u74f6",
+        "\u98f2\u6599\u74f6", "\u996e\u6599\u74f6", "\u30dc\u30c8\u30eb", "\ubcd1",
+        "botella", "garrafa", "butylka",
+    ),
+    "backpack": (
+        "bag", "school bag", "rucksack", "\u5305", "\u80cc\u5305", "\u4e66\u5305",
+        "\u66f8\u5305", "\u30ea\u30e5\u30c3\u30af", "\ubc30\ub0ad", "mochila", "ryukzak",
+    ),
+    "scissors": (
+        "scissor", "shears", "\u526a", "\u526a\u5200", "\u526a\u5b50", "\u306f\u3055\u307f",
+        "\u30cf\u30b5\u30df", "\uac00\uc704", "tijeras", "tesoura", "nozhnitsy",
+    ),
+    "pencil": (
+        "pencils", "\u94c5\u7b14", "\u925b\u7b46", "\u6728\u94c5\u7b14", "\u6728\u925b\u7b46",
+        "\u3048\u3093\u3074\u3064", "\u925b\u7b46", "\uc5f0\ud544", "lapiz", "lapis",
+        "karandash",
+    ),
+    "camera": (
+        "photo camera", "\u76f8\u673a", "\u76f8\u6a5f", "\u7167\u76f8\u673a", "\u7167\u76f8\u6a5f",
+        "\u30ab\u30e1\u30e9", "\uce74\uba54\ub77c", "camara", "camera", "kamera",
+    ),
+    "television": (
+        "tv", "tele", "\u7535\u89c6", "\u96fb\u8996", "\u7535\u89c6\u673a", "\u96fb\u8996\u6a5f",
+        "\u30c6\u30ec\u30d3", "\ud154\ub808\ube44\uc804", "television", "televisión",
+        "televisao", "televisão", "televizor",
+    ),
+    "computer": (
+        "pc", "laptop", "desktop", "\u7535\u8111", "\u96fb\u8166", "\u8ba1\u7b97\u673a",
+        "\u8a08\u7b97\u6a5f", "\u7b14\u8bb0\u672c\u7535\u8111", "\u7b46\u8a18\u578b\u96fb\u8166",
+        "\u30d1\u30bd\u30b3\u30f3", "\u30b3\u30f3\u30d4\u30e5\u30fc\u30bf\u30fc",
+        "\ucef4\ud4e8\ud130", "computadora", "computador", "kompyuter",
+    ),
+    "shirt": (
+        "tshirt", "t-shirt", "tee", "\u886c\u886b", "\u896f\u886b", "\u4e0a\u8863",
+        "\u77ed\u8896", "\u30b7\u30e3\u30c4", "\uc154\uce20", "camisa", "rubashka",
+    ),
+    "pants": (
+        "trousers", "jeans", "\u88e4", "\u88e4\u5b50", "\u957f\u88e4", "\u9577\u8932",
+        "\u725b\u4ed4\u88e4", "\u30ba\u30dc\u30f3", "\ubc14\uc9c0", "pantalones", "calca",
+    ),
+    "sock": (
+        "socks", "\u889c", "\u889c\u5b50", "\u896a\u5b50", "\u77ed\u889c", "\u9774\u4e0b",
+        "\u304f\u3064\u3057\u305f", "\uc591\ub9d0", "calcetin", "calcetines", "meia",
+    ),
+    "glasses": (
+        "eyeglasses", "spectacles", "\u773c\u955c", "\u773c\u93e1", "\u773c\u955c\u513f",
+        "\u773c\u93e1\u5152", "\u3081\u304c\u306d", "\u773c\u93e1", "\uc548\uacbd",
+        "gafas", "lentes", "oculos", "óculos",
+    ),
+    "candle": (
+        "candles", "\u8721\u70db", "\u881f\u71ed", "\u8721", "\u881f", "\u308d\u3046\u305d\u304f",
+        "\u30ed\u30a6\u30bd\u30af", "\uc591\ucd08", "vela", "svecha",
+    ),
+    "broom": (
+        "sweeper", "\u626b\u5e1a", "\u6383\u5e1a", "\u626b\u628a", "\u6383\u628a",
+        "\u307b\u3046\u304d", "\u30db\u30a6\u30ad", "\ube57\uc790\ub8e8", "escoba",
+        "vassoura", "metla",
+    ),
+    "bucket": (
+        "pail", "\u6876", "\u6c34\u6876", "\u5851\u6599\u6876", "\u30d0\u30b1\u30c4",
+        "\uc591\ub3d9\uc774", "cubo", "balde", "vedro",
+    ),
+    "ladder": (
+        "step ladder", "\u68af", "\u68af\u5b50", "\u722c\u68af", "\u306f\u3057\u3054",
+        "\u30cf\u30b7\u30b4", "\uc0ac\ub2e4\ub9ac", "escalera", "escada", "lestnica",
+    ),
+    "bridge": (
+        "overpass", "\u6865", "\u6a4b", "\u6865\u6881", "\u6a4b\u6a11", "\u5927\u6865",
+        "\u5927\u6a4b", "\u306f\u3057", "\u6a4b", "\ub2e4\ub9ac", "puente", "ponte", "most",
     ),
 }
 _WORD_SAFE_HINTS: dict[str, tuple[str, ...]] = {
@@ -511,6 +602,106 @@ _WORD_SAFE_HINTS: dict[str, tuple[str, ...]] = {
         "It is a simple symbol.",
         "It is often connected with affection.",
         "Its top has two rounded bumps and a pointed bottom.",
+    ),
+    "table": (
+        "It has a flat surface with supports underneath.",
+        "People often put things on it.",
+        "Four straight supports can make it clear.",
+    ),
+    "lamp": (
+        "It can make a room brighter.",
+        "It often has a shade above a base.",
+        "It is usually found on a stand or near furniture.",
+    ),
+    "spoon": (
+        "It has a small rounded bowl shape at one end.",
+        "It has a long thin handle.",
+        "It is used when eating or serving food.",
+    ),
+    "fork": (
+        "It has several pointed tips at one end.",
+        "It has a long handle.",
+        "It is used when eating.",
+    ),
+    "bottle": (
+        "It is a container with a narrow neck.",
+        "It often holds drinks.",
+        "A cap on top is a strong clue.",
+    ),
+    "backpack": (
+        "It is carried on the back.",
+        "Shoulder straps are strong clues.",
+        "It can hold books or supplies.",
+    ),
+    "scissors": (
+        "It has two loop handles.",
+        "It has two crossed sharp parts.",
+        "It is used for cutting.",
+    ),
+    "pencil": (
+        "It is a long thin writing tool.",
+        "A pointed tip is a strong clue.",
+        "It often has a small erasing end.",
+    ),
+    "camera": (
+        "It is used to take pictures.",
+        "A round lens on the front is a strong clue.",
+        "It often looks like a small box with a button.",
+    ),
+    "television": (
+        "It has a large screen.",
+        "It is used for watching shows.",
+        "A stand underneath can make it clearer.",
+    ),
+    "computer": (
+        "It is used for typing and working.",
+        "A screen and keyboard are strong clues.",
+        "It is common on a desk.",
+    ),
+    "shirt": (
+        "It is worn on the upper body.",
+        "Sleeves and a collar can be clues.",
+        "It often has a simple T-like outline.",
+    ),
+    "pants": (
+        "It is worn on the lower body.",
+        "Two long leg openings are the main clue.",
+        "A waistband at the top helps.",
+    ),
+    "sock": (
+        "It is worn on one foot.",
+        "It is soft and usually has a bent foot shape.",
+        "A cuff at the top can help.",
+    ),
+    "glasses": (
+        "It has two lenses connected in the middle.",
+        "Thin side arms are useful clues.",
+        "It is worn on the face.",
+    ),
+    "candle": (
+        "It is a small vertical object with a flame on top.",
+        "It can melt slowly.",
+        "A glowing tip is a strong clue.",
+    ),
+    "broom": (
+        "It has a long handle.",
+        "One end has many bristles.",
+        "It is used to clean the floor.",
+    ),
+    "bucket": (
+        "It is an open container.",
+        "A curved handle over the top is a strong clue.",
+        "It can hold water or small items.",
+    ),
+    "ladder": (
+        "It has two long rails.",
+        "Short steps connect the sides.",
+        "It is used to reach higher places.",
+    ),
+    "bridge": (
+        "It crosses over water, roads, or gaps.",
+        "It often has supports underneath.",
+        "A long arch or flat span is a useful clue.",
     ),
 }
 _drawing_guess_sessions: dict[str, dict[str, Any]] = {}
@@ -905,14 +1096,194 @@ async def _acquire_session_lock(session: dict[str, Any], locale: str) -> tuple[a
     return lock, None
 
 
-def _pick_user_word_options(ai_word: DrawingGuessWord) -> list[DrawingGuessWord]:
-    pool = [word for word in WORDS if word.id != ai_word.id]
-    return random.sample(pool, USER_DRAW_OPTION_COUNT)
+def _unique_valid_word_ids(value: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in value or []:
+        word_id = str(raw or "")
+        if word_id in _WORD_BY_ID and word_id not in seen:
+            seen.add(word_id)
+            result.append(word_id)
+    return result
 
 
-def _pick_round_words() -> tuple[DrawingGuessWord, list[DrawingGuessWord]]:
-    ai_word = random.choice(list(WORDS))
-    return ai_word, _pick_user_word_options(ai_word)
+def _shuffled_word_ids(word_ids: Iterable[str]) -> list[str]:
+    result = _unique_valid_word_ids(word_ids)
+    random.shuffle(result)
+    return result
+
+
+def _new_word_cycle_state() -> dict[str, Any]:
+    shuffled_word_ids = _shuffled_word_ids(_WORD_IDS)
+    pool1 = shuffled_word_ids[:WORD_DEDUP_POOL_SIZE]
+    pool2 = shuffled_word_ids[WORD_DEDUP_POOL_SIZE:]
+    return {
+        "pool1": pool1,
+        "pool2": pool2,
+        "active_pool": "pool1",
+        "remaining_ids": list(pool1),
+    }
+
+
+def _activate_word_cycle_pool(state: dict[str, Any], pool_name: str) -> None:
+    normalized_pool = "pool1" if pool_name == "pool1" else "pool2"
+    state["active_pool"] = normalized_pool
+    state["remaining_ids"] = _shuffled_word_ids(state.get(normalized_pool) or [])
+
+
+def _reset_word_cycle_state(state: dict[str, Any]) -> None:
+    state.clear()
+    state.update(_new_word_cycle_state())
+
+
+def _normalize_word_cycle_state(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _new_word_cycle_state()
+    state: dict[str, Any] = {
+        "pool1": _unique_valid_word_ids(value.get("pool1")),
+        "pool2": _unique_valid_word_ids(value.get("pool2")),
+        "active_pool": None,
+        "remaining_ids": [],
+    }
+    if (
+        not state["pool1"]
+        or not state["pool2"]
+        or set(state["pool1"]) & set(state["pool2"])
+        or set(state["pool1"]) | set(state["pool2"]) != set(_WORD_IDS)
+    ):
+        return _new_word_cycle_state()
+    active_pool = value.get("active_pool")
+    if active_pool in {"pool1", "pool2"}:
+        state["active_pool"] = active_pool
+        active_set = set(state[active_pool])
+        state["remaining_ids"] = [
+            word_id
+            for word_id in _unique_valid_word_ids(value.get("remaining_ids"))
+            if word_id in active_set
+        ]
+    else:
+        _activate_word_cycle_pool(state, "pool1")
+    return state
+
+
+def _rollover_word_cycle_pool_if_needed(state: dict[str, Any]) -> None:
+    active_pool = state.get("active_pool")
+    if active_pool not in {"pool1", "pool2"}:
+        _reset_word_cycle_state(state)
+        return
+    other_pool = "pool1" if active_pool == "pool2" else "pool2"
+    active_ids = _unique_valid_word_ids(state.get(active_pool))
+    other_ids = _unique_valid_word_ids(state.get(other_pool))
+    remaining = [
+        word_id
+        for word_id in _unique_valid_word_ids(state.get("remaining_ids"))
+        if word_id in set(active_ids)
+    ]
+    if not active_ids or not other_ids:
+        _reset_word_cycle_state(state)
+        return
+    if len(remaining) > WORD_DEDUP_ROLLOVER_REMAINING:
+        state["remaining_ids"] = remaining
+        return
+
+    remaining_set = set(remaining)
+    consumed_ids = [word_id for word_id in active_ids if word_id not in remaining_set]
+    state[active_pool] = consumed_ids
+    state[other_pool] = _shuffled_word_ids([*other_ids, *remaining])
+    _activate_word_cycle_pool(state, other_pool)
+
+
+def _peek_word_ids_from_cycle(
+    state: dict[str, Any],
+    count: int,
+    *,
+    excluded_ids: Iterable[str] = (),
+) -> list[str]:
+    target_count = max(0, int(count or 0))
+    if target_count <= 0:
+        return []
+    _rollover_word_cycle_pool_if_needed(state)
+    active_pool = state.get("active_pool")
+    if active_pool not in {"pool1", "pool2"}:
+        _reset_word_cycle_state(state)
+        active_pool = state["active_pool"]
+    excluded = {str(word_id) for word_id in excluded_ids}
+    available = [
+        word_id
+        for word_id in _unique_valid_word_ids(state.get("remaining_ids"))
+        if word_id not in excluded
+    ]
+    if len(available) >= target_count:
+        return random.sample(available, target_count)
+
+    fallback = [
+        word_id
+        for word_id in _WORD_IDS
+        if word_id not in excluded and word_id not in set(available)
+    ]
+    random.shuffle(fallback)
+    return [*available, *fallback[: target_count - len(available)]]
+
+
+def _exclude_word_id_from_cycle(state: dict[str, Any], word_id: str) -> None:
+    normalized_word_id = str(word_id or "")
+    if normalized_word_id not in _WORD_BY_ID:
+        return
+    active_pool = state.get("active_pool")
+    if active_pool not in {"pool1", "pool2"}:
+        _reset_word_cycle_state(state)
+        active_pool = state["active_pool"]
+    remaining = _unique_valid_word_ids(state.get("remaining_ids"))
+    if normalized_word_id in remaining:
+        state["remaining_ids"] = [item for item in remaining if item != normalized_word_id]
+        _rollover_word_cycle_pool_if_needed(state)
+
+
+def _draw_word_ids_from_cycle(state: dict[str, Any], count: int) -> list[str]:
+    selected: list[str] = []
+    target_count = max(0, int(count or 0))
+    while len(selected) < target_count:
+        active_pool = state.get("active_pool")
+        if active_pool in {"pool1", "pool2"}:
+            if not state.get("pool1") or not state.get("pool2"):
+                _reset_word_cycle_state(state)
+                continue
+            remaining = _unique_valid_word_ids(state.get("remaining_ids"))
+            if not remaining:
+                _rollover_word_cycle_pool_if_needed(state)
+                continue
+            word_id = remaining.pop(0)
+            state["remaining_ids"] = remaining
+            selected.append(word_id)
+            _rollover_word_cycle_pool_if_needed(state)
+            continue
+
+        _reset_word_cycle_state(state)
+    return selected
+
+
+def _draw_words_from_cycle(state: dict[str, Any], count: int) -> list[DrawingGuessWord]:
+    return [_WORD_BY_ID[word_id] for word_id in _draw_word_ids_from_cycle(state, count)]
+
+
+def _pick_user_word_options(
+    cycle_state: dict[str, Any],
+    *,
+    excluded_ids: Iterable[str] = (),
+) -> list[DrawingGuessWord]:
+    return [
+        _WORD_BY_ID[word_id]
+        for word_id in _peek_word_ids_from_cycle(
+            cycle_state,
+            USER_DRAW_OPTION_COUNT,
+            excluded_ids=excluded_ids,
+        )
+    ]
+
+
+def _pick_round_words(cycle_state: dict[str, Any]) -> tuple[DrawingGuessWord, list[DrawingGuessWord]]:
+    ai_word = _draw_words_from_cycle(cycle_state, 1)[0]
+    return ai_word, _pick_user_word_options(cycle_state, excluded_ids={ai_word.id})
 
 
 async def _payload(request: Request) -> dict[str, Any]:
@@ -949,6 +1320,35 @@ def _score_payload(session: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _public_word_cycle_state(session: dict[str, Any]) -> dict[str, Any]:
+    cycle_state = _normalize_word_cycle_state(session.get("word_cycle"))
+    session["word_cycle"] = cycle_state
+    active_pool = cycle_state.get("active_pool")
+    if active_pool not in {"pool1", "pool2"}:
+        _activate_word_cycle_pool(cycle_state, "pool1")
+        active_pool = cycle_state["active_pool"]
+
+    active_remaining = _unique_valid_word_ids(cycle_state.get("remaining_ids"))
+    pools: dict[str, dict[str, Any]] = {}
+    for pool_name in ("pool1", "pool2"):
+        pool_ids = _unique_valid_word_ids(cycle_state.get(pool_name))
+        if pool_name == active_pool:
+            remaining_count = len([word_id for word_id in active_remaining if word_id in set(pool_ids)])
+        else:
+            remaining_count = len(pool_ids)
+        pools[pool_name] = {
+            "remaining_count": remaining_count,
+            "locked": pool_name != active_pool,
+        }
+
+    return {
+        "active_pool": active_pool,
+        "pools": pools,
+        "request_locked": _get_session_lock(session).locked(),
+        "rollover_remaining": WORD_DEDUP_ROLLOVER_REMAINING,
+    }
+
+
 def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
     return {
         "round_id": session.get("round_id"),
@@ -961,6 +1361,7 @@ def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
             "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
         },
         "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
+        "word_cycle": _public_word_cycle_state(session),
         "user_draw_answer": (
             _word_public(_WORD_BY_ID[str(session["user_word_id"])], locale)
             if session.get("user_word_id") and session.get("phase") in {"user_drawing", "ai_guessing", "ai_guess_feedback", "summary"}
@@ -978,8 +1379,9 @@ def _ensure_user_word_options(session: dict[str, Any]) -> list[str]:
     if len(option_ids) >= USER_DRAW_OPTION_COUNT:
         return option_ids[:USER_DRAW_OPTION_COUNT]
 
-    ai_word = _WORD_BY_ID[str(session["ai_word_id"])]
-    options = _pick_user_word_options(ai_word)
+    cycle_state = _normalize_word_cycle_state(session.get("word_cycle"))
+    session["word_cycle"] = cycle_state
+    options = _pick_user_word_options(cycle_state, excluded_ids={str(session.get("ai_word_id") or "")})
     option_ids = [word.id for word in options]
     session["user_word_options"] = option_ids
     return option_ids
@@ -1207,11 +1609,11 @@ def _recent_game_chat_payload(session: dict[str, Any]) -> list[dict[str, str]]:
 def _drawing_guess_scene_premise(event: str) -> str:
     premises = {
         "ai_drawing_ready": "You have just finished your drawing. The user does not know the answer yet.",
-        "user_guess_correct": "The user guessed your drawing correctly. The next part is that the user will draw.",
+        "user_guess_correct": "The user guessed your drawing correctly. Congratulate them, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
         "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
         "hint_request": "The user wants a hint. If public_details.safe_hint is present, it is the only hint you may use. If public_details.direct_hint is present, the softer hints are exhausted and you may guide the user toward public_details.answer_label.",
-        "user_guess_timeout": "The guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true.",
-        "ai_guess_correct": "The character guessed the user's drawing correctly. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character.",
+        "user_guess_timeout": "The user's guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
+        "ai_guess_correct": "The character is making a visual guess from the user's drawing and that guess happens to be correct. The user was the drawer, not the guesser. Speak from what the character can see now, not as if the hidden answer was known beforehand.",
         "ai_guess_wrong": "The character guessed the user's drawing wrong. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character without making it feel like a failure.",
         "ai_guess_final_miss": "The character used all guess attempts and missed the user's drawing. The user was the drawer, not the guesser. The round is ending; comment on the user's drawing itself in-character without making it feel like a failure.",
         "summary_evaluation": "The round has reached the settlement page. Give a fresh in-character evaluation of the user's drawing itself. This is not a chat reply, not a guess line, and must not copy earlier game chat.",
@@ -1225,6 +1627,35 @@ def _drawing_guess_scene_premise(event: str) -> str:
 
 
 def _drawing_guess_event_roles(event: str) -> dict[str, Any]:
+    if event in {"user_guess_correct", "user_guess_timeout"}:
+        return {
+            "character_role": "transition_to_guesser",
+            "user_role": "transition_to_drawer",
+            "completed_turn": {
+                "character_role": "drawer",
+                "user_role": "guesser",
+                "result": "user_guessed_character_drawing" if event == "user_guess_correct" else "user_guessing_time_ended",
+            },
+            "next_turn": {
+                "character_role": "guesser",
+                "user_role": "drawer",
+                "character_action": "guess_the_user_drawing",
+                "user_action": "choose_card_and_draw_picture",
+            },
+            "must_not_say": [
+                "it is my turn to draw",
+                "I will draw next",
+                "let me draw next",
+                "the character will draw next",
+                "my next drawing",
+                "轮到我画",
+                "该我画",
+                "我来画",
+                "我要开始画",
+                "我下一张画",
+                "角色接下来画",
+            ],
+        }
     if event.startswith("ai_guess"):
         return {
             "character_role": "guesser",
@@ -2051,6 +2482,9 @@ def _build_drawing_guess_game_line_prompts(
             "- If public_details.previous_safe_hints is present, do not repeat those hints; say the current safe_hint in fresh character wording.\n"
             "- If public_details.direct_hint is present, use direct_hint or answer_label naturally as the hint; do not mention policy, rules, or that you are allowed to reveal anything.\n"
             "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
+            "- For user_guess_correct and user_guess_timeout, the character's drawing turn has ended. The next drawing turn belongs to the user, and the character will guess; never say or imply that the character will draw next.\n"
+            "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
+            "- For ai_guess_* events, do not present guess_label as a confirmed hidden answer unless public_details.allow_answer_reveal is true.\n"
             "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
         ),
     )
@@ -2742,6 +3176,26 @@ def _fallback_svg(word_id: str) -> str:
         "ball": '<circle cx="120" cy="91" r="50" fill="#ffffff" stroke="#303840" stroke-width="5"/><path d="M120 41 C100 64 100 119 120 141 M120 41 C140 64 140 119 120 141 M73 91 H167" stroke="#303840" stroke-width="5" fill="none"/>',
         "kite": '<polygon points="120,31 174,88 120,146 66,88" fill="#7fc7d9" stroke="#2e6775" stroke-width="5"/><path d="M120 31 V146 M66 88 H174 M120 146 C111 164 94 153 88 169" stroke="#2e6775" stroke-width="4" fill="none"/><path d="M86 169 L99 161 M86 169 L98 177" stroke="#c06b42" stroke-width="4"/>',
         "heart": '<path d="M120 145 C82 112 56 91 64 62 C70 39 99 34 120 59 C141 34 170 39 176 62 C184 91 158 112 120 145Z" fill="#df5b78" stroke="#86324a" stroke-width="5"/>',
+        "table": '<rect x="48" y="74" width="144" height="24" rx="5" fill="#b57945" stroke="#5f3b22" stroke-width="5"/><path d="M70 98 V151 M170 98 V151 M104 98 L92 151 M136 98 L148 151" stroke="#5f3b22" stroke-width="7" stroke-linecap="round"/>',
+        "lamp": '<path d="M93 58 H147 L162 96 H78Z" fill="#f0d37e" stroke="#7c6532" stroke-width="5"/><path d="M120 96 V139" stroke="#4c5964" stroke-width="8" stroke-linecap="round"/><path d="M91 148 H149" stroke="#4c5964" stroke-width="8" stroke-linecap="round"/><circle cx="120" cy="43" r="9" fill="#f9e78a"/>',
+        "spoon": '<ellipse cx="91" cy="67" rx="23" ry="32" fill="#dce6ee" stroke="#596b78" stroke-width="5"/><path d="M105 93 L160 149" stroke="#596b78" stroke-width="11" stroke-linecap="round"/>',
+        "fork": '<path d="M93 36 V92 M111 36 V92 M129 36 V92 M91 92 H131" stroke="#596b78" stroke-width="7" stroke-linecap="round"/><path d="M111 92 V151" stroke="#596b78" stroke-width="12" stroke-linecap="round"/>',
+        "bottle": '<path d="M102 45 H138 V72 C153 82 159 96 159 119 V151 H81 V119 C81 96 87 82 102 72Z" fill="#88d0df" stroke="#3c6672" stroke-width="5"/><rect x="101" y="28" width="38" height="22" rx="4" fill="#5ca8bd" stroke="#3c6672" stroke-width="5"/><path d="M91 109 H149" stroke="#ffffff" stroke-width="7" opacity=".75"/>',
+        "backpack": '<rect x="73" y="62" width="94" height="89" rx="18" fill="#6aa4d8" stroke="#2f5575" stroke-width="5"/><path d="M92 62 C95 34 145 34 148 62 M73 100 C54 103 54 135 73 138 M167 100 C186 103 186 135 167 138" fill="none" stroke="#2f5575" stroke-width="6" stroke-linecap="round"/><rect x="94" y="102" width="52" height="34" rx="7" fill="#f2d680" stroke="#7f6530" stroke-width="4"/>',
+        "scissors": '<circle cx="82" cy="123" r="18" fill="none" stroke="#4c5964" stroke-width="6"/><circle cx="119" cy="123" r="18" fill="none" stroke="#4c5964" stroke-width="6"/><path d="M101 111 L172 48 M101 135 L172 158" stroke="#4c5964" stroke-width="7" stroke-linecap="round"/><path d="M107 119 L151 78 M107 129 L151 128" stroke="#b9c5cf" stroke-width="6" stroke-linecap="round"/>',
+        "pencil": '<path d="M57 139 L153 43 L179 69 L83 165Z" fill="#f2c34e" stroke="#7b5a1e" stroke-width="5"/><path d="M153 43 L176 20 L203 47 L179 69Z" fill="#ef8f8f" stroke="#7b5a1e" stroke-width="5"/><path d="M57 139 L45 177 L83 165Z" fill="#f4d6a5" stroke="#7b5a1e" stroke-width="5"/><path d="M45 177 L61 161" stroke="#2f3033" stroke-width="6"/>',
+        "camera": '<rect x="58" y="67" width="124" height="78" rx="12" fill="#536675" stroke="#26333d" stroke-width="5"/><rect x="82" y="50" width="42" height="21" rx="5" fill="#536675" stroke="#26333d" stroke-width="5"/><circle cx="122" cy="106" r="27" fill="#d8edf5" stroke="#26333d" stroke-width="6"/><circle cx="122" cy="106" r="12" fill="#3d6f8a"/><circle cx="166" cy="82" r="6" fill="#f0c94a"/>',
+        "television": '<rect x="45" y="48" width="150" height="91" rx="10" fill="#2f3b45" stroke="#111a20" stroke-width="5"/><rect x="58" y="61" width="124" height="65" rx="5" fill="#9ed6e0"/><path d="M120 139 V157 M84 157 H156" stroke="#2f3b45" stroke-width="7" stroke-linecap="round"/>',
+        "computer": '<rect x="55" y="44" width="130" height="80" rx="8" fill="#dce8ee" stroke="#3f5968" stroke-width="5"/><rect x="69" y="58" width="102" height="51" rx="4" fill="#8ecae6"/><path d="M120 124 V143 M80 151 H160" stroke="#3f5968" stroke-width="7" stroke-linecap="round"/><rect x="64" y="156" width="112" height="14" rx="5" fill="#dce8ee" stroke="#3f5968" stroke-width="4"/>',
+        "shirt": '<path d="M82 55 L105 43 H135 L158 55 L184 82 L161 106 L151 94 V154 H89 V94 L79 106 L56 82Z" fill="#78b9e6" stroke="#2f5575" stroke-width="5" stroke-linejoin="round"/><path d="M105 43 C110 58 130 58 135 43" stroke="#2f5575" stroke-width="4" fill="none"/>',
+        "pants": '<path d="M83 42 H157 L150 157 H122 L120 94 L118 157 H90Z" fill="#5f83bd" stroke="#2d456c" stroke-width="5" stroke-linejoin="round"/><path d="M83 65 H157 M120 64 V95" stroke="#2d456c" stroke-width="4"/>',
+        "sock": '<path d="M94 39 H139 V111 C154 111 172 122 174 139 C160 150 117 150 99 140 C92 136 94 125 94 113Z" fill="#f5f0e8" stroke="#66717a" stroke-width="5"/><path d="M96 58 H138" stroke="#e87373" stroke-width="8"/>',
+        "glasses": '<circle cx="88" cy="94" r="30" fill="none" stroke="#2f3b45" stroke-width="7"/><circle cx="152" cy="94" r="30" fill="none" stroke="#2f3b45" stroke-width="7"/><path d="M118 94 H122 M58 88 L31 74 M182 88 L209 74" stroke="#2f3b45" stroke-width="6" stroke-linecap="round"/>',
+        "candle": '<rect x="96" y="73" width="48" height="84" rx="8" fill="#f8e8b0" stroke="#8a6f32" stroke-width="5"/><path d="M120 74 C100 53 121 38 120 24 C139 43 146 58 120 74Z" fill="#f59f3a" stroke="#8a4a22" stroke-width="4"/><path d="M120 74 V91" stroke="#5a4320" stroke-width="4"/>',
+        "broom": '<path d="M76 148 L162 36" stroke="#7c5630" stroke-width="9" stroke-linecap="round"/><path d="M61 137 L99 157 L82 174 L45 156Z" fill="#d6a858" stroke="#7c5630" stroke-width="5"/><path d="M58 147 L92 164 M70 136 L103 153" stroke="#7c5630" stroke-width="4"/>',
+        "bucket": '<path d="M70 74 H170 L158 154 H82Z" fill="#7fc7d9" stroke="#2e6775" stroke-width="5"/><path d="M80 77 C85 38 155 38 160 77" fill="none" stroke="#2e6775" stroke-width="6"/><path d="M82 104 H158" stroke="#ffffff" stroke-width="7" opacity=".65"/>',
+        "ladder": '<path d="M83 38 L65 157 M157 38 L175 157" stroke="#8b5a35" stroke-width="8" stroke-linecap="round"/><path d="M91 66 H149 M85 94 H155 M79 123 H161 M72 151 H168" stroke="#8b5a35" stroke-width="7" stroke-linecap="round"/>',
+        "bridge": '<path d="M40 126 C78 72 162 72 200 126" fill="none" stroke="#6a7d8f" stroke-width="10" stroke-linecap="round"/><path d="M45 126 H195 M72 126 V151 M120 93 V151 M168 126 V151" stroke="#6a7d8f" stroke-width="7" stroke-linecap="round"/><path d="M37 154 H203" stroke="#7fc7d9" stroke-width="8" stroke-linecap="round"/>',
     }
     return _wrap_svg(common.get(word_id, common["heart"]))
 
@@ -2764,7 +3218,10 @@ async def drawing_guess_round_start(request: Request):
 
     _cleanup_sessions()
     locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
-    ai_word, user_options = _pick_round_words()
+    session_key = _session_key(lanlan_name, session_id)
+    previous_session = _drawing_guess_sessions.get(session_key)
+    word_cycle = _normalize_word_cycle_state(previous_session.get("word_cycle") if previous_session else None)
+    ai_word, user_options = _pick_round_words(word_cycle)
     now = time.time()
     debug_start_phase = str(data.get("debug_start_phase") or "").strip()
     initial_phase = "word_picking" if debug_start_phase == "word_picking" else "ai_drawing"
@@ -2786,8 +3243,9 @@ async def drawing_guess_round_start(request: Request):
         "memory_consent": _normalize_memory_consent(data.get("memory_consent")),
         "game_chat_history": [],
         "client_round_token": data.get("client_round_token"),
+        "word_cycle": word_cycle,
     }
-    _drawing_guess_sessions[_session_key(lanlan_name, session_id)] = session
+    _drawing_guess_sessions[session_key] = session
     response = {"ok": True, "state": _public_round_state(session, locale)}
     if initial_phase == "word_picking":
         response.update({
@@ -3114,6 +3572,9 @@ async def drawing_guess_choose_word(request: Request):
         }
 
     session["user_word_id"] = word_id
+    cycle_state = _normalize_word_cycle_state(session.get("word_cycle"))
+    _exclude_word_id_from_cycle(cycle_state, word_id)
+    session["word_cycle"] = cycle_state
     session["phase"] = "user_drawing"
     answer = _WORD_BY_ID[word_id]
     return {
@@ -3293,7 +3754,14 @@ async def _run_drawing_guess_vision_turn(
             "attempt": attempts,
             "max_attempts": MAX_AI_GUESS_ATTEMPTS,
         }
-        if round_will_summarize:
+        if correct:
+            line_details.update({
+                "allow_answer_reveal": False,
+                "guess_is_correct": True,
+                "speak_as_visual_guess": True,
+                "do_not_imply_prior_knowledge": True,
+            })
+        elif round_will_summarize:
             line_details.update({
                 "answer_label": _word_public(answer, locale)["label"],
                 "allow_answer_reveal": True,

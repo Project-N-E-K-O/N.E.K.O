@@ -16,6 +16,7 @@
   var state = {
     sessionId: '',
     lanlanName: '',
+    windowLanlanName: '',
     routeActive: false,
     routeEnding: false,
     heartbeatTimer: null,
@@ -27,6 +28,7 @@
     aiDrawingPlaceholderTimer: null,
     sizePreviewTimer: null,
     colorPanelDrag: null,
+    debugPanelDrag: null,
     colorWheelPointerId: null,
     colorHistory: [],
     drawPickTimer: null,
@@ -53,6 +55,7 @@
     debugCharactersLoaded: false,
     debugRotateRounds: true,
     debugRoundMode: 'auto',
+    debugWordCycle: null,
     roundFlowToken: 0,
     aiGuessDeadline: 0,
     aiGuessInFlight: false,
@@ -112,12 +115,18 @@
       sessionId: $('session-id'),
       debugTrigger: $('debug-trigger'),
       debugPanel: $('debug-panel'),
+      debugPanelHandle: $('debug-panel-handle'),
       debugClose: $('debug-close'),
       debugCharacterSelect: $('debug-character-select'),
       debugAiRound: $('debug-ai-round'),
       debugUserRound: $('debug-user-round'),
       debugRotateRounds: $('debug-rotate-rounds'),
       debugAiGuessCountdown: $('debug-ai-guess-countdown'),
+      debugWordPool1Count: $('debug-word-pool1-count'),
+      debugWordPool1Lock: $('debug-word-pool1-lock'),
+      debugWordPool2Count: $('debug-word-pool2-count'),
+      debugWordPool2Lock: $('debug-word-pool2-lock'),
+      debugSessionLock: $('debug-session-lock'),
       debugTriggerAiGuess: $('debug-trigger-ai-guess'),
       modelStage: $('model-stage'),
       sidePane: $('side-pane'),
@@ -596,6 +605,7 @@
     els.chatInput.disabled = els.chatSubmit.disabled;
     els.undoTool.disabled = !canvasEditable || state.history.length <= 1;
     els.redoTool.disabled = !canvasEditable || state.redo.length === 0;
+    if (!canvasEditable || (state.brushMode === 'brush' && state.brushToolKind === 'bucket')) hideSizePreview();
     syncVoiceRouteButton();
     syncDebugPanelState();
   }
@@ -611,6 +621,49 @@
     var rest = seconds % 60;
     if (minutes <= 0) return seconds + 's';
     return minutes + ':' + String(rest).padStart(2, '0');
+  }
+
+  function applyRoundState(roundState) {
+    if (!roundState || typeof roundState !== 'object') return;
+    if (roundState.word_cycle && typeof roundState.word_cycle === 'object') {
+      state.debugWordCycle = roundState.word_cycle;
+      syncDebugPanelState();
+    }
+  }
+
+  function debugPoolLabel(pool, field) {
+    var wordCycle = state.debugWordCycle || {};
+    var pools = wordCycle.pools || {};
+    var data = pools[pool] || {};
+    if (field === 'count') {
+      var count = Number(data.remaining_count);
+      return Number.isFinite(count) ? String(count) : '--';
+    }
+    if (field === 'lock') {
+      if (!wordCycle.active_pool) return '--';
+      return data.locked ? '锁定' : '可用';
+    }
+    return '--';
+  }
+
+  function updateDebugWordCycle() {
+    if (els.debugWordPool1Count) els.debugWordPool1Count.textContent = debugPoolLabel('pool1', 'count');
+    if (els.debugWordPool1Lock) {
+      var pool1Lock = debugPoolLabel('pool1', 'lock');
+      els.debugWordPool1Lock.textContent = pool1Lock;
+      els.debugWordPool1Lock.dataset.locked = String(pool1Lock === '锁定');
+    }
+    if (els.debugWordPool2Count) els.debugWordPool2Count.textContent = debugPoolLabel('pool2', 'count');
+    if (els.debugWordPool2Lock) {
+      var pool2Lock = debugPoolLabel('pool2', 'lock');
+      els.debugWordPool2Lock.textContent = pool2Lock;
+      els.debugWordPool2Lock.dataset.locked = String(pool2Lock === '锁定');
+    }
+    if (els.debugSessionLock) {
+      var locked = !!(state.debugWordCycle && state.debugWordCycle.request_locked);
+      els.debugSessionLock.textContent = locked ? '请求锁定中' : '未锁定';
+      els.debugSessionLock.dataset.locked = String(locked);
+    }
   }
 
   function updateDebugGuessCountdown() {
@@ -648,6 +701,7 @@
     if (els.debugTriggerAiGuess) {
       els.debugTriggerAiGuess.disabled = !isDebugAiGuessAvailable() || state.aiGuessInFlight;
     }
+    updateDebugWordCycle();
     updateDebugGuessCountdown();
   }
 
@@ -829,7 +883,10 @@
       reason: 'drawing_guess_debug_character_switch',
       roundCompleted: false,
       round_completed: false,
-      postgameProactive: false
+      postgameProactive: false,
+      window_lanlan_name: state.windowLanlanName || lanlanName,
+      suppressWindowStateChange: true,
+      suppressRouteEndStatus: true
     };
     return fetch(ROUTE_API + '/route/end', {
       method: 'POST',
@@ -843,6 +900,10 @@
     if (!nextName || nextName === state.lanlanName) return Promise.resolve();
     var oldName = state.lanlanName;
     var oldSessionId = state.sessionId;
+    var previousDebugMode = state.debugRoundMode;
+    var previousRotateRounds = state.debugRotateRounds;
+    var shouldContinueRound = state.phase !== 'tutorial' && state.phase !== 'ended' && state.phase !== 'final_summary';
+    if (!state.windowLanlanName) state.windowLanlanName = oldName;
     return endRouteForDebugSwitch(oldName, oldSessionId).finally(function () {
       clearNekoVoiceQueue();
       stopSpeechAudioSocket();
@@ -860,15 +921,23 @@
       state.roundFlowToken += 1;
       state.sessionId = makeSessionId();
       state.lanlanName = nextName;
-      state.debugRoundMode = 'auto';
+      state.debugRoundMode = previousDebugMode || 'auto';
+      state.debugRotateRounds = previousRotateRounds;
       window.lanlan_config = window.lanlan_config || {};
       window.lanlan_config.lanlan_name = nextName;
       loadModelViewSettings();
       initModelSlotForCurrentCharacter(nextName).catch(function () {});
       showPlaceholder();
       setPhase('loading_round');
-      addEventMessage('', '调试：已切换为 ' + nextName + '，请选择要测试的回合。');
-      return startRoute();
+      addEventMessage('', shouldContinueRound
+        ? '调试：已切换为 ' + nextName + '，继续当前测试回合。'
+        : '调试：已切换为 ' + nextName + '。');
+      return startRoute().then(function (ok) {
+        if (!ok || !shouldContinueRound) return ok;
+        if (!state.debugRotateRounds && state.debugRoundMode === 'user') return startDebugUserRound(true);
+        if (!state.debugRotateRounds && state.debugRoundMode === 'ai') return startDebugAiRound(true);
+        return startRound();
+      });
     }).finally(function () {
       syncDebugPanelState();
       updateControls();
@@ -1076,6 +1145,7 @@
       mirror_text: false,
       emit_turn_end: true,
       interrupt_audio: false,
+      suppress_primary_audio: true,
       event: {
         kind: 'drawing_guess_neko_line',
         source: 'drawing_guess',
@@ -1233,6 +1303,9 @@
       signal: controller.signal
     }).then(function (res) {
       return res.json().catch(function () { return { ok: res.ok }; });
+    }).then(function (data) {
+      if (data && data.state) applyRoundState(data.state);
+      return data;
     }).catch(function (err) {
       if (didTimeout || (err && err.name === 'AbortError')) {
         var timeoutError = new Error('request_timeout');
@@ -1290,6 +1363,7 @@
     return Object.assign({
       session_id: state.sessionId,
       lanlan_name: state.lanlanName,
+      window_lanlan_name: state.windowLanlanName || state.lanlanName,
       source: 'drawing_guess',
       game_type: GAME_TYPE,
       i18n_language: currentLanguage(),
@@ -1844,7 +1918,14 @@
   function captureUserCanvasPng() {
     if (!els.canvas) return '';
     try {
-      return els.canvas.toDataURL('image/png');
+      var exportCanvas = document.createElement('canvas');
+      exportCanvas.width = els.canvas.width;
+      exportCanvas.height = els.canvas.height;
+      var exportContext = exportCanvas.getContext('2d');
+      exportContext.fillStyle = '#fffdfa';
+      exportContext.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      exportContext.drawImage(els.canvas, 0, 0);
+      return exportCanvas.toDataURL('image/png');
     } catch (_) {
       return '';
     }
@@ -2638,6 +2719,7 @@
     }).then(function (data) {
       var name = String((data && data.current_catgirl) || '').trim();
       state.lanlanName = name;
+      if (name && !state.windowLanlanName) state.windowLanlanName = name;
       if (name) {
         window.lanlan_config = window.lanlan_config || {};
         window.lanlan_config.lanlan_name = name;
@@ -2665,8 +2747,6 @@
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-    ctx.fillStyle = '#fffdfa';
-    ctx.fillRect(0, 0, els.canvas.width, els.canvas.height);
     ctx.restore();
     state.hasDrawn = false;
     state.history = [];
@@ -2804,7 +2884,7 @@
       if (node) node.style.setProperty('--dg-current-color', normalized);
     });
     if (els.sizePreview && !els.sizePreview.hidden && els.sizePreview.dataset.previewTool === 'brush') {
-      showSizePreview('brush');
+      els.sizePreview.style.setProperty('--dg-size-preview-color', normalized);
     }
     if (options && options.remember) rememberBrushColor(normalized);
   }
@@ -2836,6 +2916,35 @@
     };
   }
 
+  function colorWheelHueFromAngle(angleDeg) {
+    var angle = ((Number(angleDeg) || 0) % 360 + 360) % 360;
+    var stops = [
+      [0, 350],
+      [45, 35],
+      [90, 58],
+      [135, 125],
+      [180, 185],
+      [225, 220],
+      [270, 267],
+      [315, 315],
+      [360, 350]
+    ];
+    for (var i = 0; i < stops.length - 1; i += 1) {
+      var from = stops[i];
+      var to = stops[i + 1];
+      if (angle >= from[0] && angle <= to[0]) {
+        var t = (angle - from[0]) / Math.max(1, to[0] - from[0]);
+        var fromHue = from[1];
+        var toHue = to[1];
+        var delta = toHue - fromHue;
+        if (delta < -180) delta += 360;
+        if (delta > 180) delta -= 360;
+        return (fromHue + delta * t + 360) % 360;
+      }
+    }
+    return angle;
+  }
+
   function pickColorFromWheel(event, remember) {
     if (!els.colorWheel) return;
     var geometry = colorWheelGeometry();
@@ -2847,7 +2956,8 @@
     var angle = Math.atan2(dy, dx);
     var x = Math.cos(angle) * clampedDistance;
     var y = Math.sin(angle) * clampedDistance;
-    var hue = (angle * 180 / Math.PI + 450) % 360;
+    var wheelAngle = (angle * 180 / Math.PI + 450) % 360;
+    var hue = colorWheelHueFromAngle(wheelAngle);
     var saturation = clampedDistance / geometry.radius;
     setColorWheelCursor(50 + (x / geometry.radius) * 50, 50 + (y / geometry.radius) * 50);
     setBrushColor(hsvToHex(hue, saturation, 1), { remember: remember });
@@ -2922,22 +3032,46 @@
     clearTimeout(state.sizePreviewTimer);
     state.sizePreviewTimer = null;
     if (els.sizePreview) els.sizePreview.hidden = true;
+    if (els.canvas) els.canvas.style.cursor = '';
   }
 
-  function showSizePreview(tool) {
+  function canvasCursorTool() {
+    if (!isCanvasEditablePhase()) return '';
+    if (state.brushMode === 'brush' && state.brushToolKind === 'bucket') return '';
+    return state.brushMode === 'eraser' ? 'eraser' : 'brush';
+  }
+
+  function isPointerInsideCanvas(event) {
+    if (!event || !els.canvas || els.canvas.classList.contains('dg-hidden')) return false;
+    var rect = els.canvas.getBoundingClientRect();
+    return event.clientX >= rect.left
+      && event.clientX <= rect.right
+      && event.clientY >= rect.top
+      && event.clientY <= rect.bottom;
+  }
+
+  function showSizePreview(tool, event) {
     if (!els.sizePreview || !els.canvas) return;
+    var isCursorPreview = !!event;
+    if (isCursorPreview && !isPointerInsideCanvas(event)) {
+      hideSizePreview();
+      return;
+    }
     var kind = tool === 'eraser' ? 'eraser' : 'brush';
     var size = Number(kind === 'eraser' ? (els.eraserSize.value || 13) : (els.brushSize.value || 7));
-    var canvasHidden = els.canvas.classList.contains('dg-hidden');
-    var rect = canvasHidden && els.canvasStage
-      ? els.canvasStage.getBoundingClientRect()
-      : els.canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    var scaleX = rect.width / Math.max(1, els.canvas.width || 800);
-    var scaleY = rect.height / Math.max(1, els.canvas.height || 600);
+    var canvasRect = els.canvas.getBoundingClientRect();
+    var stageRect = els.canvasStage ? els.canvasStage.getBoundingClientRect() : canvasRect;
+    if (!canvasRect.width || !canvasRect.height) return;
+    var scaleX = canvasRect.width / Math.max(1, els.canvas.width || 800);
+    var scaleY = canvasRect.height / Math.max(1, els.canvas.height || 600);
     var diameter = Math.max(2, size * ((scaleX + scaleY) / 2));
     var borderWidth = Math.max(1, Math.min(3, diameter / 5));
     els.sizePreview.dataset.previewTool = kind;
+    els.sizePreview.dataset.previewMode = isCursorPreview ? 'cursor' : 'adjustment';
+    var previewX = isCursorPreview ? event.clientX - stageRect.left : canvasRect.left + canvasRect.width / 2 - stageRect.left;
+    var previewY = isCursorPreview ? event.clientY - stageRect.top : canvasRect.top + canvasRect.height / 2 - stageRect.top;
+    els.sizePreview.style.setProperty('--dg-size-preview-x', previewX.toFixed(2) + 'px');
+    els.sizePreview.style.setProperty('--dg-size-preview-y', previewY.toFixed(2) + 'px');
     els.sizePreview.style.setProperty('--dg-size-preview-diameter', diameter.toFixed(2) + 'px');
     els.sizePreview.style.setProperty('--dg-size-preview-border', borderWidth.toFixed(2) + 'px');
     if (kind === 'brush') {
@@ -2946,8 +3080,24 @@
       els.sizePreview.style.removeProperty('--dg-size-preview-color');
     }
     els.sizePreview.hidden = false;
-    clearTimeout(state.sizePreviewTimer);
-    state.sizePreviewTimer = setTimeout(hideSizePreview, 2600);
+    if (isCursorPreview) {
+      clearTimeout(state.sizePreviewTimer);
+      state.sizePreviewTimer = null;
+      els.canvas.style.cursor = 'none';
+    } else {
+      els.canvas.style.cursor = '';
+      clearTimeout(state.sizePreviewTimer);
+      state.sizePreviewTimer = setTimeout(hideSizePreview, 2600);
+    }
+  }
+
+  function updateCanvasCursorPreview(event) {
+    var tool = canvasCursorTool();
+    if (!tool) {
+      hideSizePreview();
+      return;
+    }
+    showSizePreview(tool, event);
   }
 
   function setColorPanelPosition(left, top) {
@@ -2980,6 +3130,45 @@
 
   function hideColorPanel() {
     if (els.colorPanel) els.colorPanel.hidden = true;
+  }
+
+  function setDebugPanelPosition(left, top) {
+    if (!els.debugPanel) return;
+    var width = els.debugPanel.offsetWidth || 360;
+    var height = els.debugPanel.offsetHeight || 360;
+    var maxLeft = Math.max(8, window.innerWidth - width - 8);
+    var maxTop = Math.max(8, window.innerHeight - height - 8);
+    els.debugPanel.style.left = Math.max(8, Math.min(maxLeft, left)) + 'px';
+    els.debugPanel.style.top = Math.max(8, Math.min(maxTop, top)) + 'px';
+    els.debugPanel.style.right = 'auto';
+  }
+
+  function beginDebugPanelDrag(event) {
+    if (!els.debugPanel || !els.debugPanelHandle || event.button !== 0) return;
+    if (event.target && event.target.closest && event.target.closest('button,input,select')) return;
+    event.preventDefault();
+    var rect = els.debugPanel.getBoundingClientRect();
+    state.debugPanelDrag = {
+      pointerId: event.pointerId,
+      dx: event.clientX - rect.left,
+      dy: event.clientY - rect.top
+    };
+    els.debugPanel.classList.add('is-dragging');
+    try { els.debugPanelHandle.setPointerCapture(event.pointerId); } catch (_) {}
+  }
+
+  function moveDebugPanelDrag(event) {
+    if (!state.debugPanelDrag || state.debugPanelDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setDebugPanelPosition(event.clientX - state.debugPanelDrag.dx, event.clientY - state.debugPanelDrag.dy);
+  }
+
+  function endDebugPanelDrag(event) {
+    if (!state.debugPanelDrag || state.debugPanelDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    state.debugPanelDrag = null;
+    if (els.debugPanel) els.debugPanel.classList.remove('is-dragging');
+    try { els.debugPanelHandle.releasePointerCapture(event.pointerId); } catch (_) {}
   }
 
   function toggleColorPanel() {
@@ -3040,9 +3229,38 @@
     try { els.colorWheel.releasePointerCapture(event.pointerId); } catch (_) {}
   }
 
+  function activeStrokeSize() {
+    return Number(state.brushMode === 'eraser' ? (els.eraserSize.value || 13) : (els.brushSize.value || 7));
+  }
+
+  function configureStrokeContext() {
+    els.ctx.lineCap = 'round';
+    els.ctx.lineJoin = 'round';
+    els.ctx.lineWidth = activeStrokeSize();
+    if (state.brushMode === 'eraser') {
+      els.ctx.globalCompositeOperation = 'destination-out';
+      els.ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      els.ctx.globalCompositeOperation = 'source-over';
+      els.ctx.strokeStyle = currentBrushColor();
+    }
+  }
+
+  function drawStrokePoint(point) {
+    var radius = Math.max(0.5, activeStrokeSize() / 2);
+    els.ctx.save();
+    configureStrokeContext();
+    els.ctx.fillStyle = state.brushMode === 'eraser' ? 'rgba(0,0,0,1)' : currentBrushColor();
+    els.ctx.beginPath();
+    els.ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    els.ctx.fill();
+    els.ctx.restore();
+  }
+
   function beginStroke(event) {
-    if (!isCanvasEditablePhase()) return;
+    if (!isCanvasEditablePhase() || event.button !== 0) return;
     event.preventDefault();
+    updateCanvasCursorPreview(event);
     var p = canvasPoint(event);
     if (state.brushMode === 'brush' && state.brushToolKind === 'bucket') {
       if (floodFillCanvas(p)) {
@@ -3052,26 +3270,20 @@
       return;
     }
     state.isDrawing = true;
+    drawStrokePoint(p);
+    state.hasDrawn = true;
+    configureStrokeContext();
     els.ctx.beginPath();
     els.ctx.moveTo(p.x, p.y);
     try { els.canvas.setPointerCapture(event.pointerId); } catch (_) {}
   }
 
   function moveStroke(event) {
+    updateCanvasCursorPreview(event);
     if (!state.isDrawing || !isCanvasEditablePhase()) return;
     event.preventDefault();
     var p = canvasPoint(event);
-    els.ctx.lineCap = 'round';
-    els.ctx.lineJoin = 'round';
-    if (state.brushMode === 'eraser') {
-      els.ctx.globalCompositeOperation = 'destination-out';
-      els.ctx.strokeStyle = 'rgba(0,0,0,1)';
-      els.ctx.lineWidth = Number(els.eraserSize.value || 13);
-    } else {
-      els.ctx.globalCompositeOperation = 'source-over';
-      els.ctx.strokeStyle = currentBrushColor();
-      els.ctx.lineWidth = Number(els.brushSize.value || 7);
-    }
+    configureStrokeContext();
     els.ctx.lineTo(p.x, p.y);
     els.ctx.stroke();
     state.hasDrawn = true;
@@ -3083,19 +3295,14 @@
     state.isDrawing = false;
     els.ctx.globalCompositeOperation = 'source-over';
     pushHistory();
+    updateCanvasCursorPreview(event);
   }
 
   function setTool(tool) {
     state.brushMode = tool;
     els.brushTool.setAttribute('aria-pressed', tool === 'brush' ? 'true' : 'false');
     els.eraserTool.setAttribute('aria-pressed', tool === 'eraser' ? 'true' : 'false');
-    if (tool === 'eraser') {
-      showSizePreview('eraser');
-    } else if (state.brushToolKind === 'brush') {
-      showSizePreview('brush');
-    } else {
-      hideSizePreview();
-    }
+    hideSizePreview();
   }
 
   function syncBrushToolButton() {
@@ -3135,6 +3342,8 @@
       showSizePreview('brush');
     } else if (els.eraserSize && popover.contains(els.eraserSize)) {
       showSizePreview('eraser');
+    } else {
+      hideSizePreview();
     }
   }
 
@@ -3213,6 +3422,12 @@
       });
     }
     if (els.debugClose) els.debugClose.addEventListener('click', closeDebugPanel);
+    if (els.debugPanelHandle) {
+      els.debugPanelHandle.addEventListener('pointerdown', beginDebugPanelDrag);
+      els.debugPanelHandle.addEventListener('pointermove', moveDebugPanelDrag);
+      els.debugPanelHandle.addEventListener('pointerup', endDebugPanelDrag);
+      els.debugPanelHandle.addEventListener('pointercancel', endDebugPanelDrag);
+    }
     if (els.debugCharacterSelect) {
       els.debugCharacterSelect.addEventListener('change', function () {
         switchDebugCharacter(els.debugCharacterSelect.value);
@@ -3315,6 +3530,8 @@
     els.canvas.addEventListener('pointermove', moveStroke);
     els.canvas.addEventListener('pointerup', endStroke);
     els.canvas.addEventListener('pointercancel', endStroke);
+    els.canvas.addEventListener('pointerenter', updateCanvasCursorPreview);
+    els.canvas.addEventListener('pointerleave', hideSizePreview);
     document.querySelectorAll('input[name="memory-consent"]').forEach(function (input) {
       input.addEventListener('change', readMemoryConsent);
     });
@@ -3341,6 +3558,7 @@
     syncBrushToolButton();
     state.sessionId = String(boot.sessionId || '') || makeSessionId();
     state.lanlanName = String(boot.lanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '').trim();
+    state.windowLanlanName = state.lanlanName;
     loadModelViewSettings();
     loadSideSplitRatio();
     resetCanvas();

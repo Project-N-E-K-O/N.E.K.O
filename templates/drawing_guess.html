@@ -516,7 +516,17 @@
       border-radius: 999px;
       background:
         radial-gradient(circle, #ffffff 0 14%, rgba(255, 255, 255, 0) 42%),
-        conic-gradient(#ff3b58, #ffb72e, #f4ff4f, #33d66b, #25d8ff, #3478ff, #a855f7, #ff3b58);
+        conic-gradient(
+          #ff3b58 0deg,
+          #ffb72e 45deg,
+          #f4ff4f 90deg,
+          #33d66b 135deg,
+          #25d8ff 180deg,
+          #3478ff 225deg,
+          #a855f7 270deg,
+          #ff4fc4 315deg,
+          #ff3b58 360deg
+        );
       box-shadow: 0 12px 30px rgba(33, 101, 179, 0.18), inset 0 0 0 1px rgba(33, 54, 79, 0.08);
       cursor: crosshair;
       overflow: hidden;
@@ -608,8 +618,6 @@
       position: absolute;
       inset: 0;
       z-index: 18;
-      display: grid;
-      place-items: center;
       pointer-events: none;
     }
 
@@ -618,12 +626,16 @@
     }
 
     .dg-size-preview-ring {
+      position: absolute;
+      left: var(--dg-size-preview-x, 50%);
+      top: var(--dg-size-preview-y, 50%);
       width: var(--dg-size-preview-diameter, 20px);
       height: var(--dg-size-preview-diameter, 20px);
       border: var(--dg-size-preview-border, 2px) solid var(--dg-size-preview-color, var(--dg-accent-strong));
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.22);
       box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 10px 28px rgba(33, 101, 179, 0.24);
+      transform: translate(-50%, -50%);
     }
 
     .dg-size-preview[data-preview-tool="eraser"] .dg-size-preview-ring {
@@ -940,7 +952,6 @@
       z-index: 1;
       display: block;
       background: rgba(255, 255, 255, 0.92);
-      cursor: crosshair;
       touch-action: none;
       object-fit: fill;
     }
@@ -1486,6 +1497,12 @@
       background: rgba(255, 255, 255, 0.92);
     }
 
+    .dg-input-row input:focus-visible {
+      border-color: var(--dg-accent);
+      box-shadow: 0 0 0 3px rgba(23, 167, 255, 0.18);
+      outline: none;
+    }
+
     .dg-voice-button {
       width: 38px;
       height: 38px;
@@ -1687,6 +1704,10 @@
       display: none !important;
     }
 
+    .dg-debug-panel.is-dragging {
+      user-select: none;
+    }
+
     .dg-debug-header {
       display: flex;
       align-items: center;
@@ -1696,6 +1717,8 @@
       border-bottom: 1px solid rgba(167, 215, 249, 0.74);
       background: linear-gradient(135deg, rgba(223, 243, 255, 0.92), rgba(255, 255, 255, 0.84));
       font-weight: 800;
+      cursor: move;
+      touch-action: none;
     }
 
     .dg-debug-close {
@@ -1799,6 +1822,48 @@
     .dg-debug-meter strong {
       color: var(--dg-accent-strong);
       font-variant-numeric: tabular-nums;
+    }
+
+    .dg-debug-pools {
+      display: grid;
+      gap: 8px;
+      padding: 10px 11px;
+      border: 1px solid rgba(167, 215, 249, 0.74);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .dg-debug-pool-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--dg-muted);
+    }
+
+    .dg-debug-pool-count {
+      min-width: 28px;
+      text-align: right;
+      color: var(--dg-accent-strong);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dg-debug-lock {
+      min-width: 54px;
+      text-align: center;
+      padding: 3px 7px;
+      border: 1px solid rgba(116, 190, 245, 0.42);
+      border-radius: 999px;
+      background: #edf8ff;
+      color: var(--dg-accent-strong);
+    }
+
+    .dg-debug-lock[data-locked="true"] {
+      border-color: rgba(145, 160, 176, 0.36);
+      background: rgba(239, 245, 249, 0.86);
+      color: var(--dg-muted);
     }
 
     @media (max-width: 900px) {
@@ -2061,7 +2126,7 @@
   <button id="exit-reopen-button" class="dg-exit-reopen" type="button" data-i18n="drawingGuess.exitConfirm.reopen" hidden>离开？</button>
 
   <section id="debug-panel" class="dg-debug-panel" aria-label="调试面板" hidden>
-    <div class="dg-debug-header">
+    <div id="debug-panel-handle" class="dg-debug-header">
       <span>调试面板</span>
       <button id="debug-close" class="dg-debug-close" type="button" aria-label="关闭调试面板">×</button>
     </div>
@@ -2083,6 +2148,23 @@
       <div class="dg-debug-meter">
         <span>随机猜测点</span>
         <strong id="debug-ai-guess-countdown">--</strong>
+      </div>
+      <div class="dg-debug-pools" aria-label="词库状态">
+        <div class="dg-debug-pool-row">
+          <span>词库 1</span>
+          <strong id="debug-word-pool1-count" class="dg-debug-pool-count">--</strong>
+          <span id="debug-word-pool1-lock" class="dg-debug-lock" data-locked="false">--</span>
+        </div>
+        <div class="dg-debug-pool-row">
+          <span>词库 2</span>
+          <strong id="debug-word-pool2-count" class="dg-debug-pool-count">--</strong>
+          <span id="debug-word-pool2-lock" class="dg-debug-lock" data-locked="false">--</span>
+        </div>
+        <div class="dg-debug-pool-row">
+          <span>请求锁</span>
+          <strong class="dg-debug-pool-count">--</strong>
+          <span id="debug-session-lock" class="dg-debug-lock" data-locked="false">--</span>
+        </div>
       </div>
       <button id="debug-trigger-ai-guess" class="dg-debug-button" type="button" disabled>立即触发猫娘猜测</button>
     </div>
