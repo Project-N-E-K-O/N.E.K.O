@@ -458,8 +458,9 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/__init__.py=config/__init__.py
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/api_providers.json=config/api_providers.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.json=config/characters.json
-          rem 本地化角色种子在 config/characters/<locale>.json（PR #1282 后），按 locale 读该目录；
-          rem 打整个目录，别再引用已不存在的根级 config/characters.<locale>.json 旧路径。
+          rem 本地化角色种子是 config/characters 目录下按 locale 命名的 json（en.json 等，PR #1282 后）；
+          rem 打整个目录，别再引用 PR #1282 前已不存在的根级 config.characters.locale.json 旧路径。
+          rem （cmd 的 rem 行会把尖括号当重定向解析，注释里一律不用尖括号）
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/characters=config/characters
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
