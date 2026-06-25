@@ -2490,7 +2490,8 @@ function CompactChatApp({
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
   const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
   // 主动分享的表情包是 image-only 消息（id 以 'meme-' 开头），原本只活在会折叠的历史里。把「最新一条
-  // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到下一条新消息出现（最新消息不再是表情包）即收起。
+  // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到「用户开口」或「新一轮助手发言」出现即收起
+  // （换场规则详见下方 memo 注释）。
   const compactMemeOverlay = useMemo<{ url: string; alt: string } | null>(() => {
     if (!isCompactSurface) return null;
     let memeIdx = -1;
@@ -2499,12 +2500,20 @@ function CompactChatApp({
     }
     if (memeIdx < 0) return null;
     const meme = messages[memeIdx];
-    // 表情包是「仿音乐条」的独立常显挂件：发出后一直挂着，直到用户开口（出现下一条 role==='user'
-    // 的消息）才收起。猫娘同一轮、乃至后续若干轮的台词(assistant)和音乐卡都不算「对话换场」，
-    // 不收起——否则主动分享时紧随表情包落地的台词消息会在一瞬间把图顶掉。下一张新表情包由上面
-    // 「从尾部取最新 meme」自然替换，无需在这里显式清掉旧图。
+    // 表情包是「仿音乐条」的独立常显挂件，换场规则：
+    //  1) 用户开口（出现 role==='user' 的消息）→ 收起；
+    //  2) 出现「不同 turnId 的助手发言」→ 收起（host 给 meme 打了它所属主动搭话轮的 turnId，
+    //     见 app-proactive.js `_showMemeBubbles`）。这样真正的新一轮回复/主动搭话会顶掉旧图。
+    // 同一轮紧随表情包落地的台词(assistant)与 meme 共享 turnId，不算换场、不收起——否则图会一瞬间
+    // 被台词顶掉(#2031 回归)。turnId 缺失（meme 或后续消息任一方无 turnId，如纯音乐卡）时退化为只看
+    // 规则 1，保持旧行为。下一张新表情包由上面「从尾部取最新 meme」自然替换。
+    const memeTurnId = typeof meme.turnId === 'string' && meme.turnId ? meme.turnId : null;
     for (let i = memeIdx + 1; i < messages.length; i += 1) {
-      if (messages[i]?.role === 'user') return null;
+      const later = messages[i];
+      if (later?.role === 'user') return null;
+      if (memeTurnId && typeof later?.turnId === 'string' && later.turnId && later.turnId !== memeTurnId) {
+        return null;
+      }
     }
     for (const block of meme.blocks ?? []) {
       if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
