@@ -1139,7 +1139,7 @@ async def run_sync_connector(
                                             f"agent_callback_turn={is_agent_callback_turn_end} "
                                             f"avatar_drop_turn={latest_user_is_avatar_drop}"
                                         )
-                                        if recent and latest_user_is_avatar_drop:
+                                        if recent and has_user and latest_user_is_avatar_drop:
                                             logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop turn_end), messages={len(recent)}")
                                         elif recent and not is_agent_callback_turn_end:
                                             sent = await _publish_analyze_request_with_fallback(
