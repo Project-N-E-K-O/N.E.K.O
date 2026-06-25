@@ -1681,6 +1681,11 @@
     return z >= getNetBottomZ() - shuttleRadius * 0.18
       && z <= getNetTopZ() + shuttleRadius * 0.12;
   }
+  function didShuttleLegallyClearNet(shuttle, crossing) {
+    var shuttleRadius = (shuttle && shuttle.radius) || BALL_R;
+    var z = crossing ? crossing.z : getShuttleCourtZ(shuttle, false);
+    return z > getNetTopZ() + shuttleRadius * 0.12;
+  }
   function getCourtDistanceMark(key) {
     for (var i = 0; i < COURT_DISTANCE_MARKS.length; i++) {
       if (COURT_DISTANCE_MARKS[i].key === key) return COURT_DISTANCE_MARKS[i];
@@ -4785,7 +4790,6 @@
     return clamp(heightQuality * timingQuality * contactQuality, 0, 1);
   }
   function isPlayerSmashReady(incomingBall) {
-    if (isPlayerServeSetup()) return false;
     return getPlayerSmashQuality(incomingBall) >= 0.22;
   }
   function getYuiNeutralRacketContactPoint() {
@@ -5517,10 +5521,10 @@
     var netTopZ = getNetTopZ();
     var forwardSpeed = Math.abs(ball.vCourtY || ball.vx || 0);
     var risingSpeed = Math.max(0, ball.vz || -(ball.vy || 0));
-    var highOnTape = z >= netTopZ - shuttleRadius * 0.72;
+    var clearsTape = z >= netTopZ - shuttleRadius * 0.26;
     var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;
-    var barelyOverTape = z >= netTopZ - shuttleRadius * 0.26;
-    return highOnTape && (hasCarry || barelyOverTape);
+    var aboveTape = z >= netTopZ;
+    return clearsTape && (hasCarry || aboveTape);
   }
   function spawnNetContactEffect(ball, crossing) {
     var lightweight = shouldUseLightweightNetContactEffects();
@@ -5847,6 +5851,8 @@
     shuttle.forceScore = false;
     shuttle.crossedNet = false;
     shuttle.hitNet = false;
+    shuttle.legalNetClearance = false;
+    shuttle.netCarryToTargetSide = false;
     shuttle.netContactAt = 0;
     shuttle.netContactHoldUntil = 0;
     shuttle.awaitingReturnBy = '';
@@ -5969,7 +5975,14 @@
   function stepAwaitingPlayerReturn(dt) {
     var ball = game.ball;
     if (!ball || ball.awaitingReturnBy !== 'player') return false;
-    if (performance.now() > ball.returnDeadlineAt) {
+    if (ball.resolved) {
+      if (performance.now() >= ball.resolveAt) {
+        finishShot(ball.pendingScored, ball.pendingShotType, ball);
+        return true;
+      }
+      return false;
+    }
+    if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {
       ball.shooter = 'player';
       finishShot(false, 'out', ball);
       return true;
@@ -6040,6 +6053,7 @@
     ball.hitNet = true;
     ball.netTouched = true;
     ball.netCarryToTargetSide = carriesToTargetSide;
+    ball.legalNetClearance = false;
     ball.crossedNet = carriesToTargetSide;
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
@@ -6058,12 +6072,13 @@
     var direction = ball.direction === -1 ? -1 : 1;
     var crossedNet = didShuttleCrossMidcourtNet(ball, direction);
     if (!ball.crossedNet && crossedNet) {
-      ball.crossedNet = true;
       var netCrossing = getMidcourtNetCrossing(ball);
-      if (isShuttleInsideNetZ(ball, netCrossing)) {
+      if (!didShuttleLegallyClearNet(ball, netCrossing)) {
         applyMidcourtNetContact(ball, netCrossing);
         return true;
       }
+      ball.crossedNet = true;
+      ball.legalNetClearance = true;
     }
     return false;
   }
@@ -6082,15 +6097,17 @@
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
       var landedOnTargetSide = direction > 0 ? landingCourtY >= targetLeft : landingCourtY <= targetRight;
       if (ball.hitNet) {
-        var netScored = landedOnTargetSide && inTargetX && inTargetY;
-        var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');
+        var netCarriedOver = ball.netCarryToTargetSide === true;
+        var netScored = netCarriedOver && landedOnTargetSide && inTargetX && inTargetY;
+        var netShotType = (!netCarriedOver || !landedOnTargetSide) ? 'net' : (netScored ? 'net_touch' : 'out');
         queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);
         ball.vx *= 0.18;
         ball.vy = -Math.abs(ball.vy) * 0.08;
         return;
       }
-      var scored = ball.crossedNet && inTargetX && inTargetY;
-      var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';
+      var legallyOverNet = ball.legalNetClearance === true;
+      var scored = legallyOverNet && inTargetX && inTargetY;
+      var shotType = (!legallyOverNet || !landedOnTargetSide) ? 'net' : 'out';
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
@@ -9643,6 +9660,7 @@
       shooter: 'neko',
       direction: -1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: 'player',
       returnDeadlineAt: performance.now() + 2400,
@@ -9690,6 +9708,7 @@
       shooter: 'player',
       direction: 1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: '',
       hitNet: false,
@@ -9839,6 +9858,8 @@
             trail: getShuttleTrailPoints(game.ball),
             awaitingReturnBy: game.ball.awaitingReturnBy || '',
             crossedNet: !!game.ball.crossedNet,
+            legalNetClearance: game.ball.legalNetClearance === true,
+            netCarryToTargetSide: game.ball.netCarryToTargetSide === true,
             hitNet: !!game.ball.hitNet
           } : null,
           difficulty: getDuelDifficultyName(),

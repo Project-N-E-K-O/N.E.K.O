@@ -101,7 +101,24 @@ def test_badminton_start_tutorial_memory_and_never_prompt(mock_page: Page, runni
     page.locator("#badminton-start-button").click()
     expect(page.locator("#badminton-start-overlay")).not_to_be_visible(timeout=3000)
     page.wait_for_function("window.BadmintonDemo.getState().canControlShot === true", timeout=5000)
-    assert page.evaluate("localStorage.getItem('bd_start_tutorial_dismissed')") == "1"
+    tutorial_key = page.evaluate(
+        """() => {
+          const rawName = String(
+            (window.lanlan_config && window.lanlan_config.lanlan_name)
+              || new URLSearchParams(window.location.search).get('lanlan_name')
+              || 'default'
+          ).trim();
+          let scope = 'default';
+          if (rawName) {
+            scope = encodeURIComponent(rawName.toLowerCase())
+              .replace(/%/g, '~')
+              .replace(/[^a-z0-9_~-]+/g, '_') || 'default';
+          }
+          return `bd:${scope}:bd_start_tutorial_dismissed`;
+        }"""
+    )
+    assert page.evaluate("(key) => localStorage.getItem(key)", tutorial_key) == "1"
+    assert page.evaluate("localStorage.getItem('bd_start_tutorial_dismissed')") is None
 
     page.reload()
     page.wait_for_function(
@@ -347,6 +364,13 @@ def test_badminton_space_jump_turns_air_swing_into_smash(mock_page: Page, runnin
     )
     page.wait_for_function(
         """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.playerJump && state.playerJump.active && state.playerJump.offset > 0;
+        }""",
+        timeout=2000,
+    )
+    page.wait_for_function(
+        """() => {
           const api = window.BadmintonDemo;
           const state = api && api.getState();
           if (!state || !state.playerJump || !state.playerJump.smashReady || !state.canControlShot) return false;
@@ -354,7 +378,7 @@ def test_badminton_space_jump_turns_air_swing_into_smash(mock_page: Page, runnin
           api.shoot();
           return true;
         }""",
-        timeout=2000,
+        timeout=3500,
     )
     jumping = page.evaluate("window.__badmintonSmashReadySnapshot")
     assert jumping["smashReady"] is True
@@ -1030,6 +1054,220 @@ def test_badminton_yui_awaiting_return_still_hits_midcourt_net(mock_page: Page, 
             && window.__badmintonNetEffectDebug.count === 0;
         }"""
     )
+
+
+@pytest.mark.e2e
+def test_badminton_yui_close_net_hit_below_tape_scores_for_player(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall({
+            id: 905,
+            x: 466,
+            y: 346,
+            prevX: 470,
+            prevY: 346,
+            courtY: 466,
+            prevCourtY: 470,
+            z: 104,
+            prevZ: 104,
+            vx: -360,
+            vy: 0,
+            vCourtY: -360,
+            vz: 0,
+            radius: 18,
+            shooter: 'neko',
+            direction: -1,
+            crossedNet: false,
+            resolved: false,
+            awaitingReturnBy: 'player',
+            returnDeadlineAt: performance.now() + 2400,
+            groundedReturnAt: 0,
+            angle: 43,
+            power: 52,
+            trail: []
+          });
+        }"""
+    )
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          if (!state || !state.currentShuttle || !state.currentShuttle.hitNet) return false;
+          window.__bdYuiCloseNetHitSample = {
+            hitNet: state.currentShuttle.hitNet,
+            crossedNet: state.currentShuttle.crossedNet,
+            netCarryToTargetSide: state.currentShuttle.netCarryToTargetSide,
+            y: state.currentShuttle.y,
+            z: state.currentShuttle.z
+          };
+          return true;
+        }""",
+        timeout=2000,
+    )
+    netted = page.evaluate("window.__bdYuiCloseNetHitSample")
+    assert netted["hitNet"] is True
+    assert netted["crossedNet"] is False
+    assert netted["netCarryToTargetSide"] is False
+    assert netted["z"] < 116
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.attemptsResults.length > 0;
+        }""",
+        timeout=3500,
+    )
+    resolved = page.evaluate("window.BadmintonDemo.getState()")
+    result = resolved["attemptsResults"][-1]
+    assert result["shooter"] == "neko"
+    assert result["shot_type"] == "net"
+    assert result["point_winner"] == "player"
+    assert resolved["duel"]["player_score"] == 1
+    assert resolved["duel"]["neko_score"] == 0
+    assert resolved["duel"]["neko_misses"] == 1
+    assert resolved["duel"]["player_misses"] == 0
+
+
+@pytest.mark.e2e
+def test_badminton_yui_low_midcourt_blocked_shot_scores_for_player(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall({
+            id: 906,
+            x: 466,
+            y: 406,
+            prevX: 470,
+            prevY: 406,
+            courtY: 466,
+            prevCourtY: 470,
+            z: 44,
+            prevZ: 44,
+            vx: -360,
+            vy: 0,
+            vCourtY: -360,
+            vz: 0,
+            radius: 18,
+            shooter: 'neko',
+            direction: -1,
+            crossedNet: false,
+            legalNetClearance: false,
+            resolved: false,
+            awaitingReturnBy: 'player',
+            returnDeadlineAt: performance.now() + 2400,
+            groundedReturnAt: 0,
+            angle: 32,
+            power: 52,
+            trail: []
+          });
+        }"""
+    )
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          if (!state || !state.currentShuttle || !state.currentShuttle.hitNet) return false;
+          window.__bdYuiLowBlockedNetSample = {
+            hitNet: state.currentShuttle.hitNet,
+            crossedNet: state.currentShuttle.crossedNet,
+            legalNetClearance: state.currentShuttle.legalNetClearance,
+            netCarryToTargetSide: state.currentShuttle.netCarryToTargetSide,
+            z: state.currentShuttle.z
+          };
+          return true;
+        }""",
+        timeout=2000,
+    )
+    netted = page.evaluate("window.__bdYuiLowBlockedNetSample")
+    assert netted["hitNet"] is True
+    assert netted["crossedNet"] is False
+    assert netted["legalNetClearance"] is False
+    assert netted["netCarryToTargetSide"] is False
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.attemptsResults.length > 0;
+        }""",
+        timeout=3500,
+    )
+    resolved = page.evaluate("window.BadmintonDemo.getState()")
+    result = resolved["attemptsResults"][-1]
+    assert result["shooter"] == "neko"
+    assert result["shot_type"] == "net"
+    assert result["point_winner"] == "player"
+    assert resolved["duel"]["player_score"] == 1
+    assert resolved["duel"]["neko_score"] == 0
+    assert resolved["duel"]["neko_misses"] == 1
+    assert resolved["duel"]["player_misses"] == 0
+
+
+@pytest.mark.e2e
+def test_badminton_yui_net_hit_cannot_become_player_timeout_point(mock_page: Page, running_server: str):
+    page = mock_page
+    _goto_badminton(page, running_server, "duel")
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          window.BadmintonDemo._debugSetAwaitingPlayerReturnBall({
+            id: 907,
+            x: 466,
+            y: 406,
+            prevX: 470,
+            prevY: 406,
+            courtY: 466,
+            prevCourtY: 470,
+            z: 44,
+            prevZ: 44,
+            vx: -360,
+            vy: 0,
+            vCourtY: -360,
+            vz: 0,
+            radius: 18,
+            shooter: 'neko',
+            direction: -1,
+            crossedNet: false,
+            legalNetClearance: false,
+            resolved: false,
+            awaitingReturnBy: 'player',
+            returnDeadlineAt: performance.now() + 35,
+            groundedReturnAt: 0,
+            angle: 32,
+            power: 52,
+            trail: []
+          });
+        }"""
+    )
+
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.currentShuttle && state.currentShuttle.hitNet;
+        }""",
+        timeout=2000,
+    )
+    page.wait_for_function(
+        """() => {
+          const state = window.BadmintonDemo && window.BadmintonDemo.getState();
+          return state && state.attemptsResults.length > 0;
+        }""",
+        timeout=3500,
+    )
+    resolved = page.evaluate("window.BadmintonDemo.getState()")
+    result = resolved["attemptsResults"][-1]
+    assert result["shooter"] == "neko"
+    assert result["shot_type"] == "net"
+    assert result["point_winner"] == "player"
+    assert resolved["duel"]["player_score"] == 1
+    assert resolved["duel"]["neko_score"] == 0
 
 
 @pytest.mark.e2e
@@ -2116,6 +2354,7 @@ def test_badminton_player_net_touch_landing_on_yui_side_scores_for_player(mock_p
             shooter: 'player',
             direction: 1,
             crossedNet: true,
+            netCarryToTargetSide: true,
             hitNet: true,
             netTouched: true,
             netContactHoldUntil: 0,

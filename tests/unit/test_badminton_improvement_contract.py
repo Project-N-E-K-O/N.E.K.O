@@ -2473,13 +2473,15 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "function didShuttleCrossMidcourtNet(shuttle, direction) {" in html
     assert "function getMidcourtNetCrossing(shuttle) {" in html
     assert "function isShuttleInsideNetZ(shuttle, crossing) {" in html
+    assert "function didShuttleLegallyClearNet(shuttle, crossing) {" in html
     assert "shuttle.courtY = origin.x;" in html
     assert "shuttle.z = screenYToCourtZ(origin.y);" in html
     assert "shuttle.vCourtY = shuttle.vx;" in html
     assert "shuttle.vz = -(shuttle.vy || 0);" in html
     assert "var crossedNet = didShuttleCrossMidcourtNet(ball, direction);" in html
     assert "var netCrossing = getMidcourtNetCrossing(ball);" in html
-    assert "if (isShuttleInsideNetZ(ball, netCrossing)) {" in html
+    assert "if (!didShuttleLegallyClearNet(ball, netCrossing)) {" in html
+    assert "ball.legalNetClearance = true;" in html
     assert "z >= getNetBottomZ() - shuttleRadius * 0.18" in html
     assert "z <= getNetTopZ() + shuttleRadius * 0.12" in html
     assert "function applyNetContactImpulse(ball, crossing) {" in html
@@ -2488,13 +2490,16 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "node.vx += recoilX;" in html
     assert "node.vy += rippleY;" in html
     assert "function doesNetTouchCarryToTargetSide(ball, crossing) {" in html
-    assert "var highOnTape = z >= netTopZ - shuttleRadius * 0.72;" in html
+    assert "var clearsTape = z >= netTopZ - shuttleRadius * 0.26;" in html
     assert "var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;" in html
+    assert "var aboveTape = z >= netTopZ;" in html
+    assert "return clearsTape && (hasCarry || aboveTape);" in html
     assert "function applyMidcourtNetContact(ball, crossing) {" in html
     assert "ball.x = crossing.screenX;" in html
     assert "ball.y = crossing.screenY;" in html
     assert "ball.netTouched = true;" in html
     assert "ball.netCarryToTargetSide = carriesToTargetSide;" in html
+    assert "ball.legalNetClearance = false;" in html
     assert "ball.crossedNet = carriesToTargetSide;" in html
     assert "ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;" in html
     assert "applyNetContactImpulse(ball, crossing);" in html
@@ -3336,8 +3341,16 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     net_crossing_start = html.index("function updateShuttleNetCrossing(ball) {")
     net_crossing_section = html[net_crossing_start:html.index("function checkShuttleLanding(ball) {", net_crossing_start)]
     assert "var crossedNet = didShuttleCrossMidcourtNet(ball, direction);" in net_crossing_section
-    assert "if (isShuttleInsideNetZ(ball, netCrossing)) {" in net_crossing_section
+    assert "if (!didShuttleLegallyClearNet(ball, netCrossing)) {" in net_crossing_section
     assert "applyMidcourtNetContact(ball, netCrossing);" in net_crossing_section
+    assert "ball.legalNetClearance = true;" in net_crossing_section
+    awaiting_return_start = html.index("function stepAwaitingPlayerReturn(dt) {")
+    awaiting_return_section = html[awaiting_return_start:html.index("function queueShotResolution(ball, scored, shotType, delayMs) {", awaiting_return_start)]
+    assert "if (ball.resolved) {" in awaiting_return_section
+    assert "finishShot(ball.pendingScored, ball.pendingShotType, ball);" in awaiting_return_section
+    assert "if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {" in awaiting_return_section
+    assert awaiting_return_section.index("if (ball.resolved) {") < awaiting_return_section.index("if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {")
+    assert "if (ball.hitNet) {\n      ball.awaitingReturnBy = '';" not in awaiting_return_section
     landing_start = html.index("function checkShuttleLanding(ball) {")
     landing_section = html[landing_start:html.index("function maybeYuiReturnIncomingShuttle(ball)", landing_start)]
     assert "returnedFromShuttleId" not in landing_section
@@ -3349,14 +3362,16 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var inTargetX = ball.x >= targetLeft && ball.x <= targetRight;" not in landing_section
     assert "var landedOnTargetSide = direction > 0 ? ball.x >= targetLeft : ball.x <= targetRight;" not in landing_section
     assert "if (ball.hitNet) {" in landing_section
-    assert "var netScored = landedOnTargetSide && inTargetX && inTargetY;" in landing_section
-    assert "var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');" in landing_section
+    assert "var netCarriedOver = ball.netCarryToTargetSide === true;" in landing_section
+    assert "var netScored = netCarriedOver && landedOnTargetSide && inTargetX && inTargetY;" in landing_section
+    assert "var netShotType = (!netCarriedOver || !landedOnTargetSide) ? 'net' : (netScored ? 'net_touch' : 'out');" in landing_section
     assert "queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);" in landing_section
-    assert "var scored = ball.crossedNet && inTargetX && inTargetY;" in landing_section
-    assert "var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';" in landing_section
+    assert "var legallyOverNet = ball.legalNetClearance === true;" in landing_section
+    assert "var scored = legallyOverNet && inTargetX && inTargetY;" in landing_section
+    assert "var shotType = (!legallyOverNet || !landedOnTargetSide) ? 'net' : 'out';" in landing_section
     assert "shotType = ball.hitNet ? 'net_touch' : (nearBaseline ? 'line_in' : (nearNet ? 'net_touch' : 'zone_in'));" in landing_section
     assert "var scored = !ball.hitNet && ball.crossedNet && inTargetX && inTargetY;" not in landing_section
-    net_contact_start = net_crossing_section.index("if (isShuttleInsideNetZ(ball, netCrossing)) {")
+    net_contact_start = net_crossing_section.index("if (!didShuttleLegallyClearNet(ball, netCrossing)) {")
     net_contact_section = net_crossing_section[
         net_contact_start:
         net_crossing_section.index("return false;", net_contact_start)
@@ -3492,7 +3507,7 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     awaiting_section = html[awaiting_start:html.index("function queueShotResolution", awaiting_start)]
     assert awaiting_section.index("stepBallPhysics(ball, subDt);") < awaiting_section.index("checkShuttleLanding(ball);")
     assert awaiting_section.index("checkShuttleLanding(ball);") < awaiting_section.index("updateNetPhysics(subDt);")
-    assert "if (performance.now() > ball.returnDeadlineAt) {" in html
+    assert "if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {" in html
     assert "if (!ball.groundedReturnAt) ball.groundedReturnAt = performance.now();" in html
     assert "if (performance.now() - ball.groundedReturnAt < 1100) continue;" in html
     assert "finishShot(false, 'out', ball);" in html
@@ -3577,7 +3592,8 @@ def test_badminton_space_jump_enables_air_smash():
         html.index("function isPlayerSmashReady(incomingBall) {"):
         html.index("function getYuiRacketHitRangeState(incomingBall) {")
     ]
-    assert "if (isPlayerServeSetup()) return false;" in smash_ready_section
+    assert "if (isPlayerServeSetup()) return false;" not in smash_ready_section
+    assert "return getPlayerSmashQuality(incomingBall) >= 0.22;" in smash_ready_section
     assert "function getYuiSmashQuality(incomingBall, shot) {" in html
     assert "function getYuiSmashHeightQuality(incomingBall) {" in html
     assert "function shouldYuiSmashReturn(incomingBall, shot, quality) {" in html
