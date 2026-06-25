@@ -225,9 +225,11 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。
 
+`PluginStore` 的所有方法都返回 `Result`，需用 `unwrap_or(...)` 解包。
+
 ```python
-await self.store.set("key", {"count": 42})
-value = await self.store.get("key")  # → {"count": 42}
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---

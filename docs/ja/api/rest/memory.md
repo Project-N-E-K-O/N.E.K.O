@@ -26,13 +26,15 @@
 {
   "filename": "recent_character_name.json",
   "chat": [
-    { "role": "user", "text": "Hello!" },
-    { "role": "assistant", "text": "Hi there!" }
+    { "role": "哥哥", "text": "Hello!" },
+    { "role": "小天", "text": "Hi there!" }
   ]
 }
 ```
 
 キャラクター名は `filename` から（`extract_catgirl_name_from_recent_filename` を介して）導出され、ボディからは読み取られません。各チャットエントリには `role` 文字列が必要で、メッセージ本文は `text` フィールドから読み取られます。
+
+注意: `role` は `recent.json` に保存される発話者の名前です——人間のターンはマスターに設定された名前、AI のターンはキャラクターの名前であり、`"user"`/`"assistant"` ではありません。ハンドラーは各エントリの `role` をそのまま書き込みます。
 
 ::: info
 キャラクター名は CJK 文字をサポートする正規表現で検証されます。チャット履歴エントリは必須フィールドが検証されます。

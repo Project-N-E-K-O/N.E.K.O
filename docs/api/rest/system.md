@@ -90,4 +90,10 @@ Backend screenshot fallback: when all frontend screen-capture APIs fail, the bac
 
 System-native interactive (region-select) screenshot, preferred by the chat screenshot button. macOS uses `screencapture` region selection; other platforms delegate to the frontend. Loopback-only.
 
-**Response:** JPEG DataURL of the user's selection.
+**Response:** A JSON envelope (not a raw DataURL).
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <bytes> }
+```
+
+On a canceled selection: `{ "success": false, "canceled": true }`. On a non-localhost / remote-configured backend: `{ "success": false, "error": "..." }`.

@@ -225,9 +225,11 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 `self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。
 
+`PluginStore` のすべてのメソッドは `Result` を返すため、`unwrap_or(...)` で展開してください。
+
 ```python
-await self.store.set("key", {"count": 42})
-value = await self.store.get("key")  # → {"count": 42}
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---

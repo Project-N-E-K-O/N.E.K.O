@@ -90,4 +90,10 @@ Steam 実績をアンロックします。実績名はパスパラメータ `{na
 
 システムネイティブの対話的（範囲選択）スクリーンショット。チャットのスクリーンショットボタンが優先的に使用します。macOS は `screencapture` の範囲選択を使用し、それ以外のプラットフォームではフロントエンドに委譲します。ループバックのみ。
 
-**レスポンス:** ユーザーが選択した範囲の JPEG DataURL。
+**レスポンス:** JSON エンベロープ（生の DataURL ではありません）。
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <バイト数> }
+```
+
+ユーザーが選択をキャンセルした場合: `{ "success": false, "canceled": true }`。localhost 以外 / リモートとして構成されたバックエンドの場合: `{ "success": false, "error": "..." }`。

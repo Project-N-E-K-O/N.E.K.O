@@ -69,7 +69,6 @@ N.E.K.O/
 │   ├── frontend_utils.py       # モデル検出、テキストユーティリティ
 │   ├── api_config_loader.py    # APIプロバイダー解決
 │   ├── logger_config.py        # レート制限付きロギングセットアップ
-│   ├── translation_service.py  # LLMベースの翻訳
 │   ├── workshop_utils.py       # Steam Workshopヘルパー
 │   ├── web_scraper.py          # Webコンテンツスクレイピング＆フィルタリング
 │   └── screenshot_utils.py     # ビジョンAPI用スクリーンショット処理

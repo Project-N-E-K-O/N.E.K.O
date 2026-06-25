@@ -225,9 +225,11 @@ All methods return `Result` types — check with `isinstance(result, Ok)` before
 
 Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself).
 
+All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
+
 ```python
-await self.store.set("key", {"count": 42})
-value = await self.store.get("key")  # → {"count": 42}
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---

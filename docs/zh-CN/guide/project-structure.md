@@ -69,7 +69,6 @@ N.E.K.O/
 │   ├── frontend_utils.py       # 模型发现、文本工具
 │   ├── api_config_loader.py    # API 提供商解析
 │   ├── logger_config.py        # 日志配置（含速率限制）
-│   ├── translation_service.py  # 基于 LLM 的翻译
 │   ├── workshop_utils.py       # Steam 创意工坊辅助工具
 │   ├── web_scraper.py          # 网页内容抓取与过滤
 │   └── screenshot_utils.py     # 截图处理（用于视觉 API）

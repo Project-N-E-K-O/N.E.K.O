@@ -90,7 +90,7 @@ The OpenClaw adapter (`brain/openclaw_adapter.py`) delegates an actionable task 
 
 The OpenFang adapter (`brain/openfang_adapter.py`) delegates an actionable task to the OpenFang standalone agent channel.
 
-The channel selection priority is defined in `brain/task_executor.py` as `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]`.
+The channel selection priority is defined in `brain/task_executor.py` as `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]`. Plugin / MCP tool calls (`user_plugin_enabled`) are dispatched through a separate path and are **not** part of `_CHANNEL_PRIORITY`.
 
 ## API endpoints
 

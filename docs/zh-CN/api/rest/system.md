@@ -90,4 +90,10 @@
 
 系统原生的交互式（框选区域）截图，聊天截图按钮优先使用。macOS 使用 `screencapture` 框选；其他平台委托给前端。仅限本地回环（loopback）。
 
-**响应：** 用户所选区域的 JPEG DataURL。
+**响应：** 一个 JSON 信封（而非原始 DataURL）。
+
+```json
+{ "success": true, "data": "data:image/jpeg;base64,...", "size": <字节数> }
+```
+
+用户取消框选时：`{ "success": false, "canceled": true }`。当后端非 localhost / 配置为远程时：`{ "success": false, "error": "..." }`。

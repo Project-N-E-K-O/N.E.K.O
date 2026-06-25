@@ -1,6 +1,6 @@
 # WebSocket Message Types
 
-All messages are JSON text frames.
+Messages are JSON text frames, except for audio payloads. For audio, the server sends an `audio_chunk` JSON header frame followed by a separate raw binary frame carrying the PCM bytes (see the `audio_chunk` section below).
 
 ## Client → Server
 
