@@ -1354,6 +1354,10 @@
 
         async load(config) {
             this.detachDragListeners();
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
             this.loadPlan = createLoadPlan(config || {});
             this.config = this.loadPlan.config;
             await this.setupLayeredAdapter();
@@ -1669,12 +1673,14 @@
                 }
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
+                this.attachLayeredPlayEvent();
             }
         }
 
         hide() {
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
+            this.detachLayeredPlayEvent();
             if (this.returnIdleTimer) {
                 clearTimeout(this.returnIdleTimer);
                 this.returnIdleTimer = null;
@@ -1698,6 +1704,7 @@
         dispose() {
             this.detachSpeechListeners();
             this.detachDragListeners();
+            this.detachLayeredPlayEvent();
             if (this._saveTimer) {
                 clearTimeout(this._saveTimer);
                 this._saveTimer = null;

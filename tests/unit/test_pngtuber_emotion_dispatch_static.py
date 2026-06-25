@@ -65,3 +65,28 @@ def test_pngtuber_unknown_emotion_keeps_existing_return_timer():
     block = script[start:end]
 
     assert block.index("if (!applied) return false;") < block.index("if (this.emotionTimer)")
+
+
+def test_pngtuber_lifecycle_clears_emotion_and_play_event_listeners():
+    script = PNGTUBER_CORE_JS.read_text(encoding="utf-8")
+
+    load_start = script.index("        async load(config) {")
+    load_end = script.index("        stateToSrc(state)", load_start)
+    load_block = script[load_start:load_end]
+    assert "if (this.emotionTimer)" in load_block
+    assert "clearTimeout(this.emotionTimer);" in load_block
+
+    show_start = script.index("        show() {")
+    show_end = script.index("        hide() {", show_start)
+    show_block = script[show_start:show_end]
+    assert "this.attachLayeredPlayEvent();" in show_block
+
+    hide_start = script.index("        hide() {")
+    hide_end = script.index("        dispose() {", hide_start)
+    hide_block = script[hide_start:hide_end]
+    assert "this.detachLayeredPlayEvent();" in hide_block
+
+    dispose_start = script.index("        dispose() {")
+    dispose_end = script.index("    function applyPNGTuberAvatarUiMixins()", dispose_start)
+    dispose_block = script[dispose_start:dispose_end]
+    assert "this.detachLayeredPlayEvent();" in dispose_block
