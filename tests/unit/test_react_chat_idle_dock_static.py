@@ -311,9 +311,9 @@ def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
         "function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {",
         "function _getNekoIdleCat1PairMoveChatTarget() {",
     )
-    assert "if (_isNekoDesktopLinuxRuntime()) return false;" in dispatch_block
-    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
     assert "const force = !!(options && options.force);" in dispatch_block
+    assert "if (_isNekoDesktopLinuxRuntime() && !force) return false;" in dispatch_block
+    assert "_rememberNekoIdleDesktopChatPairMoveRect(screenRect)" in dispatch_block
     assert "if (!force) {" in dispatch_block
     assert "signature === _nekoIdleDesktopChatPairMoveLastDispatchSignature" in dispatch_block
     assert "now - _nekoIdleDesktopChatPairMoveLastDispatchAt < _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS" in dispatch_block

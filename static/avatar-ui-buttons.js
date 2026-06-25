@@ -1204,9 +1204,9 @@ function _isNekoIdleCat1PlaygroundEntryPending(button) {
     return !!(button && button.__nekoIdleCat1PlaygroundPendingEntry);
 }
 
-function _isNekoIdleCat1PlaygroundEntryOrDropActive(button) {
-    return _isNekoIdleCat1PlaygroundDropActive(button) ||
-        _isNekoIdleCat1PlaygroundEntryPending(button);
+function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability) {
+    return _isNekoIdleCat1PlaygroundEntryPending(button) ||
+        _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability);
 }
 
 function _isAnyNekoIdleCat1PlaygroundDropActive() {

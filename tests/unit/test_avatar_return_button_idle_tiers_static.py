@@ -193,7 +193,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)" in source
     assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)" in source
     assert "function _isNekoIdleCat1PlaygroundDropActive(button)" in source
-    assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button)" in source
+    assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability)" in source
     assert "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in source
     assert "function _handleNekoIdleCat1PlaygroundEntryRequest(event)" in source
     assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
@@ -207,6 +207,16 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "disabledCapabilities: new Set(" in source
     assert "'question-mark-keyboard'" in source
     assert "'random-actions'" in source
+
+    playground_gate_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability)",
+        "function _isAnyNekoIdleCat1PlaygroundDropActive()",
+        "cat1 playground central entry/drop gate",
+    )
+    assert "_isNekoIdleCat1PlaygroundEntryPending(button)" in playground_gate_block
+    assert "_isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in playground_gate_block
+    assert "_isNekoIdleCat1PlaygroundDropActive(button)" not in playground_gate_block
 
     acquire_block = _source_slice_between(
         source,
