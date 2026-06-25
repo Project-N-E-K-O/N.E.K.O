@@ -18,7 +18,7 @@
 - N.E.K.O. Network launch (AI social features)
 
 ### v1.0 — Custom AI (target: late Aug 2026)
-- Reduced dependency on third-party model providers
+- Drop adaptation for some third-party model providers
 - Transition to self-developed models
 - Dedicated agent system
 
