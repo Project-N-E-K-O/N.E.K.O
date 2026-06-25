@@ -4780,10 +4780,25 @@
     }
     spawnPlayerIcePowerup();
   }
+  function cancelPendingYuiSwingForFreeze(now) {
+    if (!game.pendingSwing || game.pendingSwing.shooter !== 'neko') return false;
+    var pendingSwing = game.pendingSwing;
+    game.pendingSwing = null;
+    if (game.ball && pendingSwing.impulse && pendingSwing.impulse.incomingBall === game.ball && !game.ball.resolved) {
+      game.state = 'in_flight';
+    } else if (isDuelMode() && game.duel.activeShooter === 'neko' && game.state === 'swinging') {
+      game.state = 'neko_thinking';
+      clearTimeout(game.duel.timer);
+      var freeze = getYuiFreezeState(now);
+      game.duel.timer = setTimeout(startNekoDuelTurn, freeze.remaining_ms + 120);
+    }
+    return true;
+  }
   function applyYuiFreeze(item) {
     if (!game.playerPowerup) resetPlayerPowerups();
     var now = performance.now();
     game.playerPowerup.freezeUntil = Math.max(game.playerPowerup.freezeUntil || 0, now + PLAYER_POWERUP_ICE_FREEZE_MS);
+    cancelPendingYuiSwingForFreeze(now);
     showAssistHint(_i18n('toast.playerIcePowerup', '冰块生效，Yui 被冻住了'));
     applyNekoControl({ expression: 'shock', intensity: 'medium' }, { transient: true });
     setYuiAction('saving', 520);

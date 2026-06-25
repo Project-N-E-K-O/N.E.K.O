@@ -3082,6 +3082,12 @@ def test_badminton_player_ice_powerup_freezes_yui():
     assert "function applyYuiFreeze(item) {" in html
     assert "kind: 'player_powerup_hit'," in html
     assert "label: 'ice_freeze_yui'," in html
+    assert "function cancelPendingYuiSwingForFreeze(now) {" in html
+    assert "if (!game.pendingSwing || game.pendingSwing.shooter !== 'neko') return false;" in html
+    assert "game.pendingSwing = null;" in html
+    assert "game.state = 'in_flight';" in html
+    assert "game.state = 'neko_thinking';" in html
+    assert "cancelPendingYuiSwingForFreeze(now);" in html
     assert "function isYuiFrozen(now) {" in html
     assert "function getYuiFreezeState(now) {" in html
 
