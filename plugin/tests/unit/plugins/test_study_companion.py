@@ -1564,6 +1564,27 @@ def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
     assert "application" in result.report["relation_counts"]
 
 
+def test_study_knowledge_seed_math_relationship_density_targets() -> None:
+    seed_path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+
+    result = validate_knowledge_seed_manifest(seed_path)
+
+    assert result.is_valid
+    assert result.report is not None
+    relation_counts = result.report["relation_counts"]
+    assert result.report["typed_edges"] >= 1100
+    assert result.report["legacy_edges"] < 800
+    assert relation_counts["confusable"] >= 60
+    assert relation_counts["procedure_step"] >= 90
+    assert relation_counts["application"] >= 130
+
+
 def test_study_knowledge_seed_validator_reports_schema_errors(
     tmp_path: Path,
 ) -> None:
@@ -2569,6 +2590,19 @@ def test_study_knowledge_guidance_payload_returns_path_applications_and_confusio
             ],
         },
         {
+            "id": "college_sign_chart",
+            "name": "导数符号表",
+            "stage": "college",
+            "subject": "math",
+            "related": [
+                {
+                    "id": "college_extreme_points",
+                    "relation": "procedure_step",
+                    "reason": "符号表能定位临界点两侧单调性变化。",
+                }
+            ],
+        },
+        {
             "id": "college_stationary_point",
             "name": "驻点",
             "stage": "college",
@@ -2577,6 +2611,18 @@ def test_study_knowledge_guidance_payload_returns_path_applications_and_confusio
         {
             "id": "college_optimization",
             "name": "优化应用题",
+            "stage": "college",
+            "subject": "math",
+        },
+        {
+            "id": "college_advanced_extrema",
+            "name": "含参极值问题",
+            "stage": "college",
+            "subject": "math",
+        },
+        {
+            "id": "college_graph_analysis",
+            "name": "函数图像分析",
             "stage": "college",
             "subject": "math",
         },
@@ -2605,6 +2651,16 @@ def test_study_knowledge_guidance_payload_returns_path_applications_and_confusio
                     "reason": "优化题常把实际目标转化为极值问题。",
                 },
                 {
+                    "id": "college_advanced_extrema",
+                    "relation": "extends",
+                    "reason": "含参极值问题是在基本极值判断上的进阶扩展。",
+                },
+                {
+                    "id": "college_graph_analysis",
+                    "relation": "co_occurs",
+                    "reason": "图像分析常和单调性、极值、凹凸性一起出现。",
+                },
+                {
                     "id": "college_stationary_point",
                     "relation": "confusable",
                     "reason": "驻点不一定是极值点，还要检查单调性变化。",
@@ -2619,18 +2675,26 @@ def test_study_knowledge_guidance_payload_returns_path_applications_and_confusio
     )
 
     assert payload["topic"]["id"] == "college_extreme_points"
-    assert {edge["from"] for edge in payload["learning_path"]} == {
+    assert {edge["from"] for edge in payload["learning_path"]} >= {
         "college_derivative",
         "college_monotonicity",
+        "college_sign_chart",
     }
     assert payload["applications"][0]["to"] == "college_optimization"
     assert payload["confusions"][0]["to"] == "college_stationary_point"
     assert "导数为 0 不一定是极值点。" in payload["topic"]["typical_misconceptions"]
     assert {
         question["kind"] for question in payload["diagnosis_questions"]
-    } >= {"prerequisite_probe", "confusion_check", "next_step"}
+    } >= {
+        "prerequisite_probe",
+        "procedure_probe",
+        "confusion_check",
+        "application_practice",
+        "extension_suggestion",
+        "related_review",
+    }
     assert payload["summary"]["matched"] is True
-    assert payload["summary"]["diagnosis_question_count"] >= 3
+    assert payload["summary"]["diagnosis_question_count"] >= 6
 
 
 def test_study_knowledge_guidance_treats_confusions_as_bidirectional() -> None:
@@ -2744,10 +2808,322 @@ def test_study_knowledge_guidance_real_seed_explains_stationary_point_confusion(
         for item in diagnosis
     )
     assert any(
-        item["kind"] == "next_step"
+        item["kind"] == "procedure_probe"
         and item["topic_id"] == "college_second_derivative_test"
         for item in diagnosis
     )
+
+
+def test_study_knowledge_guidance_real_seed_covers_integral_application_and_confusions() -> None:
+    seed_root = Path("plugin/plugins/study_companion/static")
+    manifest = json.loads((seed_root / "knowledge_graph_seed.json").read_text(encoding="utf-8"))
+    topics = []
+    for item in manifest["files"]:
+        payload = json.loads((seed_root / item["path"]).read_text(encoding="utf-8"))
+        topics.extend(payload.get("topics", []))
+
+    application = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u6211\u4e0d\u4f1a\u5b9a\u79ef\u5206\u5e94\u7528",
+    )
+
+    assert application["topic"]["id"] == "college_integral_application"
+    prerequisite_targets = {edge["from"] for edge in application["learning_path"]}
+    application_targets = {edge["to"] for edge in application["applications"]}
+    assert "college_definite_integral" in prerequisite_targets
+    assert {
+        "college_integral_area_problem",
+        "college_integral_volume_problem",
+    }.issubset(application_targets)
+    assert any(
+        item["kind"] == "prerequisite_probe"
+        and item["topic_id"] == "college_definite_integral"
+        for item in application["diagnosis_questions"]
+    )
+
+    confusion = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u4e0d\u5b9a\u79ef\u5206\u548c\u5b9a\u79ef\u5206\u6709\u4ec0\u4e48\u533a\u522b",
+    )
+
+    assert confusion["topic"]["id"] in {
+        "college_indefinite_integral",
+        "college_definite_integral",
+    }
+    confusion_targets = {
+        edge["to"] if edge["from"] == confusion["topic"]["id"] else edge["from"]
+        for edge in confusion["confusions"]
+    }
+    assert {
+        "college_indefinite_integral",
+        "college_definite_integral",
+    } - {confusion["topic"]["id"]} <= confusion_targets
+    assert any(item["kind"] == "confusion_check" for item in confusion["diagnosis_questions"])
+
+    substitution = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u6362\u5143\u79ef\u5206\u4ec0\u4e48\u65f6\u5019\u7528",
+    )
+
+    assert substitution["topic"]["id"] == "college_substitution_integration"
+    assert "college_indefinite_integral" in {
+        edge["from"] for edge in substitution["learning_path"]
+    }
+
+
+def test_study_knowledge_guidance_real_seed_covers_eigenvalue_procedure() -> None:
+    seed_root = Path("plugin/plugins/study_companion/static")
+    manifest = json.loads((seed_root / "knowledge_graph_seed.json").read_text(encoding="utf-8"))
+    topics = []
+    for item in manifest["files"]:
+        payload = json.loads((seed_root / item["path"]).read_text(encoding="utf-8"))
+        topics.extend(payload.get("topics", []))
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u4e3a\u4ec0\u4e48\u8981\u6c42 det(A-\u03bbI)=0",
+    )
+
+    assert payload["topic"]["id"] == "college_characteristic_polynomial"
+    prerequisite_targets = {edge["from"] for edge in payload["learning_path"]}
+    application_targets = {edge["to"] for edge in payload["applications"]}
+    assert "college_determinant" in prerequisite_targets
+    assert "college_eigenvalue" in application_targets
+    assert any(
+        item["kind"] == "prerequisite_probe"
+        and item["topic_id"] == "college_determinant"
+        for item in payload["diagnosis_questions"]
+    )
+
+    overview = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u7279\u5f81\u503c\u600e\u4e48\u5b66",
+    )
+
+    assert overview["topic"]["id"] == "college_eigenvalue"
+    assert "college_diagonalization" in {
+        edge["to"] for edge in overview["applications"]
+    }
+    assert "college_characteristic_polynomial" in {
+        edge["from"] for edge in overview["learning_path"]
+    }
+
+    diagonalization = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u4ec0\u4e48\u65f6\u5019\u77e9\u9635\u53ef\u4ee5\u5bf9\u89d2\u5316",
+    )
+
+    assert diagonalization["topic"]["id"] == "college_diagonalization"
+    assert {
+        "college_eigenvalue",
+        "college_linear_independence",
+    }.issubset({edge["from"] for edge in diagonalization["learning_path"]})
+    assert any(
+        item["kind"] == "procedure_probe"
+        and item["topic_id"] == "college_eigenvalue"
+        for item in diagonalization["diagnosis_questions"]
+    )
+
+    eigenvector = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u7279\u5f81\u503c\u548c\u7279\u5f81\u5411\u91cf\u6709\u4ec0\u4e48\u5173\u7cfb",
+    )
+
+    assert eigenvector["topic"]["id"] == "college_eigenvalue"
+
+    singular_value = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u7279\u5f81\u503c\u548c\u5947\u5f02\u503c\u6709\u4ec0\u4e48\u533a\u522b",
+    )
+
+    assert singular_value["topic"]["id"] in {
+        "college_eigenvalue",
+        "college_singular_value",
+    }
+    assert {
+        "college_eigenvalue",
+        "college_singular_value",
+    } - {singular_value["topic"]["id"]} <= {
+        edge["to"] if edge["from"] == singular_value["topic"]["id"] else edge["from"]
+        for edge in singular_value["confusions"]
+    }
+
+    vector = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u7279\u5f81\u5411\u91cf\u548c\u666e\u901a\u5411\u91cf\u6709\u4ec0\u4e48\u533a\u522b",
+    )
+
+    assert vector["topic"]["id"] in {
+        "college_eigenvalue",
+        "college_regular_vector",
+    }
+    assert {
+        "college_eigenvalue",
+        "college_regular_vector",
+    } - {vector["topic"]["id"]} <= {
+        edge["to"] if edge["from"] == vector["topic"]["id"] else edge["from"]
+        for edge in vector["confusions"]
+    }
+
+
+def test_study_knowledge_guidance_real_seed_covers_probability_confusions() -> None:
+    seed_root = Path("plugin/plugins/study_companion/static")
+    manifest = json.loads((seed_root / "knowledge_graph_seed.json").read_text(encoding="utf-8"))
+    topics = []
+    for item in manifest["files"]:
+        payload = json.loads((seed_root / item["path"]).read_text(encoding="utf-8"))
+        topics.extend(payload.get("topics", []))
+
+    independent = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u72ec\u7acb\u548c\u4e92\u65a5\u6709\u4ec0\u4e48\u533a\u522b",
+    )
+
+    assert independent["topic"]["id"] in {
+        "college_conditional_probability",
+        "college_mutually_exclusive_events",
+    }
+    independent_confusions = {
+        edge["to"] if edge["from"] == independent["topic"]["id"] else edge["from"]
+        for edge in independent["confusions"]
+    }
+    assert {
+        "college_conditional_probability",
+        "college_mutually_exclusive_events",
+    } - {independent["topic"]["id"]} <= independent_confusions
+
+    variance = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u65b9\u5dee\u4e3a\u4ec0\u4e48\u8981\u5e73\u65b9",
+    )
+
+    assert variance["topic"]["id"] == "college_expectation_variance"
+    variance_confusions = {
+        edge["to"] if edge["from"] == variance["topic"]["id"] else edge["from"]
+        for edge in variance["confusions"]
+    }
+    assert "college_standard_deviation" in variance_confusions
+    assert any(item["kind"] == "confusion_check" for item in variance["diagnosis_questions"])
+
+    expectation = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u671f\u671b\u65b9\u5dee\u4e0d\u4f1a",
+    )
+
+    assert expectation["topic"]["id"] == "college_expectation_variance"
+
+    mean = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u671f\u671b\u548c\u5e73\u5747\u503c\u6709\u4ec0\u4e48\u533a\u522b",
+    )
+
+    assert mean["topic"]["id"] in {
+        "college_expectation_variance",
+        "college_sample_mean",
+    }
+    assert {
+        "college_expectation_variance",
+        "college_sample_mean",
+    } - {mean["topic"]["id"]} <= {
+        edge["to"] if edge["from"] == mean["topic"]["id"] else edge["from"]
+        for edge in mean["confusions"]
+    }
+
+    inference = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u7f6e\u4fe1\u533a\u95f4\u548c\u5047\u8bbe\u68c0\u9a8c\u6709\u4ec0\u4e48\u5173\u7cfb",
+    )
+
+    assert inference["topic"]["id"] in {
+        "college_confidence_interval",
+        "college_hypothesis_testing",
+    }
+    assert {
+        "college_confidence_interval",
+        "college_hypothesis_testing",
+    } - {inference["topic"]["id"]} <= {
+        edge["to"] if edge["from"] == inference["topic"]["id"] else edge["from"]
+        for edge in [*inference["confusions"], *inference["next_practice_topics"]]
+    }
+
+
+def test_study_knowledge_seed_contains_college_graph_template_edges() -> None:
+    seed_root = Path("plugin/plugins/study_companion/static")
+    manifest = json.loads((seed_root / "knowledge_graph_seed.json").read_text(encoding="utf-8"))
+    topics = []
+    for item in manifest["files"]:
+        payload = json.loads((seed_root / item["path"]).read_text(encoding="utf-8"))
+        topics.extend(payload.get("topics", []))
+    by_id = {topic["id"]: topic for topic in topics}
+
+    required_topic_ids = {
+        "college_derivative_existence",
+        "college_derivative_rules",
+        "college_chain_rule",
+        "college_tangent_line_equation",
+        "college_convavity_inflection",
+        "college_antiderivative",
+        "college_rational_function_integration",
+        "college_definite_integral_properties",
+        "college_variable_upper_limit_integral",
+        "college_linear_transformation",
+        "college_similar_matrix",
+        "college_binomial_distribution",
+        "college_normal_distribution",
+    }
+    assert required_topic_ids <= set(by_id)
+
+    def has_edge(source_id: str, target_id: str, relation: str) -> bool:
+        for topic in topics:
+            topic_id = topic["id"]
+            for edge in topic.get("prerequisites") or []:
+                if not isinstance(edge, dict):
+                    continue
+                if (
+                    edge.get("id") == source_id
+                    and topic_id == target_id
+                    and edge.get("relation") == relation
+                ):
+                    return True
+            for edge in topic.get("related") or []:
+                if not isinstance(edge, dict):
+                    continue
+                if (
+                    topic_id == source_id
+                    and edge.get("id") == target_id
+                    and edge.get("relation") == relation
+                ):
+                    return True
+        return False
+
+    assert has_edge("college_continuity", "college_derivative_existence", "prerequisite")
+    assert has_edge("college_derivative_definition", "college_derivative_rules", "prerequisite")
+    assert has_edge("college_derivative_rules", "college_chain_rule", "prerequisite")
+    assert has_edge("college_derivative_calculation", "college_tangent_line_equation", "application")
+    assert has_edge("college_second_derivative_test", "college_convavity_inflection", "application")
+    assert has_edge("college_antiderivative", "college_indefinite_integral", "confusable")
+    assert has_edge("college_limit_concept", "college_function_value", "confusable")
+    assert has_edge("college_continuity", "college_derivative_existence", "confusable")
+    assert has_edge("college_stationary_points", "college_extreme_value_points", "confusable")
+    assert has_edge("college_eigenvalue", "college_singular_value", "confusable")
+    assert has_edge("college_rank", "college_basis_dimension", "confusable")
+    assert has_edge("college_permutation", "college_combination", "confusable")
+    assert has_edge("college_definite_integral", "college_definite_integral_properties", "supports")
+    assert has_edge("college_newton_leibniz", "college_variable_upper_limit_integral", "procedure_step")
+    assert has_edge("college_derivative_calculation", "college_critical_points", "procedure_step")
+    assert has_edge("college_critical_points", "college_stationary_points", "procedure_step")
+    assert has_edge("college_stationary_points", "college_second_derivative_test", "procedure_step")
+    assert has_edge("college_integral_application_interval", "college_integral_application_integrand", "procedure_step")
+    assert has_edge("college_characteristic_matrix", "college_determinant", "procedure_step")
+    assert has_edge("college_determinant", "college_characteristic_polynomial", "procedure_step")
+    assert has_edge("college_null_hypothesis", "college_test_statistic", "procedure_step")
+    assert has_edge("college_matrix_operations", "college_linear_transformation", "supports")
+    assert has_edge("college_similar_matrix", "college_diagonalization", "prerequisite")
+    assert has_edge("college_eigenvalue", "college_diagonalization", "application")
+    assert has_edge("college_eigenvalue", "college_quadratic_form", "application")
+    assert has_edge("college_binomial_distribution", "college_expectation_variance", "application")
+    assert has_edge("college_normal_distribution", "college_confidence_interval", "application")
+    assert has_edge("college_graph_theory_intro", "college_graph_shortest_path", "application")
 
 
 @pytest.mark.asyncio

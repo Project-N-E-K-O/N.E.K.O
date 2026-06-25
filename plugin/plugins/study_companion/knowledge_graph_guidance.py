@@ -321,7 +321,7 @@ def _build_diagnosis_questions(
     learning_path: list[dict[str, Any]],
     confusions: list[dict[str, Any]],
     next_practice: list[dict[str, Any]],
-    limit: int = 6,
+    limit: int = 8,
 ) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -340,6 +340,34 @@ def _build_diagnosis_questions(
         topic_id, topic_label = _other_topic_for_edge(edge, selected_id)
         if not topic_id or topic_id == selected_id:
             continue
+        if relation == "procedure_step":
+            add(
+                _question_payload(
+                    kind="procedure_probe",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"你是卡在“{topic_label or topic_id}”这一步，"
+                        f"还是不知道它在“{selected_label}”里该放到哪里？"
+                    ),
+                    edge=edge,
+                )
+            )
+            continue
+        if relation == "application":
+            add(
+                _question_payload(
+                    kind="application_practice",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"要不要用“{topic_label or topic_id}”做一道典型题，"
+                        f"看看“{selected_label}”怎样落到题目里？"
+                    ),
+                    edge=edge,
+                )
+            )
+            continue
         add(
             _question_payload(
                 kind="prerequisite_probe",
@@ -352,7 +380,7 @@ def _build_diagnosis_questions(
                 edge=edge,
             )
         )
-        if len(questions) >= 3:
+        if len([item for item in questions if item["kind"] == "prerequisite_probe"]) >= 3:
             break
 
     for edge in confusions:
@@ -372,21 +400,74 @@ def _build_diagnosis_questions(
             break
 
     for edge in next_practice:
+        relation = _text(edge.get("relation"))
         topic_id, topic_label = _other_topic_for_edge(edge, selected_id)
         if not topic_id or topic_id == selected_id:
             continue
-        add(
-            _question_payload(
-                kind="next_step",
-                topic_id=topic_id,
-                topic_label=topic_label,
-                question=(
-                    f"要不要下一步练“{topic_label or topic_id}”，"
-                    f"把“{selected_label}”用到具体题里？"
-                ),
-                edge=edge,
+        if relation == "application":
+            add(
+                _question_payload(
+                    kind="application_practice",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"要不要用“{topic_label or topic_id}”做一道典型题，"
+                        f"把“{selected_label}”用到具体场景里？"
+                    ),
+                    edge=edge,
+                )
             )
-        )
+        elif relation == "procedure_step":
+            add(
+                _question_payload(
+                    kind="procedure_probe",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"你是卡在“{topic_label or topic_id}”这一步，"
+                        f"还是不知道它怎样推进“{selected_label}”？"
+                    ),
+                    edge=edge,
+                )
+            )
+        elif relation == "extends":
+            add(
+                _question_payload(
+                    kind="extension_suggestion",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"如果基础判断已经会了，要不要进阶到“{topic_label or topic_id}”？"
+                    ),
+                    edge=edge,
+                )
+            )
+        elif relation == "co_occurs":
+            add(
+                _question_payload(
+                    kind="related_review",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"要不要顺手复习“{topic_label or topic_id}”，"
+                        f"它经常和“{selected_label}”一起出现？"
+                    ),
+                    edge=edge,
+                )
+            )
+        else:
+            add(
+                _question_payload(
+                    kind="next_step",
+                    topic_id=topic_id,
+                    topic_label=topic_label,
+                    question=(
+                        f"要不要下一步练“{topic_label or topic_id}”，"
+                        f"把“{selected_label}”用到具体题里？"
+                    ),
+                    edge=edge,
+                )
+            )
         if len(questions) >= limit:
             break
 
