@@ -776,6 +776,7 @@
         "pendingImagesAriaLabel": "Imagens pendentes",
         "pendingImageAlt": "Imagem {{index}}",
         "removePendingImage": "Remover imagem",
+        "closeMemeAriaLabel": "Fechar imagem",
         "emojiButtonAriaLabel": "Emoji",
         "toolIconsAriaLabel": "Ícones de ferramentas",
         "toolLollipop": "Pirulito",

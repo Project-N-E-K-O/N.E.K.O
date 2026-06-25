@@ -1035,6 +1035,7 @@
   var NET_CONTACT_IMPULSE = 320;
   var NET_CONTACT_HOLD_MS = 90;
   var PLAYER_MOVE_SPEED = 1040;
+  var PLAYER_POST_SERVE_MOVE_LOCK_MS = 420;
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
   var PLAYER_JUMP_MAX_OFFSET = 82;
@@ -1070,6 +1071,12 @@
   var YUI_RACKET_RESCUE_GATE_REACH_Y = 54;
   var YUI_RACKET_SAVE_REACH_X = 84;
   var YUI_RACKET_SAVE_REACH_Y = 86;
+  var YUI_SHORT_DROP_SAVE_REACH_X = 96;
+  var YUI_SHORT_DROP_SAVE_REACH_Y = 118;
+  var YUI_SHORT_DROP_SAVE_NET_WINDOW_PX = 112;
+  var YUI_SHORT_DROP_SAVE_MAX_Z = 96;
+  var YUI_SHORT_DROP_SAVE_MIN_Z = 4;
+  var YUI_SHORT_DROP_SAVE_POWER_MAX = 32;
   var YUI_SMASH_MIN_SHUTTLE_Z = 64;
   var YUI_SMASH_FULL_SHUTTLE_Z = 138;
   var YUI_CHEAT_RANDOM_CHANCE = 0.72;
@@ -1398,6 +1405,7 @@
   };
   var generatedQuickLines = {};
   var generatedQuickLinesRequestSeq = 0;
+  var gameOverLineSpokenSessionId = '';
   var YUI_PASSIVE_LINES_DUEL = {
     line_in: ['这球压得挺准', '边线都帮你了'],
     net_touch: ['擦网也敢打啊', '这球贴得真险'],
@@ -1405,7 +1413,7 @@
     out: ['就差那么一点', '这球飞太深了'],
     net: ['球网替我拦你', '这拍急了吧'],
     shot_missed: ['别慌，下一拍', '刚刚慢了半拍'],
-    game_over: ['这次先到这儿', '下一局别跑'],
+    game_over: ['这次先到这儿', '下一局别跑', '这局先收着', '比分摆在这儿'],
     long_aim: ['该挥拍了吧', '想太久会僵哦'],
     close_to_record: ['纪录就在拍尖上', '再稳一拍就到了'],
     new_record: ['行吧，这球漂亮', '新纪录先借你'],
@@ -1421,7 +1429,7 @@
     out: ['Missed by a little', 'That one flew too deep'],
     net: ['The net stopped it for me', 'You rushed that swing'],
     shot_missed: ['Stay calm, next shot', 'You were half a beat late'],
-    game_over: ['That is it for now', 'Do not run from the next round'],
+    game_over: ['That is it for now', 'Do not run from the next round', 'We will hold this score', 'The scoreboard remembers'],
     long_aim: ['Time to swing', 'Think too long and you will stiffen'],
     close_to_record: ['The record is on your racket', 'One steadier shot'],
     new_record: ['Fine, that was good', 'You can borrow the new record'],
@@ -1437,7 +1445,7 @@
     out: ['ほんの少し外れたね', '今のは奥まで飛びすぎ'],
     net: ['ネットが私の味方をしたね', 'その一振り、急ぎすぎ'],
     shot_missed: ['落ち着いて、次の一拍', '今のは半拍遅れたね'],
-    game_over: ['今回はここまで', '次のラウンド、逃げないでね'],
+    game_over: ['今回はここまで', '次のラウンド、逃げないでね', 'このスコアは預かっておくね', '点数はちゃんと残ったよ'],
     long_aim: ['そろそろ振ろうか', '考えすぎると固まるよ'],
     close_to_record: ['記録はラケットの先だよ', 'もう一拍だけ安定させて'],
     new_record: ['いいよ、今のはきれい', '新記録、少しだけ貸してあげる'],
@@ -1672,6 +1680,11 @@
     var z = crossing ? crossing.z : getShuttleCourtZ(shuttle, false);
     return z >= getNetBottomZ() - shuttleRadius * 0.18
       && z <= getNetTopZ() + shuttleRadius * 0.12;
+  }
+  function didShuttleLegallyClearNet(shuttle, crossing) {
+    var shuttleRadius = (shuttle && shuttle.radius) || BALL_R;
+    var z = crossing ? crossing.z : getShuttleCourtZ(shuttle, false);
+    return z > getNetTopZ() + shuttleRadius * 0.12;
   }
   function getCourtDistanceMark(key) {
     for (var i = 0; i < COURT_DISTANCE_MARKS.length; i++) {
@@ -2385,6 +2398,12 @@
     if (primary === 'ja') return YUI_PASSIVE_LINES_DUEL_JA;
     return YUI_PASSIVE_LINES_DUEL_EN;
   }
+  function getNeutralQuickLineFallback(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return ['稳一下节奏', '下一拍继续'];
+    if (primary === 'ja') return ['リズムを整えよう', '次の一本に集中しよう'];
+    return ['Settle the rhythm', 'Focus on the next rally'];
+  }
   function isLikelyChineseFallbackLine(line) {
     var text = String(line || '').trim();
     if (!/[\u3400-\u9fff]/.test(text)) return false;
@@ -2453,7 +2472,8 @@
     var source = getQuickLineFallbackSource(primary);
     var defaultFallback = getDefaultQuickLineFallback(primary);
     var scope = 'duel';
-    var fallback = source[key] || defaultFallback[key] || source.game_over || defaultFallback.game_over || ['One more rally.'];
+    var isGameOverKey = key === 'game_over';
+    var fallback = source[key] || defaultFallback[key] || (isGameOverKey ? (source.game_over || defaultFallback.game_over) : null) || getNeutralQuickLineFallback(primary);
     return moodStyleLine(pickLocalizedLine(scope, key, fallback, primary, options), currentMood);
   }
   function getRequestLanguage() {
@@ -2801,9 +2821,10 @@
     var kind = String(event && event.kind || '');
     var label = String(event && event.label || '');
     if (kind === 'game_over' || event && event.is_new_record || kind === 'new_record' || /^streak_(15|20)$/.test(kind)) return 0;
+    if (kind === 'yui_cheat_item') return 0;
+    if (kind === 'yui_cheat_hit') return 0;
+    if (kind === 'yui_cheat_score') return 0;
     if (/^streak_(5|10)$/.test(kind)) return 1;
-    if (kind === 'yui_cheat_item') return 1;
-    if (kind === 'yui_cheat_score') return 1;
     if (label.indexOf('duel') !== -1) return 1;
     if (kind === 'shot_missed' || kind === 'close_to_record') return 2;
     if (kind === 'long_aim' || kind === 'very_long_aim') return 3;
@@ -2852,9 +2873,18 @@
     if (_voiceEntryExpired(entry)) return;
     var pending = voiceArbiter.pending;
     if (_voiceEntryExpired(pending)) pending = voiceArbiter.pending = null;
+    if (shouldInterruptVoiceAudio(entry.event)) {
+      voiceArbiter.pending = entry;
+      _scheduleVoiceArbiterFlush(0);
+      return;
+    }
     if (pending && pending.priority <= entry.priority) return;
     voiceArbiter.pending = entry;
     _scheduleVoiceArbiterFlush(entry.tailWaitMs);
+  }
+  function shouldInterruptVoiceAudio(event) {
+    var kind = String(event && event.kind || '');
+    return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score';
   }
   function _mirrorAndSpeak(entry) {
     if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();
@@ -2885,7 +2915,7 @@
       request_id: 'bd-' + entry.id,
       mirror_text: false,
       emit_turn_end: false,
-      interrupt_audio: false,
+      interrupt_audio: shouldInterruptVoiceAudio(entry.event),
       line: entry.line,
       i18n_language: getRequestLanguage(),
       event: payloadEvent
@@ -2893,18 +2923,24 @@
     lastVoiceRequest = speakPayload;
     lastVoiceResult = null;
     lastVoiceFallbackReason = '';
-    return post('/mirror-assistant', mirrorPayload, 2500)
-      .catch(function () {})
-      .then(function () {
-        return post('/speak', speakPayload, 3500).then(function (res) {
-          lastVoiceResult = res || null;
-          return res;
-        }).catch(function () {
-          lastVoiceFallbackReason = 'project_speak_failed';
-          lastVoiceResult = { ok: false, reason: 'project_speak_failed' };
-          return lastVoiceResult;
-        });
+    function requestMirror() {
+      return post('/mirror-assistant', mirrorPayload, 2500).catch(function () {});
+    }
+    function requestSpeak() {
+      return post('/speak', speakPayload, 3500).then(function (res) {
+        lastVoiceResult = res || null;
+        return res;
+      }).catch(function () {
+        lastVoiceFallbackReason = 'project_speak_failed';
+        lastVoiceResult = { ok: false, reason: 'project_speak_failed' };
+        return lastVoiceResult;
       });
+    }
+    if (shouldInterruptVoiceAudio(entry.event)) {
+      void requestMirror();
+      return requestSpeak();
+    }
+    return requestMirror().then(requestSpeak);
   }
   function _requestVoicePlayback(entry) {
     if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();
@@ -2912,7 +2948,9 @@
     voiceArbiter.inFlight = {
       id: entry.id,
       line: entry.line,
-      expiresAt: Date.now() + holdMs
+      expiresAt: Date.now() + holdMs,
+      isUserReply: !!entry.isUserReply,
+      eventKind: String(entry.event && entry.event.kind || '')
     };
     showBubble(entry.line, entry.control, entry.event);
     return _mirrorAndSpeak(entry).finally(function () {
@@ -2941,6 +2979,12 @@
       return;
     }
     if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt) {
+      if (shouldInterruptVoiceAudio(pending.event) && !voiceArbiter.inFlight.isUserReply) {
+        voiceArbiter.inFlight = null;
+        voiceArbiter.pending = null;
+        void _requestVoicePlayback(pending);
+        return;
+      }
       _scheduleVoiceArbiterFlush(Math.max(80, voiceArbiter.inFlight.expiresAt - Date.now()));
       return;
     }
@@ -2995,7 +3039,7 @@
       label: 'yui_cheat_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
-      voice_deadline_ms: 3600
+      voice_deadline_ms: 6200
     };
     showBubble(line, control, event);
     speakLine(line, control, event);
@@ -3013,7 +3057,22 @@
       label: 'yui_cheat_score_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
-      voice_deadline_ms: 5200
+      voice_deadline_ms: 6800
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
+  }
+  function showYuiCheatHitLine(kind) {
+    var line = kind === 'octopus'
+      ? _i18n('toast.yuiCheatInk', 'Yui 扔了墨汁')
+      : _i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了');
+    var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 2800, bubbleDurationMs: 3800 };
+    var event = {
+      kind: 'yui_cheat_hit',
+      label: 'yui_cheat_hit_' + kind,
+      item_kind: kind,
+      force_voice_in_debug: true,
+      voice_deadline_ms: 6200
     };
     showBubble(line, control, event);
     speakLine(line, control, event);
@@ -3095,13 +3154,22 @@
     var label = String(event && event.label || '');
     if (event && (event.force_voice || event.force_voice_in_debug || event.voice_always)) return true;
     if (kind === 'user_reply' || event.isUserReply || event.source === 'user_reply') return true;
-    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_score') return true;
+    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score') return true;
     if (kind === 'difficulty_ramp') return true;
     if (event && event.point_winner === 'neko' && label === 'neko_duel_shot') return true;
     if (label.indexOf('duel_difficulty_') === 0) return true;
     return false;
   }
+  function shouldSuppressRepeatedGameOverLine(event) {
+    if (!event || event.kind !== 'game_over') return false;
+    var eventSessionId = String(event.session_id || sessionId || '');
+    if (!eventSessionId) return false;
+    if (gameOverLineSpokenSessionId === eventSessionId) return true;
+    gameOverLineSpokenSessionId = eventSessionId;
+    return false;
+  }
   function speakLine(line, control, event) {
+    if (shouldSuppressRepeatedGameOverLine(event || {})) return;
     line = replaceUnexpectedChineseFallbackLine(line, event);
     if (!shouldReadBadmintonVoice(event, control)) {
       lastVoiceRequest = {
@@ -3160,6 +3228,12 @@
       return;
     }
     if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt && voiceArbiter.inFlight.id !== entry.id) {
+      if (shouldInterruptVoiceAudio(entry.event) && !voiceArbiter.inFlight.isUserReply) {
+        voiceArbiter.inFlight = null;
+        voiceArbiter.pending = null;
+        void _requestVoicePlayback(entry);
+        return;
+      }
       _storeVoicePending(entry);
       return;
     }
@@ -3946,6 +4020,13 @@
     if (event.kind === 'very_long_aim') return 'long_aim';
     return shotTypeLabelKey(event.shot_type) || event.kind;
   }
+  function shouldSuppressChatFallback(res) {
+    return !!(res && res.suppress_fallback);
+  }
+  function pickChatFallbackLine(res, event) {
+    if (shouldSuppressChatFallback(res)) return '';
+    return pickLine(getFallbackLineKey(event), null, {});
+  }
   function buildBadmintonCurrentStatePayload() {
     var state = {
       game: 'badminton',
@@ -3997,6 +4078,7 @@
     notifyBadmintonEventListeners(event);
     event.i18n_language = getRequestLanguage();
     var shouldCall = shouldCallLLMDuel(event);
+    if (event.local_voice_already_spoken) return;
     if (debugMode) {
       speakLine(pickLine(getFallbackLineKey(event)), {}, event);
       return;
@@ -4028,11 +4110,15 @@
         if (res && res.difficulty) setDuelDifficulty(res.difficulty);
         if (res && res.mood) setMood(res.mood, { reason: 'llm' });
         if (res && res.line) speakLine(moodStyleLine(res.line, currentMood), res.control || {}, event);
-        else speakLine(pickLine(getFallbackLineKey(event)), {}, event);
+        else {
+          var fallbackLine = pickChatFallbackLine(res, event);
+          if (fallbackLine) speakLine(fallbackLine, {}, event);
+        }
       })
       .catch(function () {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
-        speakLine(pickLine(getFallbackLineKey(event)), {}, event);
+        var fallbackLine = pickChatFallbackLine({ error: 'request_failed' }, event);
+        if (fallbackLine) speakLine(fallbackLine, {}, event);
       });
   }
 
@@ -4264,6 +4350,7 @@
     heldShuttleVisible: true,
     pendingSwing: null,
     shuttleSeq: 0,
+    playerMoveLockedUntil: 0,
     playerCourt: { x: PLAYER_START_X, y: PLAYER_START_Y, targetX: PLAYER_START_X, targetY: PLAYER_START_Y },
     playerJump: { offset: 0, velocity: 0, active: false, cooldownUntil: 0, lastSmashAt: 0 },
     playerCheatEffect: { slowUntil: 0, spinUntil: 0, spinStartedAt: 0, spinAngle: 0 },
@@ -4338,6 +4425,7 @@
     game.playerCourt.y = PLAYER_START_Y;
     game.playerCourt.targetX = PLAYER_START_X;
     game.playerCourt.targetY = PLAYER_START_Y;
+    game.playerMoveLockedUntil = 0;
     resetPlayerJump();
     resetYuiCheats();
     game.yuiCourt.x = YUI_START_X;
@@ -4469,6 +4557,7 @@
       item_kind: item.kind,
       close_score: close,
       duel: buildDuelStatePayload(),
+      local_voice_already_spoken: true,
       voice_deadline_ms: 900
     });
     return true;
@@ -4520,6 +4609,7 @@
     markYuiCheatHit('banana');
     badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });
     showAssistHint(_i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了'));
+    showYuiCheatHitLine('banana');
     setPlayerAction('react-disappointed', 560);
     sendGameEvent({
       kind: 'yui_cheat_hit',
@@ -4528,6 +4618,7 @@
       item_kind: 'banana',
       item_id: item && item.id,
       duel: buildDuelStatePayload(),
+      local_voice_already_spoken: true,
       voice_deadline_ms: 900
     });
   }
@@ -4699,45 +4790,67 @@
     return clamp(heightQuality * timingQuality * contactQuality, 0, 1);
   }
   function isPlayerSmashReady(incomingBall) {
-    if (isPlayerServeSetup()) return false;
     return getPlayerSmashQuality(incomingBall) >= 0.22;
   }
   function getYuiNeutralRacketContactPoint() {
     var contact = getYuiShotOrigin();
     return { x: contact.x, y: contact.y, source: 'neutral-racket-anchor' };
   }
+  function getYuiRacketRangeStateForPoint(incomingBall, racket, reachX, reachY) {
+    var contact = racket || getYuiNeutralRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : contact.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : contact.y;
+    var dx = Math.abs(ballX - contact.x);
+    var dy = Math.abs(ballY - contact.y);
+    var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
+    return { dx: dx, dy: dy, normalized: normalized, racket: contact, source: contact.source || '' };
+  }
   function getYuiRacketRangeState(incomingBall, reachX, reachY) {
     var neutral = getYuiNeutralRacketContactPoint();
     var visible = getYuiVisibleRacketContactPoint();
-    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : neutral.x;
-    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : neutral.y;
-    function stateFor(racket) {
-      var dx = Math.abs(ballX - racket.x);
-      var dy = Math.abs(ballY - racket.y);
-      var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
-      return { dx: dx, dy: dy, normalized: normalized, racket: racket, source: racket.source || '' };
-    }
-    var best = stateFor(neutral);
+    var best = getYuiRacketRangeStateForPoint(incomingBall, neutral, reachX, reachY);
     if (visible) {
-      var visibleState = stateFor(visible);
+      var visibleState = getYuiRacketRangeStateForPoint(incomingBall, visible, reachX, reachY);
       if (visibleState.normalized < best.normalized) best = visibleState;
     }
     return best;
   }
+  function getYuiVisibleOrNeutralRacketRangeState(incomingBall, reachX, reachY) {
+    var visible = getYuiVisibleRacketContactPoint();
+    return getYuiRacketRangeStateForPoint(incomingBall, visible || getYuiNeutralRacketContactPoint(), reachX, reachY);
+  }
   function getYuiRacketHitRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
   }
   function isYuiRacketHitInRange(incomingBall) {
     return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
   }
   function getYuiRacketRescueGateState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
   }
   function getYuiRacketSaveRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
+  }
+  function getYuiShortDropSaveRangeState(incomingBall) {
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);
   }
   function isYuiSmashSaveReachable(incomingBall) {
     return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
+  }
+  function isYuiShortDropSaveReachable(incomingBall) {
+    if (!incomingBall || incomingBall.isSmash || incomingBall.hitNet) return false;
+    if (incomingBall.shooter !== 'player' || incomingBall.direction !== 1 || !incomingBall.crossedNet) return false;
+    var shuttleRadius = incomingBall.radius || BALL_R;
+    var shuttleCourtY = getShuttleCourtY(incomingBall, false);
+    var nearNetLeft = BADMINTON.netX + shuttleRadius * 0.5;
+    var nearNetRight = nearNetLeft + YUI_SHORT_DROP_SAVE_NET_WINDOW_PX;
+    if (shuttleCourtY < nearNetLeft || shuttleCourtY > nearNetRight) return false;
+    var shuttleZ = getShuttleCourtZ(incomingBall, false);
+    var minSaveZ = Math.max(YUI_SHORT_DROP_SAVE_MIN_Z, shuttleRadius * 0.25 + 0.5);
+    if (shuttleZ <= minSaveZ || shuttleZ > YUI_SHORT_DROP_SAVE_MAX_Z) return false;
+    var shotPower = Number.isFinite(incomingBall.power) ? incomingBall.power : ((incomingBall.swingForce || 0) * 100);
+    if (shotPower > YUI_SHORT_DROP_SAVE_POWER_MAX) return false;
+    return getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiShortDropSaveRangeState(incomingBall).normalized <= 1;
   }
   function getYuiSmashHeightQuality(incomingBall) {
     if (!incomingBall) return 0;
@@ -5134,13 +5247,16 @@
     if (isPlayerReceivingReturn()) return canPlayerReturnIncomingShuttle();
     return !isPositionTransitioning;
   }
+  function isPlayerPostServeMoveLocked() {
+    return performance.now() < (game.playerMoveLockedUntil || 0);
+  }
   function canPlayerMoveCourt() {
     if (isBadmintonLoadingActive()) return false;
     var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;
     var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
     var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || (playerShotInFlight && !isPlayerPostServeMoveLocked()) || yuiTurnActive || incomingYuiBall || yuiSwinging);
   }
   function isPlayerServeSetup() {
     return isDuelMode() && game.state === 'ready' && isPlayerTurn() && game.heldShuttleVisible && !game.ball && !game.pendingSwing;
@@ -5410,10 +5526,10 @@
     var netTopZ = getNetTopZ();
     var forwardSpeed = Math.abs(ball.vCourtY || ball.vx || 0);
     var risingSpeed = Math.max(0, ball.vz || -(ball.vy || 0));
-    var highOnTape = z >= netTopZ - shuttleRadius * 0.72;
+    var clearsTape = z >= netTopZ - shuttleRadius * 0.26;
     var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;
-    var barelyOverTape = z >= netTopZ - shuttleRadius * 0.26;
-    return highOnTape && (hasCarry || barelyOverTape);
+    var aboveTape = z >= netTopZ;
+    return clearsTape && (hasCarry || aboveTape);
   }
   function spawnNetContactEffect(ball, crossing) {
     var lightweight = shouldUseLightweightNetContactEffects();
@@ -5450,6 +5566,7 @@
   function resetGame() {
     clearTimeout(resultTimer);
     resultTimer = 0;
+    gameOverLineSpokenSessionId = '';
     netContactEffects = [];
     if (debugMode && window.__badmintonNetEffectDebug) {
       window.__badmintonNetEffectDebug = {
@@ -5739,6 +5856,8 @@
     shuttle.forceScore = false;
     shuttle.crossedNet = false;
     shuttle.hitNet = false;
+    shuttle.legalNetClearance = false;
+    shuttle.netCarryToTargetSide = false;
     shuttle.netContactAt = 0;
     shuttle.netContactHoldUntil = 0;
     shuttle.awaitingReturnBy = '';
@@ -5771,6 +5890,9 @@
     };
     game.pendingSwing = swing;
     game.heldShuttleVisible = false;
+    if (shotShooter === 'player' && !incomingBall) {
+      game.playerMoveLockedUntil = performance.now() + SWING_IMPACT_DELAY_MS + PLAYER_POST_SERVE_MOVE_LOCK_MS;
+    }
     if (game.ball && game.ball.shooter !== shotShooter && !incomingBall) game.ball = null;
     game.charging = false;
     game.state = 'swinging';
@@ -5858,7 +5980,14 @@
   function stepAwaitingPlayerReturn(dt) {
     var ball = game.ball;
     if (!ball || ball.awaitingReturnBy !== 'player') return false;
-    if (performance.now() > ball.returnDeadlineAt) {
+    if (ball.resolved) {
+      if (performance.now() >= ball.resolveAt) {
+        finishShot(ball.pendingScored, ball.pendingShotType, ball);
+        return true;
+      }
+      return false;
+    }
+    if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {
       ball.shooter = 'player';
       finishShot(false, 'out', ball);
       return true;
@@ -5929,6 +6058,7 @@
     ball.hitNet = true;
     ball.netTouched = true;
     ball.netCarryToTargetSide = carriesToTargetSide;
+    ball.legalNetClearance = false;
     ball.crossedNet = carriesToTargetSide;
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
@@ -5942,18 +6072,26 @@
     ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + (carriesToTargetSide ? 132 : 150), carriesToTargetSide ? 132 : 150);
     syncShuttleCourtCoordinates(ball);
   }
-  function checkShuttleLanding(ball) {
-    if (!ball || ball.resolved) return;
+  function updateShuttleNetCrossing(ball) {
+    if (!ball || ball.resolved) return false;
     var direction = ball.direction === -1 ? -1 : 1;
     var crossedNet = didShuttleCrossMidcourtNet(ball, direction);
     if (!ball.crossedNet && crossedNet) {
-      ball.crossedNet = true;
       var netCrossing = getMidcourtNetCrossing(ball);
-      if (isShuttleInsideNetZ(ball, netCrossing)) {
+      if (!didShuttleLegallyClearNet(ball, netCrossing)) {
         applyMidcourtNetContact(ball, netCrossing);
-        return;
+        return true;
       }
+      ball.crossedNet = true;
+      ball.legalNetClearance = true;
     }
+    return false;
+  }
+  function checkShuttleLanding(ball) {
+    if (!ball || ball.resolved) return;
+    var direction = ball.direction === -1 ? -1 : 1;
+    // This is a no-op after the main physics loop, but required by stepAwaitingPlayerReturn.
+    if (updateShuttleNetCrossing(ball)) return;
     var ballRadius = ball.radius || BALL_R;
     if (ball.y >= FLOOR_Y - ballRadius * 0.25) {
       if (ball.netContactHoldUntil && performance.now() < ball.netContactHoldUntil) return;
@@ -5964,15 +6102,17 @@
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
       var landedOnTargetSide = direction > 0 ? landingCourtY >= targetLeft : landingCourtY <= targetRight;
       if (ball.hitNet) {
-        var netScored = landedOnTargetSide && inTargetX && inTargetY;
-        var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');
+        var netCarriedOver = ball.netCarryToTargetSide === true;
+        var netScored = netCarriedOver && landedOnTargetSide && inTargetX && inTargetY;
+        var netShotType = (!netCarriedOver || !landedOnTargetSide) ? 'net' : (netScored ? 'net_touch' : 'out');
         queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);
         ball.vx *= 0.18;
         ball.vy = -Math.abs(ball.vy) * 0.08;
         return;
       }
-      var scored = ball.crossedNet && inTargetX && inTargetY;
-      var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';
+      var legallyOverNet = ball.legalNetClearance === true;
+      var scored = legallyOverNet && inTargetX && inTargetY;
+      var shotType = (!legallyOverNet || !landedOnTargetSide) ? 'net' : 'out';
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
@@ -6002,14 +6142,17 @@
     var shuttleRadius = ball.radius || BALL_R;
     var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;
     var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;
+    var yuiRacketHitState = getYuiRacketHitRangeState(ball);
+    var yuiRacketHitInRange = yuiRacketHitState.normalized <= 1;
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
-    var inYuiReach = crossesYuiReach
+    var inYuiReach = yuiRacketHitInRange || (crossesYuiReach
       && shuttleZ <= yuiContactTopZ
-      && shuttleZ >= yuiContactBottomZ;
-    if (!inYuiReach) return false;
-    var yuiSave = isYuiSmashSaveReachable(ball);
-    if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;
+      && shuttleZ >= yuiContactBottomZ);
+    var yuiShortDropSave = isYuiShortDropSaveReachable(ball);
+    var yuiSave = isYuiSmashSaveReachable(ball) || yuiShortDropSave;
+    if (!inYuiReach && !yuiSave) return false;
+    if (!yuiRacketHitInRange && !yuiSave) return false;
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
     maybeTriggerYuiCheat('rally_return');
@@ -6638,9 +6781,10 @@
         b.prevCourtY = getShuttleCourtY(b, false);
         b.prevZ = getShuttleCourtZ(b, false);
         stepBallPhysics(b, subDt);
+        updateShuttleNetCrossing(b);
+        if (!b.hitNet && maybeYuiReturnIncomingShuttle(b)) break;
         checkShuttleLanding(b);
         if (!b.hitNet) {
-          if (maybeYuiReturnIncomingShuttle(b)) break;
           if (maybePlayerReceiveIncomingShuttle(b)) break;
         }
         updateNetPhysics(subDt);
@@ -8927,6 +9071,8 @@
     var contact = getRacketContactPoint('player');
     var yui = getYuiShotOrigin();
     if (!ball || !contact || !yui) return;
+    var canReturnNow = canPlayerReturnIncomingShuttle();
+    if (!canReturnNow) return;
     var dx = yui.x - contact.x;
     var dy = yui.y - contact.y;
     var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -8944,11 +9090,10 @@
     var controlY = ball.y + uy * 2 + ny * 24;
     var endX = ball.x + ux * 38 + nx * 7;
     var endY = ball.y + uy * 38 + ny * 7;
-    var canReturnNow = canPlayerReturnIncomingShuttle();
-    var cueAlpha = canReturnNow ? 1 : 0.46;
+    var cueAlpha = 1;
 
     aimingCtx.save();
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,236,168,.075)' : 'rgba(114,216,255,.055)';
+    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
     aimingCtx.lineWidth = 5.8 + pulse * 0.8;
     aimingCtx.lineCap = 'round';
     aimingCtx.globalAlpha = cueAlpha;
@@ -8957,7 +9102,7 @@
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
 
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)';
+    aimingCtx.strokeStyle = 'rgba(255,210,96,.30)';
     aimingCtx.lineWidth = 1.5 + pulse * 0.35;
     aimingCtx.beginPath();
     aimingCtx.moveTo(startX, startY);
@@ -9523,6 +9668,7 @@
       shooter: 'neko',
       direction: -1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: 'player',
       returnDeadlineAt: performance.now() + 2400,
@@ -9570,6 +9716,7 @@
       shooter: 'player',
       direction: 1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: '',
       hitNet: false,
@@ -9643,6 +9790,7 @@
           incomingReturnInReach: canPlayerReturnIncomingShuttle(),
           positionTransitioning: isPositionTransitioning,
           playerCourt: Object.assign({}, game.playerCourt),
+          playerMoveLockRemainingMs: Math.max(0, Math.round((game.playerMoveLockedUntil || 0) - performance.now())),
           courtServiceLines: getCourtServiceLinePositions(BADMINTON),
           playerServeX: PLAYER_START_X,
           playerFootY: getPlayerFootY(),
@@ -9718,6 +9866,8 @@
             trail: getShuttleTrailPoints(game.ball),
             awaitingReturnBy: game.ball.awaitingReturnBy || '',
             crossedNet: !!game.ball.crossedNet,
+            legalNetClearance: game.ball.legalNetClearance === true,
+            netCarryToTargetSide: game.ball.netCarryToTargetSide === true,
             hitNet: !!game.ball.hitNet
           } : null,
           difficulty: getDuelDifficultyName(),

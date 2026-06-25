@@ -16,7 +16,13 @@
 import sys
 import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _repo_root not in sys.path:
+# Always insert at position 0 so project-root ``utils/`` (and ``config/``,
+# etc.) are found *before* ``plugin/`` which may contain identically-named
+# sub-packages.  The check ``not in`` is deliberately removed: ``_repo_root``
+# may already exist later in sys.path (e.g. via .venv site-packages), but
+# that position loses to ``plugin/`` which is inserted at index 1 by
+# ``_start_embedded_user_plugin_server`` (L747).
+if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
 # Wire DI bindings explicitly — direct script invocation
