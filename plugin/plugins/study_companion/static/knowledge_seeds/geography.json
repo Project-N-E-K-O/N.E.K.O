@@ -13,8 +13,85 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "geo_junior_transport_trade",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_china_regions",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "primary_ratio_scale",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "primary_ratio_scale",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Map scale questions apply ratio reasoning to convert map distance into real distance.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
+        },
+        {
+          "id": "coordinate_system",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Latitude and longitude reading transfers naturally to coordinate-plane location and ordered-pair thinking.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
+        },
+        {
           "id": "geo_junior_climate_types",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 世界气候类型 after 地图三要素; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
@@ -71,6 +148,13 @@
         "daily_practice",
         "unit_test",
         "zhongkao_style"
+      ],
+      "aliases": [
+        "地图比例尺",
+        "比例尺",
+        "地图三要素",
+        "地图上怎么判断方向",
+        "比例尺怎么换算实际距离"
       ]
     },
     {
@@ -84,13 +168,90 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "geo_senior_water_cycle",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_senior_atmospheric_circulation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "geo_junior_river_landform",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 河流与地形 after 世界气候类型; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Climate graphs require reading curve trends, intervals, maxima, minima, and variable relationships from function-like graphs.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Temperature and precipitation charts use the same evidence extraction skills as statistical chart interpretation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -142,6 +303,13 @@
         "daily_practice",
         "unit_test",
         "zhongkao_style"
+      ],
+      "aliases": [
+        "季风气候",
+        "气候类型",
+        "气候判断",
+        "怎么根据气温降水判断气候类型",
+        "世界气候类型有什么分布规律"
       ]
     },
     {
@@ -155,13 +323,90 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "geo_senior_water_cycle",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_natural_disaster",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_senior_geomorphology",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "geo_junior_population_city",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 人口与城市 after 河流与地形; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "bio_junior_ecology_food_chain",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "River landform and watershed questions often explain habitats that support food-chain and ecosystem analysis.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "biology",
+            "bridge_direction": "geography_to_biology"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "River corridors and floodplains provide geographic contexts for tracing ecosystem energy flow and carrying capacity.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "biology",
+            "bridge_direction": "geography_to_biology"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -213,6 +458,13 @@
         "daily_practice",
         "unit_test",
         "zhongkao_style"
+      ],
+      "aliases": [
+        "河流地貌",
+        "河流地貌形成",
+        "流水地貌",
+        "河流为什么会形成冲积平原",
+        "河流侵蚀和堆积怎么区分"
       ]
     },
     {
@@ -227,12 +479,92 @@
       "related": [
         {
           "id": "geo_junior_agriculture_industry",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 农业工业区位 after 人口与城市; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Population and city analysis should next connect people, labor, market, and land use to agricultural and industrial location factors.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
+        },
+        {
+          "id": "geo_junior_transport_trade",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Urban hierarchy and population concentration are commonly applied to explain transport networks, commuting, tourism, and regional flows.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_china_regions",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Students often mix population or city distribution questions with broader regional-difference comparisons, so hints should separate the evidence used for each.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Population and urbanization charts train the same data-reading habits used in economic data graph interpretation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "economics",
+            "bridge_direction": "geography_to_economics"
+          }
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Human population maps connect to biological population-growth curves through density, growth rate, and carrying-capacity reasoning.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "biology",
+            "bridge_direction": "geography_to_biology"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -297,13 +629,90 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "geo_junior_population_city",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_transport_trade",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_senior_industrial_location",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "geo_junior_china_regions",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 中国区域差异 after 农业工业区位; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Agricultural and industrial location choices respond to market size, resource availability, cost, and supply-demand conditions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "economics",
+            "bridge_direction": "geography_to_economics"
+          }
+        },
+        {
+          "id": "college_econ_scarcity_opportunity_cost",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Land, water, labor, and transport constraints make location decisions a practical opportunity-cost comparison.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "economics",
+            "bridge_direction": "geography_to_economics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -355,6 +764,13 @@
         "daily_practice",
         "unit_test",
         "zhongkao_style"
+      ],
+      "aliases": [
+        "工业区位",
+        "区位因素",
+        "产业区位",
+        "农业区位因素怎么分析",
+        "工业布局要考虑哪些因素"
       ]
     },
     {
@@ -369,11 +785,53 @@
       "related": [
         {
           "id": "geo_junior_natural_disaster",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 自然灾害与防灾减灾 after 中国区域差异; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_junior_map_skills",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Regional comparison should start by locating boundaries, relative position, scale, and map symbols before explaining differences.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "China regional differences are commonly applied to compare farming systems, industrial layout, and development conditions across regions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_population_city",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Regional natural-human differences can be confused with population and urbanization patterns; diagnosis should ask which variable the question targets.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -440,11 +898,53 @@
       "related": [
         {
           "id": "geo_senior_water_cycle",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 水循环与水资源 after 大气环流与天气系统; it is the next topic in the senior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_junior_map_skills",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Weather-system problems first require reading isobars, wind direction, fronts, and spatial position from maps before explaining circulation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "geo_junior_natural_disaster",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Atmospheric circulation and weather systems are applied to explain rainstorms, typhoons, cold waves, drought, and disaster prevention scenarios.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_climate_types",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "Students often confuse short-term weather-system judgment with long-term climate-type classification, so feedback should contrast time scale and evidence.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -513,11 +1013,53 @@
       "related": [
         {
           "id": "geo_senior_industrial_location",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 产业区位与区域发展 after 水循环与水资源; it is the next topic in the senior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_senior_geomorphology",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After identifying precipitation, runoff, infiltration, and human intervention, learners can trace how water movement shapes erosion and deposition landforms.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "geo_junior_natural_disaster",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Water-cycle reasoning is commonly applied to flood, drought, urban waterlogging, and water-resource management questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_river_landform",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "Water-cycle processes are often mixed with river-landform formation; diagnosis should separate circulation links from erosion and deposition results.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -586,12 +1128,91 @@
       "related": [
         {
           "id": "geo_senior_earth_movement",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 地球运动 after 产业区位与区域发展; it is the next topic in the senior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Industrial-location evaluation should first list location factors such as resources, labor, market, transport, technology, policy, and environment.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
+        },
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Industrial location and industrial transfer are applied to evaluate regional transformation, carrying capacity, and sustainable development paths.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_transport_trade",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Transport conditions are one location factor, but students often treat transport influence as the whole industrial-location analysis.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Industrial transfer and site selection require comparing transport, labor, land, policy, and environmental costs against expected benefits.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "economics",
+            "bridge_direction": "geography_to_economics"
+          }
+        },
+        {
+          "id": "history_junior_industrial_revolution",
+          "relation": "supports",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "Modern industrial-location patterns are easier to explain when linked to the historical rise of factories, transport networks, and urban labor markets.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "history",
+            "bridge_direction": "geography_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -659,11 +1280,53 @@
       "related": [
         {
           "id": "geo_junior_transport_trade",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 交通运输与区域联系 after 自然灾害与防灾减灾; it is the next topic in the junior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_senior_water_cycle",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Flood and drought questions should trace precipitation, runoff, infiltration, storage, and human activity before proposing mitigation measures.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Disaster analysis is applied to land-use planning, ecological restoration, resilient infrastructure, and regional sustainable development.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_river_landform",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "River landform formation can be confused with flood-disaster causation; feedback should distinguish normal geomorphic process from hazard exposure and vulnerability.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -728,7 +1391,47 @@
       "depth": 2,
       "difficulty": 0.5,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "geo_junior_map_skills",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Transport and trade questions should first read route direction, node location, distance, and regional connections from the map.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "geo_senior_industrial_location",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Transport accessibility and trade links are commonly applied to explain industrial layout, logistics cost, and regional economic ties.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_junior_agriculture_industry",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Students often confuse transport effects with the full set of agricultural and industrial location factors, so review should separate factor type and conclusion.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "忽略图例比例尺方向",
         "原因和措施混写",
@@ -793,12 +1496,92 @@
       "related": [
         {
           "id": "geo_senior_geomorphology",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 外力作用与地貌 after 地球运动; it is the next topic in the senior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78
+        },
+        {
+          "id": "geo_junior_map_skills",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Earth-movement calculations should first read latitude, date, direction, and diagram labels before judging solar altitude and day length.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
+        },
+        {
+          "id": "geo_junior_climate_types",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.81,
+          "reason": "Seasonal solar-radiation differences help explain temperature belts, seasonal change, and some climate-distribution patterns.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "geo_senior_atmospheric_circulation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Students may attribute seasonal day-length or solar-altitude changes to weather systems instead of Earth movement, so diagnosis should contrast mechanism and time scale.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_trig_angle_system",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Solar altitude, latitude, longitude, and time-zone calculations rely on angle measurement and angular distance.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
+        },
+        {
+          "id": "senior_function_periodicity",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Day-night alternation and seasonal change provide concrete contexts for periodic-function reasoning.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -867,7 +1650,7 @@
       "related": [
         {
           "id": "geo_senior_regional_sustainability",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 区域可持续发展 after 外力作用与地貌; it is the next topic in the senior_high geography learning sequence.",
           "use_cases": [
             "learning_path",
@@ -938,7 +1721,46 @@
       "depth": 3,
       "difficulty": 0.72,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_community_succession",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Regional sustainability problems often require explaining ecological restoration through community succession and habitat recovery.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "biology",
+            "bridge_direction": "geography_to_biology"
+          }
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Sustainable regional planning should compare ecological protection, growth, jobs, cost, and equity as explicit policy tradeoffs.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "economics",
+            "bridge_direction": "geography_to_economics"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "忽略图例比例尺方向",
         "原因和措施混写",

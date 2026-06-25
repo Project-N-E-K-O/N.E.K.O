@@ -87,6 +87,12 @@ from plugin.plugins.study_companion.knowledge_graph_guidance import (
     build_knowledge_guidance_payload,
     match_topics,
 )
+from plugin.plugins.study_companion.knowledge_graph_index import (
+    KnowledgeGraphIndex,
+    SubgraphBudget,
+    build_relevant_subgraph,
+    compress_subgraph_payload,
+)
 from plugin.plugins.study_companion.knowledge_seed_validator import (
     validate_knowledge_seed_manifest,
 )
@@ -1558,6 +1564,49 @@ def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
     assert len(result.topics) >= 650
     assert result.report is not None
     assert result.report["topic_count"] == len(result.topics)
+    assert result.report["schema_ready_topics"] == len(result.topics)
+    assert result.report["subject_schema_ready_counts"]["math"] > 0
+    expected_subjects = {
+        "biology",
+        "chemistry",
+        "chinese",
+        "computer_science",
+        "economics",
+        "english",
+        "geography",
+        "history",
+        "math",
+        "physics",
+        "politics",
+    }
+    assert set(result.report["subject_minimum_standards"]) == expected_subjects
+    assert set(result.report["subject_minimum_standard_topic_counts"]) == expected_subjects
+    assert set(result.report["subject_minimum_standard_ready_counts"]) == expected_subjects
+    assert set(result.report["subject_minimum_standard_gap_counts"]) == expected_subjects
+    assert result.report["subject_minimum_standard_ready_counts"]["math"] > 0
+    assert result.report["subject_minimum_standard_ready_counts"]["chinese"] >= 4
+    assert result.report["subject_minimum_standard_ready_counts"]["economics"] >= 4
+    assert result.report["subject_minimum_standard_gap_counts"]["math"] > 0
+    assert (
+        result.report["subject_minimum_standard_ready_counts"]["math"]
+        + result.report["subject_minimum_standard_gap_counts"]["math"]
+        == result.report["subject_minimum_standard_topic_counts"]["math"]
+    )
+    assert 0.0 <= result.report["subject_minimum_standard_ready_rates"]["math"] <= 1.0
+    assert 0.0 <= result.report["subject_minimum_standard_gap_rates"]["math"] <= 1.0
+    assert result.report["subject_minimum_standard_relation_gap_counts"]["math"][
+        "confusable"
+    ] > 0
+    assert result.report["subject_minimum_standard_uncovered_subject_counts"] == {}
+    assert "math" in result.report["sample_subject_minimum_standard_gaps"]
+    assert result.report["top_gap_topics_by_subject"]["math"]
+    assert result.report["top_missing_relation_by_subject"]["math"][0]["count"] > 0
+    assert result.report["chapter_gap_counts"]["math"]
+    assert result.report["recommended_next_batch"]["math"]
+    assert len(result.report["recommended_next_batch"]["math"]) <= 12
+    assert result.report["cross_subject_edge_counts"]
+    assert result.report["cross_subject_relation_counts"]
+    assert result.report["legacy_edge_samples"]
     assert result.report["missing_stage"] == 0
     assert result.report["missing_college_course_family"] == 0
     assert result.report["typed_edges"] > 0
@@ -1579,7 +1628,9 @@ def test_study_knowledge_seed_math_relationship_density_targets() -> None:
     assert result.report is not None
     relation_counts = result.report["relation_counts"]
     assert result.report["typed_edges"] >= 1100
-    assert result.report["legacy_edges"] < 800
+    assert result.report["legacy_edges"] < 250
+    assert relation_counts["nearby"] < 150
+    assert relation_counts["next"] < 30
     assert relation_counts["confusable"] >= 60
     assert relation_counts["procedure_step"] >= 90
     assert relation_counts["application"] >= 130
@@ -1639,6 +1690,14 @@ def test_study_knowledge_seed_validator_reports_schema_errors(
                                 "reason": "bad use case",
                                 "use_cases": ["unsupported_case"],
                             },
+                            {
+                                "id": "duplicate_topic",
+                                "relation": "application",
+                                "reason": "bad edge metadata",
+                                "priority": "urgent",
+                                "context": "quiz",
+                                "confidence": 1.5,
+                            },
                         ],
                         "skills": ["识别重复知识点"],
                         "question_types": ["综合题"],
@@ -1688,6 +1747,9 @@ def test_study_knowledge_seed_validator_reports_schema_errors(
         "invalid_typed_edge",
         "unknown_edge_relation",
         "unknown_edge_use_case",
+        "invalid_edge_priority",
+        "invalid_edge_context",
+        "invalid_edge_confidence",
     }.issubset(issue_codes)
 
 
@@ -1750,13 +1812,299 @@ def test_study_knowledge_seed_validator_reports_graph_quality_gaps(
 
     result = validate_knowledge_seed_manifest(manifest)
 
-    assert "prerequisite_cycle" in {issue.code for issue in result.issues}
+    issue_codes = {issue.code for issue in result.issues}
+    assert "prerequisite_cycle" in issue_codes
+    assert "subject_minimum_standard_gap" not in issue_codes
     assert result.report is not None
     assert result.report["cycles_in_prerequisites"] == 2
     assert result.report["missing_college_course_family"] == 2
+    assert result.report["subject_minimum_standard_topic_counts"]["math"] == 2
+    assert result.report["subject_minimum_standard_ready_counts"]["math"] == 0
+    assert result.report["subject_minimum_standard_gap_counts"]["math"] == 2
+    assert result.report["subject_minimum_standard_gap_rates"]["math"] == 1.0
+    assert result.report["subject_minimum_standard_relation_gap_counts"]["math"] == {
+        "application": 2,
+        "confusable": 2,
+        "procedure_step": 2,
+    }
+    assert result.report["sample_subject_minimum_standard_gaps"]["math"] == [
+        {
+            "id": "college_cycle_a",
+            "missing_relations": ["application", "confusable", "procedure_step"],
+            "missing_fields": [],
+        },
+        {
+            "id": "college_cycle_b",
+            "missing_relations": ["application", "confusable", "procedure_step"],
+            "missing_fields": [],
+        },
+    ]
     assert set(result.report["sample_prerequisite_cycle_nodes"]) == {
         "college_cycle_a",
         "college_cycle_b",
+    }
+
+
+def test_study_knowledge_seed_validator_reports_subject_minimum_standard_summary(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "seed.json"
+    manifest = tmp_path / "knowledge_graph_seed.json"
+    manifest.write_text(
+        json.dumps({"files": [{"path": "seed.json", "topic_count": 3}]}),
+        encoding="utf-8",
+    )
+    common = {
+        "subject": "math",
+        "stage": "college",
+        "chapter": "Calculus",
+        "unit": "Derivatives",
+        "course_family": "calculus",
+        "curriculum_version": "generic_college",
+        "exam_region": "college_course_generic",
+        "exam_type": "college_course_exam",
+        "skills": ["analyze relation coverage"],
+        "question_types": ["concept"],
+        "examples": [{"prompt": "Explain the relation.", "answer_outline": ["A"]}],
+        "typical_misconceptions": ["missing graph edges hide learning gaps"],
+        "prerequisites": [],
+    }
+    seed.write_text(
+        json.dumps(
+            {
+                "topics": [
+                    {
+                        **common,
+                        "id": "math_ready",
+                        "name": "Ready",
+                        "prerequisites": [
+                            {
+                                "id": "math_proc",
+                                "relation": "prerequisite",
+                                "reason": "required foundation",
+                            }
+                        ],
+                        "related": [
+                            {
+                                "id": "math_proc",
+                                "relation": "procedure_step",
+                                "reason": "next step",
+                            },
+                            {
+                                "id": "math_confusion",
+                                "relation": "confusable",
+                                "reason": "compare concepts",
+                            },
+                            {
+                                "id": "math_confusion",
+                                "relation": "application",
+                                "reason": "apply the concept",
+                            },
+                        ],
+                    },
+                    {
+                        **common,
+                        "id": "math_proc",
+                        "name": "Procedure Only",
+                        "related": [
+                            {
+                                "id": "math_ready",
+                                "relation": "procedure_step",
+                                "reason": "next step",
+                            }
+                        ],
+                    },
+                    {
+                        **common,
+                        "id": "math_confusion",
+                        "name": "Confusion Target",
+                        "related": [
+                            {
+                                "id": "math_ready",
+                                "relation": "confusable",
+                                "reason": "compare concepts",
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(manifest)
+
+    assert result.is_valid
+    assert result.report is not None
+    assert result.report["subject_minimum_standard_topic_counts"]["math"] == 3
+    assert result.report["subject_minimum_standard_ready_counts"]["math"] == 1
+    assert result.report["subject_minimum_standard_gap_counts"]["math"] == 2
+    assert result.report["subject_minimum_standard_ready_rates"]["math"] == pytest.approx(
+        1 / 3
+    )
+    assert result.report["subject_minimum_standard_relation_gap_counts"]["math"] == {
+        "application": 2,
+        "confusable": 1,
+        "prerequisite": 2,
+        "procedure_step": 1,
+    }
+    assert result.report["top_missing_relation_by_subject"]["math"] == [
+        {"relation": "application", "count": 2},
+        {"relation": "prerequisite", "count": 2},
+        {"relation": "confusable", "count": 1},
+        {"relation": "procedure_step", "count": 1},
+    ]
+    assert result.report["chapter_ready_counts"]["math"] == {"Calculus": 1}
+    assert result.report["chapter_gap_counts"]["math"] == {"Calculus": 2}
+    assert result.report["recommended_next_batch"]["math"] == [
+        "math_confusion",
+        "math_proc",
+    ]
+    assert result.report["top_gap_topics_by_subject"]["math"] == [
+        {
+            "id": "math_confusion",
+            "chapter": "Calculus",
+            "unit": "Derivatives",
+            "missing_relations": [
+                "application",
+                "prerequisite",
+                "procedure_step",
+            ],
+            "missing_fields": [],
+            "missing_count": 3,
+            "edge_count": 1,
+        },
+        {
+            "id": "math_proc",
+            "chapter": "Calculus",
+            "unit": "Derivatives",
+            "missing_relations": ["application", "confusable", "prerequisite"],
+            "missing_fields": [],
+            "missing_count": 3,
+            "edge_count": 1,
+        },
+    ]
+
+
+def test_study_knowledge_seed_validator_reports_subject_minimum_field_gaps(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "seed.json"
+    manifest = tmp_path / "knowledge_graph_seed.json"
+    manifest.write_text(
+        json.dumps({"files": [{"path": "seed.json", "topic_count": 2}]}),
+        encoding="utf-8",
+    )
+    common = {
+        "subject": "english",
+        "stage": "senior_high",
+        "chapter": "Reading",
+        "unit": "Main idea",
+        "curriculum_version": "generic_cn_high_school",
+        "exam_region": "new_gaokao_i",
+        "exam_type": "gaokao_style",
+        "skills": ["read a paragraph"],
+        "examples": [{"prompt": "Find the main idea.", "answer_outline": ["A"]}],
+        "typical_misconceptions": ["confusing detail with main idea"],
+        "prerequisites": [],
+    }
+    seed.write_text(
+        json.dumps(
+            {
+                "topics": [
+                    {
+                        **common,
+                        "id": "english_missing_field",
+                        "name": "Missing Field",
+                        "question_types": [],
+                        "related": [
+                            {
+                                "id": "english_ready",
+                                "relation": "procedure_step",
+                                "reason": "find the next step",
+                            }
+                        ],
+                    },
+                    {
+                        **common,
+                        "id": "english_ready",
+                        "name": "Ready",
+                        "question_types": ["main idea"],
+                        "related": [
+                            {
+                                "id": "english_missing_field",
+                                "relation": "procedure_step",
+                                "reason": "find the next step",
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(manifest)
+
+    issue_codes = {issue.code for issue in result.issues}
+    assert "subject_minimum_standard_gap" not in issue_codes
+    assert result.report is not None
+    assert result.report["subject_minimum_standard_topic_counts"]["english"] == 2
+    assert result.report["subject_minimum_standard_ready_counts"]["english"] == 1
+    assert result.report["subject_minimum_standard_field_gap_counts"]["english"] == {
+        "question_types": 1
+    }
+
+
+def test_study_knowledge_seed_validator_reports_uncovered_subjects(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "seed.json"
+    manifest = tmp_path / "knowledge_graph_seed.json"
+    manifest.write_text(
+        json.dumps({"files": [{"path": "seed.json", "topic_count": 1}]}),
+        encoding="utf-8",
+    )
+    seed.write_text(
+        json.dumps(
+            {
+                "topics": [
+                    {
+                        "id": "art_color_theory",
+                        "name": "Color Theory",
+                        "subject": "art",
+                        "stage": "college",
+                        "chapter": "Design",
+                        "unit": "Color",
+                        "course_family": "visual_arts",
+                        "curriculum_version": "generic_college",
+                        "exam_region": "college_course_generic",
+                        "exam_type": "college_course_exam",
+                        "skills": ["compare colors"],
+                        "question_types": ["concept"],
+                        "examples": [
+                            {
+                                "prompt": "Compare warm and cool colors.",
+                                "answer_outline": ["A"],
+                            }
+                        ],
+                        "typical_misconceptions": ["treating hue and value as the same"],
+                        "prerequisites": [],
+                        "related": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(manifest)
+
+    assert result.is_valid
+    assert result.report is not None
+    assert result.report["subject_counts"]["art"] == 1
+    assert result.report["subject_minimum_standard_uncovered_subject_counts"] == {
+        "art": 1
     }
 
 
@@ -2161,11 +2509,15 @@ def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
         ]
     )
 
-    assert {
-        "from": "quadratic_vertex_form",
-        "to": "linear_function_kb",
-        "relation": "compare",
-    } in payload["edges"]
+    edge = next(
+        edge
+        for edge in payload["edges"]
+        if edge["from"] == "quadratic_vertex_form" and edge["to"] == "linear_function_kb"
+    )
+    assert edge["relation"] == "compare"
+    assert edge["priority"] == "optional"
+    assert edge["context"] == "explanation"
+    assert edge["confidence"] == 0.65
     assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
 
 
@@ -2514,6 +2866,7 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
                 "skills": ["read coordinates", "compare signed numbers"],
                 "question_types": ["concept", "calculation"],
                 "examples": [{"prompt": "Place -2 on the number line."}],
+                "typical_misconceptions": ["Confusing position with distance."],
                 "prerequisites": [
                     {
                         "id": "real_number_concept",
@@ -2536,26 +2889,35 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         ]
     )
 
-    assert {
-        "from": "real_number_concept",
-        "to": "number_axis",
-        "relation": "prerequisite",
-        "required_mastery": 0.55,
-        "reason": "Number-axis work depends on real-number meaning.",
-        "use_cases": ["learning_path"],
-    } in payload["edges"]
-    assert {
-        "from": "number_axis",
-        "to": "absolute_value",
-        "relation": "application",
-        "reason": "Absolute value is interpreted as distance on the number axis.",
-        "use_cases": ["diagnosis", "hint_generation"],
-    } in payload["edges"]
+    prereq_edge = next(
+        edge
+        for edge in payload["edges"]
+        if edge["from"] == "real_number_concept" and edge["to"] == "number_axis"
+    )
+    assert prereq_edge["relation"] == "prerequisite"
+    assert prereq_edge["required_mastery"] == 0.55
+    assert prereq_edge["reason"] == "Number-axis work depends on real-number meaning."
+    assert prereq_edge["use_cases"] == ["learning_path"]
+    assert prereq_edge["priority"] == "core"
+    assert prereq_edge["context"] == "diagnosis"
+    assert prereq_edge["confidence"] == 0.9
+    application_edge = next(
+        edge
+        for edge in payload["edges"]
+        if edge["from"] == "number_axis" and edge["to"] == "absolute_value"
+    )
+    assert application_edge["relation"] == "application"
+    assert application_edge["reason"] == "Absolute value is interpreted as distance on the number axis."
+    assert application_edge["use_cases"] == ["diagnosis", "hint_generation"]
+    assert application_edge["priority"] == "useful"
+    assert application_edge["context"] == "practice"
+    assert application_edge["confidence"] == 0.9
     assert payload["nodes"][0]["stage"] == "junior_high"
     assert payload["nodes"][0]["unit"] == "Number system"
     assert payload["nodes"][0]["skills"] == ["read coordinates", "compare signed numbers"]
     assert payload["nodes"][0]["question_types"] == ["concept", "calculation"]
     assert payload["nodes"][0]["examples"] == [{"prompt": "Place -2 on the number line."}]
+    assert payload["nodes"][0]["typical_misconceptions"] == ["Confusing position with distance."]
     assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
@@ -2778,6 +3140,805 @@ def test_study_knowledge_guidance_prefers_specific_topic_over_learning_intent() 
     matches = match_topics(topics, query="\u94fe\u8868\u600e\u4e48\u5b66", limit=2)
 
     assert matches[0]["id"] == "college_ds_linked_list"
+
+
+def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+    cases = [
+        (
+            "\u6781\u9650\u548c\u51fd\u6570\u503c\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_limit_concept", "college_function_value"},
+        ),
+        (
+            "\u8fde\u7eed\u4e3a\u4ec0\u4e48\u4e0d\u4e00\u5b9a\u53ef\u5bfc\uff1f",
+            {"college_continuity", "college_derivative_existence"},
+        ),
+        (
+            "\u5bfc\u6570\u600e\u4e48\u7528\u6765\u6c42\u6781\u503c\uff1f",
+            {
+                "senior_derivative_extrema",
+                "college_monotonic_extrema",
+                "college_stationary_points",
+                "college_extreme_value_points",
+            },
+        ),
+        (
+            "\u6781\u503c\u548c\u6700\u503c\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_extreme_value_points", "college_absolute_extrema"},
+        ),
+        (
+            "\u5b9a\u79ef\u5206\u9762\u79ef\u9898\u600e\u4e48\u505a\uff1f",
+            {"college_integral_area_problem", "college_definite_integral", "college_integral_application"},
+        ),
+        (
+            "\u7279\u5f81\u503c\u600e\u4e48\u6c42\uff1f",
+            {
+                "college_eigenvalue",
+                "college_characteristic_matrix",
+                "college_characteristic_polynomial",
+            },
+        ),
+        (
+            "\u7279\u5f81\u503c\u548c\u5947\u5f02\u503c\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_eigenvalue", "college_singular_value"},
+        ),
+        (
+            "\u79e9\u548c\u7ef4\u6570\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_rank", "college_basis_dimension", "college_matrix_dimension"},
+        ),
+        (
+            "\u6392\u5217\u548c\u7ec4\u5408\u600e\u4e48\u533a\u5206\uff1f",
+            {"senior_probability_counting", "college_permutation", "college_combination"},
+        ),
+        (
+            "\u4e8c\u9879\u5206\u5e03\u548c\u6b63\u6001\u5206\u5e03\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_binomial_distribution", "college_normal_distribution"},
+        ),
+        (
+            "\u7f6e\u4fe1\u533a\u95f4\u548c\u5047\u8bbe\u68c0\u9a8c\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_confidence_interval", "college_hypothesis_testing"},
+        ),
+        (
+            "\u4e0d\u5b9a\u79ef\u5206\u548c\u5b9a\u79ef\u5206\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_indefinite_integral", "college_definite_integral"},
+        ),
+        (
+            "\u539f\u51fd\u6570\u548c\u4e0d\u5b9a\u79ef\u5206\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_antiderivative", "college_indefinite_integral"},
+        ),
+        (
+            "\u7279\u5f81\u5411\u91cf\u548c\u666e\u901a\u5411\u91cf\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_eigenvalue", "college_regular_vector", "college_eigenvector_solution"},
+        ),
+        (
+            "\u5047\u8bbe\u68c0\u9a8c\u600e\u4e48\u505a\uff1f",
+            {"college_hypothesis_testing", "college_null_hypothesis", "college_test_statistic"},
+        ),
+        (
+            "\u56fe\u7684\u6700\u77ed\u8def\u600e\u4e48\u5b66\uff1f",
+            {"college_graph_shortest_path", "college_graph_theory_intro"},
+        ),
+        (
+            "\u5bfc\u6570\u548c\u5207\u7ebf\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {
+                "senior_derivative_tangent",
+                "college_derivative_calculation",
+                "college_tangent_line_equation",
+            },
+        ),
+        (
+            "\u671f\u671b\u548c\u5e73\u5747\u503c\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_expectation_variance", "college_sample_mean"},
+        ),
+        (
+            "\u53d7\u529b\u5206\u6790\u600e\u4e48\u505a\uff1f",
+            {"college_force_analysis"},
+        ),
+        (
+            "BFS\u548cDFS\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_graph_traversal"},
+        ),
+        (
+            "\u6700\u77ed\u8def\u7b97\u6cd5\u600e\u4e48\u5b66\uff1f",
+            {"college_ds_shortest_path", "college_graph_shortest_path"},
+        ),
+        (
+            "\u901f\u5ea6\u548c\u52a0\u901f\u5ea6\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"physics_senior_experiment_acceleration", "college_physics_kinematics_calculus"},
+        ),
+        (
+            "\u725b\u987f\u7b2c\u4e8c\u5b9a\u5f8b\u9898\u600e\u4e48\u505a\uff1f",
+            {"physics_senior_newton_laws"},
+        ),
+        (
+            "\u529f\u548c\u80fd\u91cf\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"physics_junior_work_power", "college_physics_work_energy_theorem"},
+        ),
+        (
+            "\u6c27\u5316\u5242\u548c\u8fd8\u539f\u5242\u600e\u4e48\u533a\u5206\uff1f",
+            {"chem_senior_redox"},
+        ),
+        (
+            "\u6c27\u5316\u8fd8\u539f\u53cd\u5e94\u600e\u4e48\u914d\u5e73\uff1f",
+            {"chem_senior_redox", "chem_senior_redox_balance"},
+        ),
+        (
+            "\u5316\u5b66\u5e73\u8861\u79fb\u52a8\u600e\u4e48\u5224\u65ad\uff1f",
+            {"chem_senior_equilibrium", "chem_senior_equilibrium_constant"},
+        ),
+        (
+            "pH\u600e\u4e48\u8ba1\u7b97\uff1f",
+            {"chem_senior_ph_ionization"},
+        ),
+        (
+            "\u57fa\u56e0\u578b\u548c\u8868\u73b0\u578b\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"bio_senior_genetics_law", "bio_junior_inheritance_intro"},
+        ),
+        (
+            "\u9057\u4f20\u6982\u7387\u9898\u600e\u4e48\u505a\uff1f",
+            {"bio_junior_inheritance_intro", "bio_senior_genetics_law"},
+        ),
+        (
+            "\u51cf\u6570\u5206\u88c2\u548c\u6709\u4e1d\u5206\u88c2\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"bio_senior_meiosis", "bio_senior_mitosis_image"},
+        ),
+        (
+            "\u9605\u8bfb\u7406\u89e3\u4e3b\u65e8\u9898\u600e\u4e48\u505a\uff1f",
+            {"english_senior_reading_main_idea"},
+        ),
+        (
+            "\u5b8c\u5f62\u586b\u7a7a\u600e\u4e48\u505a\uff1f",
+            {"english_junior_cloze_context", "english_senior_cloze_logic"},
+        ),
+        (
+            "\u6570\u7ec4\u548c\u94fe\u8868\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_ds_linear_list", "college_ds_linked_list", "college_ds_dynamic_array"},
+        ),
+        (
+            "\u9012\u5f52\u548c\u8fed\u4ee3\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_ds_recursion_iteration", "college_c_recursion_basic"},
+        ),
+        (
+            "\u6808\u548c\u961f\u5217\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_ds_stack", "college_ds_queue_circular"},
+        ),
+        (
+            "\u5feb\u901f\u6392\u5e8f\u548c\u5f52\u5e76\u6392\u5e8f\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_ds_quick_merge_sort", "college_ds_sorting_basic"},
+        ),
+        (
+            "\u54c8\u5e0c\u8868\u51b2\u7a81\u600e\u4e48\u5904\u7406\uff1f",
+            {"college_ds_hash_table"},
+        ),
+        (
+            "\u5730\u56fe\u6bd4\u4f8b\u5c3a\u600e\u4e48\u770b\uff1f",
+            {"geo_junior_map_skills"},
+        ),
+        (
+            "\u5b63\u98ce\u6c14\u5019\u600e\u4e48\u5224\u65ad\uff1f",
+            {"geo_junior_climate_types", "geo_senior_atmospheric_circulation"},
+        ),
+        (
+            "\u6cb3\u6d41\u5730\u8c8c\u600e\u4e48\u5f62\u6210\uff1f",
+            {"geo_junior_river_landform", "geo_senior_geomorphology"},
+        ),
+        (
+            "\u5de5\u4e1a\u533a\u4f4d\u56e0\u7d20\u600e\u4e48\u5206\u6790\uff1f",
+            {"geo_senior_industrial_location", "geo_junior_agriculture_industry"},
+        ),
+        (
+            "\u79e6\u671d\u4e2d\u592e\u96c6\u6743\u6709\u4ec0\u4e48\u7279\u70b9\uff1f",
+            {"history_junior_qin_unification"},
+        ),
+        (
+            "\u9e26\u7247\u6218\u4e89\u4e3a\u4ec0\u4e48\u662f\u8fd1\u4ee3\u5f00\u7aef\uff1f",
+            {"history_junior_opium_war"},
+        ),
+        (
+            "\u5de5\u4e1a\u9769\u547d\u6709\u4ec0\u4e48\u5f71\u54cd\uff1f",
+            {"history_junior_industrial_revolution"},
+        ),
+        (
+            "\u53f2\u6599\u9898\u600e\u4e48\u5206\u6790\uff1f",
+            {"history_senior_material_analysis"},
+        ),
+        (
+            "\u5e02\u573a\u673a\u5236\u548c\u5b8f\u89c2\u8c03\u63a7\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"pol_senior_economy_market", "pol_senior_socialism_market"},
+        ),
+        (
+            "\u6743\u5229\u548c\u4e49\u52a1\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"pol_junior_rights_obligations"},
+        ),
+        (
+            "\u552f\u7269\u8fa9\u8bc1\u6cd5\u600e\u4e48\u7528\uff1f",
+            {"pol_senior_philosophy_dialectics"},
+        ),
+        (
+            "\u4f9d\u6cd5\u6cbb\u56fd\u6750\u6599\u9898\u600e\u4e48\u7b54\uff1f",
+            {"pol_senior_rule_of_law"},
+        ),
+        (
+            "\u6587\u8a00\u865a\u8bcd\u600e\u4e48\u5224\u65ad\uff1f",
+            {"chinese_junior_classical_function_words", "chinese_senior_classical_function_words"},
+        ),
+        (
+            "\u8bd7\u6b4c\u610f\u8c61\u548c\u60c5\u611f\u600e\u4e48\u5206\u6790\uff1f",
+            {"chinese_senior_poetry_image_emotion"},
+        ),
+        (
+            "\u6750\u6599\u4f5c\u6587\u600e\u4e48\u5ba1\u9898\u7acb\u610f\uff1f",
+            {"chinese_senior_composition_material_review"},
+        ),
+        (
+            "\u5c0f\u8bf4\u4eba\u7269\u5f62\u8c61\u600e\u4e48\u5206\u6790\uff1f",
+            {"chinese_senior_literary_image"},
+        ),
+        (
+            "\u9700\u6c42\u548c\u4f9b\u7ed9\u66f2\u7ebf\u600e\u4e48\u770b\uff1f",
+            {"college_micro_demand_supply"},
+        ),
+        (
+            "\u673a\u4f1a\u6210\u672c\u662f\u4ec0\u4e48\uff1f",
+            {"college_econ_scarcity_opportunity_cost"},
+        ),
+        (
+            "\u901a\u8d27\u81a8\u80c0\u548cCPI\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_macro_cpi_inflation"},
+        ),
+        (
+            "\u8d22\u653f\u653f\u7b56\u548c\u8d27\u5e01\u653f\u7b56\u6709\u4ec0\u4e48\u533a\u522b\uff1f",
+            {"college_macro_fiscal_policy", "college_macro_monetary_policy"},
+        ),
+        (
+            "\u5bfc\u6570\u548c\u901f\u5ea6\u52a0\u901f\u5ea6\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {
+                "physics_senior_experiment_acceleration",
+                "college_physics_kinematics_calculus",
+                "college_derivative_calculation",
+            },
+        ),
+        (
+            "\u8fb9\u9645\u6210\u672c\u4e3a\u4ec0\u4e48\u7528\u5bfc\u6570\uff1f",
+            {"college_derivative_definition", "college_micro_cost_short_run"},
+        ),
+        (
+            "\u77e9\u9635\u548c\u56fe\u7b97\u6cd5\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_rank", "college_matrix_operations", "college_ds_graph_representation"},
+        ),
+        (
+            "\u51fd\u6570\u56fe\u50cf\u600e\u4e48\u770b\u7269\u7406\u8fd0\u52a8\uff1f",
+            {"function_graph_reading", "physics_senior_motion_graph_synthesis"},
+        ),
+        (
+            "\u9700\u6c42\u4f9b\u7ed9\u66f2\u7ebf\u548c\u51fd\u6570\u56fe\u50cf\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_micro_demand_supply", "linear_function_graph"},
+        ),
+        (
+            "\u5f39\u6027\u5206\u6790\u548c\u659c\u7387\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_micro_elasticity", "linear_function_kb"},
+        ),
+        (
+            "\u6781\u503c\u600e\u4e48\u7528\u6765\u5206\u6790\u5229\u6da6\u6700\u5927\u5316\uff1f",
+            {
+                "college_micro_firm_profit",
+                "college_extreme_value_points",
+                "college_absolute_extrema",
+            },
+        ),
+        (
+            "\u79ef\u5206\u548c\u7269\u7406\u505a\u529f\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"physics_junior_work_power", "college_integral_physics_application"},
+        ),
+        (
+            "\u4e09\u89d2\u51fd\u6570\u548c\u7b80\u8c10\u8fd0\u52a8\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {
+                "trig_area",
+                "physics_senior_simple_harmonic",
+                "college_physics_simple_harmonic_oscillation",
+                "senior_trig_graph",
+            },
+        ),
+        (
+            "\u5411\u91cf\u548c\u529b\u7684\u5206\u89e3\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"physics_senior_force_decomposition", "senior_plane_vector_concept"},
+        ),
+        (
+            "\u9012\u5f52\u4e3a\u4ec0\u4e48\u548c\u8bc1\u660e\u601d\u8def\u6709\u5173\uff1f",
+            {"geometric_proof_strategy", "college_c_recursion_basic", "proof_writing"},
+        ),
+        (
+            "\u590d\u6742\u5ea6\u548c\u51fd\u6570\u589e\u957f\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {
+                "quadratic_monotonicity",
+                "college_ds_algorithm_complexity",
+                "function_thinking",
+                "senior_exponential_function",
+            },
+        ),
+        (
+            "\u56fe\u8bba\u548c\u56fe\u904d\u5386\u7b97\u6cd5\u600e\u4e48\u8fde\u8d77\u6765\uff1f",
+            {
+                "college_ds_algorithm_complexity",
+                "college_graph_theory_intro",
+                "college_ds_graph_traversal",
+            },
+        ),
+        (
+            "\u4e8c\u7ef4\u6570\u7ec4\u548c\u77e9\u9635\u8fd0\u7b97\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_matrix_operations", "college_c_2d_array_matrix"},
+        ),
+        (
+            "\u52a8\u6001\u89c4\u5212\u548c\u77e9\u9635\u601d\u7ef4\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_ds_greedy_dp_intro", "college_matrix_operations"},
+        ),
+        (
+            "\u8fb9\u9645\u6536\u76ca\u548c\u5bfc\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"college_derivative_definition", "college_micro_firm_profit"},
+        ),
+        (
+            "\u4f9b\u9700\u5747\u8861\u4e3a\u4ec0\u4e48\u8981\u770b\u4ea4\u70b9\uff1f",
+            {"linear_function_intersection", "college_micro_demand_supply"},
+        ),
+        (
+            "\u6bd4\u7387\u53d8\u5316\u548c\u7ecf\u6d4e\u5f39\u6027\u600e\u4e48\u8fde\u63a5\uff1f",
+            {"college_micro_elasticity", "function_concept"},
+        ),
+        (
+            "\u4f4d\u79fb\u65f6\u95f4\u56fe\u50cf\u548c\u4e00\u6b21\u51fd\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"linear_function_graph", "physics_senior_motion_graph_synthesis"},
+        ),
+        (
+            "\u52a0\u901f\u5ea6\u4e3a\u4ec0\u4e48\u53ef\u4ee5\u7528\u5bfc\u6570\u7406\u89e3\uff1f",
+            {"physics_senior_experiment_acceleration", "college_derivative_calculation"},
+        ),
+        (
+            "\u53d8\u529b\u505a\u529f\u4e3a\u4ec0\u4e48\u8981\u7528\u79ef\u5206\uff1f",
+            {"college_integral_physics_application", "physics_senior_work_energy_path"},
+        ),
+        (
+            "\u659c\u9762\u529b\u5206\u89e3\u548c\u4e09\u89d2\u51fd\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+            {"trig_area", "physics_senior_force_decomposition", "senior_trig_definitions"},
+        ),
+        (
+            "矢量空间和物理矢量有什么关系？",
+            {"college_physics_vector_calculus", "college_vector_space", "senior_vector_linear_operation"},
+        ),
+        (
+            "功和动能定理为什么要用被积函数和数量积？",
+            {
+                "college_integral_application_integrand",
+                "college_physics_work_energy_theorem",
+                "senior_vector_dot_product",
+            },
+        ),
+        (
+            "简谐运动为什么可以用三角函数描述？",
+            {
+                "college_physics_simple_harmonic_oscillation",
+                "physics_senior_simple_harmonic",
+                "senior_trig_graph",
+                "trig_area",
+            },
+        ),
+        (
+            "阻尼振动和指数函数增长衰减有什么关系？",
+            {"college_physics_damped_forced_oscillation", "senior_exponential_function"},
+        ),
+        (
+            "经济增长和指数函数有什么关系？",
+            {"college_econ_growth_productivity", "senior_exponential_function"},
+        ),
+        (
+            "经济数据图表为什么要懂期望方差和正态分布？",
+            {"college_econ_data_graph", "college_expectation_variance", "college_normal_distribution"},
+        ),
+        (
+            "生产可能性边界和数学建模怎么联系？",
+            {"college_econ_ppf", "college_econ_scarcity_opportunity_cost", "mathematical_modeling"},
+        ),
+        (
+            "短期成本曲线为什么要用导数和单调极值？",
+            {"college_derivative_calculation", "college_micro_cost_short_run", "college_monotonic_extrema"},
+        ),
+        (
+            "弹性分析为什么既看斜率又看导数？",
+            {"college_derivative_calculation", "college_micro_elasticity", "linear_function_kb"},
+        ),
+        (
+            "利润最大化为什么既看二次函数最值又看导数？",
+            {
+                "college_derivative_calculation",
+                "college_extreme_value_points",
+                "college_micro_firm_profit",
+                "quadratic_max_min",
+            },
+        ),
+        (
+            "图的存储结构和邻接矩阵怎么联系？",
+            {"college_c_2d_array_matrix", "college_ds_graph_representation", "college_matrix_operations"},
+        ),
+        (
+            "算法复杂度为什么要用函数思维和对数函数？",
+            {"college_ds_algorithm_complexity", "function_thinking", "senior_logarithmic_function"},
+        ),
+        (
+            "递归程序和数列递推有什么关系？",
+            {"college_c_recursion_basic", "college_ds_recursion_iteration", "senior_sequence_recursion"},
+        ),
+        (
+            "二维数组表示矩阵时行列维度容易混在哪里？",
+            {"college_c_2d_array_matrix", "college_matrix_dimension", "college_matrix_operations"},
+        ),
+        (
+            "图论里的遍历和算法里的BFS DFS有什么关系？",
+            {"college_ds_graph_traversal", "college_graph_theory_intro", "college_graph_traversal"},
+        ),
+        (
+            "英语概要写作的转述压缩和写作衔接怎么一起练？",
+            {"english_senior_summary_paraphrase", "english_senior_writing_cohesion"},
+        ),
+        (
+            "英语作者态度题和词义猜测、七选五连贯有什么关系？",
+            {
+                "english_senior_reading_author_attitude",
+                "english_senior_reading_word_guess",
+                "english_senior_seven_choice_coherence",
+            },
+        ),
+        (
+            "中式表达纠偏和语境词汇复习怎么一起做？",
+            {"english_senior_translation_chinese_interference", "english_senior_vocabulary_context_review"},
+        ),
+        (
+            "实用类文本信息筛选和信息类文本比较整合有什么区别？",
+            {"chinese_senior_modern_info_comparison", "chinese_senior_practical_filter"},
+        ),
+        (
+            "议论文论证层次和素材作文审题立意怎么连接？",
+            {
+                "chinese_senior_composition_argument_layer",
+                "chinese_senior_composition_example_argument",
+                "chinese_senior_composition_material_review",
+            },
+        ),
+    ]
+
+    expected_subjects = {
+        "biology",
+        "chemistry",
+        "chinese",
+        "computer_science",
+        "economics",
+        "english",
+        "geography",
+        "history",
+        "math",
+        "physics",
+        "politics",
+    }
+    minimum_subject_query_counts = {
+        "biology": 3,
+        "chemistry": 4,
+        "chinese": 4,
+        "computer_science": 10,
+        "economics": 8,
+        "english": 5,
+        "geography": 4,
+        "history": 4,
+        "math": 30,
+        "physics": 7,
+        "politics": 4,
+    }
+    topic_subjects = {
+        str(topic["id"]): str(topic["subject"])
+        for topic in topics
+        if "id" in topic and "subject" in topic
+    }
+    subject_query_counts = dict.fromkeys(expected_subjects, 0)
+
+    cross_subject_queries = {
+        "\u5bfc\u6570\u548c\u901f\u5ea6\u52a0\u901f\u5ea6\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u8fb9\u9645\u6210\u672c\u4e3a\u4ec0\u4e48\u7528\u5bfc\u6570\uff1f",
+        "\u51fd\u6570\u56fe\u50cf\u600e\u4e48\u770b\u7269\u7406\u8fd0\u52a8\uff1f",
+        "\u9700\u6c42\u4f9b\u7ed9\u66f2\u7ebf\u548c\u51fd\u6570\u56fe\u50cf\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u5f39\u6027\u5206\u6790\u548c\u659c\u7387\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u6781\u503c\u600e\u4e48\u7528\u6765\u5206\u6790\u5229\u6da6\u6700\u5927\u5316\uff1f",
+        "\u79ef\u5206\u548c\u7269\u7406\u505a\u529f\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u4e09\u89d2\u51fd\u6570\u548c\u7b80\u8c10\u8fd0\u52a8\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u5411\u91cf\u548c\u529b\u7684\u5206\u89e3\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u9012\u5f52\u4e3a\u4ec0\u4e48\u548c\u8bc1\u660e\u601d\u8def\u6709\u5173\uff1f",
+        "\u590d\u6742\u5ea6\u548c\u51fd\u6570\u589e\u957f\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u56fe\u8bba\u548c\u56fe\u904d\u5386\u7b97\u6cd5\u600e\u4e48\u8fde\u8d77\u6765\uff1f",
+        "\u4e8c\u7ef4\u6570\u7ec4\u548c\u77e9\u9635\u8fd0\u7b97\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u8fb9\u9645\u6536\u76ca\u548c\u5bfc\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u6bd4\u7387\u53d8\u5316\u548c\u7ecf\u6d4e\u5f39\u6027\u600e\u4e48\u8fde\u63a5\uff1f",
+        "\u4f4d\u79fb\u65f6\u95f4\u56fe\u50cf\u548c\u4e00\u6b21\u51fd\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "\u52a0\u901f\u5ea6\u4e3a\u4ec0\u4e48\u53ef\u4ee5\u7528\u5bfc\u6570\u7406\u89e3\uff1f",
+        "\u53d8\u529b\u505a\u529f\u4e3a\u4ec0\u4e48\u8981\u7528\u79ef\u5206\uff1f",
+        "\u659c\u9762\u529b\u5206\u89e3\u548c\u4e09\u89d2\u51fd\u6570\u6709\u4ec0\u4e48\u5173\u7cfb\uff1f",
+        "矢量空间和物理矢量有什么关系？",
+        "功和动能定理为什么要用被积函数和数量积？",
+        "简谐运动为什么可以用三角函数描述？",
+        "阻尼振动和指数函数增长衰减有什么关系？",
+        "经济增长和指数函数有什么关系？",
+        "经济数据图表为什么要懂期望方差和正态分布？",
+        "生产可能性边界和数学建模怎么联系？",
+        "短期成本曲线为什么要用导数和单调极值？",
+        "弹性分析为什么既看斜率又看导数？",
+        "利润最大化为什么既看二次函数最值又看导数？",
+        "图的存储结构和邻接矩阵怎么联系？",
+        "算法复杂度为什么要用函数思维和对数函数？",
+        "递归程序和数列递推有什么关系？",
+        "二维数组表示矩阵时行列维度容易混在哪里？",
+        "图论里的遍历和算法里的BFS DFS有什么关系？",
+    }
+
+    assert len(cases) == 100
+    assert len(cross_subject_queries) >= 34
+    assert set(minimum_subject_query_counts) == expected_subjects
+    for _query, expected_topic_ids in cases:
+        covered_subjects = {topic_subjects[topic_id] for topic_id in expected_topic_ids}
+        assert covered_subjects <= expected_subjects
+        for subject in covered_subjects:
+            subject_query_counts[subject] += 1
+
+    assert {
+        subject
+        for subject, query_count in subject_query_counts.items()
+        if query_count > 0
+    } == expected_subjects
+    for subject, minimum_query_count in minimum_subject_query_counts.items():
+        assert subject_query_counts[subject] >= minimum_query_count
+
+    for query, expected_topic_ids in cases:
+        payload = build_knowledge_guidance_payload(topics=topics, query=query)
+
+        assert payload["topic"]["id"] in expected_topic_ids, query
+        subgraph = payload["relevant_subgraph"]
+        model_context = payload["model_context"]
+        assert model_context["mode"] == "guidance", query
+        assert model_context["query"] == query, query
+        assert model_context["focus"]["id"] == subgraph["focus_topics"][0]["id"], query
+        assert model_context["summary"]["node_count"] == subgraph["summary"]["node_count"], query
+        assert model_context["summary"]["edge_count"] == subgraph["summary"]["edge_count"], query
+        assert model_context["summary"]["raw_seed_included"] is False, query
+        for raw_key in ("topics", "nodes", "edges", "matches", "relation_groups"):
+            assert raw_key not in model_context, query
+        compact_fields = (
+            "prerequisites",
+            "procedure",
+            "confusions",
+            "applications",
+            "extensions",
+            "review_with",
+            "practice_suggestions",
+        )
+        for field in compact_fields:
+            assert isinstance(model_context[field], list), query
+            assert all(isinstance(item, str) for item in model_context[field]), query
+        assert len(model_context["practice_suggestions"]) <= 6, query
+        assert sum(1 for field in compact_fields[:4] if model_context[field]) >= 2, query
+        relation_groups = payload["relation_groups"]
+        active_core_groups = {
+            relation
+            for relation in ("prerequisite", "confusable", "procedure_step", "application")
+            if relation_groups[relation]["items"]
+        }
+        assert len(active_core_groups) >= 2, query
+        if query in cross_subject_queries:
+            node_subjects = {
+                str(node["id"]): str(node.get("subject") or "")
+                for node in subgraph.get("nodes", [])
+                if isinstance(node, dict) and node.get("id")
+            }
+            node_labels = {
+                str(node["id"]): str(node.get("label") or node.get("id") or "")
+                for node in subgraph.get("nodes", [])
+                if isinstance(node, dict) and node.get("id")
+            }
+            cross_subject_edges = [
+                edge
+                for edge in subgraph.get("edges", [])
+                if isinstance(edge, dict)
+                and node_subjects.get(str(edge.get("from") or ""))
+                and node_subjects.get(str(edge.get("to") or ""))
+                and node_subjects[str(edge.get("from") or "")]
+                != node_subjects[str(edge.get("to") or "")]
+            ]
+            assert cross_subject_edges, query
+            compact_text = "\n".join(
+                item
+                for field in compact_fields
+                for item in model_context[field]
+            )
+            assert any(
+                node_labels.get(str(edge.get(endpoint) or ""))
+                and node_labels[str(edge.get(endpoint) or "")] in compact_text
+                for edge in cross_subject_edges
+                for endpoint in ("from", "to")
+            ), query
+
+
+def test_study_knowledge_guidance_groups_edges_into_user_facing_sections() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        query="\u5bfc\u6570\u600e\u4e48\u7528\u6765\u6c42\u6781\u503c\uff1f",
+    )
+
+    assert set(payload["relation_groups"]) >= {
+        "prerequisite",
+        "confusable",
+        "procedure_step",
+        "application",
+        "extends",
+        "co_occurs",
+    }
+    sections = {section["relation"]: section for section in payload["guidance_sections"]}
+    assert sections["prerequisite"]["title"] == "\u5148\u8865\u4ec0\u4e48"
+    assert sections["confusable"]["title"] == "\u5bb9\u6613\u6df7\u5728\u54ea\u91cc"
+    assert sections["procedure_step"]["title"] == "\u89e3\u9898\u6d41\u7a0b\u4e0b\u4e00\u6b65"
+    assert sections["application"]["title"] == "\u5178\u578b\u7528\u9014"
+    assert sections["extends"]["title"] == "\u540e\u7eed\u62d3\u5c55"
+    assert sections["co_occurs"]["title"] == "\u4e00\u8d77\u590d\u4e60"
+    assert any(
+        item["relation"] == "procedure_step"
+        and {
+            item["from"],
+            item["to"],
+        }
+        & {"college_critical_points", "college_stationary_points"}
+        for item in sections["procedure_step"]["items"]
+    )
+    for section in sections.values():
+        for item in section["items"]:
+            assert item["priority"] in {"core", "useful", "optional"}
+            assert item["context"] in {"diagnosis", "explanation", "practice", "review"}
+            assert 0.0 <= item["confidence"] <= 1.0
+    assert payload["summary"]["active_relation_group_count"] >= 2
+
+
+def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    static_css = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
+    surface_source = (
+        plugin_dir / "surfaces" / "knowledge_map.tsx"
+    ).read_text(encoding="utf-8")
+    surface_utils = (
+        plugin_dir / "surfaces" / "study_surface_utils.ts"
+    ).read_text(encoding="utf-8")
+
+    for source in (static_source, surface_source):
+        assert "ui.knowledge.edge_relation.application" in source
+        assert "ui.knowledge.edge_relation.procedure_step" in source
+        assert "ui.knowledge.edge_relation.confusable" in source
+        assert "data-relation" in source
+        assert "data-priority" in source
+        assert "data-context" in source
+        assert "knowledge-edge-row__reason" in source
+        assert "knowledge-edge-row__meta" in source
+    for source in (static_css, surface_utils):
+        assert 'data-relation="confusable"' in source
+        assert 'data-relation="application"' in source
+        assert 'data-relation="procedure_step"' in source
+        assert 'data-relation="extends"' in source
+        assert 'data-relation="co_occurs"' in source
+    assert "function renderKnowledgeNodeDetail" in static_source
+    assert "knowledge-node-detail" in surface_source
+    assert "ui.knowledge.node_detail.why" in surface_source
+    assert "ui.knowledge.node_detail.why" in static_source
+    assert "ui.knowledge.node_detail.next" in static_source
+    assert "ui.knowledge.node_detail.practice" in static_source
+    assert "ui.knowledge.node_detail.misconceptions" in static_source
+
+
+def test_study_knowledge_graph_index_builds_lookup_maps_and_edges() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+
+    index = KnowledgeGraphIndex(topics)
+
+    assert "college_derivative_calculation" in index.by_id
+    assert "math" in index.subject_to_ids
+    assert "college" in index.stage_to_ids
+    assert index.relation_counts["procedure_step"] >= 90
+    assert index.relation_counts["application"] >= 130
+    matches = index.match(
+        query="\u5bfc\u6570\u600e\u4e48\u7528\u6765\u6c42\u6781\u503c\uff1f",
+        limit=3,
+    )
+    assert matches
+    assert matches[0]["id"] in {
+        "senior_derivative_extrema",
+        "college_monotonic_extrema",
+        "college_stationary_points",
+        "college_extreme_value_points",
+    }
+
+
+def test_study_knowledge_relevant_subgraph_respects_budget_and_relation_limits() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+    budget = SubgraphBudget(
+        focus_topics=2,
+        max_depth=2,
+        max_nodes=12,
+        max_edges=10,
+        relation_limits={
+            "prerequisite": 2,
+            "procedure_step": 3,
+            "confusable": 2,
+            "application": 2,
+            "extends": 1,
+            "co_occurs": 1,
+        },
+    )
+
+    subgraph = build_relevant_subgraph(
+        topics,
+        query="\u5bfc\u6570\u600e\u4e48\u7528\u6765\u6c42\u6781\u503c\uff1f",
+        budget=budget,
+    )
+
+    assert subgraph["summary"]["matched"] is True
+    assert subgraph["summary"]["raw_seed_included"] is False
+    assert subgraph["summary"]["node_count"] <= 12
+    assert subgraph["summary"]["edge_count"] <= 10
+    assert len(subgraph["focus_topics"]) <= 2
+    for relation, limit in budget.relation_limits.items():
+        assert len(subgraph["relation_groups"][relation]["items"]) <= limit
+    assert any(
+        edge["relation"] in {"procedure_step", "application", "confusable", "prerequisite"}
+        for edge in subgraph["edges"]
+    )
+
+
+def test_study_knowledge_compressed_subgraph_payload_omits_raw_seed_topics() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+    subgraph = build_relevant_subgraph(
+        KnowledgeGraphIndex(topics),
+        query="\u5bfc\u6570\u600e\u4e48\u7528\u6765\u6c42\u6781\u503c\uff1f",
+        budget=SubgraphBudget(max_nodes=20, max_edges=30),
+    )
+
+    compressed = compress_subgraph_payload(subgraph)
+
+    assert compressed["summary"]["raw_seed_included"] is False
+    assert "topics" not in compressed
+    assert "nodes" not in compressed
+    assert "edges" not in compressed
+    assert compressed["focus"]["id"]
+    assert compressed["procedure"] or compressed["applications"]
+    assert compressed["confusions"] or compressed["prerequisites"]
+    assert compressed["summary"]["node_count"] <= 20
+    assert compressed["summary"]["edge_count"] <= 30
+
+
+def test_study_knowledge_guidance_includes_budgeted_model_context() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+
+    payload = build_knowledge_guidance_payload(
+        topics=topics,
+        topic_id="college_stationary_points",
+        query="\u5bfc\u6570\u4e3a0\u4e3a\u4ec0\u4e48\u4e0d\u4e00\u5b9a\u662f\u6781\u503c\u70b9\uff1f",
+    )
+
+    subgraph = payload["relevant_subgraph"]
+    model_context = payload["model_context"]
+    assert payload["summary"]["raw_seed_included"] is False
+    assert subgraph["summary"]["raw_seed_included"] is False
+    assert subgraph["summary"]["node_count"] <= 20
+    assert subgraph["summary"]["edge_count"] <= 30
+    assert payload["summary"]["subgraph_node_count"] == subgraph["summary"]["node_count"]
+    assert payload["summary"]["subgraph_edge_count"] == subgraph["summary"]["edge_count"]
+    assert model_context["summary"]["raw_seed_included"] is False
+    assert "topics" not in model_context
+    assert "nodes" not in model_context
+    assert "edges" not in model_context
+    assert model_context["focus"]["id"] == "college_stationary_points"
+    assert model_context["confusions"] or model_context["prerequisites"]
+    assert model_context["procedure"] or model_context["applications"]
 
 
 def test_study_knowledge_guidance_real_seed_explains_stationary_point_confusion() -> None:
@@ -3124,6 +4285,12 @@ def test_study_knowledge_seed_contains_college_graph_template_edges() -> None:
     assert has_edge("college_binomial_distribution", "college_expectation_variance", "application")
     assert has_edge("college_normal_distribution", "college_confidence_interval", "application")
     assert has_edge("college_graph_theory_intro", "college_graph_shortest_path", "application")
+    assert has_edge("college_derivative_calculation", "college_physics_kinematics_calculus", "application")
+    assert has_edge("college_definite_integral", "college_physics_work_energy_theorem", "application")
+    assert has_edge("college_graph_theory_intro", "college_ds_shortest_path", "application")
+    assert has_edge("college_matrix_operations", "college_c_2d_array_matrix", "application")
+    assert has_edge("college_expectation_variance", "bio_senior_genetics_law", "application")
+    assert has_edge("senior_exponential_function", "chem_senior_ph_ionization", "application")
 
 
 @pytest.mark.asyncio
@@ -5946,6 +7113,92 @@ async def test_learning_context_includes_knowledge_graph_guidance_for_explain(
 
 
 @pytest.mark.asyncio
+async def test_non_concept_learning_context_uses_compact_knowledge_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        context = await plugin._build_learning_context(
+            "question_generate",
+            input_text="\u5bfc\u6570\u4e3a0\u4e3a\u4ec0\u4e48\u4e0d\u662f\u6781\u503c\u70b9",
+            extra={"selected_topic_id": "college_stationary_points"},
+        )
+
+        guidance = context["knowledge_guidance"]
+        assert guidance["focus"]["id"] == "college_stationary_points"
+        assert "relevant_subgraph" not in guidance
+        assert "diagnosis_questions" not in guidance
+        assert "learning_path" not in guidance
+
+        public_guidance = getattr(context, "public_knowledge_guidance")
+        assert public_guidance["topic"]["id"] == "college_stationary_points"
+        assert public_guidance["diagnosis_questions"]
+        assert "relevant_subgraph" in public_guidance
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_prompt_uses_compact_guidance_but_public_payload_is_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        evaluated = await plugin.study_evaluate_answer(
+            question="\u5bfc\u6570\u4e3a0\u4e3a\u4ec0\u4e48\u4e0d\u662f\u6781\u503c\u70b9\uff1f",
+            expected_answer="\u8fd8\u8981\u68c0\u67e5\u5355\u8c03\u6027\u662f\u5426\u53d8\u5316\u3002",
+            answer="\u9700\u8981\u770b\u5355\u8c03\u6027\u53d8\u5316\u3002",
+            selected_topic_id="college_stationary_points",
+        )
+
+        assert isinstance(evaluated, Ok)
+        prompt_context = fake_agent.evaluations[-1][3]
+        prompt_guidance = prompt_context["knowledge_guidance"]
+        assert prompt_guidance["focus"]["id"] == "college_stationary_points"
+        assert "relevant_subgraph" not in prompt_guidance
+        assert "diagnosis_questions" not in prompt_guidance
+        assert "learning_path" not in prompt_guidance
+
+        public_guidance = evaluated.value["knowledge_guidance"]
+        assert public_guidance["topic"]["id"] == "college_stationary_points"
+        assert public_guidance["diagnosis_questions"]
+        assert "relevant_subgraph" in public_guidance
+        assert evaluated.value["diagnosis_questions"] == public_guidance[
+            "diagnosis_questions"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6262,6 +7515,30 @@ async def test_tutor_agent_prompt_and_reply_contract(
     assert "Knowledge graph guidance" in guided_messages[1]["content"]
     assert "\u6c42\u6781\u503c\u70b9" in guided_messages[1]["content"]
     assert "\u4f60\u662f\u4e0d\u4f1a\u6c42\u5bfc\u5417" in guided_messages[1]["content"]
+    compact_guided_messages = build_concept_explain_messages(
+        text="\u6211\u4e0d\u4f1a\u6c42\u6781\u503c\u70b9",
+        language="zh-CN",
+        mode=MODE_COMPANION,
+        context={
+            "source": "unit-test",
+            "mode": MODE_COMPANION,
+            "knowledge_guidance": {
+                "topic": {"id": "extrema", "label": "\u6c42\u6781\u503c\u70b9"},
+                "learning_path": [{"from": "derivative", "to": "extrema"}],
+                "model_context": {
+                    "focus": {"id": "extrema", "label": "\u6c42\u6781\u503c\u70b9"},
+                    "prerequisites": ["\u5bfc\u6570"],
+                    "procedure": ["\u6c42\u5bfc"],
+                    "summary": {"raw_seed_included": False},
+                },
+            },
+        },
+    )
+    compact_content = compact_guided_messages[1]["content"]
+    assert "\u6c42\u6781\u503c\u70b9" in compact_content
+    assert "\u5bfc\u6570" in compact_content
+    assert "learning_path" not in compact_content
+    assert "derivative" not in compact_content
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 

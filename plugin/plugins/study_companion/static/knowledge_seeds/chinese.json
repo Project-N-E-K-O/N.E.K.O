@@ -149,6 +149,45 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "chinese_primary_sentence_expansion",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Paragraph main idea tasks are often confused with sentence expansion tasks because both ask students to process wording, but one summarizes while the other elaborates.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_primary_observation_writing",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Summarizing a paragraph helps students select key details before turning observations into a short composition.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_primary_observation_writing",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After identifying the main idea, students can organize selected details into a coherent observation-writing paragraph.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_primary_observation_writing",
           "relation": "next",
           "reason": "Practice 观察作文 after 段落主要内容; it is the next topic in the primary chinese learning sequence.",
@@ -276,6 +315,45 @@
       "related": [
         {
           "id": "chinese_junior_expository_reading",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Narrative reading asks about events, characters, and emotion, while expository reading asks about object features and explanation methods.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Narrative reading skills transfer to character-image analysis because both rely on actions, language, psychology, and context evidence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Narrative reading answers should move from locating plot evidence to naming character or emotion, then formatting the response by points.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_junior_expository_reading",
           "relation": "next",
           "reason": "Practice 说明文阅读 after 记叙文阅读; it is the next topic in the junior_high chinese learning sequence.",
           "use_cases": [
@@ -345,6 +423,45 @@
       "difficulty": 0.52,
       "prerequisites": [],
       "related": [
+        {
+          "id": "chinese_junior_argumentative_reading",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Expository reading explains objects and methods, while argumentative reading tracks claims, reasons, and evidence.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Expository reading prepares students to filter factual information and match textual details to task requirements.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After extracting explanation targets and key features, students can compress the passage into a concise summary.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "chinese_junior_argumentative_reading",
           "relation": "next",
@@ -417,6 +534,45 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "chinese_junior_expository_reading",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Argumentative reading focuses on claims and proof, which students often confuse with expository object-feature explanation.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Understanding argument structure supports later argumentative writing and helps students build claims with evidence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After identifying the central claim, students should map supporting points and the order of reasoning.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_junior_classical_function_words",
           "relation": "next",
           "reason": "Practice 文言虚词 after 议论文阅读; it is the next topic in the junior_high chinese learning sequence.",
@@ -424,6 +580,24 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Argumentative reading trains claim-evidence-reasoning checks that transfer to political logic questions and structured material answers.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "politics",
+            "bridge_direction": "chinese_to_politics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -547,7 +721,47 @@
       "depth": 3,
       "difficulty": 0.68,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "procedure_step",
+          "reason": "Question review should lead to evidence location, then structured answer points for literary-text reading.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "application",
+          "reason": "Literary-text reading applies to character image analysis because plot, action, and narration provide evidence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_text",
+          "relation": "confusable",
+          "reason": "Literary text asks about theme, image, emotion, and technique, while practical text asks for factual information and task matching.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈主题",
         "文言词义只记现代义，忽略语境",
@@ -631,6 +845,45 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "procedure_step",
+          "reason": "Question review should lead to locating task-relevant facts, then grouping information into concise answer points.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_new_gaokao_mixed_text",
+          "relation": "application",
+          "reason": "Practical-text reading supports mixed-text tasks because students must compare sources and integrate task-matched information.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_text",
+          "relation": "confusable",
+          "reason": "Practical text focuses on information filtering, which students often confuse with literary theme and emotion analysis.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -718,6 +971,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chinese_senior_poetry_image_emotion",
+          "relation": "procedure_step",
+          "reason": "Question review should locate images and wording, connect them to emotion, then form structured appreciation points.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "application",
+          "reason": "Poetry appreciation uses image and emotion analysis before explaining expression techniques and their effects.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "confusable",
+          "reason": "Students often name a technique when the prompt asks for emotion, or state emotion without explaining the technique effect.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -803,6 +1095,45 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_material_review",
+          "relation": "procedure_step",
+          "reason": "Argument writing should begin with prompt review, constraint extraction, and a focused arguable claim.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "application",
+          "reason": "A clear argument becomes stronger when students choose evidence and analyze how it proves the claim.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_task_driven_writing",
+          "relation": "confusable",
+          "reason": "General argument writing can be confused with task-driven writing that requires role, audience, and situation constraints.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -890,6 +1221,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "procedure_step",
+          "reason": "Question review should identify the requested form, locate key language material, then organize the answer by rule.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "application",
+          "reason": "Language-use tasks improve structured answer habits because wording, order, and constraints must all be checked.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_error_correction",
+          "relation": "confusable",
+          "reason": "Language-use prompts may ask for expression, cohesion, compression, or correction, so the task type must be separated first.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -976,6 +1346,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chinese_senior_classical_content_words",
+          "relation": "procedure_step",
+          "reason": "Translation should first locate content-word meanings, then align sentence structure and produce fluent modern wording.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_sentence_patterns",
+          "relation": "application",
+          "reason": "Special sentence patterns help students turn literal parsing into accurate classical Chinese translation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_summary",
+          "relation": "confusable",
+          "reason": "Translation asks for word and sentence accuracy, while summary asks for event meaning and viewpoint.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Classical translation helps decode institutions, titles, rituals, and cultural terms that appear in historical cultural-exchange materials.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1054,7 +1481,47 @@
       "depth": 3,
       "difficulty": 0.74,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chinese_senior_composition_task_context",
+          "relation": "procedure_step",
+          "reason": "Task-driven writing should review identity, audience, purpose, and constraints before forming the central idea.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "application",
+          "reason": "After reviewing the task and forming an idea, students need layered argument organization to develop the response.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument",
+          "relation": "confusable",
+          "reason": "Task-driven writing is often mistaken for ordinary argument writing when situational requirements are ignored.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离文本空谈",
         "答题角度不全",
@@ -1145,6 +1612,45 @@
         {
           "id": "chinese_senior_modern_info_comparison",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "procedure_step",
+          "reason": "Argument-structure answers should review the prompt, locate claim and evidence, then describe the reasoning order.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "application",
+          "reason": "Reading argument structure supports writing because students can reuse claim, evidence, and reasoning layers.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_modern_info_comparison",
+          "relation": "confusable",
+          "reason": "Argument-structure questions track reasoning, while information-comparison questions match and integrate factual points.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1233,6 +1739,63 @@
         {
           "id": "chinese_senior_literary_image",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "procedure_step",
+          "reason": "Comparison tasks should review dimensions, locate matched information, then organize similarities and differences.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_new_gaokao_mixed_text",
+          "relation": "application",
+          "reason": "Information comparison directly supports mixed-text reading because both require cross-source integration.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_modern_argument_structure",
+          "relation": "confusable",
+          "reason": "Information comparison is often confused with argument-structure analysis when students summarize claims instead of comparing details.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Cross-text comparison in Chinese builds the same evidence matching and viewpoint comparison needed in historical material analysis.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1315,6 +1878,45 @@
       ],
       "related": [
         {
+          "id": "chinese_senior_prose_language_appreciation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Character-image questions focus on people and evidence, while prose language appreciation focuses on expression and style.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_environment",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Environment description often supports character mood, identity, and theme interpretation.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Character analysis should use plot actions, dialogue, and conflict as evidence.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_senior_modern_info_comparison",
           "relation": "nearby"
         },
@@ -1384,6 +1986,12 @@
         "school_exam",
         "gaokao_style",
         "academic_level_exam"
+      ],
+      "aliases": [
+        "小说人物形象",
+        "人物形象分析",
+        "文学类文本人物",
+        "小说人物怎么分析"
       ]
     },
     {
@@ -1402,6 +2010,45 @@
         }
       ],
       "related": [
+        {
+          "id": "chinese_senior_literary_environment",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Plot-effect questions ask how events advance conflict and theme, while environment-effect questions ask how setting shapes mood and character.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Plot-effect answers need a stable point-by-point template covering content, structure, character, and theme.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "After locating a plot segment, students should connect it to character behavior and conflict before explaining its effect.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "chinese_senior_literary_image",
           "relation": "nearby"
@@ -1497,6 +2144,45 @@
         {
           "id": "chinese_senior_prose_language_appreciation",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "procedure_step",
+          "reason": "Environment-effect answers should locate the scene, connect it to plot and character, then state the thematic effect.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "application",
+          "reason": "Environment description often reveals character mood and image through setting, atmosphere, and contrast.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_prose_language_appreciation",
+          "relation": "confusable",
+          "reason": "Environment-effect questions ask what the setting does, while language-appreciation questions ask how wording creates effect.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1585,6 +2271,45 @@
         {
           "id": "chinese_senior_practical_filter",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "procedure_step",
+          "reason": "Language-appreciation answers should review the angle, locate key wording, analyze effect, and write by points.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "relation": "application",
+          "reason": "Prose wording appreciation transfers to poetry language style because both connect diction and rhythm to expression.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "confusable",
+          "reason": "Language style focuses on wording and tone, while expression technique focuses on method and effect.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1667,12 +2392,69 @@
       ],
       "related": [
         {
+          "id": "chinese_senior_modern_info_comparison",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Information filtering selects accurate details from one text, while comparison tasks integrate similarities and differences across texts.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_text",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Filtering information is a core operation in practical-text reading questions about reports, interviews, and nonliterary materials.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After filtering valid information, students often need to compress it into a brief answer that satisfies the question limit.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_senior_prose_language_appreciation",
           "relation": "nearby"
         },
         {
           "id": "chinese_senior_classical_content_words",
           "relation": "nearby"
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Practical-text filtering transfers to historical source questions because both require selecting reliable evidence before answering the prompt.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1761,6 +2543,45 @@
         {
           "id": "chinese_senior_classical_function_words",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_translation",
+          "relation": "procedure_step",
+          "reason": "Content-word meaning should be located in context before students translate the full sentence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_summary",
+          "relation": "application",
+          "reason": "Accurate content-word interpretation supports classical passage summary because event relations depend on key meanings.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_function_words",
+          "relation": "confusable",
+          "reason": "Content words carry concrete meaning, while function words mark grammar, tone, or logical relations.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1843,6 +2664,58 @@
       ],
       "related": [
         {
+          "id": "chinese_junior_classical_function_words",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Junior and senior function-word tasks share terms but differ in depth, sentence complexity, and evidence requirements.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_translation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Function-word judgement is directly used when translating classical Chinese sentences accurately.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_sentence_patterns",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After identifying a function word, the next step is to verify its role inside the sentence pattern and translation structure.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_content_words",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Classical function-word analysis depends on reading the local context and separating content-word meaning from grammatical function.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "chinese_senior_classical_content_words",
           "relation": "nearby"
         },
@@ -1912,6 +2785,12 @@
         "school_exam",
         "gaokao_style",
         "academic_level_exam"
+      ],
+      "aliases": [
+        "文言虚词",
+        "虚词用法",
+        "而之其以用法",
+        "文言虚词判断"
       ]
     },
     {
@@ -1937,6 +2816,45 @@
         {
           "id": "chinese_senior_classical_summary",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_translation",
+          "relation": "procedure_step",
+          "reason": "Sentence-pattern recognition should precede translation so omitted, inverted, and passive elements are restored.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_summary",
+          "relation": "application",
+          "reason": "Recognizing sentence patterns helps students identify who did what before summarizing classical text content.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_classical_content_words",
+          "relation": "confusable",
+          "reason": "Sentence-pattern questions focus on structure, while content-word questions focus on contextual meaning.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2107,12 +3025,69 @@
       ],
       "related": [
         {
+          "id": "chinese_senior_poetry_compare",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Single-poem image-emotion questions differ from comparison questions that require similarities and differences across texts.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Imagery and emotion are often supported by diction, tone, and language style evidence.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Poetry image analysis should connect imagery to expression technique before naming the emotion.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_senior_classical_summary",
           "relation": "nearby"
         },
         {
           "id": "chinese_senior_poetry_expression_technique",
           "relation": "nearby"
+        },
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Poetic imagery about routes, objects, and customs can support historical interpretation of cultural exchange and regional interaction.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2176,6 +3151,12 @@
         "school_exam",
         "gaokao_style",
         "academic_level_exam"
+      ],
+      "aliases": [
+        "诗歌意象",
+        "诗歌情感",
+        "意象与情感",
+        "诗歌意象情感分析"
       ]
     },
     {
@@ -2201,6 +3182,45 @@
         {
           "id": "chinese_senior_poetry_language_style",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_image_emotion",
+          "relation": "procedure_step",
+          "reason": "Technique answers should locate image and wording evidence before naming the method and explaining emotion.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_compare",
+          "relation": "application",
+          "reason": "Technique analysis supports poetry comparison because students can compare methods, effects, and emotions across poems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "relation": "confusable",
+          "reason": "Expression technique explains method, while language style explains diction, tone, and rhythm.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2289,6 +3309,45 @@
         {
           "id": "chinese_senior_poetry_compare",
           "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "procedure_step",
+          "reason": "Language-style answers should locate representative words, infer tone, then connect wording to expression effect.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_poetry_compare",
+          "relation": "application",
+          "reason": "Language-style analysis helps compare poems by diction, rhythm, tone, and emotional expression.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_prose_language_appreciation",
+          "relation": "confusable",
+          "reason": "Poetry language style shares wording analysis with prose appreciation but must account for poetic compression and rhythm.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2465,6 +3524,24 @@
         {
           "id": "chinese_senior_language_compression",
           "relation": "nearby"
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Chinese sentence-ordering work strengthens cohesion awareness that transfers to English paragraph links, transitions, and logical flow.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2548,11 +3625,68 @@
       "related": [
         {
           "id": "chinese_senior_language_cohesion",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Compression tasks require condensing key information, while cohesion tasks require ordering sentences by logic and connectors.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "A concise compressed answer depends on first filtering out invalid, repeated, or secondary information.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "After selecting key information, students often rewrite sentence patterns to meet word-count and expression requirements.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_cohesion",
           "relation": "nearby"
         },
         {
           "id": "chinese_senior_language_sentence_rewrite",
           "relation": "nearby"
+        },
+        {
+          "id": "english_senior_summary_writing",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Chinese compression and gist extraction transfer to English summary writing through selecting main ideas and deleting minor details.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2641,6 +3775,24 @@
         {
           "id": "chinese_senior_language_error_correction",
           "relation": "nearby"
+        },
+        {
+          "id": "english_senior_summary_paraphrase",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Chinese sentence rewriting builds paraphrase control that helps English summaries avoid copying while preserving the original meaning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2899,12 +4051,69 @@
       ],
       "related": [
         {
+          "id": "chinese_senior_composition_task_context",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "General material essays and task-driven essays both require prompt reading, but task-driven writing adds audience, role, and situation constraints.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "A valid thesis needs matching evidence and analysis rather than disconnected examples.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After reviewing the prompt, students need to turn the central claim into layered argument structure.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_senior_language_graphic",
           "relation": "nearby"
         },
         {
           "id": "chinese_senior_composition_argument_layer",
           "relation": "nearby"
+        },
+        {
+          "id": "pol_senior_philosophy_dialectics",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Essay prompt review trains students to identify contradictions, relations, and value angles before applying dialectical analysis to political materials.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "politics",
+            "bridge_direction": "chinese_to_politics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2968,6 +4177,12 @@
         "school_exam",
         "gaokao_style",
         "academic_level_exam"
+      ],
+      "aliases": [
+        "材料作文",
+        "审题立意",
+        "材料作文审题立意",
+        "作文立意"
       ]
     },
     {
@@ -2987,12 +4202,69 @@
       ],
       "related": [
         {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Argument layers organize reasoning, while example argument work selects evidence and explains how it proves the claim.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_opening_ending",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "A clear argument layer guides how the opening introduces the claim and how the ending returns to the central point.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After setting the argument layers, students should choose evidence for each layer and explain the proof connection.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "chinese_senior_composition_material_review",
           "relation": "nearby"
         },
         {
           "id": "chinese_senior_composition_example_argument",
           "relation": "nearby"
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Layered argumentative writing maps well to law-rule material answers, where claims, legal basis, analysis, and conclusion must be ordered.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "politics",
+            "bridge_direction": "chinese_to_politics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3433,6 +4705,24 @@
         {
           "id": "chinese_senior_text_answer_template",
           "relation": "nearby"
+        },
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Classical cultural knowledge gives historical background for rituals, institutions, calendars, and exchange symbols in cultural history questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3609,6 +4899,24 @@
         {
           "id": "chinese_senior_exam_revision_strategy",
           "relation": "nearby"
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Mixed-text reading strengthens source grouping, viewpoint extraction, and evidence synthesis for historical document-based questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [

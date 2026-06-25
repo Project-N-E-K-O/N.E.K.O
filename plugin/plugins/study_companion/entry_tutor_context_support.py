@@ -21,6 +21,17 @@ from .knowledge_graph_guidance import build_knowledge_guidance_payload
 from .models import public_current_question_payload
 
 
+class _LearningContext(dict[str, Any]):
+    def __init__(
+        self,
+        *args: Any,
+        public_knowledge_guidance: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.public_knowledge_guidance = public_knowledge_guidance
+
+
 class _TutorContextSupportMixin:
     async def _build_knowledge_guidance_context(
         self,
@@ -123,27 +134,31 @@ class _TutorContextSupportMixin:
         history = await asyncio.to_thread(self._store.list_interactions, history_limit)
         current_question = snapshot.get("current_question") or {}
         public_current_question = public_current_question_payload(current_question)
-        context = {
-            "operation": operation,
-            "input_text": input_text,
-            "language": self._cfg.language,
-            "mode": snapshot.get("active_mode") or self._cfg.mode,
-            "screen_classification": snapshot.get("last_screen_classification") or {},
-            "recent_screen_classifications": snapshot.get(
-                "recent_screen_classifications"
-            )
-            or [],
-            "current_question": public_current_question,
-            "public_current_question": public_current_question,
-            "last_answer_evaluation": snapshot.get("last_answer_evaluation") or {},
-            "session_summary_seed": snapshot.get("session_summary_seed") or {},
-            "recent_learning_events": (snapshot.get("recent_learning_events") or [])[
-                -8:
-            ],
-            "last_ocr_text": snapshot.get("last_ocr_text") or "",
-            "last_ocr_at": snapshot.get("last_ocr_at") or "",
-            "history": history,
-        }
+        context = _LearningContext(
+            {
+                "operation": operation,
+                "input_text": input_text,
+                "language": self._cfg.language,
+                "mode": snapshot.get("active_mode") or self._cfg.mode,
+                "screen_classification": snapshot.get("last_screen_classification")
+                or {},
+                "recent_screen_classifications": snapshot.get(
+                    "recent_screen_classifications"
+                )
+                or [],
+                "current_question": public_current_question,
+                "public_current_question": public_current_question,
+                "last_answer_evaluation": snapshot.get("last_answer_evaluation")
+                or {},
+                "session_summary_seed": snapshot.get("session_summary_seed") or {},
+                "recent_learning_events": (
+                    snapshot.get("recent_learning_events") or []
+                )[-8:],
+                "last_ocr_text": snapshot.get("last_ocr_text") or "",
+                "last_ocr_at": snapshot.get("last_ocr_at") or "",
+                "history": history,
+            }
+        )
         if operation == LLM_OPERATION_QUESTION_GENERATE:
             hint = ""
             if extra:
@@ -196,7 +211,14 @@ class _TutorContextSupportMixin:
             context=context,
         )
         if guidance.get("summary", {}).get("matched"):
-            context["knowledge_guidance"] = guidance
+            context.public_knowledge_guidance = guidance
+            if operation == LLM_OPERATION_CONCEPT_EXPLAIN:
+                context["knowledge_guidance"] = guidance
+            else:
+                model_context = guidance.get("model_context")
+                context["knowledge_guidance"] = (
+                    dict(model_context) if isinstance(model_context, dict) else guidance
+                )
         return context
 
     async def _record_tutor_result(
@@ -291,7 +313,9 @@ class _TutorContextSupportMixin:
             payload.setdefault("summary", reply.reply)
         else:
             payload = build_tutor_payload(reply)
-        guidance = (extra_context or {}).get("knowledge_guidance")
+        guidance = getattr(extra_context, "public_knowledge_guidance", None)
+        if not isinstance(guidance, dict):
+            guidance = (extra_context or {}).get("knowledge_guidance")
         if isinstance(guidance, dict):
             summary = guidance.get("summary")
             if isinstance(summary, dict) and summary.get("matched"):

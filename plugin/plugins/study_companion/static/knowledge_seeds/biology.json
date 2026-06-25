@@ -14,7 +14,7 @@
       "related": [
         {
           "id": "bio_junior_photosynthesis_respiration",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 光合作用与呼吸作用 after 细胞结构; it is the next topic in the junior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -85,7 +85,7 @@
       "related": [
         {
           "id": "bio_junior_human_body_systems",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 人体系统协调 after 光合作用与呼吸作用; it is the next topic in the junior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -156,7 +156,7 @@
       "related": [
         {
           "id": "bio_junior_ecology_food_chain",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 食物链与生态系统 after 人体系统协调; it is the next topic in the junior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -227,7 +227,7 @@
       "related": [
         {
           "id": "bio_junior_microscope",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 显微镜使用 after 食物链与生态系统; it is the next topic in the junior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -289,13 +289,133 @@
     {
       "id": "bio_senior_genetics_law",
       "name": "孟德尔遗传定律",
+      "aliases": [
+        "孟德尔遗传",
+        "遗传概率",
+        "基因型",
+        "表现型",
+        "基因型和表现型",
+        "分离定律"
+      ],
       "subject": "biology",
       "stage": "senior_high",
       "chapter": "高中生物",
       "depth": 2,
       "difficulty": 0.66,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_inheritance_intro",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "孟德尔遗传计算需要先分清性状、基因型、表现型和显隐性关系。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_meiosis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "遗传定律的配子类型和比例依赖减数分裂中等位基因的分离。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "bio_senior_gene_frequency",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "种群基因频率是遗传概率思想在群体层面的延伸应用。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_dna_expression",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "基因型、表现型讨论遗传结果，基因表达讨论 DNA 信息如何转录翻译为功能产物。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_probability_counting",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Genotype and gamete-count problems apply counting rules before probability ratios are computed.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "genetic_cross_to_counting"
+          }
+        },
+        {
+          "id": "college_conditional_probability",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Genetic risk after known phenotype or family history uses conditional probability reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "genetic_risk_conditioning"
+          }
+        },
+        {
+          "id": "senior_binomial_distribution",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Independent offspring outcomes can be modeled as repeated Bernoulli trials in family-size questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "offspring_trials_binomial"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "把相近概念机械背诵，缺少过程联系",
         "实验题不区分自变量、因变量和无关变量",
@@ -374,7 +494,7 @@
       "related": [
         {
           "id": "bio_senior_homeostasis",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 稳态与调节 after DNA复制与基因表达; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -460,7 +580,7 @@
       "related": [
         {
           "id": "bio_senior_ecology_energy_flow",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 生态系统能量流动 after 稳态与调节; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -546,7 +666,7 @@
       "related": [
         {
           "id": "bio_senior_experiment_design",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 生物实验设计 after 生态系统能量流动; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -632,7 +752,7 @@
       "related": [
         {
           "id": "bio_senior_meiosis",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 减数分裂 after 生物实验设计; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -718,7 +838,7 @@
       "related": [
         {
           "id": "bio_junior_inheritance_intro",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 性状遗传初步 after 显微镜使用; it is the next topic in the junior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -781,13 +901,67 @@
     {
       "id": "bio_junior_inheritance_intro",
       "name": "性状遗传初步",
+      "aliases": [
+        "性状遗传",
+        "遗传概率题",
+        "基因型",
+        "表现型",
+        "显性隐性",
+        "遗传推理"
+      ],
       "subject": "biology",
       "stage": "junior_high",
       "chapter": "遗传与进化",
       "depth": 2,
       "difficulty": 0.54,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "遗传概率题要从亲本基因型写到配子，再组合出子代表现型比例。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "bio_senior_dna_expression",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "基因型和表现型属于遗传推理，不能直接等同于基因表达过程。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "tree_diagram",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Basic inheritance crosses use tree diagrams to enumerate gamete combinations and phenotype outcomes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "inheritance_cross_tree_diagram"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "概念背诵和过程理解脱节",
         "实验变量与对照组不清",
@@ -843,6 +1017,13 @@
     {
       "id": "bio_senior_meiosis",
       "name": "减数分裂",
+      "aliases": [
+        "减数分裂",
+        "有丝分裂和减数分裂",
+        "减数分裂和有丝分裂",
+        "配子形成",
+        "同源染色体分离"
+      ],
       "subject": "biology",
       "stage": "senior_high",
       "chapter": "遗传与进化",
@@ -851,8 +1032,34 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "bio_senior_mitosis_image",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "减数分裂和有丝分裂最容易在染色体行为、子细胞数和遗传物质变化上混淆。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "减数分裂解释等位基因分离和配子类型，是遗传概率题的细胞学基础。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "bio_senior_gene_frequency",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 种群基因频率 after 减数分裂; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -939,7 +1146,7 @@
       "related": [
         {
           "id": "bio_senior_biotech_engineering",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 现代生物技术工程 after 种群基因频率; it is the next topic in the senior_high biology learning sequence.",
           "use_cases": [
             "learning_path",
@@ -1103,17 +1310,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_genetics_law",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 孟德尔遗传定律 before 细胞结构与功能对应; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_genetics_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 细胞结构与功能对应 together with 孟德尔遗传定律 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_membrane_transport",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 细胞结构与功能对应 together with 物质跨膜运输 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_membrane_transport",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Cell structure-function matching is used to explain selective transport and secretion scenarios.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_junior_cell_structure",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Students often mix organelle recognition with senior-level structure-function reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1191,17 +1446,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_cell_structure_function",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 细胞结构与功能对应 before 物质跨膜运输; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_cell_structure_function",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物质跨膜运输 together with 细胞结构与功能对应 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_enzyme_curve",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物质跨膜运输 together with 酶活性曲线分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Transport mechanisms are commonly tested through osmosis, concentration gradients, and controlled variable experiments.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_cell_structure_function",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "Learners may confuse membrane component functions with the transport mode chosen from a scenario.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1279,17 +1582,122 @@
       "prerequisites": [
         {
           "id": "bio_senior_membrane_transport",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 物质跨膜运输 before 酶活性曲线分析; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_membrane_transport",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 酶活性曲线分析 together with 物质跨膜运输 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_cell_respiration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 酶活性曲线分析 together with 细胞呼吸过程与计算 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_cell_respiration",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Enzyme activity curves help explain reaction-rate limits in respiration and metabolism questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Students often treat curve-reading skills as the biological enzyme conclusion without separating data pattern from mechanism.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Enzyme activity curves require reading peaks, intervals, and trend changes from function graphs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "enzyme_curve_graph_reading"
+          }
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Before explaining optimum enzyme conditions, students identify increasing and decreasing intervals.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "enzyme_curve_monotonicity"
+          }
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "application",
+          "priority": "optional",
+          "context": "explanation",
+          "confidence": 0.78,
+          "reason": "Optimal temperature or pH points connect enzyme-rate maxima with extrema reasoning.",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "enzyme_optimum_extrema"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1367,17 +1775,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_enzyme_curve",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 酶活性曲线分析 before 细胞呼吸过程与计算; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_enzyme_curve",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 细胞呼吸过程与计算 together with 酶活性曲线分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_photosynthesis_curve",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 细胞呼吸过程与计算 together with 光合作用曲线分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Respiration calculations connect cellular carbon release to carbon-cycle and material-flow contexts.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_photosynthesis_curve",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Respiration and photosynthesis questions often share gas-exchange graphs but reverse matter and energy directions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1455,17 +1911,122 @@
       "prerequisites": [
         {
           "id": "bio_senior_cell_respiration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 细胞呼吸过程与计算 before 光合作用曲线分析; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_cell_respiration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 光合作用曲线分析 together with 细胞呼吸过程与计算 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_mitosis_image",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 光合作用曲线分析 together with 有丝分裂图像判断 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Photosynthetic rate analysis supports ecosystem productivity and energy-input questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_cell_respiration",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Net photosynthesis, total photosynthesis, and respiration are easy to confuse in light-intensity graphs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Light-response and CO2-response curves require extracting intercepts, plateaus, and limiting intervals.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "photosynthesis_curve_graph_reading"
+          }
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Photosynthesis-rate questions apply monotonicity to separate limiting-factor regions from saturation regions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "photosynthesis_limiting_regions"
+          }
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "application",
+          "priority": "optional",
+          "context": "explanation",
+          "confidence": 0.77,
+          "reason": "Compensation and saturation analysis can be extended to maximum-rate reasoning on smooth curves.",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "photosynthesis_curve_extrema"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1543,17 +2104,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_photosynthesis_curve",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 光合作用曲线分析 before 有丝分裂图像判断; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_photosynthesis_curve",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有丝分裂图像判断 together with 光合作用曲线分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_meiosis_abnormal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有丝分裂图像判断 together with 减数分裂异常与配子 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Chromosome image identification is used before analyzing abnormal segregation and gamete outcomes.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_meiosis",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Mitosis and meiosis images are often confused when homologous chromosome pairing and separation are not checked.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1631,17 +2240,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_mitosis_image",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 有丝分裂图像判断 before 减数分裂异常与配子; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_mitosis_image",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 减数分裂异常与配子 together with 有丝分裂图像判断 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_mendel_ratio_variant",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 减数分裂异常与配子 together with 孟德尔比例变式 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Abnormal meiosis can explain unexpected gamete types and nonstandard inheritance ratios.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_mitosis_image",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Students may attribute nondisjunction in gamete formation to ordinary mitotic image changes.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1719,17 +2376,84 @@
       "prerequisites": [
         {
           "id": "bio_senior_meiosis_abnormal",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 减数分裂异常与配子 before 孟德尔比例变式; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_meiosis_abnormal",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 孟德尔比例变式 together with 减数分裂异常与配子 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_linkage_exchange",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 孟德尔比例变式 together with 连锁互换与遗传图谱 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Variant Mendelian ratios support genotype inference in pedigree and probability questions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Standard Mendelian ratios and variant ratios are confused when lethal genes or interaction effects are ignored.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_classical_probability",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Variant Mendelian ratios convert genotype outcome spaces into classical probability calculations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "mendelian_ratio_sample_space"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1807,17 +2531,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_mendel_ratio_variant",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 孟德尔比例变式 before 连锁互换与遗传图谱; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_mendel_ratio_variant",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 连锁互换与遗传图谱 together with 孟德尔比例变式 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_pedigree_analysis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 连锁互换与遗传图谱 together with 遗传系谱图分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1895,17 +2638,84 @@
       "prerequisites": [
         {
           "id": "bio_senior_linkage_exchange",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 连锁互换与遗传图谱 before 遗传系谱图分析; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_linkage_exchange",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 遗传系谱图分析 together with 连锁互换与遗传图谱 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_dna_replication_experiment",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 遗传系谱图分析 together with DNA 半保留复制实验 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Pedigree analysis applies Mendelian genotype and phenotype rules to family-line probability inference.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_linkage_exchange",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Pedigree probability and linkage-map reasoning both use inheritance evidence but differ in the target conclusion.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_conditional_probability",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Pedigree inference updates genotype probabilities after each observed family phenotype.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "pedigree_conditional_update"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1983,17 +2793,65 @@
       "prerequisites": [
         {
           "id": "bio_senior_pedigree_analysis",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 遗传系谱图分析 before DNA 半保留复制实验; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86
         }
       ],
       "related": [
         {
           "id": "bio_senior_pedigree_analysis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review DNA 半保留复制实验 together with 遗传系谱图分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_gene_expression_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review DNA 半保留复制实验 together with 基因表达与调控 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "DNA replication experiment evidence prepares learners to reason about molecular information flow and regulation.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "bio_senior_dna_expression",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "Replication evidence is often mixed up with transcription and translation when templates and products are not separated.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2071,17 +2929,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_dna_replication_experiment",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master DNA 半保留复制实验 before 基因表达与调控; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_dna_replication_experiment",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 基因表达与调控 together with DNA 半保留复制实验 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_mutation_variation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 基因表达与调控 together with 变异类型与育种应用 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2159,17 +3036,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_gene_expression_regulation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 基因表达与调控 before 变异类型与育种应用; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_gene_expression_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 变异类型与育种应用 together with 基因表达与调控 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_evolution_selection",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 变异类型与育种应用 together with 自然选择与进化证据 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2247,17 +3143,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_mutation_variation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 变异类型与育种应用 before 自然选择与进化证据; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_mutation_variation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 自然选择与进化证据 together with 变异类型与育种应用 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_neural_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 自然选择与进化证据 together with 神经调节与反射弧 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2335,17 +3250,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_evolution_selection",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 自然选择与进化证据 before 神经调节与反射弧; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_evolution_selection",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 神经调节与反射弧 together with 自然选择与进化证据 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_hormone_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 神经调节与反射弧 together with 激素调节与反馈 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2423,17 +3357,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_neural_regulation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 神经调节与反射弧 before 激素调节与反馈; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_neural_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 激素调节与反馈 together with 神经调节与反射弧 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_immunity_process",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 激素调节与反馈 together with 免疫调节过程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2511,17 +3464,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_hormone_regulation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 激素调节与反馈 before 免疫调节过程; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_hormone_regulation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 免疫调节过程 together with 激素调节与反馈 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_plant_hormone",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 免疫调节过程 together with 植物激素调节 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2599,17 +3571,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_immunity_process",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 免疫调节过程 before 植物激素调节; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_immunity_process",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 植物激素调节 together with 免疫调节过程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_population_growth",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 植物激素调节 together with 种群数量变化曲线 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2687,17 +3678,74 @@
       "prerequisites": [
         {
           "id": "bio_senior_plant_hormone",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 植物激素调节 before 种群数量变化曲线; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_plant_hormone",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 种群数量变化曲线 together with 植物激素调节 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_community_succession",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 种群数量变化曲线 together with 群落结构与演替 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Population growth curves require reading slope, plateau, and inflection information from graphs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "population_curve_graph_reading"
+          }
+        },
+        {
+          "id": "senior_function_modeling",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Ecological population questions translate time and population size into function-model language.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "population_growth_function_model"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2775,17 +3823,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_population_growth",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 种群数量变化曲线 before 群落结构与演替; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_population_growth",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 群落结构与演替 together with 种群数量变化曲线 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_ecosystem_material_cycle",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 群落结构与演替 together with 生态系统物质循环 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2863,17 +3930,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_community_succession",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 群落结构与演替 before 生态系统物质循环; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_community_succession",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生态系统物质循环 together with 群落结构与演替 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_ecology_calculation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生态系统物质循环 together with 生态能量流动计算 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2951,17 +4037,55 @@
       "prerequisites": [
         {
           "id": "bio_senior_ecosystem_material_cycle",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 生态系统物质循环 before 生态能量流动计算; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_ecosystem_material_cycle",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生态能量流动计算 together with 生态系统物质循环 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_experiment_control",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生态能量流动计算 together with 生物实验对照设计 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "direct_proportion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Energy-transfer calculations apply proportional reasoning between trophic levels and transfer efficiency.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "energy_flow_proportion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3039,17 +4163,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_ecology_calculation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 生态能量流动计算 before 生物实验对照设计; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_ecology_calculation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生物实验对照设计 together with 生态能量流动计算 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_experiment_curve_table",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生物实验对照设计 together with 实验图表信息提取 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3127,17 +4270,74 @@
       "prerequisites": [
         {
           "id": "bio_senior_experiment_control",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 生物实验对照设计 before 实验图表信息提取; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_experiment_control",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验图表信息提取 together with 生物实验对照设计 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_experiment_error_analysis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验图表信息提取 together with 实验误差与结论评价 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "mean_median_mode",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Biology experiment summaries often apply mean values to compare treatment and control groups.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "experiment_mean_comparison"
+          }
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Experimental tables and biological charts apply statistical-chart reading to compare trends and groups.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "bio_experiment_chart_reading"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3215,17 +4415,55 @@
       "prerequisites": [
         {
           "id": "bio_senior_experiment_curve_table",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 实验图表信息提取 before 实验误差与结论评价; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_experiment_curve_table",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验误差与结论评价 together with 实验图表信息提取 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_pcr_electrophoresis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验误差与结论评价 together with PCR 与电泳结果分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "variance",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Experimental error evaluation applies variance to judge dispersion among repeated measurements.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "experiment_variance_error"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3303,17 +4541,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_experiment_error_analysis",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 实验误差与结论评价 before PCR 与电泳结果分析; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_experiment_error_analysis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review PCR 与电泳结果分析 together with 实验误差与结论评价 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_gene_engineering",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review PCR 与电泳结果分析 together with 基因工程流程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3391,17 +4648,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_pcr_electrophoresis",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master PCR 与电泳结果分析 before 基因工程流程; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_pcr_electrophoresis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 基因工程流程 together with PCR 与电泳结果分析 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_cell_engineering",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 基因工程流程 together with 植物组织培养与细胞工程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3479,17 +4755,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_gene_engineering",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 基因工程流程 before 植物组织培养与细胞工程; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_gene_engineering",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 植物组织培养与细胞工程 together with 基因工程流程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_exam_integrated_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 植物组织培养与细胞工程 together with 生物综合情境题 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3567,17 +4862,36 @@
       "prerequisites": [
         {
           "id": "bio_senior_cell_engineering",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 植物组织培养与细胞工程 before 生物综合情境题; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_cell_engineering",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生物综合情境题 together with 植物组织培养与细胞工程 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "bio_senior_answer_standardization",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生物综合情境题 together with 生物规范表述 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3655,13 +4969,26 @@
       "prerequisites": [
         {
           "id": "bio_senior_exam_integrated_context",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 生物综合情境题 before 生物规范表述; it supplies the foundation for this biology learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "bio_senior_exam_integrated_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 生物规范表述 together with 生物综合情境题 when diagnosing adjacent biology skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [

@@ -22,10 +22,73 @@ GENERIC_QUERY_TERMS = {
     "\u4e0d\u61c2",
     "\u600e\u4e48",
     "\u600e\u4e48\u5b66",
+    "\u600e\u4e48\u505a",
+    "\u600e\u4e48\u6c42",
+    "\u600e\u4e48\u533a\u5206",
     "\u4e48\u5b66",
     "\u5982\u4f55",
     "\u5b66\u4e60",
+    "\u4ec0\u4e48",
+    "\u533a\u522b",
+    "\u5173\u7cfb",
+    "\u4e3a\u4ec0\u4e48",
+    "\u7528\u6765",
+    "\u4e00\u5b9a",
+    "\u4e0d\u4e00\u5b9a",
 }
+SUBJECT_QUERY_HINTS = {
+    "physics": {
+        "\u725b\u987f",
+        "\u53d7\u529b",
+        "\u901f\u5ea6",
+        "\u52a0\u901f\u5ea6",
+        "\u529f",
+        "\u80fd\u91cf",
+        "\u7535\u573a",
+        "\u7535\u52bf",
+    },
+    "chemistry": {
+        "\u5316\u5b66",
+        "\u6c27\u5316",
+        "\u8fd8\u539f",
+        "\u914d\u5e73",
+        "\u5e73\u8861",
+        "ph",
+        "\u7535\u79bb",
+    },
+    "biology": {
+        "\u57fa\u56e0",
+        "\u9057\u4f20",
+        "\u8868\u73b0\u578b",
+        "\u51cf\u6570\u5206\u88c2",
+        "\u6709\u4e1d\u5206\u88c2",
+    },
+    "english": {
+        "\u9605\u8bfb\u7406\u89e3",
+        "\u4e3b\u65e8",
+        "\u5b8c\u5f62",
+        "\u957f\u96be\u53e5",
+        "\u63a8\u65ad\u9898",
+        "\u7ec6\u8282\u9898",
+    },
+    "computer_science": {
+        "\u6570\u7ec4",
+        "\u94fe\u8868",
+        "\u6700\u77ed\u8def",
+        "bfs",
+        "dfs",
+        "\u904d\u5386",
+    },
+}
+RELATION_GROUP_TITLES = {
+    "prerequisite": "\u5148\u8865\u4ec0\u4e48",
+    "confusable": "\u5bb9\u6613\u6df7\u5728\u54ea\u91cc",
+    "procedure_step": "\u89e3\u9898\u6d41\u7a0b\u4e0b\u4e00\u6b65",
+    "application": "\u5178\u578b\u7528\u9014",
+    "extends": "\u540e\u7eed\u62d3\u5c55",
+    "co_occurs": "\u4e00\u8d77\u590d\u4e60",
+}
+RELATION_GROUP_ORDER = tuple(RELATION_GROUP_TITLES)
 
 
 def _text(value: Any) -> str:
@@ -73,6 +136,47 @@ def _edge_use_cases(value: Any) -> list[str]:
     return [_text(item) for item in value["use_cases"] if _text(item)]
 
 
+def _edge_priority_value(relation: str, ref: Any) -> str:
+    if isinstance(ref, dict):
+        priority = _text(ref.get("priority"))
+        if priority in {"core", "useful", "optional"}:
+            return priority
+    if relation in {"prerequisite", "procedure_step", "confusable"}:
+        return "core"
+    if relation in {"application", "supports", "extends"}:
+        return "useful"
+    return "optional"
+
+
+def _edge_context_value(relation: str, use_cases: list[str], ref: Any) -> str:
+    if isinstance(ref, dict):
+        context = _text(ref.get("context"))
+        if context in {"diagnosis", "explanation", "practice", "review"}:
+            return context
+    if relation == "confusable":
+        return "diagnosis"
+    if relation in {"procedure_step", "application"}:
+        return "practice"
+    if relation in {"extends", "co_occurs"} or "review" in use_cases:
+        return "review"
+    return "explanation"
+
+
+def _edge_confidence_value(ref: Any, *, reason: str, use_cases: list[str]) -> float:
+    if isinstance(ref, dict):
+        try:
+            confidence = float(ref.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = -1.0
+        if 0.0 <= confidence <= 1.0:
+            return confidence
+    if reason and use_cases:
+        return 0.95
+    if reason or use_cases:
+        return 0.85
+    return 0.7
+
+
 def _relation_priority(edge: dict[str, Any]) -> int:
     return RELATION_PRIORITY.get(_text(edge.get("relation")), 99)
 
@@ -99,6 +203,13 @@ def _edge_payload(
     use_cases = _edge_use_cases(ref)
     if use_cases:
         payload["use_cases"] = use_cases
+    payload["priority"] = _edge_priority_value(relation, ref)
+    payload["context"] = _edge_context_value(relation, use_cases, ref)
+    payload["confidence"] = _edge_confidence_value(
+        ref,
+        reason=reason,
+        use_cases=use_cases,
+    )
     if isinstance(ref, dict) and ref.get("required_mastery") is not None:
         payload["required_mastery"] = ref.get("required_mastery")
     return payload
@@ -172,13 +283,33 @@ def _query_terms(query: str) -> list[str]:
             terms.add(raw_part)
         cjk_chars = [char for char in raw_part if "\u4e00" <= char <= "\u9fff"]
         cjk = "".join(cjk_chars)
+        for stopword in sorted(GENERIC_QUERY_TERMS, key=len, reverse=True):
+            cjk = cjk.replace(stopword, " ")
+        cjk = cjk.replace("\u6709", " ")
+        for connector in ("\u548c", "\u4e0e", "\u8ddf", "\u53ca", "\u3001"):
+            cjk = cjk.replace(connector, " ")
+        for item in cjk.split():
+            if item:
+                terms.add(item)
         for size in (2, 3, 4):
-            for index in range(0, max(0, len(cjk) - size + 1)):
-                terms.add(cjk[index : index + size])
+            compact_cjk = cjk.replace(" ", "")
+            for index in range(0, max(0, len(compact_cjk) - size + 1)):
+                terms.add(compact_cjk[index : index + size])
     return sorted(
         (term for term in terms if term not in GENERIC_QUERY_TERMS),
         key=lambda item: (-len(item), item),
     )
+
+
+def _subject_hints(query: str) -> set[str]:
+    normalized = _text(query).lower()
+    if not normalized:
+        return set()
+    hints: set[str] = set()
+    for subject, tokens in SUBJECT_QUERY_HINTS.items():
+        if any(token in normalized for token in tokens):
+            hints.add(subject)
+    return hints
 
 
 def match_topics(
@@ -199,7 +330,9 @@ def match_topics(
                 "match": "topic_id",
             }
         ]
-    terms = _query_terms(query or topic_id)
+    query_text = query or topic_id
+    terms = _query_terms(query_text)
+    subject_hints = _subject_hints(query_text)
     if not terms:
         return []
     scored: list[dict[str, Any]] = []
@@ -208,10 +341,24 @@ def match_topics(
         if not current_id:
             continue
         label = _topic_label(topic, current_id)
+        label_lower = label.lower()
         aliases = [alias.lower() for alias in _topic_aliases(topic)]
         haystack = _topic_search_text(topic)
         score = 0
         matched_terms: list[str] = []
+        if label_lower and label_lower in terms:
+            score += 40
+            matched_terms.append(label_lower)
+        elif len(label_lower) >= 2 and label_lower in " ".join(terms):
+            score += 24
+            matched_terms.append(label_lower)
+        for alias in aliases:
+            if alias and alias in terms:
+                score += 36
+                matched_terms.append(alias)
+            elif len(alias) >= 2 and alias in " ".join(terms):
+                score += 20
+                matched_terms.append(alias)
         for term in terms:
             if not term:
                 continue
@@ -220,14 +367,24 @@ def match_topics(
             elif term in aliases:
                 score += 18
             elif any(term in alias for alias in aliases):
-                score += 10
+                score += 8 if len(term) >= 3 else 5
+            elif label.lower().startswith(term):
+                score += 18
             elif term in label.lower():
-                score += 8
+                score += 10
             elif term in haystack:
                 score += 3
             else:
                 continue
             matched_terms.append(term)
+        subject = _text(topic.get("subject"))
+        if score and subject_hints:
+            if subject in subject_hints:
+                score += 18
+            elif subject:
+                score -= 10
+        if score and subject == "math":
+            score += 2
         if score:
             scored.append(
                 {
@@ -235,12 +392,17 @@ def match_topics(
                     "label": label,
                     "score": score,
                     "match": "query",
-                    "matched_terms": matched_terms[:6],
+                    "matched_terms": list(dict.fromkeys(matched_terms))[:6],
                 }
             )
-    return sorted(scored, key=lambda item: (-int(item["score"]), item["label"]))[
-        : max(1, int(limit or 5))
-    ]
+    return sorted(
+        scored,
+        key=lambda item: (
+            -int(item["score"]),
+            len(_text(item["label"])),
+            item["label"],
+        ),
+    )[: max(1, int(limit or 5))]
 
 
 def _learning_path_for_topic(
@@ -284,6 +446,61 @@ def _dedupe_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         unique.append(edge)
     return unique
+
+
+def _sort_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        _dedupe_edges(edges),
+        key=lambda edge: (
+            _relation_priority(edge),
+            _text(edge.get("from_label")),
+            _text(edge.get("to_label")),
+            _text(edge.get("from")),
+            _text(edge.get("to")),
+        ),
+    )
+
+
+def _build_relation_groups(
+    *,
+    learning_path: list[dict[str, Any]],
+    applications: list[dict[str, Any]],
+    confusions: list[dict[str, Any]],
+    next_practice: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    candidates = _dedupe_edges(
+        [*learning_path, *applications, *confusions, *next_practice]
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {
+        relation: [] for relation in RELATION_GROUP_ORDER
+    }
+    for edge in candidates:
+        relation = _text(edge.get("relation"))
+        if relation == "supports":
+            relation = "prerequisite"
+        if relation in grouped:
+            grouped[relation].append(edge)
+    return {
+        relation: {
+            "relation": relation,
+            "title": RELATION_GROUP_TITLES[relation],
+            "items": _sort_edges(items),
+        }
+        for relation, items in grouped.items()
+    }
+
+
+def _build_guidance_sections(
+    relation_groups: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "relation": relation,
+            "title": group["title"],
+            "items": group["items"],
+        }
+        for relation, group in relation_groups.items()
+    ]
 
 
 def _other_topic_for_edge(edge: dict[str, Any], selected_id: str) -> tuple[str, str]:
@@ -483,6 +700,23 @@ def build_knowledge_guidance_payload(
     match_limit: int = 5,
 ) -> dict[str, Any]:
     topic_items = list(topics or [])
+    from .knowledge_graph_index import (  # lazy import avoids a module import cycle
+        SubgraphBudget,
+        build_relevant_subgraph,
+        compress_subgraph_payload,
+    )
+
+    subgraph_budget = SubgraphBudget(
+        focus_topics=max(1, min(3, int(match_limit or 3))),
+        max_depth=max(1, min(2, int(max_depth or 2))),
+    )
+    relevant_subgraph = build_relevant_subgraph(
+        topic_items,
+        topic_id=topic_id,
+        query=query,
+        budget=subgraph_budget,
+    )
+    model_context = compress_subgraph_payload(relevant_subgraph, mode="guidance")
     by_id = {_topic_id(topic): topic for topic in topic_items if _topic_id(topic)}
     edges = build_topic_edges(topic_items)
     incoming: dict[str, list[dict[str, Any]]] = {}
@@ -500,6 +734,12 @@ def build_knowledge_guidance_payload(
     selected_id = _text(matches[0]["id"]) if matches else _text(topic_id)
     selected_topic = by_id.get(selected_id)
     if not selected_topic:
+        relation_groups = _build_relation_groups(
+            learning_path=[],
+            applications=[],
+            confusions=[],
+            next_practice=[],
+        )
         return {
             "topic": {},
             "matches": matches,
@@ -507,12 +747,20 @@ def build_knowledge_guidance_payload(
             "applications": [],
             "confusions": [],
             "next_practice_topics": [],
+            "relation_groups": relation_groups,
+            "guidance_sections": _build_guidance_sections(relation_groups),
             "diagnosis_questions": [],
+            "relevant_subgraph": relevant_subgraph,
+            "model_context": model_context,
             "summary": {
                 "matched": False,
                 "topic_count": len(topic_items),
                 "edge_count": len(edges),
+                "active_relation_group_count": 0,
                 "diagnosis_question_count": 0,
+                "subgraph_node_count": relevant_subgraph["summary"]["node_count"],
+                "subgraph_edge_count": relevant_subgraph["summary"]["edge_count"],
+                "raw_seed_included": False,
             },
         }
 
@@ -546,6 +794,15 @@ def build_knowledge_guidance_payload(
         confusions=confusions,
         next_practice=next_practice,
     )
+    relation_groups = _build_relation_groups(
+        learning_path=learning_path,
+        applications=applications,
+        confusions=confusions,
+        next_practice=next_practice,
+    )
+    active_relation_group_count = sum(
+        1 for group in relation_groups.values() if group["items"]
+    )
     return {
         "topic": {
             "id": selected_id,
@@ -565,7 +822,11 @@ def build_knowledge_guidance_payload(
         "applications": applications,
         "confusions": confusions,
         "next_practice_topics": next_practice,
+        "relation_groups": relation_groups,
+        "guidance_sections": _build_guidance_sections(relation_groups),
         "diagnosis_questions": diagnosis_questions,
+        "relevant_subgraph": relevant_subgraph,
+        "model_context": model_context,
         "summary": {
             "matched": True,
             "topic_count": len(topic_items),
@@ -574,6 +835,10 @@ def build_knowledge_guidance_payload(
             "application_count": len(applications),
             "confusion_count": len(confusions),
             "next_practice_count": len(next_practice),
+            "active_relation_group_count": active_relation_group_count,
             "diagnosis_question_count": len(diagnosis_questions),
+            "subgraph_node_count": relevant_subgraph["summary"]["node_count"],
+            "subgraph_edge_count": relevant_subgraph["summary"]["edge_count"],
+            "raw_seed_included": False,
         },
     }

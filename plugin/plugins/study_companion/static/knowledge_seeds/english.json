@@ -14,7 +14,7 @@
       "related": [
         {
           "id": "english_primary_sight_words",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 小学高频词 after 自然拼读; it is the next topic in the primary english learning sequence.",
           "use_cases": [
             "learning_path",
@@ -82,7 +82,7 @@
       "related": [
         {
           "id": "english_primary_daily_dialogue",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 日常交际用语 after 小学高频词; it is the next topic in the primary english learning sequence.",
           "use_cases": [
             "learning_path",
@@ -150,7 +150,7 @@
       "related": [
         {
           "id": "english_primary_picture_writing",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 看图写句 after 日常交际用语; it is the next topic in the primary english learning sequence.",
           "use_cases": [
             "learning_path",
@@ -276,18 +276,22 @@
       "related": [
         {
           "id": "english_junior_clause_intro",
-          "relation": "next",
-          "reason": "Practice 宾语从句与状语从句 after 初中时态体系; it is the next topic in the junior_high english learning sequence.",
+          "relation": "procedure_step",
+          "reason": "After identifying time markers and verb forms, students check clause boundaries and conjunctions before analyzing the full sentence.",
           "use_cases": [
             "learning_path",
+            "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Choosing tense only from Chinese translation instead of time markers.",
+        "Ignoring subject person and number when changing verb forms.",
+        "Mixing present perfect with simple past when the time boundary is clear."
       ],
       "unit": "时态与句法",
       "skills": [
@@ -296,8 +300,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "语法填空",
-        "句型转换"
+        "tense identification",
+        "verb form choice",
+        "sentence transformation"
       ],
       "examples": [
         {
@@ -347,18 +352,22 @@
       "related": [
         {
           "id": "english_junior_reading_detail",
-          "relation": "next",
-          "reason": "Practice 阅读细节定位 after 宾语从句与状语从句; it is the next topic in the junior_high english learning sequence.",
+          "relation": "procedure_step",
+          "reason": "After parsing clauses, students use the clause structure to locate who did what, when, where, and why in reading details.",
           "use_cases": [
             "learning_path",
+            "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Keeping question word order inside an object clause.",
+        "Choosing conjunctions by translation while ignoring logical relation.",
+        "Forgetting tense consistency between the main clause and subordinate clause."
       ],
       "unit": "时态与句法",
       "skills": [
@@ -367,8 +376,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "语法填空",
-        "句子合并"
+        "object clause choice",
+        "adverbial clause connection",
+        "sentence combination"
       ],
       "examples": [
         {
@@ -418,18 +428,22 @@
       "related": [
         {
           "id": "english_junior_cloze_context",
-          "relation": "next",
-          "reason": "Practice 完形填空语境推断 after 阅读细节定位; it is the next topic in the junior_high english learning sequence.",
+          "relation": "procedure_step",
+          "reason": "After locating explicit information, students extend the same evidence habit to infer missing words from nearby context in cloze tasks.",
           "use_cases": [
             "learning_path",
+            "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Answering from memory of keywords instead of returning to the exact sentence.",
+        "Treating a distractor with similar wording as direct evidence.",
+        "Missing negation, time, number, or speaker limits in the stem."
       ],
       "unit": "时态与句法",
       "skills": [
@@ -438,8 +452,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "阅读理解",
-        "信息定位"
+        "detail location",
+        "information matching",
+        "evidence-based reading"
       ],
       "examples": [
         {
@@ -480,13 +495,60 @@
     {
       "id": "english_junior_cloze_context",
       "name": "完形填空语境推断",
+      "aliases": [
+        "完形填空",
+        "完形填空怎么做",
+        "语境推断",
+        "上下文选词",
+        "完形语境"
+      ],
       "subject": "english",
       "stage": "junior_high",
       "chapter": "英语语法",
       "depth": 2,
       "difficulty": 0.56,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_cloze_logic",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "完形填空要先根据上下文逻辑线索判断转折、因果、递进或复现关系。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_cloze_collocation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "完形选项常同时考查语境意义、固定搭配和语义场。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "完形填空重在语篇语义选择，语法填空更重在形式和语法约束。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -549,19 +611,35 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "english_senior_reading_main_idea",
+          "relation": "procedure_step",
+          "reason": "After mapping paragraph functions, students summarize the central claim before handling detailed inference questions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "english_senior_grammar_filling",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 语法填空 after 长篇阅读篇章结构; it is the next topic in the senior_high english learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Reading paragraph by paragraph without tracking the whole passage structure.",
+        "Mistaking examples or data for the author's central claim.",
+        "Ignoring contrast, concession, and cause-effect signals between paragraphs."
       ],
       "unit": "高中阅读与写作",
       "skills": [
@@ -570,8 +648,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "阅读理解",
-        "篇章结构"
+        "discourse structure analysis",
+        "main idea inference",
+        "paragraph function"
       ],
       "examples": [
         {
@@ -633,7 +712,83 @@
       "depth": 2,
       "difficulty": 0.64,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_reading_detail_location",
+          "relation": "procedure_step",
+          "reason": "Inference questions start by reading the stem, locating evidence, and eliminating options that overstate, reverse, or import outside information.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "confusable",
+          "reason": "Inference asks what can be concluded from evidence; attitude asks the author's stance or emotional coloring, so the evidence focus is different.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "english_senior_exam_time_strategy",
+          "relation": "application",
+          "reason": "The same stem-first and evidence-check routine helps students allocate time before choosing between close inference options.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_junior_narrative_reading",
+          "relation": "application",
+          "reason": "English inference from textual clues transfers to Chinese narrative reading when students infer motivation, plot cause, and implied emotion from evidence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "application",
+          "reason": "English inference practice builds the evidence-bound reasoning needed to infer standpoint, cause, and context from history source materials.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "history",
+            "bridge_direction": "english_to_history"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -711,19 +866,35 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "english_senior_tense_voice_context",
+          "relation": "procedure_step",
+          "reason": "Grammar cloze first requires judging sentence role and context, then selecting tense and voice for verb blanks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "english_senior_application_letter",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 应用文写作 after 语法填空; it is the next topic in the senior_high english learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Filling a blank from a fixed phrase without checking sentence function.",
+        "Ignoring whether the blank needs a finite verb, non-finite verb, or derived word.",
+        "Missing agreement, tense, voice, or article constraints from nearby words."
       ],
       "unit": "高中阅读与写作",
       "skills": [
@@ -732,8 +903,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "语法填空",
-        "语篇语法"
+        "grammar cloze",
+        "verb form completion",
+        "word formation in context"
       ],
       "examples": [
         {
@@ -797,19 +969,35 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "english_senior_application_email",
+          "relation": "procedure_step",
+          "reason": "After identifying purpose, audience, and required points, students draft the email body with appropriate tone and paragraph order.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "english_senior_continuation_writing",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 读后续写 after 应用文写作; it is the next topic in the senior_high english learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Writing fluent sentences that do not cover all required task points.",
+        "Using an informal tone for a formal letter or notice.",
+        "Listing information without paragraph logic or closing request."
       ],
       "unit": "高中阅读与写作",
       "skills": [
@@ -818,8 +1006,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "应用文写作",
-        "表达润色"
+        "application writing outline",
+        "letter purpose and audience",
+        "formal expression revision"
       ],
       "examples": [
         {
@@ -883,19 +1072,53 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "english_senior_continuation_plot_logic",
+          "relation": "procedure_step",
+          "reason": "Continuation writing begins by extracting conflict, character goals, and paragraph openings, then planning a coherent plot step.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "english_senior_summary_writing",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 概要写作 after 读后续写; it is the next topic in the senior_high english learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8
+        },
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "application",
+          "reason": "English continuation writing helps Chinese literary text analysis by tracking conflict, plot turn, character motive, and effect on theme.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
-        "只凭中文直觉选词，忽略搭配和语境",
-        "阅读题只看单句，不回到段落逻辑",
-        "写作表达有结论但缺少支撑句和连接词"
+        "Adding dramatic events that break the original story logic.",
+        "Forgetting to resolve the conflict implied by the two given opening sentences.",
+        "Imitating vocabulary only while losing character motivation and emotional progression."
       ],
       "unit": "高中阅读与写作",
       "skills": [
@@ -904,8 +1127,9 @@
         "用原文证据或表达规则解释答案"
       ],
       "question_types": [
-        "读后续写",
-        "叙事写作"
+        "continuation plot design",
+        "emotion arc completion",
+        "language imitation"
       ],
       "examples": [
         {
@@ -970,12 +1194,56 @@
       "related": [
         {
           "id": "english_senior_listening_note",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 听力速记策略 after 概要写作; it is the next topic in the senior_high english learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "english_senior_summary_paraphrase",
+          "relation": "procedure_step",
+          "reason": "Summary writing moves from reading the task and locating main points to paraphrasing them without copying long source phrases.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "application",
+          "reason": "After compressing source information, cohesion checks make the summary read as one logical paragraph instead of separated notes.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "application",
+          "reason": "English summary writing transfers to Chinese language compression by preserving core information while deleting examples, repetition, and secondary modifiers.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1054,7 +1322,34 @@
       "depth": 2,
       "difficulty": 0.58,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "english_senior_listening_inference",
+          "relation": "procedure_step",
+          "reason": "Listening notes first capture names, numbers, time, place, and contrast markers, then support inference about intention or attitude.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_exam_time_strategy",
+          "relation": "application",
+          "reason": "Fast note symbols reduce replay dependence and help reserve enough time for reading and writing sections.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "脱离语境选词",
         "阅读答案没有证据",
@@ -1134,23 +1429,51 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_inference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 推理判断题 before 时态语态语境判断; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 时态语态语境判断 together with 推理判断题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82
         },
         {
           "id": "english_senior_nonfinite_verbs",
-          "relation": "nearby"
+          "relation": "procedure_step",
+          "reason": "After confirming the finite predicate, remaining verb forms are checked as non-finite structures or modifiers.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
         }
       ],
       "typical_misconceptions": [
-        "只按中文直译导致语法和搭配不自然",
-        "阅读题脱离原文定位凭感觉推断",
-        "写作缺少语篇衔接和情节/任务约束"
+        "Selecting passive voice only because the Chinese translation sounds passive.",
+        "Ignoring whether the sentence already has a finite predicate.",
+        "Using a tense marker mechanically without checking discourse time."
       ],
       "skills": [
         "定位原文信息并识别语篇逻辑",
@@ -1158,8 +1481,9 @@
         "组织符合题型要求的段落和衔接句"
       ],
       "question_types": [
-        "语篇理解",
-        "表达运用"
+        "tense and voice choice",
+        "predicate verb analysis",
+        "contextual grammar cloze"
       ],
       "examples": [
         {
@@ -1222,23 +1546,51 @@
       "prerequisites": [
         {
           "id": "english_senior_tense_voice_context",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 时态语态语境判断 before 非谓语动词; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
         {
           "id": "english_senior_tense_voice_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 非谓语动词 together with 时态语态语境判断 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82
         },
         {
           "id": "english_senior_clause_connection",
-          "relation": "nearby"
+          "relation": "procedure_step",
+          "reason": "When a verb cannot be reduced to a non-finite phrase, students next check whether a finite clause and connector are required.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
         }
       ],
       "typical_misconceptions": [
-        "只按中文直译导致语法和搭配不自然",
-        "阅读题脱离原文定位凭感觉推断",
-        "写作缺少语篇衔接和情节/任务约束"
+        "Treating every verb blank as a predicate verb.",
+        "Choosing -ing, -ed, or to-do by memorized translation instead of active-passive and time relation.",
+        "Missing the logical subject of the non-finite phrase."
       ],
       "skills": [
         "定位原文信息并识别语篇逻辑",
@@ -1246,8 +1598,9 @@
         "组织符合题型要求的段落和衔接句"
       ],
       "question_types": [
-        "语篇理解",
-        "表达运用"
+        "non-finite verb form",
+        "modifier structure analysis",
+        "grammar cloze verb blank"
       ],
       "examples": [
         {
@@ -1310,17 +1663,36 @@
       "prerequisites": [
         {
           "id": "english_senior_nonfinite_verbs",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 非谓语动词 before 从句连接词选择; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_nonfinite_verbs",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 从句连接词选择 together with 非谓语动词 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_relative_clause",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 从句连接词选择 together with 定语从句限定与非限定 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1398,17 +1770,36 @@
       "prerequisites": [
         {
           "id": "english_senior_clause_connection",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 从句连接词选择 before 定语从句限定与非限定; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_clause_connection",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 定语从句限定与非限定 together with 从句连接词选择 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_subject_verb_agreement",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 定语从句限定与非限定 together with 主谓一致 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1486,17 +1877,36 @@
       "prerequisites": [
         {
           "id": "english_senior_relative_clause",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 定语从句限定与非限定 before 主谓一致; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_relative_clause",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 主谓一致 together with 定语从句限定与非限定 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_special_sentence_patterns",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 主谓一致 together with 倒装强调省略 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1574,17 +1984,36 @@
       "prerequisites": [
         {
           "id": "english_senior_subject_verb_agreement",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 主谓一致 before 倒装强调省略; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_subject_verb_agreement",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 倒装强调省略 together with 主谓一致 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_word_formation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 倒装强调省略 together with 词性转换与派生 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1662,17 +2091,36 @@
       "prerequisites": [
         {
           "id": "english_senior_special_sentence_patterns",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 倒装强调省略 before 词性转换与派生; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_special_sentence_patterns",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 词性转换与派生 together with 倒装强调省略 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_cloze_logic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 词性转换与派生 together with 完形填空逻辑线索 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1750,17 +2198,36 @@
       "prerequisites": [
         {
           "id": "english_senior_word_formation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 词性转换与派生 before 完形填空逻辑线索; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_word_formation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 完形填空逻辑线索 together with 词性转换与派生 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_cloze_collocation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 完形填空逻辑线索 together with 完形搭配与语义场 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1838,17 +2305,36 @@
       "prerequisites": [
         {
           "id": "english_senior_cloze_logic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 完形填空逻辑线索 before 完形搭配与语义场; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_cloze_logic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 完形搭配与语义场 together with 完形填空逻辑线索 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_reading_main_idea",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 完形搭配与语义场 together with 阅读主旨大意题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1917,6 +2403,13 @@
     {
       "id": "english_senior_reading_main_idea",
       "name": "阅读主旨大意题",
+      "aliases": [
+        "阅读理解主旨题",
+        "主旨大意题",
+        "文章主旨",
+        "标题题",
+        "main idea"
+      ],
       "subject": "english",
       "stage": "senior_high",
       "chapter": "高中英语阅读",
@@ -1926,17 +2419,93 @@
       "prerequisites": [
         {
           "id": "english_senior_cloze_collocation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 完形搭配与语义场 before 阅读主旨大意题; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
-          "id": "english_senior_cloze_collocation",
-          "relation": "nearby"
+          "id": "english_senior_long_reading_structure",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "主旨题要先识别篇章结构和主题句，再排除只覆盖局部细节的选项。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         },
         {
           "id": "english_senior_reading_detail_location",
-          "relation": "nearby"
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "主旨题问全文或段落中心，细节题问具体信息定位，选项范围不同。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "作者态度题需要在把握主旨和论证方向后判断观点色彩。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "english_senior_cloze_collocation",
+          "relation": "co_occurs",
+          "reason": "Review 阅读主旨大意题 together with 完形搭配与语义场 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_reading_detail_location",
+          "relation": "co_occurs",
+          "reason": "Review 阅读主旨大意题 together with 阅读细节定位题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "chinese_primary_paragraph_main_idea",
+          "relation": "application",
+          "reason": "English main idea questions train students to separate central claims from examples, which transfers to Chinese paragraph main idea reading.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2014,23 +2583,100 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_main_idea",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 阅读主旨大意题 before 阅读细节定位题; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_main_idea",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 阅读细节定位题 together with 阅读主旨大意题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82
         },
         {
           "id": "english_senior_reading_word_guess",
-          "relation": "nearby"
+          "relation": "procedure_step",
+          "reason": "After locating the evidence sentence, students use local definition, contrast, cause-effect, or example clues to infer unfamiliar words.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9
+        },
+        {
+          "id": "english_senior_reading_main_idea",
+          "relation": "confusable",
+          "reason": "Detail questions ask for located facts, while main idea questions ask for the whole passage or paragraph point; keyword overlap can hide the scope shift.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "application",
+          "reason": "English detail-location habits transfer to Chinese practical text filtering by requiring exact evidence, scope words, and condition checks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
+        },
+        {
+          "id": "chinese_senior_practical_text",
+          "relation": "application",
+          "reason": "English information matching supports Chinese practical text analysis because both depend on locating purpose, audience, limits, and explicit details.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
-        "只按中文直译导致语法和搭配不自然",
-        "阅读题脱离原文定位凭感觉推断",
-        "写作缺少语篇衔接和情节/任务约束"
+        "Choosing an option because it repeats a keyword but changes the condition.",
+        "Missing scope words such as most, only, first, never, or according to.",
+        "Using outside knowledge instead of evidence from the located sentence."
       ],
       "skills": [
         "定位原文信息并识别语篇逻辑",
@@ -2038,8 +2684,9 @@
         "组织符合题型要求的段落和衔接句"
       ],
       "question_types": [
-        "语篇理解",
-        "表达运用"
+        "detail evidence location",
+        "option-text matching",
+        "fact inference from evidence"
       ],
       "examples": [
         {
@@ -2102,17 +2749,62 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_detail_location",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 阅读细节定位题 before 词义猜测题; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_detail_location",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 词义猜测题 together with 阅读细节定位题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_reading_author_attitude",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 词义猜测题 together with 作者态度与观点题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "procedure_step",
+          "reason": "After using local clues to infer word meaning, students check evaluative words and contrast markers to judge author attitude.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_reading_detail_location",
+          "relation": "confusable",
+          "reason": "Word-guess items need local semantic clues, while detail items need factual matching; both may reuse the same sentence but ask different operations.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2190,17 +2882,98 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_word_guess",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 词义猜测题 before 作者态度与观点题; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_word_guess",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 作者态度与观点题 together with 词义猜测题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_seven_choice_coherence",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 作者态度与观点题 together with 七选五衔接题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_seven_choice_coherence",
+          "relation": "procedure_step",
+          "reason": "After judging author attitude, students use tone and paragraph function to choose coherent sentences in gap-filling reading tasks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_reading_inference",
+          "relation": "confusable",
+          "reason": "Attitude questions ask for stance words such as supportive or skeptical; inference questions ask for a conclusion supported by textual evidence.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "chinese_junior_argumentative_reading",
+          "relation": "application",
+          "reason": "English author attitude questions transfer to Chinese argumentative reading by tracking stance words, evidence tone, and evaluation direction.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "application",
+          "reason": "Author attitude analysis supports politics material reasoning because both require identifying the claim, value stance, and support relation before judging options.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "politics",
+            "bridge_direction": "english_to_politics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2278,17 +3051,62 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_author_attitude",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 作者态度与观点题 before 七选五衔接题; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_author_attitude",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 七选五衔接题 together with 作者态度与观点题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_grammar_cloze_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 七选五衔接题 together with 语法填空上下文约束 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "procedure_step",
+          "reason": "Seven-choice coherence trains reference and logic tracking, then grammar cloze applies the same context check to form and function blanks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "application",
+          "reason": "Coherence clues from gap-filling reading transfer to paragraph linking and sentence order choices in writing revision.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2366,17 +3184,62 @@
       "prerequisites": [
         {
           "id": "english_senior_seven_choice_coherence",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 七选五衔接题 before 语法填空上下文约束; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_seven_choice_coherence",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 语法填空上下文约束 together with 七选五衔接题 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_error_correction",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 语法填空上下文约束 together with 短文改错/语法纠错 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_error_correction",
+          "relation": "procedure_step",
+          "reason": "After filling blanks by context and grammar, students use the same checks to scan a passage for tense, agreement, article, and connector errors.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_cloze_logic",
+          "relation": "confusable",
+          "reason": "Grammar cloze is constrained by form and sentence function, while cloze logic chooses the best meaning from discourse relations.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2454,17 +3317,49 @@
       "prerequisites": [
         {
           "id": "english_senior_grammar_cloze_context",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 语法填空上下文约束 before 短文改错/语法纠错; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_grammar_cloze_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 短文改错/语法纠错 together with 语法填空上下文约束 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_listening_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 短文改错/语法纠错 together with 听力推断与态度 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_listening_inference",
+          "relation": "procedure_step",
+          "reason": "Error correction sharpens marker awareness, then listening inference uses stress, contrast, and modal verbs to infer intention or attitude.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2542,17 +3437,62 @@
       "prerequisites": [
         {
           "id": "english_senior_error_correction",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 短文改错/语法纠错 before 听力推断与态度; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_error_correction",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 听力推断与态度 together with 短文改错/语法纠错 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_application_email",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 听力推断与态度 together with 应用文邮件写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_application_email",
+          "relation": "procedure_step",
+          "reason": "After inferring speaker purpose and attitude, students convert the communicative intent into audience-aware email content.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "confusable",
+          "reason": "Listening attitude relies on spoken cues such as stress and hesitation, while reading attitude relies on wording and argument direction.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2630,17 +3570,49 @@
       "prerequisites": [
         {
           "id": "english_senior_listening_inference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 听力推断与态度 before 应用文邮件写作; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_listening_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 应用文邮件写作 together with 听力推断与态度 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_application_notice",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 应用文邮件写作 together with 通知与倡议书写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_application_notice",
+          "relation": "procedure_step",
+          "reason": "Email writing organizes purpose, audience, and required points, then notice writing applies the same task-reading routine to public information.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2718,17 +3690,36 @@
       "prerequisites": [
         {
           "id": "english_senior_application_email",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 应用文邮件写作 before 通知与倡议书写作; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_application_email",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 通知与倡议书写作 together with 应用文邮件写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_application_speech",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 通知与倡议书写作 together with 演讲稿写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2806,17 +3797,36 @@
       "prerequisites": [
         {
           "id": "english_senior_application_notice",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 通知与倡议书写作 before 演讲稿写作; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_application_notice",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 演讲稿写作 together with 通知与倡议书写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_continuation_plot_logic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 演讲稿写作 together with 读后续写情节推进 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2894,17 +3904,36 @@
       "prerequisites": [
         {
           "id": "english_senior_application_speech",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 演讲稿写作 before 读后续写情节推进; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_application_speech",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写情节推进 together with 演讲稿写作 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_continuation_emotion_arc",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写情节推进 together with 读后续写情绪弧线 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2982,17 +4011,36 @@
       "prerequisites": [
         {
           "id": "english_senior_continuation_plot_logic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 读后续写情节推进 before 读后续写情绪弧线; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_continuation_plot_logic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写情绪弧线 together with 读后续写情节推进 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_continuation_language_imitation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写情绪弧线 together with 读后续写语言协同 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3070,17 +4118,36 @@
       "prerequisites": [
         {
           "id": "english_senior_continuation_emotion_arc",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 读后续写情绪弧线 before 读后续写语言协同; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_continuation_emotion_arc",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写语言协同 together with 读后续写情绪弧线 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_summary_paraphrase",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 读后续写语言协同 together with 概要写作转述压缩 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3158,17 +4225,67 @@
       "prerequisites": [
         {
           "id": "english_senior_continuation_language_imitation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 读后续写语言协同 before 概要写作转述压缩; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_continuation_language_imitation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 概要写作转述压缩 together with 读后续写语言协同 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_writing_cohesion",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 概要写作转述压缩 together with 写作衔接与句式升级 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "procedure_step",
+          "reason": "Paraphrase and compression are followed by cohesion checks so the shortened text preserves logic, reference, and paragraph flow.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "application",
+          "reason": "English paraphrase practice transfers to Chinese sentence rewriting because both keep meaning stable while changing structure and wording.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3246,17 +4363,72 @@
       "prerequisites": [
         {
           "id": "english_senior_summary_paraphrase",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 概要写作转述压缩 before 写作衔接与句式升级; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_summary_paraphrase",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 写作衔接与句式升级 together with 概要写作转述压缩 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_exam_time_strategy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 写作衔接与句式升级 together with 英语考试时间分配 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_cohesion",
+          "relation": "application",
+          "reason": "English cohesion revision transfers directly to Chinese cohesion tasks through reference, logical connectors, sentence order, and paragraph flow.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
+        },
+        {
+          "id": "chinese_senior_modern_argument_structure",
+          "relation": "application",
+          "reason": "English paragraph cohesion supports Chinese argumentative structure by linking claim, reason, evidence, and conclusion in a visible chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.83,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3334,17 +4506,49 @@
       "prerequisites": [
         {
           "id": "english_senior_writing_cohesion",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 写作衔接与句式升级 before 英语考试时间分配; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_writing_cohesion",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 英语考试时间分配 together with 写作衔接与句式升级 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_vocabulary_context_review",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 英语考试时间分配 together with 语境词汇复习 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "english_senior_vocabulary_context_review",
+          "relation": "procedure_step",
+          "reason": "A timed exam review first assigns minutes by section, then uses remaining review time to strengthen high-frequency contextual vocabulary.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3422,17 +4626,36 @@
       "prerequisites": [
         {
           "id": "english_senior_exam_time_strategy",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 英语考试时间分配 before 语境词汇复习; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_exam_time_strategy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 语境词汇复习 together with 英语考试时间分配 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_translation_chinese_interference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 语境词汇复习 together with 中式表达纠偏 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3510,17 +4733,72 @@
       "prerequisites": [
         {
           "id": "english_senior_vocabulary_context_review",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 语境词汇复习 before 中式表达纠偏; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_vocabulary_context_review",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 中式表达纠偏 together with 语境词汇复习 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_reading_new_gaokao_information",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 中式表达纠偏 together with 新高考信息类阅读 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "chinese_senior_language_error_correction",
+          "relation": "confusable",
+          "reason": "Chinese interference in English translation is a useful mirror for Chinese error correction because both expose word order, collocation, and logical expression problems.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "application",
+          "reason": "Correcting Chinese-influenced English trains students to separate intended meaning from surface wording, which helps Chinese expression rewriting.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.81,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "bridge_direction": "english_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3598,17 +4876,54 @@
       "prerequisites": [
         {
           "id": "english_senior_translation_chinese_interference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 中式表达纠偏 before 新高考信息类阅读; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_translation_chinese_interference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 新高考信息类阅读 together with 中式表达纠偏 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "english_senior_writing_rubric_revision",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 新高考信息类阅读 together with 写作评分标准自查 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "application",
+          "reason": "English informational reading strategies transfer to history material analysis through source purpose, data selection, qualification, and evidence comparison.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "history",
+            "bridge_direction": "english_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3686,13 +5001,44 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_new_gaokao_information",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 新高考信息类阅读 before 写作评分标准自查; it supplies the foundation for this english learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_new_gaokao_information",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 写作评分标准自查 together with 新高考信息类阅读 when diagnosing adjacent english skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "application",
+          "reason": "English writing rubric revision supports politics material argumentation by checking task response, claim clarity, evidence relevance, and logical order.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "politics",
+            "bridge_direction": "english_to_politics"
+          }
         }
       ],
       "typical_misconceptions": [

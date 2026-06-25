@@ -56,6 +56,54 @@ ALLOWED_EDGE_USE_CASES = {
     "practice_planning",
     "review",
 }
+ALLOWED_EDGE_PRIORITIES = {"core", "useful", "optional"}
+ALLOWED_EDGE_CONTEXTS = {"diagnosis", "explanation", "practice", "review"}
+SUBJECT_MINIMUM_STANDARDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "math": {
+        "relations": ("prerequisite", "procedure_step", "confusable", "application"),
+        "fields": (),
+    },
+    "physics": {
+        "relations": ("prerequisite", "procedure_step", "application"),
+        "fields": (),
+    },
+    "chemistry": {"relations": ("procedure_step", "confusable"), "fields": ()},
+    "biology": {
+        "relations": ("prerequisite", "application", "confusable"),
+        "fields": (),
+    },
+    "english": {
+        "relations": ("procedure_step",),
+        "fields": ("question_types", "typical_misconceptions"),
+    },
+    "computer_science": {
+        "relations": ("prerequisite", "procedure_step", "application"),
+        "fields": (),
+    },
+    "chinese": {
+        "relations": ("procedure_step", "application", "confusable"),
+        "fields": (),
+    },
+    "economics": {
+        "relations": ("procedure_step", "application", "confusable"),
+        "fields": (),
+    },
+    "geography": {
+        "relations": ("procedure_step", "application", "confusable"),
+        "fields": (),
+    },
+    "history": {
+        "relations": ("procedure_step", "application", "confusable"),
+        "fields": (),
+    },
+    "politics": {
+        "relations": ("procedure_step", "application", "confusable"),
+        "fields": (),
+    },
+}
+SUBJECT_MINIMUM_GAP_SAMPLE_LIMIT = 10
+QUALITY_ACTION_LIST_LIMIT = 12
+LEGACY_EDGE_SAMPLE_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -494,6 +542,40 @@ def _validate_typed_edge(
                         source_id,
                     )
                 )
+    priority = ref.get("priority")
+    if priority is not None and str(priority).strip() not in ALLOWED_EDGE_PRIORITIES:
+        issues.append(
+            KnowledgeSeedIssue(
+                "invalid_edge_priority",
+                f"{field} typed edge priority must be one of: core,useful,optional",
+                str(topic.path),
+                source_id,
+            )
+        )
+    context = ref.get("context")
+    if context is not None and str(context).strip() not in ALLOWED_EDGE_CONTEXTS:
+        issues.append(
+            KnowledgeSeedIssue(
+                "invalid_edge_context",
+                f"{field} typed edge context must be one of: diagnosis,explanation,practice,review",
+                str(topic.path),
+                source_id,
+            )
+        )
+    if ref.get("confidence") is not None:
+        try:
+            confidence = float(ref.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = -1.0
+        if not 0.0 <= confidence <= 1.0:
+            issues.append(
+                KnowledgeSeedIssue(
+                    "invalid_edge_confidence",
+                    f"{field} typed edge confidence must be between 0.0 and 1.0",
+                    str(topic.path),
+                    source_id,
+                )
+            )
 
 
 def _validate_references(
@@ -554,9 +636,35 @@ def _find_prerequisite_cycle_nodes(prerequisite_edges: dict[str, set[str]]) -> s
     return cycle_nodes
 
 
+def _topic_schema_ready(topic: KnowledgeSeedTopic) -> bool:
+    data = topic.data
+    scalar_values = [
+        str(data.get("id") or "").strip(),
+        str(data.get("name") or "").strip(),
+        topic.subject,
+        topic.stage,
+        str(data.get("chapter") or "").strip(),
+        str(data.get("unit") or "").strip(),
+    ]
+    if not all(scalar_values):
+        return False
+    for field in REQUIRED_LIST_FIELDS:
+        if not isinstance(data.get(field), list):
+            return False
+    for field in NON_EMPTY_LIST_FIELDS:
+        if not data.get(field):
+            return False
+    return True
+
+
 def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, Any]:
     topic_ids = {str(topic.data.get("id") or "").strip() for topic in topics}
     topic_ids.discard("")
+    topic_subject_by_id = {
+        str(topic.data.get("id") or "").strip(): topic.subject or "<missing>"
+        for topic in topics
+        if str(topic.data.get("id") or "").strip()
+    }
     inbound: dict[str, int] = {topic_id: 0 for topic_id in topic_ids}
     outbound: dict[str, int] = {topic_id: 0 for topic_id in topic_ids}
     stage_counts: dict[str, int] = {}
@@ -569,6 +677,21 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
     over_connected_topics: list[str] = []
     duplicate_name_keys: dict[str, int] = {}
     prerequisite_edges: dict[str, set[str]] = {}
+    schema_ready_topics = 0
+    subject_schema_ready_counts: dict[str, int] = {}
+    subject_minimum_standard_topic_counts: dict[str, int] = {}
+    subject_minimum_standard_ready_counts: dict[str, int] = {}
+    subject_minimum_standard_gap_counts: dict[str, int] = {}
+    subject_minimum_standard_relation_gap_counts: dict[str, dict[str, int]] = {}
+    subject_minimum_standard_field_gap_counts: dict[str, dict[str, int]] = {}
+    subject_minimum_standard_uncovered_subject_counts: dict[str, int] = {}
+    subject_minimum_standard_gap_samples: dict[str, list[dict[str, Any]]] = {}
+    minimum_gap_candidates: dict[str, list[dict[str, Any]]] = {}
+    chapter_ready_counts: dict[str, dict[str, int]] = {}
+    chapter_gap_counts: dict[str, dict[str, int]] = {}
+    cross_subject_edge_counts: dict[str, dict[str, int]] = {}
+    cross_subject_relation_counts: dict[str, int] = {}
+    legacy_edge_samples: list[dict[str, str]] = []
 
     for topic in topics:
         topic_id = str(topic.data.get("id") or "").strip()
@@ -576,6 +699,11 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
         subject = topic.subject or "<missing>"
         stage_counts[stage] = stage_counts.get(stage, 0) + 1
         subject_counts[subject] = subject_counts.get(subject, 0) + 1
+        if _topic_schema_ready(topic):
+            schema_ready_topics += 1
+            subject_schema_ready_counts[subject] = (
+                subject_schema_ready_counts.get(subject, 0) + 1
+            )
         if not topic.stage:
             missing_stage += 1
         if topic.stage == "college" and not str(
@@ -591,6 +719,7 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
         )
         duplicate_name_keys[name_key] = duplicate_name_keys.get(name_key, 0) + 1
         local_edges = 0
+        local_relations: set[str] = set()
         for field in ("prerequisites", "related"):
             refs = topic.data.get(field)
             if not isinstance(refs, list):
@@ -600,20 +729,95 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
                 if not target_id:
                     continue
                 relation = _edge_relation(field, ref)
+                local_relations.add(relation)
                 edge_counts[relation] = edge_counts.get(relation, 0) + 1
                 local_edges += 1
                 if _is_typed_edge(ref):
                     typed_edges += 1
                 else:
                     legacy_edges += 1
+                    if len(legacy_edge_samples) < LEGACY_EDGE_SAMPLE_LIMIT:
+                        legacy_edge_samples.append(
+                            {
+                                "source": topic_id,
+                                "target": target_id,
+                                "field": field,
+                                "relation": relation,
+                            }
+                        )
                 if topic_id:
                     outbound[topic_id] = outbound.get(topic_id, 0) + 1
                 if target_id in inbound:
                     inbound[target_id] = inbound.get(target_id, 0) + 1
                 if field == "prerequisites" and topic_id:
                     prerequisite_edges.setdefault(topic_id, set()).add(target_id)
+                target_subject = topic_subject_by_id.get(target_id)
+                if target_subject and target_subject != subject:
+                    subject_edges = cross_subject_edge_counts.setdefault(subject, {})
+                    subject_edges[target_subject] = subject_edges.get(target_subject, 0) + 1
+                    cross_subject_relation_counts[relation] = (
+                        cross_subject_relation_counts.get(relation, 0) + 1
+                    )
         if local_edges > 24 and topic_id:
             over_connected_topics.append(topic_id)
+        standard = SUBJECT_MINIMUM_STANDARDS.get(subject)
+        if standard:
+            subject_minimum_standard_topic_counts[subject] = (
+                subject_minimum_standard_topic_counts.get(subject, 0) + 1
+            )
+            chapter = str(topic.data.get("chapter") or "").strip() or "<missing>"
+            required_relations = set(standard.get("relations", ()))
+            required_fields = set(standard.get("fields", ()))
+            missing_relations = sorted(required_relations - local_relations)
+            missing_fields = sorted(
+                field for field in required_fields if not topic.data.get(field)
+            )
+            if missing_relations or missing_fields:
+                chapter_gaps = chapter_gap_counts.setdefault(subject, {})
+                chapter_gaps[chapter] = chapter_gaps.get(chapter, 0) + 1
+                subject_minimum_standard_gap_counts[subject] = (
+                    subject_minimum_standard_gap_counts.get(subject, 0) + 1
+                )
+                relation_gaps = subject_minimum_standard_relation_gap_counts.setdefault(
+                    subject, {}
+                )
+                for relation in missing_relations:
+                    relation_gaps[relation] = relation_gaps.get(relation, 0) + 1
+                field_gaps = subject_minimum_standard_field_gap_counts.setdefault(
+                    subject, {}
+                )
+                for field in missing_fields:
+                    field_gaps[field] = field_gaps.get(field, 0) + 1
+                samples = subject_minimum_standard_gap_samples.setdefault(subject, [])
+                if len(samples) < SUBJECT_MINIMUM_GAP_SAMPLE_LIMIT:
+                    samples.append(
+                        {
+                            "id": topic_id,
+                            "missing_relations": missing_relations,
+                            "missing_fields": missing_fields,
+                        }
+                    )
+                minimum_gap_candidates.setdefault(subject, []).append(
+                    {
+                        "id": topic_id,
+                        "chapter": chapter,
+                        "unit": str(topic.data.get("unit") or "").strip(),
+                        "missing_relations": missing_relations,
+                        "missing_fields": missing_fields,
+                        "missing_count": len(missing_relations) + len(missing_fields),
+                        "edge_count": local_edges,
+                    }
+                )
+            else:
+                chapter_ready = chapter_ready_counts.setdefault(subject, {})
+                chapter_ready[chapter] = chapter_ready.get(chapter, 0) + 1
+                subject_minimum_standard_ready_counts[subject] = (
+                    subject_minimum_standard_ready_counts.get(subject, 0) + 1
+                )
+        else:
+            subject_minimum_standard_uncovered_subject_counts[subject] = (
+                subject_minimum_standard_uncovered_subject_counts.get(subject, 0) + 1
+            )
 
     isolated_topics = sorted(
         topic_id
@@ -623,6 +827,56 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
     duplicate_names = sum(1 for count in duplicate_name_keys.values() if count > 1)
 
     cycle_nodes = _find_prerequisite_cycle_nodes(prerequisite_edges)
+    standard_subjects = set(SUBJECT_MINIMUM_STANDARDS)
+    for subject in standard_subjects:
+        subject_minimum_standard_topic_counts.setdefault(subject, 0)
+        subject_minimum_standard_ready_counts.setdefault(subject, 0)
+        subject_minimum_standard_gap_counts.setdefault(subject, 0)
+    subject_minimum_standard_ready_rates = {
+        subject: (
+            subject_minimum_standard_ready_counts.get(subject, 0)
+            / subject_minimum_standard_topic_counts[subject]
+            if subject_minimum_standard_topic_counts[subject]
+            else 0.0
+        )
+        for subject in standard_subjects
+    }
+    subject_minimum_standard_gap_rates = {
+        subject: (
+            subject_minimum_standard_gap_counts.get(subject, 0)
+            / subject_minimum_standard_topic_counts[subject]
+            if subject_minimum_standard_topic_counts[subject]
+            else 0.0
+        )
+        for subject in standard_subjects
+    }
+    top_missing_relation_by_subject = {
+        subject: [
+            {"relation": relation, "count": count}
+            for relation, count in sorted(
+                counts.items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
+        for subject, counts in sorted(
+            subject_minimum_standard_relation_gap_counts.items()
+        )
+    }
+    top_gap_topics_by_subject = {
+        subject: sorted(
+            candidates,
+            key=lambda item: (
+                -int(item["missing_count"]),
+                int(item["edge_count"]),
+                str(item["chapter"]),
+                str(item["id"]),
+            ),
+        )[:QUALITY_ACTION_LIST_LIMIT]
+        for subject, candidates in sorted(minimum_gap_candidates.items())
+    }
+    recommended_next_batch = {
+        subject: [str(item["id"]) for item in items[:QUALITY_ACTION_LIST_LIMIT]]
+        for subject, items in top_gap_topics_by_subject.items()
+    }
 
     return {
         "topic_count": len(topics),
@@ -630,6 +884,7 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
         "typed_edges": typed_edges,
         "legacy_edges": legacy_edges,
         "missing_stage": missing_stage,
+        "schema_ready_topics": schema_ready_topics,
         "missing_college_course_family": len(missing_college_course_family),
         "isolated_nodes": len(isolated_topics),
         "over_connected_nodes": len(over_connected_topics),
@@ -637,11 +892,70 @@ def _build_quality_report(topics: tuple[KnowledgeSeedTopic, ...]) -> dict[str, A
         "cycles_in_prerequisites": len(cycle_nodes),
         "stage_counts": dict(sorted(stage_counts.items())),
         "subject_counts": dict(sorted(subject_counts.items())),
+        "subject_schema_ready_counts": dict(sorted(subject_schema_ready_counts.items())),
+        "subject_minimum_standards": {
+            subject: {
+                "relations": list(standard.get("relations", ())),
+                "fields": list(standard.get("fields", ())),
+            }
+            for subject, standard in sorted(SUBJECT_MINIMUM_STANDARDS.items())
+        },
+        "subject_minimum_standard_topic_counts": dict(
+            sorted(subject_minimum_standard_topic_counts.items())
+        ),
+        "subject_minimum_standard_ready_counts": dict(
+            sorted(subject_minimum_standard_ready_counts.items())
+        ),
+        "subject_minimum_standard_gap_counts": dict(
+            sorted(subject_minimum_standard_gap_counts.items())
+        ),
+        "subject_minimum_standard_ready_rates": dict(
+            sorted(subject_minimum_standard_ready_rates.items())
+        ),
+        "subject_minimum_standard_gap_rates": dict(
+            sorted(subject_minimum_standard_gap_rates.items())
+        ),
+        "subject_minimum_standard_relation_gap_counts": {
+            subject: dict(sorted(counts.items()))
+            for subject, counts in sorted(
+                subject_minimum_standard_relation_gap_counts.items()
+            )
+        },
+        "subject_minimum_standard_field_gap_counts": {
+            subject: dict(sorted(counts.items()))
+            for subject, counts in sorted(subject_minimum_standard_field_gap_counts.items())
+        },
+        "subject_minimum_standard_uncovered_subject_counts": dict(
+            sorted(subject_minimum_standard_uncovered_subject_counts.items())
+        ),
+        "top_gap_topics_by_subject": top_gap_topics_by_subject,
+        "top_missing_relation_by_subject": top_missing_relation_by_subject,
+        "chapter_ready_counts": {
+            subject: dict(sorted(counts.items()))
+            for subject, counts in sorted(chapter_ready_counts.items())
+        },
+        "chapter_gap_counts": {
+            subject: dict(sorted(counts.items()))
+            for subject, counts in sorted(chapter_gap_counts.items())
+        },
+        "cross_subject_edge_counts": {
+            subject: dict(sorted(counts.items()))
+            for subject, counts in sorted(cross_subject_edge_counts.items())
+        },
+        "cross_subject_relation_counts": dict(
+            sorted(cross_subject_relation_counts.items())
+        ),
+        "legacy_edge_samples": legacy_edge_samples,
+        "recommended_next_batch": recommended_next_batch,
         "relation_counts": dict(sorted(edge_counts.items())),
         "sample_isolated_nodes": isolated_topics[:10],
         "sample_missing_college_course_family": sorted(missing_college_course_family)[:10],
         "sample_over_connected_nodes": sorted(over_connected_topics)[:10],
         "sample_prerequisite_cycle_nodes": sorted(cycle_nodes)[:10],
+        "sample_subject_minimum_standard_gaps": {
+            subject: samples
+            for subject, samples in sorted(subject_minimum_standard_gap_samples.items())
+        },
     }
 
 
@@ -766,6 +1080,7 @@ def _format_quality_report(report: dict[str, Any] | None) -> list[str]:
         "typed_edges",
         "legacy_edges",
         "missing_stage",
+        "schema_ready_topics",
         "missing_college_course_family",
         "isolated_nodes",
         "over_connected_nodes",
@@ -778,6 +1093,56 @@ def _format_quality_report(report: dict[str, Any] | None) -> list[str]:
         lines.append("relation_counts:")
         for relation, count in relation_counts.items():
             lines.append(f"  {relation}: {count}")
+    topic_counts = report.get("subject_minimum_standard_topic_counts")
+    ready_counts = report.get("subject_minimum_standard_ready_counts")
+    gap_counts = report.get("subject_minimum_standard_gap_counts")
+    ready_rates = report.get("subject_minimum_standard_ready_rates")
+    if isinstance(topic_counts, dict) and topic_counts:
+        lines.append("subject_minimum_standard_ready_counts:")
+        for subject, total in topic_counts.items():
+            count = 0
+            if isinstance(ready_counts, dict):
+                count = int(ready_counts.get(subject, 0) or 0)
+            gap_count = 0
+            if isinstance(gap_counts, dict):
+                gap_count = int(gap_counts.get(subject, 0) or 0)
+            rate = 0.0
+            if isinstance(ready_rates, dict):
+                rate = float(ready_rates.get(subject, 0.0) or 0.0)
+            lines.append(
+                f"  {subject}: {count}/{int(total)} ready, {gap_count} gaps, {rate:.2%}"
+            )
+    top_missing = report.get("top_missing_relation_by_subject")
+    if isinstance(top_missing, dict) and top_missing:
+        lines.append("top_missing_relation_by_subject:")
+        for subject, entries in top_missing.items():
+            if not isinstance(entries, list) or not entries:
+                continue
+            summary = ", ".join(
+                f"{entry.get('relation')}: {entry.get('count')}"
+                for entry in entries[:5]
+                if isinstance(entry, dict)
+            )
+            if summary:
+                lines.append(f"  {subject}: {summary}")
+    next_batch = report.get("recommended_next_batch")
+    if isinstance(next_batch, dict) and next_batch:
+        lines.append("recommended_next_batch:")
+        for subject, topic_ids in next_batch.items():
+            if not isinstance(topic_ids, list) or not topic_ids:
+                continue
+            preview = ", ".join(str(topic_id) for topic_id in topic_ids[:5])
+            lines.append(f"  {subject}: {preview}")
+    cross_subject = report.get("cross_subject_edge_counts")
+    if isinstance(cross_subject, dict) and cross_subject:
+        lines.append("cross_subject_edge_counts:")
+        for subject, counts in cross_subject.items():
+            if not isinstance(counts, dict) or not counts:
+                continue
+            summary = ", ".join(
+                f"{target}: {count}" for target, count in list(counts.items())[:5]
+            )
+            lines.append(f"  {subject}: {summary}")
     return lines
 
 

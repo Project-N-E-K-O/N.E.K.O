@@ -14,11 +14,37 @@
       "related": [
         {
           "id": "chem_junior_chemical_equation",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 化学方程式配平 after 物质分类; it is the next topic in the junior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_junior_chemical_equation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Classifying substances and reaction types is the first check before writing and balancing a chemical equation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_junior_solution_solubility",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Students often confuse pure substances, mixtures, and solutions when interpreting classification questions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -85,12 +111,76 @@
       "related": [
         {
           "id": "chem_junior_solution_solubility",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 溶液与溶解度 after 化学方程式配平; it is the next topic in the junior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Balanced equations provide mole ratios before limiting-reagent or yield calculations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Full chemical equations and net ionic equations are commonly mixed up in equation-writing tasks.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "primary_ratio_meaning",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Balancing equations applies ratio meaning because coefficients compare particle and mole counts.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "equation_coefficients_as_ratios"
+          }
+        },
+        {
+          "id": "linear_equation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Unknown coefficients in a chemical equation can be solved by setting atom-count balance equations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "atom_balance_linear_equations"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -156,11 +246,37 @@
       "related": [
         {
           "id": "chem_junior_acid_base_salt",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 酸碱盐基础 after 溶液与溶解度; it is the next topic in the junior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Solubility and solution state checks often come before concentration or dilution calculations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Solubility curve questions can be confused with precipitation-equilibrium and solubility-product reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -227,11 +343,37 @@
       "related": [
         {
           "id": "chem_junior_gas_preparation",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 气体制取与检验 after 酸碱盐基础; it is the next topic in the junior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ionic_reaction",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Identifying acids, bases, and salts prepares students to write ions and judge ionic reactions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ph_ionization",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "Acid-base classification, pH, and ionization strength are frequently conflated in diagnosis questions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -298,11 +440,37 @@
       "related": [
         {
           "id": "chem_senior_equilibrium",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 化学平衡移动 after 离子反应与离子方程式; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.93,
+          "reason": "Ionic reaction recognition is followed by splitting soluble strong electrolytes and writing the net ionic equation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Students often confuse whether ions can coexist with whether an ionic reaction equation should be written.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -375,13 +543,75 @@
     {
       "id": "chem_senior_redox",
       "name": "氧化还原反应",
+      "aliases": [
+        "氧化剂",
+        "还原剂",
+        "氧化还原反应",
+        "氧化剂和还原剂",
+        "氧化还原配平"
+      ],
       "subject": "chemistry",
       "stage": "senior_high",
       "chapter": "化学反应原理",
       "depth": 2,
       "difficulty": 0.66,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "chem_senior_ionic_reaction",
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "氧化还原反应常和离子反应、离子方程式条件一起判断。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.94,
+          "reason": "氧化还原配平需要先标化合价，再用电子守恒配平。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "氧化还原滴定是氧化剂、还原剂和电子守恒的典型应用。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "学生容易把氧化还原配平和离子方程式拆写条件混在一起。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背方程式，不判断反应条件和现象",
         "离子方程式漏写沉淀、气体或弱电解质",
@@ -451,6 +681,12 @@
     {
       "id": "chem_senior_equilibrium",
       "name": "化学平衡移动",
+      "aliases": [
+        "化学平衡移动",
+        "平衡移动",
+        "勒夏特列原理",
+        "平衡移动判断"
+      ],
       "subject": "chemistry",
       "stage": "senior_high",
       "chapter": "化学反应原理",
@@ -459,8 +695,47 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "chem_senior_equilibrium_constant",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "判断平衡移动时需要结合浓度、温度、压强变化和 Q 与 K 的关系。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_equilibrium_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "平衡图像综合题会把移动方向、速率变化和转化率放在同一题中考查。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "速率变大不等于平衡一定正向移动，二者需要分开判断。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "chem_senior_electrochemistry",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 原电池与电解池 after 化学平衡移动; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
@@ -546,11 +821,37 @@
       "related": [
         {
           "id": "chem_senior_organic_functional_group",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 有机官能团 after 原电池与电解池; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_primary_battery",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Electrochemistry concepts lead into identifying electrodes, ion movement, and reactions in primary cells.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Galvanic-cell reasoning and electrolysis-product judgment are easy to reverse because electrode roles differ.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -632,11 +933,37 @@
       "related": [
         {
           "id": "chem_senior_mole_calculation",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 物质的量计算 after 有机官能团; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Recognizing functional groups is the first step before predicting transformations in an organic synthesis route.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_organic_isomer",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Functional-group identification is often confused with isomer enumeration when structures have the same formula.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -718,11 +1045,37 @@
       "related": [
         {
           "id": "chem_junior_metal_activity",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 金属活动性顺序 after 气体制取与检验; it is the next topic in the junior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Basic gas preparation supports later choices of collection, purification, drying, and testing steps.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_experiment_separation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Gas collection and purification operations can be confused with general separation and purification methods.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -787,7 +1140,34 @@
       "depth": 2,
       "difficulty": 0.6,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_redox",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Metal activity comparisons lead into electron-transfer reasoning for oxidation and reduction reactions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_primary_battery",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Metal activity order is often confused with electrode potential and anode-cathode judgment in cells.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "方程式与实验条件混淆",
         "忽略守恒关系或离子共存限制",
@@ -852,11 +1232,37 @@
       "related": [
         {
           "id": "chem_senior_thermochemistry",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 反应热与盖斯定律 after 物质的量计算; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Mole conversion is the setup step before applying equation ratios and identifying limiting reagents.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Amount of substance, molar mass, and solution concentration are commonly substituted for one another incorrectly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -939,11 +1345,37 @@
       "related": [
         {
           "id": "chem_senior_experiment_design",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 化学实验方案评价 after 反应热与盖斯定律; it is the next topic in the senior_high chemistry learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_reaction_heat_diagram",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Thermochemistry concepts are applied by reading energy diagrams and mapping reactants, products, and enthalpy change.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Energy change and reaction rate are often confused when catalyst or temperature information appears together.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -1023,7 +1455,34 @@
       "depth": 3,
       "difficulty": 0.76,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Experiment design proceeds by identifying variables, controls, observations, and evaluation criteria.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_experiment_separation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Designing a controlled experiment is often confused with choosing a separation or purification operation.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "方程式与实验条件混淆",
         "忽略守恒关系或离子共存限制",
@@ -1103,17 +1562,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_redox",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 氧化还原反应 before 原子结构与元素周期律; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_redox",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 原子结构与元素周期律 together with 氧化还原反应 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_chemical_bonding",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 原子结构与元素周期律 together with 化学键与晶体类型 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1191,17 +1669,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_atomic_structure_periodic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 原子结构与元素周期律 before 化学键与晶体类型; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_atomic_structure_periodic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学键与晶体类型 together with 原子结构与元素周期律 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_material_structure_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学键与晶体类型 together with 结构性质信息推断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1279,17 +1776,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_chemical_bonding",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 化学键与晶体类型 before 结构性质信息推断; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_chemical_bonding",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 结构性质信息推断 together with 化学键与晶体类型 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_stoichiometry_limiting",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 结构性质信息推断 together with 过量与不足量计算 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1367,17 +1883,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_material_structure_inference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 结构性质信息推断 before 过量与不足量计算; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_material_structure_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 过量与不足量计算 together with 结构性质信息推断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_solution_concentration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 过量与不足量计算 together with 溶液浓度与稀释 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "direct_proportion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Limiting-reagent calculations apply direct proportion when balanced-equation mole ratios scale quantities.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "stoichiometric_ratio_scaling"
+          }
+        },
+        {
+          "id": "linear_equation_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Yield and excess calculations often reduce to one-step linear equations with a chemical constraint.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "stoichiometry_linear_equation_application"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1455,17 +2028,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_stoichiometry_limiting",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 过量与不足量计算 before 溶液浓度与稀释; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_stoichiometry_limiting",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 溶液浓度与稀释 together with 过量与不足量计算 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_ion_coexistence",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 溶液浓度与稀释 together with 离子共存判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "primary_unit_conversion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Concentration and dilution tasks apply unit conversion between volume, mass, amount, and molarity units.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "solution_units_conversion"
+          }
+        },
+        {
+          "id": "primary_proportion_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Dilution problems apply proportional reasoning because solute amount stays fixed while volume changes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "dilution_proportion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1543,17 +2173,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_solution_concentration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 溶液浓度与稀释 before 离子共存判断; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_solution_concentration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 离子共存判断 together with 溶液浓度与稀释 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_ionic_equation_writing",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 离子共存判断 together with 离子方程式书写正误 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1631,17 +2280,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_ion_coexistence",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 离子共存判断 before 离子方程式书写正误; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_ion_coexistence",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 离子方程式书写正误 together with 离子共存判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_redox_balance",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 离子方程式书写正误 together with 氧化还原配平 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1719,17 +2387,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_ionic_equation_writing",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 离子方程式书写正误 before 氧化还原配平; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_ionic_equation_writing",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 氧化还原配平 together with 离子方程式书写正误 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_redox_titration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 氧化还原配平 together with 氧化还原滴定 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1807,17 +2494,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_redox_balance",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 氧化还原配平 before 氧化还原滴定; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_redox_balance",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 氧化还原滴定 together with 氧化还原配平 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_reaction_heat_diagram",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 氧化还原滴定 together with 反应热图像与盖斯定律 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1895,17 +2601,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_redox_titration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 氧化还原滴定 before 反应热图像与盖斯定律; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_redox_titration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 反应热图像与盖斯定律 together with 氧化还原滴定 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_rate_factors",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 反应热图像与盖斯定律 together with 化学反应速率影响因素 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1983,17 +2708,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_reaction_heat_diagram",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 反应热图像与盖斯定律 before 化学反应速率影响因素; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_reaction_heat_diagram",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学反应速率影响因素 together with 反应热图像与盖斯定律 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_equilibrium_constant",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学反应速率影响因素 together with 平衡常数与转化率 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Reaction-rate tasks apply graph reading to compare slopes, intervals, and changing concentration over time.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "reaction_rate_graph_slope"
+          }
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Rate-factor comparisons apply monotonicity when concentration, temperature, or catalyst changes alter trend direction.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "rate_factor_function_change"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2071,17 +2853,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_rate_factors",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 化学反应速率影响因素 before 平衡常数与转化率; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_rate_factors",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平衡常数与转化率 together with 化学反应速率影响因素 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_equilibrium_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平衡常数与转化率 together with 平衡图像综合 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_function_modeling",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Equilibrium-constant calculations apply function modeling because concentration changes determine K and conversion.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "equilibrium_constant_function_model"
+          }
+        },
+        {
+          "id": "inverse_function_graph",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Some equilibrium expressions apply inverse-variation intuition when products and reactants trade off in a ratio.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "equilibrium_ratio_inverse_variation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2159,17 +2998,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_equilibrium_constant",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 平衡常数与转化率 before 平衡图像综合; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_equilibrium_constant",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平衡图像综合 together with 平衡常数与转化率 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_acid_base_titration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平衡图像综合 together with 酸碱中和滴定 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Equilibrium graph tasks apply graph reading to locate plateaus, jumps, and before-after trend changes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "equilibrium_graph_interpretation"
+          }
+        },
+        {
+          "id": "senior_function_zero",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Equilibrium-state questions apply zero and sign-change intuition when net change becomes zero at balance.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "equilibrium_net_change_zero"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2247,17 +3143,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_equilibrium_graph",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 平衡图像综合 before 酸碱中和滴定; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_equilibrium_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 酸碱中和滴定 together with 平衡图像综合 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_ph_ionization",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 酸碱中和滴定 together with 弱电解质电离与 pH when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Titration-curve tasks apply graph reading to locate steep regions, equivalence points, and buffer intervals.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "titration_curve_graph_reading"
+          }
+        },
+        {
+          "id": "linear_function_intersection",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Titration endpoint estimates apply intersection intuition when two trend lines mark the equivalence region.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "titration_endpoint_intersection"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2326,6 +3279,13 @@
     {
       "id": "chem_senior_ph_ionization",
       "name": "弱电解质电离与 pH",
+      "aliases": [
+        "pH计算",
+        "pH",
+        "pH怎么计算",
+        "弱电解质电离",
+        "电离平衡"
+      ],
       "subject": "chemistry",
       "stage": "senior_high",
       "chapter": "高中化学反应原理",
@@ -2335,17 +3295,113 @@
       "prerequisites": [
         {
           "id": "chem_senior_acid_base_titration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 酸碱中和滴定 before 弱电解质电离与 pH; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_acid_base_titration",
-          "relation": "nearby"
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "pH 计算通常要先判断酸碱强弱、过量关系和电荷守恒，再代入浓度关系。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "pH 计算会用到物质的量，但核心判断是电离、水解和氢离子浓度。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         },
         {
           "id": "chem_senior_precipitation_equilibrium",
-          "relation": "nearby"
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "沉淀溶解平衡题常和溶液 pH、离子浓度变化一起出现。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "co_occurs",
+          "reason": "Review 弱电解质电离与 pH together with 酸碱中和滴定 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "co_occurs",
+          "reason": "Review 弱电解质电离与 pH together with 沉淀溶解平衡 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_logarithm_operation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.92,
+          "reason": "pH calculations apply logarithm operations because pH is the negative base-ten log of hydrogen-ion concentration.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "ph_logarithm_operation"
+          }
+        },
+        {
+          "id": "senior_logarithmic_function",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Ionization-equilibrium graphs apply logarithmic-function intuition when concentration changes shift pH nonlinearly.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "ph_logarithmic_function_graph"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2423,17 +3479,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_ph_ionization",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 弱电解质电离与 pH before 沉淀溶解平衡; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_ph_ionization",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 沉淀溶解平衡 together with 弱电解质电离与 pH when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_primary_battery",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 沉淀溶解平衡 together with 原电池原理与电极判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2511,17 +3586,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_precipitation_equilibrium",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 沉淀溶解平衡 before 原电池原理与电极判断; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_precipitation_equilibrium",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 原电池原理与电极判断 together with 沉淀溶解平衡 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_electrolysis_product",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 原电池原理与电极判断 together with 电解产物判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2599,17 +3693,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_primary_battery",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 原电池原理与电极判断 before 电解产物判断; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_primary_battery",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电解产物判断 together with 原电池原理与电极判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_electrochem_calculation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电解产物判断 together with 电化学定量计算 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2687,17 +3800,74 @@
       "prerequisites": [
         {
           "id": "chem_senior_electrolysis_product",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电解产物判断 before 电化学定量计算; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_electrolysis_product",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电化学定量计算 together with 电解产物判断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_organic_isomer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电化学定量计算 together with 有机同分异构体 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "linear_function_concept",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Electrochemical quantity calculations apply linear relationships such as charge equals current times time.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "electrochemistry_linear_charge_relation"
+          }
+        },
+        {
+          "id": "primary_unit_conversion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Electrochemical calculation applies unit conversion among amperes, seconds, coulombs, moles, gas volume, and mass.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "math",
+            "bridge_direction": "chemistry_to_math",
+            "bridge_focus": "electrochemistry_unit_conversion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2775,17 +3945,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_electrochem_calculation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电化学定量计算 before 有机同分异构体; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_electrochem_calculation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有机同分异构体 together with 电化学定量计算 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_organic_reaction_route",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有机同分异构体 together with 有机合成路线推断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2863,17 +4052,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_organic_isomer",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 有机同分异构体 before 有机合成路线推断; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_organic_isomer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有机合成路线推断 together with 有机同分异构体 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_organic_polymer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 有机合成路线推断 together with 高分子与聚合反应 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2951,17 +4159,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_organic_reaction_route",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 有机合成路线推断 before 高分子与聚合反应; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_organic_reaction_route",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 高分子与聚合反应 together with 有机合成路线推断 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_experiment_separation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 高分子与聚合反应 together with 物质分离提纯实验 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3039,17 +4266,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_organic_polymer",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 高分子与聚合反应 before 物质分离提纯实验; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_organic_polymer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物质分离提纯实验 together with 高分子与聚合反应 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_experiment_gas",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物质分离提纯实验 together with 气体制备与检验 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3127,17 +4373,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_experiment_separation",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 物质分离提纯实验 before 气体制备与检验; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_experiment_separation",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 气体制备与检验 together with 物质分离提纯实验 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_experiment_variable_control",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 气体制备与检验 together with 实验变量控制与评价 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3215,17 +4480,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_experiment_gas",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 气体制备与检验 before 实验变量控制与评价; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_experiment_gas",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验变量控制与评价 together with 气体制备与检验 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_industrial_process_flow",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 实验变量控制与评价 together with 工业流程信息题 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3303,17 +4587,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_experiment_variable_control",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 实验变量控制与评价 before 工业流程信息题; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_experiment_variable_control",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 工业流程信息题 together with 实验变量控制与评价 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_unknown_substance_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 工业流程信息题 together with 无机物推断综合 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3391,17 +4694,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_industrial_process_flow",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 工业流程信息题 before 无机物推断综合; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_industrial_process_flow",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 无机物推断综合 together with 工业流程信息题 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_data_table_reasoning",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 无机物推断综合 together with 化学数据表格推理 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3479,17 +4801,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_unknown_substance_inference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 无机物推断综合 before 化学数据表格推理; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_unknown_substance_inference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学数据表格推理 together with 无机物推断综合 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_green_chemistry_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学数据表格推理 together with 绿色化学与情境应用 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3567,17 +4908,36 @@
       "prerequisites": [
         {
           "id": "chem_senior_data_table_reasoning",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 化学数据表格推理 before 绿色化学与情境应用; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_data_table_reasoning",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 绿色化学与情境应用 together with 化学数据表格推理 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "chem_senior_exam_synthesis_strategy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 绿色化学与情境应用 together with 化学压轴综合策略 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3655,13 +5015,26 @@
       "prerequisites": [
         {
           "id": "chem_senior_green_chemistry_context",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 绿色化学与情境应用 before 化学压轴综合策略; it supplies the foundation for this chemistry learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "chem_senior_green_chemistry_context",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 化学压轴综合策略 together with 绿色化学与情境应用 when diagnosing adjacent chemistry skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [

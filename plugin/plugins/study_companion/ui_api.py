@@ -6,11 +6,54 @@ from urllib.parse import quote
 
 STUDY_PANEL_SURFACE_ID = "study-panel"
 
+CORE_EDGE_RELATIONS = {"prerequisite", "procedure_step", "confusable"}
+USEFUL_EDGE_RELATIONS = {"application", "extends", "supports"}
+EDGE_CONTEXT_VALUES = {"diagnosis", "explanation", "practice", "review"}
+EDGE_PRIORITY_VALUES = {"core", "useful", "optional"}
+
 
 def _topic_ref_id(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("id") or value.get("topic_id") or "").strip()
     return str(value or "").strip()
+
+
+def _knowledge_edge_priority(relation: str, ref: dict[str, Any]) -> str:
+    priority = str(ref.get("priority") or "").strip()
+    if priority in EDGE_PRIORITY_VALUES:
+        return priority
+    if relation in CORE_EDGE_RELATIONS:
+        return "core"
+    if relation in USEFUL_EDGE_RELATIONS:
+        return "useful"
+    return "optional"
+
+
+def _knowledge_edge_context(relation: str, ref: dict[str, Any]) -> str:
+    context = str(ref.get("context") or "").strip()
+    if context in EDGE_CONTEXT_VALUES:
+        return context
+    if relation in {"prerequisite", "confusable"}:
+        return "diagnosis"
+    if relation in {"procedure_step", "application"}:
+        return "practice"
+    if relation in {"extends", "co_occurs", "nearby", "next"}:
+        return "review"
+    return "explanation"
+
+
+def _knowledge_edge_confidence(ref: dict[str, Any], *, reason: str, use_cases: list[str]) -> float:
+    try:
+        confidence = float(ref.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = -1.0
+    if 0.0 <= confidence <= 1.0:
+        return round(confidence, 3)
+    if reason and use_cases:
+        return 0.9
+    if reason or use_cases:
+        return 0.8
+    return 0.65
 
 
 def _knowledge_edge_payload(
@@ -30,14 +73,24 @@ def _knowledge_edge_payload(
     typed_relation = str(ref.get("relation") or "").strip()
     if typed_relation:
         edge["relation"] = typed_relation
+    relation = str(edge["relation"])
     reason = str(ref.get("reason") or "").strip()
     if reason:
         edge["reason"] = reason
+    use_case_items: list[str] = []
     use_cases = ref.get("use_cases")
     if isinstance(use_cases, list):
-        edge["use_cases"] = [str(item).strip() for item in use_cases if str(item).strip()]
+        use_case_items = [str(item).strip() for item in use_cases if str(item).strip()]
+        edge["use_cases"] = use_case_items
     if ref.get("required_mastery") is not None:
         edge["required_mastery"] = ref.get("required_mastery")
+    edge["priority"] = _knowledge_edge_priority(relation, ref)
+    edge["context"] = _knowledge_edge_context(relation, ref)
+    edge["confidence"] = _knowledge_edge_confidence(
+        ref,
+        reason=reason,
+        use_cases=use_case_items,
+    )
     return edge
 
 
@@ -109,6 +162,11 @@ def build_knowledge_map_payload(
                 "skills": list(topic.get("skills") or []),
                 "question_types": list(topic.get("question_types") or []),
                 "examples": list(topic.get("examples") or []),
+                "typical_misconceptions": list(
+                    topic.get("typical_misconceptions")
+                    or topic.get("misconceptions")
+                    or []
+                ),
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),
                 "weak": weak,

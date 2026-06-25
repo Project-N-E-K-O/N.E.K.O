@@ -523,6 +523,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_sequence_concept",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.83,
+          "reason": "Array traversal treats indexed elements as a finite ordered sequence, so sequence notation helps explain position, term, and boundary cases.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "array_traversal_to_sequences",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_matrix_dimension",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "Array length is a one-dimensional size, while matrix dimension tracks row and column counts; mixing them causes loop-bound errors.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "array_length_vs_matrix_dimension",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -598,6 +640,27 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_matrix_operations",
+          "required_mastery": 0.54,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Matrix traversal and transposition in C rely on row-column indexing that mirrors matrix operations.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "matrix_math_to_2d_arrays",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
@@ -619,6 +682,109 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_matrix_dimension",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.87,
+          "reason": "Array bounds and matrix dimensions are easy to mix up: code indexes rows and columns from memory layout, while math states matrix shape abstractly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "array_shape_vs_matrix_dimension",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_linear_transformation",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Matrix-based coordinate transforms connect 2D array storage to linear-algebra algorithms and graphics-style computations.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "matrix_to_linear_algebra_algorithms",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_matrix_elementary_transform",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Row swaps, row scaling, and row addition are implemented as loops over 2D arrays when coding elementary matrix transformations.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "2d_arrays_to_elementary_matrix_transforms",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_linear_systems",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "A coefficient table for linear systems is naturally stored as a 2D array before elimination steps update rows and columns.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "2d_arrays_to_linear_system_tables",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_rank",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.8,
+          "reason": "Code that reduces a matrix represented by a 2D array can expose pivots and rank through row-operation logic.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "2d_array_row_reduction_to_rank",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -886,6 +1052,27 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "proof_writing",
+          "required_mastery": 0.52,
+          "relation": "prerequisite",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "Recursive correctness arguments need a clear base case and induction-style step; proof-writing structure helps students justify the recursion, not just run it.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "recursion_to_induction",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
@@ -907,6 +1094,89 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_sequence_recursion",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.88,
+          "reason": "Recursive functions implement recurrence-style definitions, so sequence recursion gives a mathematical model for base cases and recursive steps.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "recursion_to_recurrence",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_sequence_concept",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "Recursive functions often generate ordered terms, so sequence concepts help students name each call result as a term indexed by depth.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "recursion_depth_to_sequence_terms",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_geometric_sequence",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Divide-and-branch recursion can create term counts that grow like a geometric sequence across recursion levels.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "recursion_tree_to_geometric_sequence",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.85,
+          "reason": "After writing a recursive base case and recursive step, students can justify correctness with an induction-style proof structure.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "recursive_correctness_to_induction_proof",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1461,10 +1731,60 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
+        },
+        {
+          "id": "function_thinking",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "Asymptotic complexity compares algorithms as functions of input size, so function thinking is needed before interpreting growth rates.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "complexity_to_function_growth",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
+        {
+          "id": "college_ds_sorting_basic",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Sorting practice uses time-complexity analysis to compare algorithms as input size changes.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_linear_list",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Complexity analysis first counts primitive operations, then applies the result to linear-list access, insertion, and deletion costs.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_c_debug_boundary",
           "relation": "co_occurs",
@@ -1483,6 +1803,130 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_exponential_function",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.88,
+          "reason": "Exponential growth such as 2^n must be distinguished from polynomial or logarithmic complexity when ranking algorithms.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "complexity_growth_classes",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_logarithmic_function",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Logarithmic functions explain why halving-search patterns such as binary search have much slower growth than linear scans.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "complexity_to_log_growth",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_power_function",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "Polynomial complexity classes such as n, n^2, and n^3 are easier to compare when students read them as power functions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "complexity_to_power_functions",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_logarithm_operation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Repeated halving in algorithms maps directly to logarithm operations when solving for the number of steps.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "halving_steps_to_logarithms",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_function_modeling",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "Runtime analysis builds a function model T(n) from input size to operation count before comparing algorithms.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "runtime_to_function_modeling",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_limit_concept",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.8,
+          "reason": "Asymptotic notation compares long-run growth, so the limit concept supports explanations of dominant terms and negligible constants.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "asymptotic_growth_to_limits",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1557,10 +2001,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_dynamic_array",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Dynamic arrays extend sequential lists with capacity management and amortized-cost reasoning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_c_array_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Sequential-list analysis starts from array index access and continuous traversal of stored elements.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_algorithm_complexity",
           "relation": "co_occurs",
@@ -1658,6 +2131,45 @@
       ],
       "related": [
         {
+          "id": "college_ds_dynamic_array",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_linear_list",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "college_ds_linear_list",
           "relation": "co_occurs",
           "reason": "单链表操作 and 线性表顺序存储 are often studied together, so guidance can compare their conditions and usage.",
@@ -1728,7 +2240,15 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "data_structures"
+      "course_family": "data_structures",
+      "aliases": [
+        "linked list",
+        "数组和链表",
+        "链表",
+        "单链表",
+        "单链表怎么插入删除节点",
+        "链表和数组有什么区别"
+      ]
     },
     {
       "id": "college_ds_stack",
@@ -1753,6 +2273,45 @@
         }
       ],
       "related": [
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_c_array_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_queue_circular",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
         {
           "id": "college_ds_linked_list",
           "relation": "co_occurs",
@@ -1824,7 +2383,15 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "data_structures"
+      "course_family": "data_structures",
+      "aliases": [
+        "栈和队列",
+        "栈",
+        "后进先出",
+        "stack",
+        "栈怎么处理括号匹配",
+        "表达式求值为什么要用栈"
+      ]
     },
     {
       "id": "college_ds_queue_circular",
@@ -1845,10 +2412,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "BFS uses a queue to keep pending vertices by layer, making it a direct queue application.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_linear_list",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Circular-queue implementation first chooses sequential storage, then maintains front, rear, and modular movement.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_stack",
           "relation": "co_occurs",
@@ -1941,10 +2537,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_binary_search_tree",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "BST search, insertion, and deletion all use traversal order to locate nodes and subtrees.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Binary-tree traversal usually fixes recursive visit order before converting it to an iterative stack process.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_queue_circular",
           "relation": "co_occurs",
@@ -2037,10 +2662,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_search_binary",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "A BST extends ordered-search thinking to dynamic sets and is useful to compare with binary search.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_tree_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "BST operations first traverse the tree while preserving the ordered left-child and right-child constraint.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_tree_traversal",
           "relation": "co_occurs",
@@ -2133,10 +2787,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_shortest_path",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Dijkstra-style shortest-path algorithms commonly use a priority queue to pick the smallest tentative distance.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_tree_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Heap sift-up and sift-down operations depend on complete-binary-tree parent and child positions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_binary_search_tree",
           "relation": "co_occurs",
@@ -2229,10 +2912,60 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
+        },
+        {
+          "id": "college_graph_theory_intro",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "Adjacency lists and adjacency matrices encode vertices, edges, direction, and weights from graph theory.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "graph_theory_to_representation",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "BFS and DFS depend on the graph representation to enumerate neighbors accurately.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_linear_list",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Graph storage turns vertex and edge sets into linear structures that can enumerate adjacent vertices.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_heap_priority_queue",
           "relation": "co_occurs",
@@ -2251,6 +2984,68 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_matrix_operations",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "An adjacency matrix is a matrix representation of a graph; matrix operations can express reachability and weighted-edge calculations.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "matrix_to_graph_representation",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_matrix_dimension",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "An adjacency matrix for n vertices has n by n dimensions, which connects graph storage choices to matrix shape.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "adjacency_matrix_to_matrix_dimension",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_graph_shortest_path",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Weighted graph representations store the edge weights that shortest-path models use as path lengths.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "weighted_representation_to_shortest_path_model",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2325,10 +3120,60 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
+        },
+        {
+          "id": "college_graph_traversal",
+          "required_mastery": 0.55,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "BFS and DFS are algorithmic procedures for the mathematical idea of graph traversal.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "graph_theory_to_traversal",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
+        {
+          "id": "college_ds_topological_sort",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Topological sort applies graph traversal ideas to directed acyclic graphs with in-degree updates.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_queue_circular",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Graph traversal first chooses BFS or DFS, then uses a queue or stack to manage pending vertices.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_graph_representation",
           "relation": "co_occurs",
@@ -2347,6 +3192,89 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_graph_connectivity",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Traversal is commonly used to test connected components and prove reachability in graph models.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "traversal_to_connectivity",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_graph_shortest_path",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "BFS traversal gives shortest paths in an unweighted graph because it visits vertices by increasing edge distance.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "bfs_to_unweighted_shortest_path",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_spanning_tree",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "DFS and BFS can record parent links that form traversal trees, which connect directly to spanning-tree ideas.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "graph_traversal_to_spanning_tree",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_graph_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "When solving graph traversal problems, the code step of marking visited vertices mirrors the mathematical traversal process.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "visited_marks_to_graph_traversal_process",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2421,10 +3349,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_graph_representation",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Shortest-path algorithms read edge weights from adjacency matrices or adjacency lists before updating distances.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_heap_priority_queue",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Weighted shortest-path solving maintains tentative distances and then selects the next vertex with a priority queue.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_graph_traversal",
           "relation": "co_occurs",
@@ -2443,6 +3400,69 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_graph_shortest_path",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Dijkstra, Bellman-Ford, and Floyd-style code are implementations of the mathematical shortest-path model.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "shortest_path_code_to_math_model",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_matrix_operations",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "All-pairs shortest-path algorithms can update a distance matrix, making matrix operations useful for tracing intermediate states.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "distance_matrix_to_matrix_operations",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_graph_connectivity",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Before interpreting a shortest-path result, students must check whether vertices are connected or unreachable.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "reachability_check_before_shortest_path",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2539,6 +3559,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_spanning_tree",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Minimum-spanning-tree algorithms search for a lowest-weight spanning tree in the mathematical graph model.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "mst_algorithm_to_spanning_tree",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "college_graph_connectivity",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "A spanning tree exists only for a connected graph, so connectivity is a prerequisite for interpreting MST output.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "connectivity_before_minimum_spanning_tree",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2613,10 +3675,39 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9
         }
       ],
       "related": [
+        {
+          "id": "college_ds_search_binary",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Binary search requires an ordered sequence, so basic sorting directly prepares searchable data.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Sorting practice executes comparison and swap steps, then uses complexity analysis to evaluate efficiency.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
         {
           "id": "college_ds_minimum_spanning_tree",
           "relation": "co_occurs",
@@ -2714,6 +3805,45 @@
       ],
       "related": [
         {
+          "id": "college_ds_search_binary",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_sorting_basic",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "This topic should be understood first and is used for diagnosis and learning-path guidance.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "college_ds_sorting_basic",
           "relation": "co_occurs",
           "reason": "快速排序与归并排序 and 基础排序算法 are often studied together, so guidance can compare their conditions and usage.",
@@ -2731,6 +3861,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_sequence_recursion",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "Quick sort and merge sort lead to recurrence-style formulas for subproblem sizes and total work.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "divide_and_conquer_sorting_to_recurrence",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_logarithmic_function",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "The height of balanced divide-and-conquer sorting is logarithmic in the input size.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "balanced_sort_recursion_to_log_depth",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2784,7 +3956,15 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "data_structures"
+      "course_family": "data_structures",
+      "aliases": [
+        "快速排序",
+        "归并排序",
+        "快排归并",
+        "quick sort merge sort",
+        "快速排序和归并排序怎么比较",
+        "快排一趟划分怎么做"
+      ]
     },
     {
       "id": "college_ds_hash_table",
@@ -2809,6 +3989,45 @@
         }
       ],
       "related": [
+        {
+          "id": "college_ds_search_binary",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_ds_linked_list",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "This topic should be understood first and is used for diagnosis and learning-path guidance.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
         {
           "id": "college_ds_quick_merge_sort",
           "relation": "co_occurs",
@@ -2880,7 +4099,15 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "data_structures"
+      "course_family": "data_structures",
+      "aliases": [
+        "哈希表",
+        "散列表",
+        "哈希冲突",
+        "hash collision",
+        "哈希冲突怎么处理",
+        "散列表查找为什么快"
+      ]
     },
     {
       "id": "college_ds_search_binary",
@@ -2923,6 +4150,27 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_logarithmic_function",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Binary search repeatedly halves the search interval, so the number of comparisons follows logarithmic growth.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "binary_search_to_logarithmic_growth",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3387,6 +4635,45 @@
       ],
       "related": [
         {
+          "id": "college_ds_tree_traversal",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_c_loop_invariant",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_c_recursion_basic",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "This topic should be understood first and is used for diagnosis and learning-path guidance.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "college_cs_test_cases",
           "relation": "co_occurs",
           "reason": "递归与迭代转换 and 测试用例设计 are often studied together, so guidance can compare their conditions and usage.",
@@ -3404,6 +4691,68 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_sequence_recursion",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "Recursion in programs and recurrence relations share self-reference, but one describes execution while the other defines mathematical terms.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "recursion_vs_recurrence",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_sequence_sum",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "reason": "Converting recursion to iteration often turns repeated recursive contributions into an accumulated sequence sum.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "recursion_iteration_to_sequence_sum",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "Equivalence between a recursive version and an iterative version can be argued with an induction-style invariant proof.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "recursive_iterative_equivalence_to_induction",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3457,7 +4806,15 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "data_structures"
+      "course_family": "data_structures",
+      "aliases": [
+        "递归和迭代",
+        "递归",
+        "迭代",
+        "recursion iteration",
+        "递归怎么改成循环",
+        "递归和迭代什么时候选"
+      ]
     },
     {
       "id": "college_ds_dynamic_array",
@@ -3767,6 +5124,27 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_matrix_operations",
+          "required_mastery": 0.5,
+          "relation": "prerequisite",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Two-dimensional dynamic-programming tables use matrix-like indexing, transitions, and boundary rows or columns.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "matrix_to_dynamic_programming",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "related": [
@@ -3779,6 +5157,89 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "college_matrix_dimension",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.81,
+          "reason": "Dynamic-programming table design first fixes state dimensions and boundary rows or columns before filling recurrence values.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_concept": "matrix_dimension_to_dp_table_design",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_sequence_recursion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Dynamic programming stores recurrence values after turning a recursive sequence relation into reusable states.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "dynamic_programming_to_recurrence_values",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "senior_sequence_sum",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.8,
+          "reason": "Many dynamic-programming transitions combine earlier terms, so sequence sums help explain accumulated optimal values.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "dp_transition_to_sequence_sum",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.81,
+          "reason": "After defining DP states and transitions, a proof-writing step explains why the recurrence covers all valid choices.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "dp_correctness_to_proof_structure",
+            "cross_subject": true,
+            "added_for": "cs_math_cross_seed_links"
+          }
         }
       ],
       "typical_misconceptions": [

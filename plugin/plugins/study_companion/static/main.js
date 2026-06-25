@@ -1398,8 +1398,49 @@ function renderKnowledgeStageSelector(nodes = []) {
   return root;
 }
 
-function renderKnowledgeNodes(nodes = []) {
+function renderKnowledgeNodeDetail(node = {}, edges = [], labelById = new Map()) {
+  const detail = drawerElement('article', 'knowledge-node-detail');
+  detail.dataset.topicId = String(node.id || node.topic_id || '');
+  detail.appendChild(drawerElement('h3', '', knowledgeNodeLabel(node)));
+  const facts = [
+    String(node.subject || '').trim(),
+    String(node.chapter || '').trim(),
+    String(node.unit || '').trim(),
+  ].filter(Boolean).join(' / ');
+  if (facts) detail.appendChild(drawerElement('p', 'knowledge-node-detail__meta', facts));
+  const nodeId = String(node.id || node.topic_id || '').trim();
+  const relatedEdges = edges.filter((edge) => String(edge.from || '') === nodeId || String(edge.to || '') === nodeId);
+  const addSection = (key, fallback, items) => {
+    const section = drawerElement('section', 'knowledge-node-detail__section');
+    section.appendChild(drawerElement('h4', '', t(key, fallback)));
+    const list = drawerElement('ul', 'knowledge-node-detail__list');
+    items.slice(0, 4).forEach((item) => list.appendChild(drawerElement('li', '', item)));
+    if (!list.childElementCount) {
+      list.appendChild(drawerElement('li', '', t('ui.knowledge.node_detail.empty', 'Keep studying this topic to unlock more graph context.')));
+    }
+    section.appendChild(list);
+    detail.appendChild(section);
+  };
+  addSection('ui.knowledge.node_detail.why', 'Why connected', relatedEdges.map((edge) => {
+    const otherId = String(edge.from || '') === nodeId ? String(edge.to || '') : String(edge.from || '');
+    const other = labelById.get(otherId) || otherId || '-';
+    const relation = knowledgeRelationLabel(edge.relation);
+    const reason = String(edge.reason || '').trim();
+    return reason ? `${relation}: ${other} - ${reason}` : `${relation}: ${other}`;
+  }));
+  addSection('ui.knowledge.node_detail.next', 'Recommended next step', relatedEdges.filter((edge) => ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').trim().toLowerCase())).map((edge) => {
+    const target = labelById.get(String(edge.to || '')) || String(edge.to || '') || '-';
+    return `${knowledgeRelationLabel(edge.relation)}: ${target}`;
+  }));
+  addSection('ui.knowledge.node_detail.practice', 'Practice type', (Array.isArray(node.question_types) ? node.question_types : []).map((item) => String(item || '').trim()).filter(Boolean));
+  addSection('ui.knowledge.node_detail.misconceptions', 'Common misconceptions', (Array.isArray(node.typical_misconceptions) ? node.typical_misconceptions : []).map((item) => String(item || '').trim()).filter(Boolean));
+  return detail;
+}
+
+function renderKnowledgeNodes(nodes = [], edges = []) {
   const root = drawerElement('div', 'knowledge-stage-groups');
+  const labelById = new Map(nodes.map((node) => [String(node.id || node.topic_id || ''), knowledgeNodeLabel(node)]));
+  const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const groups = new Map();
   nodes.slice(0, 80).forEach((node) => {
     const stage = stageValueFromNode(node);
@@ -1424,8 +1465,12 @@ function renderKnowledgeNodes(nodes = []) {
       valueLabel(node.chapter, ''),
       valueLabel(node.unit, ''),
     ].filter(Boolean).join(' / ');
+    item.addEventListener('click', () => {
+      detailMount.replaceChildren(renderKnowledgeNodeDetail(node, edges, labelById));
+    });
     return item;
   };
+  root.appendChild(detailMount);
   const selectedStage = normalizeLearningStage(learningProfile.stage);
   [...groups.entries()].sort(([stageA], [stageB]) => (
     stageA === selectedStage ? -1 : stageB === selectedStage ? 1 : [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageA) - [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageB)
@@ -1510,6 +1555,9 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
       relation: knowledgeRelationLabel(edge.relation),
       rawRelation: String(edge.relation || 'related').trim().toLowerCase(),
       reason: String(edge.reason || '').trim(),
+      priority: String(edge.priority || '').trim(),
+      context: String(edge.context || '').trim(),
+      confidence: Number.isFinite(Number(edge.confidence)) ? `${Math.round(Number(edge.confidence) * 100)}%` : '',
     });
     groups.set(groupKey, group);
   });
@@ -1532,12 +1580,18 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
     const list = drawerElement('div', 'knowledge-edge-card__items');
     group.items.slice(0, 6).forEach((item) => {
       const row = drawerElement('div', 'knowledge-edge-row');
-      row.dataset.relation = item.rawRelation || 'related';
+      row.setAttribute('data-relation', item.rawRelation || 'related');
+      row.setAttribute('data-priority', item.priority || 'optional');
+      row.setAttribute('data-context', item.context || 'review');
       row.appendChild(drawerElement('span', 'knowledge-edge-row__relation', item.relation));
       const target = drawerElement('span', 'knowledge-edge-row__target', item.to);
       if (item.reason) {
         target.title = item.reason;
         target.appendChild(drawerElement('small', 'knowledge-edge-row__reason', item.reason));
+      }
+      const meta = [item.priority, item.context, item.confidence].filter(Boolean).join(' / ');
+      if (meta) {
+        target.appendChild(drawerElement('small', 'knowledge-edge-row__meta', meta));
       }
       row.appendChild(target);
       list.appendChild(row);
@@ -1579,7 +1633,7 @@ function renderKnowledgePanel(payload = null) {
   root.appendChild(renderKnowledgeStageSelector(nodes));
 
   if (shownNodes.length) {
-    root.appendChild(renderKnowledgeNodes(shownNodes));
+    root.appendChild(renderKnowledgeNodes(shownNodes, shownEdges));
   } else {
     root.appendChild(drawerElement('pre', '', t('ui.knowledge.scope_empty', 'No topics in this graph range yet. Switch to all stages or keep studying to build it.')));
   }

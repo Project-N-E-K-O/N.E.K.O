@@ -14,12 +14,51 @@
       "related": [
         {
           "id": "physics_junior_force_balance",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 二力平衡 after 速度与运动图像; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "读 s-t、v-t 图像前，需要先会从函数图像读取斜率、截距、增减和区间信息。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "函数图像->运动图像",
+            "physics_use": "从运动图像判断速度、路程和运动状态"
+          }
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Motion graph tasks use linear-function graphs to compare uniform motion segments and read slope as speed.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "motion_graph_linear_function"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -85,12 +124,50 @@
       "related": [
         {
           "id": "physics_junior_pressure_buoyancy",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 压强与浮力 after 二力平衡; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Force balance diagrams apply vector addition because the net force is represented by a zero resultant.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "force_balance_vector_addition"
+          }
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Before checking equilibrium, students can project each force onto coordinate axes and compare component sums.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "equilibrium_component_setup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -156,7 +233,7 @@
       "related": [
         {
           "id": "physics_junior_work_power",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 功和功率 after 压强与浮力; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -218,6 +295,13 @@
     {
       "id": "physics_junior_work_power",
       "name": "功和功率",
+      "aliases": [
+        "功和能量",
+        "做功",
+        "功率",
+        "机械功",
+        "功和动能"
+      ],
       "subject": "physics",
       "stage": "junior_high",
       "chapter": "力学",
@@ -226,13 +310,89 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "physics_senior_work_energy_path",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "功和能量关系题通常要先判断力是否做功，再选择功-能路径。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_energy_momentum",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "高中动量能量综合会继续使用功、功率和能量转化判断。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "大学物理会把功和动能定理扩展到更一般的力学模型。",
+          "use_cases": [
+            "learning_path",
+            "review"
+          ]
+        },
+        {
           "id": "physics_junior_circuit_recognition",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 串并联电路识别 after 功和功率; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Work problems apply dot-product thinking by using only the force component along displacement.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "work_effective_component"
+          }
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "Variable-force work questions give a concrete physics case for integral accumulation over displacement.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "work_integral_application"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -298,7 +458,7 @@
       "related": [
         {
           "id": "physics_junior_ohm_law",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 欧姆定律 after 串并联电路识别; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -369,12 +529,50 @@
       "related": [
         {
           "id": "physics_junior_electric_power",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 电功率 after 欧姆定律; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Use linear I-U graphs to identify proportional voltage-current behavior and resistor characteristics.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "ohm_law_linear_graph"
+          }
+        },
+        {
+          "id": "linear_function_kb",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Read slope and intercept meanings before interpreting experimental current-voltage data.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "slope_interpretation_for_circuits"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -440,12 +638,31 @@
       "related": [
         {
           "id": "physics_junior_experiment_resistance",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 测电阻实验 after 电功率; it is the next topic in the junior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "quadratic_function_concept",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Electric power formulas such as P=U^2/R and P=I^2R are quadratic relationships under fixed resistance.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "electric_power_quadratic_model"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -563,13 +780,87 @@
     {
       "id": "physics_senior_newton_laws",
       "name": "牛顿运动定律综合",
+      "aliases": [
+        "牛顿第二定律",
+        "牛顿运动定律",
+        "F=ma",
+        "动力学建模",
+        "牛二题",
+        "牛顿第二定律题"
+      ],
       "subject": "physics",
       "stage": "senior_high",
       "chapter": "高中力学",
       "depth": 2,
       "difficulty": 0.66,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_force_balance",
+          "required_mastery": 0.62,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "牛顿第二定律题需要先会确定研究对象并完成受力分析。",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.92,
+          "reason": "动力学建模通常按选对象、画受力图、正交分解、列 F=ma 的步骤推进。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "探究加速度与力质量关系是牛顿第二定律的实验化应用。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_energy_momentum",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "力学综合题常在牛顿定律之后切换到动量或能量路径。",
+          "use_cases": [
+            "learning_path",
+            "review"
+          ]
+        },
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "学生提到“第二定律”时需要区分牛顿第二定律和热力学第二定律。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -648,7 +939,7 @@
       "related": [
         {
           "id": "physics_senior_circular_motion",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 圆周运动 after 动量能量综合; it is the next topic in the senior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -734,12 +1025,50 @@
       "related": [
         {
           "id": "physics_senior_electric_magnetic_field",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 电场磁场综合 after 圆周运动; it is the next topic in the senior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Resolve circular-motion position, velocity, and force components with sine and cosine definitions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "circular_motion_trig_components"
+          }
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Represent radial and tangential directions in coordinates before writing centripetal-acceleration equations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "radial_tangential_vector_coordinates"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -820,7 +1149,7 @@
       "related": [
         {
           "id": "physics_senior_experiment_data",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 高中物理实验数据处理 after 电场磁场综合; it is the next topic in the senior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -906,7 +1235,7 @@
       "related": [
         {
           "id": "physics_senior_ac_circuit_intro",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 交变电流初步 after 高中物理实验数据处理; it is the next topic in the senior_high physics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -1070,17 +1399,162 @@
       "prerequisites": [
         {
           "id": "physics_senior_newton_laws",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 牛顿运动定律综合 before 运动图像综合; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_newton_laws",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 运动图像综合 together with 牛顿运动定律综合 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_force_decomposition",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 运动图像综合 together with 力的分解与正交分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Motion graph synthesis usually identifies velocity and acceleration before choosing a force-analysis model.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Acceleration experiments rely on reading motion data and checking whether the graph matches the physical process.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_function_graph_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "运动图像综合会把函数图像分析中的斜率、面积和凹凸变化翻译为速度、位移和加速度信息。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "函数图像->运动图像",
+            "physics_use": "把 x-t、v-t、a-t 图像特征映射到运动过程"
+          }
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.89,
+          "reason": "理解瞬时速度和瞬时加速度需要先理解导数作为瞬时变化率的定义。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "导数->速度/加速度",
+            "physics_use": "用变化率解释图像切线斜率"
+          }
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Motion graph synthesis applies derivatives when velocity is the rate of change of position and acceleration is the rate of change of velocity.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "kinematics_derivatives"
+          }
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Velocity-time and acceleration-time graph tasks apply definite integrals to recover displacement or velocity change from area.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "motion_graph_area_integral"
+          }
+        },
+        {
+          "id": "college_integral_application_interval",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Before using area under a motion graph, students must choose the time interval that matches the physical process.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "motion_graph_integral_interval"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1158,17 +1632,166 @@
       "prerequisites": [
         {
           "id": "physics_senior_motion_graph_synthesis",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 运动图像综合 before 力的分解与正交分析; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_motion_graph_synthesis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 力的分解与正交分析 together with 运动图像综合 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_connected_body",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 力的分解与正交分析 together with 连接体与整体隔离法 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Connected-body problems normally start by decomposing forces on each object before writing linked equations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_friction_critical",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Friction threshold problems use force decomposition to compare components with maximum static friction.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "力的正交分解需要先会把向量投影到坐标轴，并用分量表示大小和方向。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "向量->力分解",
+            "physics_use": "建立沿斜面和垂直斜面的受力分量"
+          }
+        },
+        {
+          "id": "sine_cosine_tangent",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "斜面分解通常先定坐标轴，再用 sin、cos 把重力分解为平行斜面和垂直斜面的分量。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "三角函数->斜面分解",
+            "procedure": [
+              "choose_axes",
+              "project_gravity",
+              "write_component_equations"
+            ]
+          }
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Force decomposition applies vector linear operations by replacing one force with equivalent perpendicular components.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "force_decomposition_vector_operations"
+          }
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Incline and pulling-force problems apply dot products to find the component of a force along a chosen direction.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "force_projection_dot_product"
+          }
+        },
+        {
+          "id": "sine_cosine_tangent",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Inclined-plane force components apply sine and cosine ratios to connect angle geometry with parallel and normal components.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "incline_components_trig"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1246,17 +1869,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_force_decomposition",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 力的分解与正交分析 before 连接体与整体隔离法; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_force_decomposition",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 连接体与整体隔离法 together with 力的分解与正交分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_friction_critical",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 连接体与整体隔离法 together with 摩擦力临界问题 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_friction_critical",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "After linking the bodies, students often need to decide the friction regime before solving the equations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "application",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.86,
+          "reason": "Connected-body scenarios provide a common application for choosing objects, axes, and decomposed force components.",
+          "use_cases": [
+            "diagnosis",
+            "review",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1334,17 +2005,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_connected_body",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 连接体与整体隔离法 before 摩擦力临界问题; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_connected_body",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 摩擦力临界问题 together with 连接体与整体隔离法 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_projectile_motion",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 摩擦力临界问题 together with 平抛与斜抛运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Critical friction analysis requires resolving normal force and tangential components before comparing limits.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Connected bodies on rough surfaces are a standard application of static-friction threshold reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1422,17 +2141,141 @@
       "prerequisites": [
         {
           "id": "physics_senior_friction_critical",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 摩擦力临界问题 before 平抛与斜抛运动; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_friction_critical",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平抛与斜抛运动 together with 摩擦力临界问题 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_circular_critical",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 平抛与斜抛运动 together with 圆周运动临界条件 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Projectile solutions split motion into horizontal and vertical components, then verify timing and velocity with graph reasoning.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_multistage_synthesis",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Projectile motion often appears as one segment inside multi-stage mechanics synthesis problems.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Projectile initial velocity must be decomposed into horizontal and vertical components using trigonometric ratios.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "projectile_velocity_decomposition"
+          }
+        },
+        {
+          "id": "quadratic_function_concept",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Projectile trajectory y(x) is modeled as a quadratic function when air resistance is ignored.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "projectile_quadratic_trajectory"
+          }
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Projectile motion applies vector coordinates by separating initial velocity and displacement into horizontal and vertical components.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "projectile_vector_components"
+          }
+        },
+        {
+          "id": "sine_cosine_tangent",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Oblique launch problems apply trigonometric ratios to convert launch speed and angle into component velocities.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "projectile_trig_components"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1510,17 +2353,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_projectile_motion",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 平抛与斜抛运动 before 圆周运动临界条件; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_projectile_motion",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 圆周运动临界条件 together with 平抛与斜抛运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_work_energy_path",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 圆周运动临界条件 together with 功和动能定理路径选择 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Critical circular-motion questions require radial force decomposition before applying the centripetal condition.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_gravitation_orbit",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "Orbit problems apply circular-motion critical ideas when gravity supplies the centripetal force.",
+          "use_cases": [
+            "learning_path",
+            "review",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1598,17 +2489,124 @@
       "prerequisites": [
         {
           "id": "physics_senior_circular_critical",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 圆周运动临界条件 before 功和动能定理路径选择; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_circular_critical",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 功和动能定理路径选择 together with 圆周运动临界条件 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_mechanical_energy_loss",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 功和动能定理路径选择 together with 机械能守恒与能量损失 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After choosing a work-energy path, students must account for nonconservative work and energy loss.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_multistage_synthesis",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Work-energy path selection is a common application in multi-stage mechanics problems with changing constraints.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "变力做功和 v-t 图像位移都需要先理解定积分表示连续累积量。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "积分->位移/功",
+            "physics_use": "用面积或累积量解释位移、功和能量变化"
+          }
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "功和动能定理路径选择可以作为定积分物理应用中的典型变力做功场景。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "功->定积分物理应用",
+            "math_use": "建立 W=∫F(x)dx 或面积累积模型"
+          }
+        },
+        {
+          "id": "college_integral_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Work-energy path selection applies integral modeling when work is accumulated from a changing force over a path.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "work_energy_integral_model"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1686,17 +2684,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_work_energy_path",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 功和动能定理路径选择 before 机械能守恒与能量损失; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_work_energy_path",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 机械能守恒与能量损失 together with 功和动能定理路径选择 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_momentum_collision",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 机械能守恒与能量损失 together with 碰撞与动量守恒 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Energy-loss questions require identifying dissipative work before writing the work-energy relationship.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_experiment_energy",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Energy experiments use mechanical energy loss to explain deviations from ideal conservation.",
+          "use_cases": [
+            "diagnosis",
+            "review",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1774,17 +2820,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_mechanical_energy_loss",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 机械能守恒与能量损失 before 碰撞与动量守恒; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_mechanical_energy_loss",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 碰撞与动量守恒 together with 机械能守恒与能量损失 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_impulse_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 碰撞与动量守恒 together with 冲量与力时图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_impulse_graph",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Collision analysis often moves from conservation statements to impulse-time information for force and duration.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_energy_momentum",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Momentum collision problems are a central application of combined momentum and energy reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1862,17 +2956,65 @@
       "prerequisites": [
         {
           "id": "physics_senior_momentum_collision",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 碰撞与动量守恒 before 冲量与力时图像; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88
         }
       ],
       "related": [
         {
           "id": "physics_senior_momentum_collision",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 冲量与力时图像 together with 碰撞与动量守恒 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_gravitation_orbit",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 冲量与力时图像 together with 万有引力与天体运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "physics_senior_momentum_collision",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Impulse graphs are used to update momentum states before interpreting a collision or interaction outcome.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Force-time graph interpretation is a practical application of experiment data reading and area estimation.",
+          "use_cases": [
+            "diagnosis",
+            "review",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1950,17 +3092,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_impulse_graph",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 冲量与力时图像 before 万有引力与天体运动; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_impulse_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 万有引力与天体运动 together with 冲量与力时图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_simple_harmonic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 万有引力与天体运动 together with 简谐运动图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2038,17 +3199,94 @@
       "prerequisites": [
         {
           "id": "physics_senior_gravitation_orbit",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 万有引力与天体运动 before 简谐运动图像; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_gravitation_orbit",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 简谐运动图像 together with 万有引力与天体运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_wave_interference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 简谐运动图像 together with 机械波传播与干涉 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "分析简谐运动 x-t 图像前，需要先熟悉正弦、余弦函数图像的周期、相位和振幅。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "三角函数->简谐运动",
+            "physics_use": "读取简谐运动的振幅、周期、相位和初始状态"
+          }
+        },
+        {
+          "id": "senior_function_periodicity",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Simple harmonic motion graph questions apply function periodicity to identify cycle length and repeated states.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "simple_harmonic_periodicity"
+          }
+        },
+        {
+          "id": "sine_cosine_tangent",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.87,
+          "reason": "Simple harmonic motion uses sine and cosine forms to connect displacement, phase, and initial state.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "simple_harmonic_trig_form"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2126,17 +3364,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_simple_harmonic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 简谐运动图像 before 机械波传播与干涉; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_simple_harmonic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 机械波传播与干涉 together with 简谐运动图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_electric_field_force",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 机械波传播与干涉 together with 电场力与电势能 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2214,17 +3471,55 @@
       "prerequisites": [
         {
           "id": "physics_senior_wave_interference",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 机械波传播与干涉 before 电场力与电势能; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_wave_interference",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电场力与电势能 together with 机械波传播与干涉 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_electric_potential_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电场力与电势能 together with 电势与场强图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Electric field force problems use vector addition to combine fields and forces from multiple charges.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "electric_force_vector_superposition"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2302,17 +3597,74 @@
       "prerequisites": [
         {
           "id": "physics_senior_electric_field_force",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电场力与电势能 before 电势与场强图像; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_electric_field_force",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电势与场强图像 together with 电场力与电势能 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_capacitor_dynamic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电势与场强图像 together with 电容器动态分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_derivative_tangent",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "The electric field direction and magnitude are read from the negative slope of the potential-position graph.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "potential_graph_slope_to_field"
+          }
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Students need graph-reading skill before extracting extrema, monotonic intervals, and slopes from potential graphs.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "potential_graph_information_reading"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2390,17 +3742,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_electric_potential_graph",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电势与场强图像 before 电容器动态分析; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_electric_potential_graph",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电容器动态分析 together with 电势与场强图像 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_dc_circuit_dynamic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电容器动态分析 together with 闭合电路动态分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -2478,17 +3849,74 @@
       "prerequisites": [
         {
           "id": "physics_senior_capacitor_dynamic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电容器动态分析 before 闭合电路动态分析; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_capacitor_dynamic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 闭合电路动态分析 together with 电容器动态分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_power_extreme",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 闭合电路动态分析 together with 电路功率极值 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_exponential_function",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Circuit transition problems apply exponential-function intuition to describe charging, discharging, and approach to a steady state.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "circuit_transition_exponential"
+          }
+        },
+        {
+          "id": "college_first_order_linear_ode",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "RC and RL transition models apply first-order linear differential equations to connect rates of change with circuit state variables.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "circuit_transition_first_order_ode"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2566,17 +3994,74 @@
       "prerequisites": [
         {
           "id": "physics_senior_dc_circuit_dynamic",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 闭合电路动态分析 before 电路功率极值; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_dc_circuit_dynamic",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电路功率极值 together with 闭合电路动态分析 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_magnetic_force",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 电路功率极值 together with 带电粒子在磁场中运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "quadratic_max_min",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Circuit power extreme questions apply quadratic maximum and minimum reasoning when power is written as a parameter function.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "circuit_power_quadratic_extreme"
+          }
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Power optimization tasks apply derivative extrema methods when resistance or current is treated as a continuous variable.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "circuit_power_derivative_extreme"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2654,17 +4139,55 @@
       "prerequisites": [
         {
           "id": "physics_senior_power_extreme",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 电路功率极值 before 带电粒子在磁场中运动; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_power_extreme",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 带电粒子在磁场中运动 together with 电路功率极值 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_composite_field",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 带电粒子在磁场中运动 together with 复合场粒子运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Use vector perpendicularity and component checks before applying magnetic force direction rules.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "magnetic_force_vector_perpendicularity"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2742,17 +4265,55 @@
       "prerequisites": [
         {
           "id": "physics_senior_magnetic_force",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 带电粒子在磁场中运动 before 复合场粒子运动; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_magnetic_force",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 复合场粒子运动 together with 带电粒子在磁场中运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_electromagnetic_induction_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 复合场粒子运动 together with 法拉第电磁感应定律 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Composite field trajectories are easier to split by coordinate axes before matching electric and magnetic stages.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "composite_field_coordinate_decomposition"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2830,17 +4391,55 @@
       "prerequisites": [
         {
           "id": "physics_senior_composite_field",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 复合场粒子运动 before 法拉第电磁感应定律; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_composite_field",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 法拉第电磁感应定律 together with 复合场粒子运动 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_induction_rod",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 法拉第电磁感应定律 together with 导体棒切割磁感线 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Faraday induction links induced emf to the rate of change of magnetic flux, a derivative calculation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "flux_rate_of_change_derivative"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2918,17 +4517,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_electromagnetic_induction_law",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 法拉第电磁感应定律 before 导体棒切割磁感线; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_electromagnetic_induction_law",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 导体棒切割磁感线 together with 法拉第电磁感应定律 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_ac_transformer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 导体棒切割磁感线 together with 变压器与远距离输电 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3006,17 +4624,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_induction_rod",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 导体棒切割磁感线 before 变压器与远距离输电; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_induction_rod",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 变压器与远距离输电 together with 导体棒切割磁感线 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_experiment_vernier",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 变压器与远距离输电 together with 游标卡尺与螺旋测微器读数 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3094,17 +4731,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_ac_transformer",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 变压器与远距离输电 before 游标卡尺与螺旋测微器读数; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_ac_transformer",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 游标卡尺与螺旋测微器读数 together with 变压器与远距离输电 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_experiment_acceleration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 游标卡尺与螺旋测微器读数 together with 探究加速度与力质量关系 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3173,6 +4829,13 @@
     {
       "id": "physics_senior_experiment_acceleration",
       "name": "探究加速度与力质量关系",
+      "aliases": [
+        "速度和加速度",
+        "速度",
+        "加速度",
+        "加速度与力质量关系",
+        "加速度实验"
+      ],
       "subject": "physics",
       "stage": "senior_high",
       "chapter": "高中物理实验",
@@ -3182,17 +4845,62 @@
       "prerequisites": [
         {
           "id": "physics_senior_experiment_vernier",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 游标卡尺与螺旋测微器读数 before 探究加速度与力质量关系; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
+          "id": "physics_senior_newton_laws",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "解释加速度变化时需要回到牛顿第二定律的力、质量、加速度关系。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "速度描述位移变化率，加速度描述速度变化率，是运动学中最常混淆的一组概念。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "physics_senior_experiment_vernier",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 探究加速度与力质量关系 together with 游标卡尺与螺旋测微器读数 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_experiment_energy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 探究加速度与力质量关系 together with 验证机械能守恒实验 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3270,17 +4978,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_experiment_acceleration",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 探究加速度与力质量关系 before 验证机械能守恒实验; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_experiment_acceleration",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 验证机械能守恒实验 together with 探究加速度与力质量关系 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_experiment_resistance",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 验证机械能守恒实验 together with 测电阻与伏安法选择 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3358,17 +5085,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_experiment_energy",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 验证机械能守恒实验 before 测电阻与伏安法选择; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_experiment_energy",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 测电阻与伏安法选择 together with 验证机械能守恒实验 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_experiment_battery",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 测电阻与伏安法选择 together with 测电源电动势和内阻 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3446,17 +5192,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_experiment_resistance",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 测电阻与伏安法选择 before 测电源电动势和内阻; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_experiment_resistance",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 测电源电动势和内阻 together with 测电阻与伏安法选择 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_model_boundary",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 测电源电动势和内阻 together with 物理压轴边界条件 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3534,17 +5299,36 @@
       "prerequisites": [
         {
           "id": "physics_senior_experiment_battery",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 测电源电动势和内阻 before 物理压轴边界条件; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_experiment_battery",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物理压轴边界条件 together with 测电源电动势和内阻 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         },
         {
           "id": "physics_senior_multistage_synthesis",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 物理压轴边界条件 together with 多过程综合建模 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3622,13 +5406,26 @@
       "prerequisites": [
         {
           "id": "physics_senior_model_boundary",
-          "required_mastery": 0.58
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Master 物理压轴边界条件 before 多过程综合建模; it supplies the foundation for this physics learning path.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "related": [
         {
           "id": "physics_senior_model_boundary",
-          "relation": "nearby"
+          "relation": "co_occurs",
+          "reason": "Review 多过程综合建模 together with 物理压轴边界条件 when diagnosing adjacent physics skills.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -3735,6 +5532,26 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.88,
+          "reason": "理解位移、速度、加速度和力的矢量合成，需要先掌握向量加减和数乘的线性运算。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "向量运算->物理矢量",
+            "physics_use": "合成和分解位移、速度、加速度、力"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3832,6 +5649,88 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.92,
+          "reason": "质点运动学微积分表述通常先建立 x(t)，再求导得到 v(t)，继续求导得到 a(t)。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "导数->速度/加速度",
+            "procedure": [
+              "model_position_function",
+              "differentiate_to_velocity",
+              "differentiate_to_acceleration"
+            ]
+          }
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "二阶导数在函数图像中常用于凹凸判断，在运动学中表示加速度，两个语境不能直接混用结论。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "加速度->二阶导数",
+            "confusion": "graph_curvature_vs_physical_acceleration"
+          }
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.92,
+          "reason": "Particle kinematics applies derivative calculation to move from position functions to velocity and acceleration functions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "particle_kinematics_derivative_calculation"
+          }
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Particle kinematics applies definite integrals to reconstruct displacement or velocity change from time-dependent velocity or acceleration.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "particle_kinematics_definite_integral"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4026,6 +5925,50 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_integral_application_integrand",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "用积分求功时，需要先把力随位移变化的函数建立为被积函数，再确定积分区间。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "功->被积函数建立",
+            "procedure": [
+              "choose_displacement_variable",
+              "model_force_function",
+              "integrate_force_over_path"
+            ]
+          }
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "恒力做功 W=Fs cosθ 可以用向量数量积解释力在位移方向上的有效分量。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "功->向量数量积",
+            "math_use": "用点积解释方向夹角和有效分量"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4511,6 +6454,50 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.87,
+          "reason": "建立简谐振动微分方程时，需要用二阶导数把位移函数和加速度联系起来。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "math_to_physics",
+            "bridge_focus": "二阶导数->简谐振动",
+            "procedure": [
+              "define_displacement_function",
+              "differentiate_twice",
+              "relate_acceleration_to_displacement"
+            ]
+          }
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "简谐振动微分方程的解通常写成正弦或余弦形式，三角函数图像帮助解释相位和周期。",
+          "use_cases": [
+            "hint_generation",
+            "learning_path",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "简谐振动方程->三角函数图像",
+            "math_use": "用三角函数图像解释通解参数"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4608,6 +6595,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_exponential_function",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Damped oscillation applies exponential-function intuition to describe amplitude decay envelopes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "damping_exponential_envelope"
+          }
+        },
+        {
+          "id": "college_differential",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.83,
+          "reason": "Damping models require translating small changes in displacement and velocity into differential-equation terms.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "damping_differential_modeling"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5190,6 +7215,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_vector_space",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Field superposition relies on vector-space operations before integrating or summing electric fields.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "field_superposition_vector_space"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5675,6 +7719,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Biot-Savart calculations accumulate infinitesimal magnetic-field contributions with definite integrals.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "biot_savart_definite_integral"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5869,6 +7932,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Lorentz force magnitude uses the sine of the angle between velocity and magnetic field.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "lorentz_force_angle_sine"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6063,6 +8145,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_partial_derivative",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Maxwell equations require partial derivatives to describe spatial and temporal changes of fields.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "maxwell_partial_derivatives"
+          }
+        },
+        {
+          "id": "college_gradient_directional_derivative",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Gradient and directional-derivative ideas help interpret how electromagnetic fields vary in space.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "field_variation_gradient"
+          }
         }
       ],
       "typical_misconceptions": [

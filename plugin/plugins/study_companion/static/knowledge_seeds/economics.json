@@ -26,6 +26,45 @@
       ],
       "related": [
         {
+          "id": "college_econ_index_real_nominal",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.78,
+          "reason": "Opportunity cost is about the next best forgone alternative, not about nominal versus real measurement.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Opportunity cost is a core input when comparing costs and benefits of choices.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_ppf",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "The production possibilities frontier visualizes scarcity, trade-offs, and opportunity cost.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "mathematical_modeling",
           "relation": "co_occurs",
           "reason": "稀缺性与机会成本 and 数学建模与应用题审题 are often studied together, so guidance can compare their conditions and usage.",
@@ -97,7 +136,13 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "economics"
+      "course_family": "economics",
+      "aliases": [
+        "机会成本",
+        "稀缺性",
+        "稀缺性与机会成本",
+        "opportunity cost"
+      ]
     },
     {
       "id": "college_econ_ppf",
@@ -139,6 +184,45 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After using the PPF to identify scarcity and trade-offs, learners can analyze how markets allocate goods through demand and supply.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_econ_scarcity_opportunity_cost",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.9,
+          "reason": "PPF questions apply scarcity and opportunity cost by showing feasible choices and the cost of moving along the frontier.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_growth_productivity",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Students often confuse movement along a fixed PPF with outward shifts caused by growth or productivity improvements.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -216,9 +300,272 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "function_concept",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Function concepts are a math prerequisite for reading demand and supply curves as mappings between price and quantity.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "function_to_supply_demand_curve"
+          }
+        },
+        {
+          "id": "function_graph_reading",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Demand-supply analysis needs graph-reading skill before learners interpret curve shifts, slopes, and intersections on price-quantity axes.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "supply_demand_curve_to_function_graph_reading"
+          }
         }
       ],
       "related": [
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Micro demand-supply curves differ from macro aggregate demand and aggregate supply models in scope and interpretation.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_consumer_choice",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Demand curves connect individual choice to market demand and equilibrium outcomes.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_elasticity",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After drawing demand and supply curves, elasticity helps explain response size and incidence.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Linear function graph skills transfer directly to drawing demand and supply schedules as curves on price-quantity axes.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "function_graph_to_supply_demand_curve"
+          }
+        },
+        {
+          "id": "linear_function_application",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Set up price as an input and quantity as an output before solving shifts, intersections, and equilibrium changes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "function_modeling_to_market_equilibrium"
+          }
+        },
+        {
+          "id": "linear_function_kb",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Slope and intercept describe a line, while economic interpretation asks whether the curve is demand or supply and what changed.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "slope_intercept_vs_economic_interpretation"
+          }
+        },
+        {
+          "id": "senior_function_modeling",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Supply and demand curves apply function modeling by translating economic assumptions into price-quantity relationships.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "supply_demand_curve_to_function_modeling"
+          }
+        },
+        {
+          "id": "linear_function_intersection",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Finding market equilibrium follows the same procedural step as locating the intersection of two linear functions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "market_equilibrium_to_function_intersection"
+          }
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "A curve's mathematical monotonicity is not the same as the economic cause of a demand or supply shift.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "curve_direction_vs_economic_shift"
+          }
+        },
+        {
+          "id": "function_concept",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Supply and demand analysis applies the function concept by treating price and quantity as linked variables.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "supply_demand_to_function_concept"
+          }
+        },
+        {
+          "id": "linear_function_expression",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Linear demand and supply schedules apply linear function expressions when learners write equations for market curves.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "market_curves_to_linear_function_expression"
+          }
+        },
+        {
+          "id": "linear_system_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Market equilibrium applies linear system solving when demand and supply equations are set equal.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "equilibrium_to_linear_system_application"
+          }
+        },
+        {
+          "id": "coordinate_system",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Drawing supply and demand curves proceeds through coordinate-system setup with quantity and price axes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "market_graph_to_coordinate_system"
+          }
+        },
         {
           "id": "college_econ_ppf",
           "relation": "co_occurs",
@@ -291,7 +638,13 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "economics"
+      "course_family": "economics",
+      "aliases": [
+        "需求供给",
+        "需求和供给曲线",
+        "供需模型",
+        "demand supply"
+      ]
     },
     {
       "id": "college_micro_elasticity",
@@ -313,6 +666,40 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "linear_function_kb",
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Slope and intercept ideas prepare learners to compare absolute curve changes with percentage ratio changes in elasticity.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "ratio_change_elasticity"
+          }
+        },
+        {
+          "id": "primary_ratio_meaning",
+          "required_mastery": 0.58,
+          "relation": "prerequisite",
+          "reason": "Elasticity compares percentage changes as a ratio, so learners need ratio meaning before interpreting elastic and inelastic responses.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "elasticity_to_ratio_change"
+          }
         }
       ],
       "related": [
@@ -333,6 +720,235 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Elasticity analysis starts by identifying the relevant demand or supply curve and the direction of price or quantity change.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.81,
+          "reason": "Elasticity supports cost-benefit reasoning by estimating how consumers or firms respond to price and policy changes.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Point elasticity applies derivative calculation by multiplying the local rate of quantity change by the price-quantity ratio.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "derivative_to_point_elasticity"
+          }
+        },
+        {
+          "id": "function_concept",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Elasticity work first identifies the function linking price and quantity, then compares percentage changes along that relation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "function_to_ratio_change"
+          }
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "The slope of a demand curve is an absolute rate, while elasticity is a percentage ratio change and varies with the point.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "slope_vs_elasticity"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Elasticity applies percentage-change reasoning from growth-rate problems to price and quantity responses.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "elasticity_to_percentage_change"
+          }
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Point elasticity proceeds from average percentage changes to local rate-of-change reasoning expressed by the derivative definition.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "point_elasticity_to_derivative_definition"
+          }
+        },
+        {
+          "id": "direct_proportion",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.79,
+          "reason": "Elasticity is a ratio of percentage changes, not a claim that price and quantity are directly proportional.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "elasticity_ratio_vs_direct_proportion"
+          }
+        },
+        {
+          "id": "senior_derivative_concept",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Point elasticity applies derivative concepts to describe local responsiveness of quantity to price.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "point_elasticity_to_derivative_concept"
+          }
+        },
+        {
+          "id": "primary_percent_meaning",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Elasticity applies percent meaning because it compares percentage changes in price and quantity.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "elasticity_to_percent_meaning"
+          }
+        },
+        {
+          "id": "senior_derivative_tangent",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "Point elasticity applies tangent-slope reasoning when interpreting the local slope of a demand curve.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "point_elasticity_to_tangent_slope"
+          }
+        },
+        {
+          "id": "college_chain_rule",
+          "relation": "procedure_step",
+          "priority": "optional",
+          "context": "review",
+          "confidence": 0.78,
+          "reason": "Advanced elasticity work can proceed to chain-rule reasoning when variables affect demand through intermediate functions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "elasticity_to_chain_rule_extension"
+          }
+        },
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "confusable",
+          "priority": "optional",
+          "context": "diagnosis",
+          "confidence": 0.74,
+          "reason": "Elasticity measures responsiveness, while inflation measures changes in the overall price level; both use percentages but answer different questions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -431,6 +1047,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_utility_marginal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Consumer choice problems proceed from preferences and budget constraints to marginal utility comparisons at the chosen bundle.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "Consumer choice explains where individual demand curves come from before they are aggregated into market demand.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_scarcity_opportunity_cost",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.78,
+          "reason": "A budget constraint is a specific income-price limit, while opportunity cost is the broader value of the next best forgone option.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -528,6 +1183,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_consumer_choice",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Marginal utility calculations feed into consumer choice by comparing marginal utility per unit of price across goods.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.8,
+          "reason": "Diminishing marginal utility helps explain why demand curves usually slope downward.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_elasticity",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.76,
+          "reason": "Marginal utility describes added satisfaction from consumption, while elasticity describes responsiveness to price or income changes.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -604,6 +1298,40 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Derivative calculation is a math prerequisite for interpreting marginal cost as the rate of change of total cost.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "derivative_to_marginal_cost"
+          }
+        },
+        {
+          "id": "college_derivative_definition",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "reason": "Marginal cost depends on understanding a derivative as the instantaneous change in total cost with respect to output.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "marginal_cost_to_derivative_definition"
+          }
         }
       ],
       "related": [
@@ -624,6 +1352,178 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Short-run cost curves are used next to compare marginal revenue with marginal cost and determine profit-maximizing output.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Perfect competition problems apply short-run cost curves to shutdown, supply, and profit calculations.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Monotonicity and extrema analysis helps explain turning points and marginal-average relationships on cost curves.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "extrema_to_cost_curve_shape"
+          }
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Short-run cost curves apply derivative calculation when deriving marginal cost from a total cost function.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "marginal_cost_to_derivative_calculation"
+          }
+        },
+        {
+          "id": "college_function_graph_analysis",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Average and marginal cost curves apply function graph analysis to compare shape, turning points, and intersections.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cost_curves_to_function_graph_analysis"
+          }
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.83,
+          "reason": "Explaining cost-curve curvature can proceed to second-derivative tests for convexity and minimum-cost points.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cost_curve_curvature_to_second_derivative"
+          }
+        },
+        {
+          "id": "college_derivative_definition",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.87,
+          "reason": "Marginal cost applies the derivative definition as the limiting change in total cost per extra unit of output.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "marginal_cost_to_derivative_definition"
+          }
+        },
+        {
+          "id": "college_tangent_line_equation",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Marginal cost applies tangent-line reasoning when a cost curve is approximated near a chosen output level.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "marginal_cost_to_tangent_line"
+          }
+        },
+        {
+          "id": "college_convavity_inflection",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "Cost-curve shape applies concavity and inflection reasoning when interpreting increasing or decreasing marginal cost.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cost_curve_shape_to_concavity"
+          }
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.79,
+          "reason": "Short-run production cost concepts are narrower than general cost-benefit analysis and depend on fixed versus variable inputs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -701,6 +1601,23 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_absolute_extrema",
+          "required_mastery": 0.62,
+          "relation": "prerequisite",
+          "reason": "Absolute extrema reasoning is a math prerequisite for checking whether a candidate output maximizes profit over the feasible range.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "extrema_to_profit_maximization"
+          }
         }
       ],
       "related": [
@@ -721,6 +1638,235 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_cost_short_run",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Profit maximization requires identifying revenue, total cost, marginal cost, and marginal revenue before choosing output.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Profit maximization applies derivatives because marginal revenue and marginal cost are rates of change of revenue and cost.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "derivative_to_marginal_revenue_cost"
+          }
+        },
+        {
+          "id": "college_extreme_value_points",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After setting marginal revenue equal to marginal cost, learners test candidate extreme points against boundaries and assumptions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "critical_point_to_profit_choice"
+          }
+        },
+        {
+          "id": "quadratic_max_min",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Quadratic maximum templates can find a profit peak, but economic profit maximization still requires MR, MC, and feasibility checks.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge": "math_to_economics",
+            "focus": "quadratic_maximum_vs_profit_rule"
+          }
+        },
+        {
+          "id": "college_optimization_applications",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Firm profit maximization is an economics application of optimization: choose output to maximize profit under feasibility constraints.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "profit_maximization_to_optimization"
+          }
+        },
+        {
+          "id": "college_monotonic_extrema",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Profit maximization applies monotonicity and extrema reasoning when comparing marginal revenue, marginal cost, and boundary outputs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "profit_maximization_to_extrema"
+          }
+        },
+        {
+          "id": "college_second_derivative_test",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "After MR equals MC, the second-derivative test helps check whether the candidate output is a profit maximum.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "profit_maximum_to_second_derivative_test"
+          }
+        },
+        {
+          "id": "college_critical_points",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Profit maximization applies critical-point analysis when MR equals MC or a boundary output must be checked.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "profit_maximization_to_critical_points"
+          }
+        },
+        {
+          "id": "college_absolute_extrema",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Profit maximization applies absolute-extrema reasoning because the best output must be chosen over the feasible range.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "profit_maximization_to_absolute_extrema"
+          }
+        },
+        {
+          "id": "senior_derivative_extrema",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Firm output choice applies derivative-extrema methods to locate and verify profit peaks.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "firm_output_choice_to_derivative_extrema"
+          }
+        },
+        {
+          "id": "college_lagrange_multiplier",
+          "relation": "application",
+          "priority": "optional",
+          "context": "review",
+          "confidence": 0.78,
+          "reason": "Constrained profit problems apply Lagrange multiplier ideas when firms optimize under resource or technology constraints.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "constrained_profit_to_lagrange_multiplier"
+          }
+        },
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Firm profit rules are applied directly when analyzing output and entry decisions in competitive markets.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Economic profit includes opportunity cost, while simple accounting comparisons may omit implicit costs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -819,6 +1965,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Competitive-market analysis proceeds by applying the firm profit rule under the price-taking assumption.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.85,
+          "reason": "Perfect competition applies demand and supply logic to markets with many buyers and sellers and no individual price control.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_monopoly",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Perfect competition and monopoly use different assumptions about price-taking, market power, and marginal revenue.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -916,6 +2101,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Monopoly problems use the profit-maximization workflow but require a separate marginal revenue curve below demand.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_externality",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.77,
+          "reason": "Monopoly is a market power case that can be compared with other sources of market failure such as externalities.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Students often apply competitive price-taking rules to monopoly even though monopoly faces the market demand curve.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1012,6 +2236,45 @@
           "use_cases": [
             "learning_path",
             "practice_planning"
+          ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Externality analysis starts from market demand and supply, then adds private and social cost or benefit curves.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.84,
+          "reason": "Externality cases are common applications for evaluating taxes, subsidies, regulation, and efficiency-equity trade-offs.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_micro_public_goods",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Externalities and public goods are both market failures, but public goods are defined by non-rivalry and non-excludability.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -1207,6 +2470,45 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "GDP accounting problems proceed by reading economic data, identifying components, and applying the expenditure or income approach.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "GDP data often require converting between nominal and real values before comparing output across time.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "GDP deflator and CPI both measure price changes, but GDP accounting covers domestic production while CPI tracks a consumer basket.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -1288,6 +2590,121 @@
       "related": [
         {
           "id": "college_macro_gdp_accounting",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "CPI measures consumer price changes, while GDP accounting measures output and income flows.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Inflation indicators are central evidence for monetary policy decisions.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Inflation analysis requires converting nominal values to real values and reading price indexes correctly.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "primary_percent_application",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "CPI and inflation calculations apply percent-change methods to compare price levels across periods.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cpi_inflation_to_percent_application"
+          }
+        },
+        {
+          "id": "weighted_mean",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "CPI applies weighted-mean reasoning because category prices contribute according to basket weights.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cpi_basket_to_weighted_mean"
+          }
+        },
+        {
+          "id": "primary_line_chart_trend",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Inflation time-series work applies line-chart trend reading to describe changes in the price level.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "inflation_series_to_line_chart_trend"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Inflation-rate questions apply growth-rate problem solving when comparing CPI values between periods.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "inflation_rate_to_growth_rate_problem"
+          }
+        },
+        {
+          "id": "college_macro_gdp_accounting",
           "relation": "co_occurs",
           "reason": "CPI 与通货膨胀 and GDP 核算 are often studied together, so guidance can compare their conditions and usage.",
           "use_cases": [
@@ -1358,7 +2775,13 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "economics"
+      "course_family": "economics",
+      "aliases": [
+        "通货膨胀",
+        "CPI",
+        "居民消费价格指数",
+        "通货膨胀和CPI"
+      ]
     },
     {
       "id": "college_macro_unemployment",
@@ -1498,6 +2921,82 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Aggregate demand and aggregate supply analysis applies function graph reading to interpret shifts, intersections, and output-price changes.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "aggregate_supply_demand_to_function_graph_reading"
+          }
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "AD-AS diagrams apply linear function graph skills when learners compare slopes, shifts, and intercept-style readings.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "ad_as_to_linear_function_graph"
+          }
+        },
+        {
+          "id": "linear_function_intersection",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Short-run macro equilibrium applies intersection reasoning where aggregate demand and aggregate supply meet.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "ad_as_equilibrium_to_function_intersection"
+          }
+        },
+        {
+          "id": "senior_function_modeling",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Aggregate demand and supply apply function modeling by translating macro assumptions into output-price relationships.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "ad_as_to_function_modeling"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1675,6 +3174,45 @@
       ],
       "related": [
         {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Fiscal-policy questions often require weighing inflation, unemployment, debt, and growth trade-offs.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Fiscal policy changes government spending or taxes, while monetary policy changes money and interest-rate conditions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_macro_multiplier",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Fiscal policy analysis should connect spending or tax changes to multiplier effects and aggregate demand.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "college_macro_multiplier",
           "relation": "co_occurs",
           "reason": "财政政策 and 乘数效应 are often studied together, so guidance can compare their conditions and usage.",
@@ -1746,7 +3284,13 @@
         "unit_test",
         "college_course_exam"
       ],
-      "course_family": "economics"
+      "course_family": "economics",
+      "aliases": [
+        "财政政策",
+        "财政政策和货币政策",
+        "扩张性财政政策",
+        "fiscal policy"
+      ]
     },
     {
       "id": "college_macro_money_banking",
@@ -2371,6 +3915,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "primary_ratio_meaning",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Cost-benefit analysis applies ratio reasoning when comparing benefit-cost ratios and relative returns.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cost_benefit_to_ratio_reasoning"
+          }
+        },
+        {
+          "id": "primary_optimization_strategy",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Cost-benefit analysis applies optimization strategy when choosing the option with the greatest net benefit under constraints.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "cost_benefit_to_optimization_strategy"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2459,6 +4041,63 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Economic data interpretation applies statistical chart skills when learners read bars, lines, and comparative displays.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "economic_data_to_statistical_charts"
+          }
+        },
+        {
+          "id": "senior_statistics_regression",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Economic scatterplots apply regression intuition when learners describe association without overclaiming causation.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "economic_scatterplot_to_regression_intuition"
+          }
+        },
+        {
+          "id": "senior_linear_regression_equation",
+          "relation": "application",
+          "priority": "optional",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "Economic trend questions apply linear regression equations when estimating simple relationships from observed data.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "economics",
+            "target_subject": "math",
+            "bridge_direction": "economics_to_math",
+            "bridge_focus": "economic_trend_to_linear_regression_equation"
+          }
         },
         {
           "id": "college_econ_index_real_nominal",

@@ -449,6 +449,45 @@ export const BRAND_CSS = `
     border-color: rgba(31, 157, 98, 0.34);
   }
 
+  .knowledge-node-detail {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid rgba(17, 24, 39, 0.10);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.82);
+  }
+
+  .knowledge-node-detail h3,
+  .knowledge-node-detail h4,
+  .knowledge-node-detail p {
+    margin: 0;
+  }
+
+  .knowledge-node-detail__meta {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .knowledge-node-detail__section {
+    display: grid;
+    gap: 6px;
+  }
+
+  .knowledge-node-detail__section h4 {
+    font-size: 12px;
+    color: var(--ink);
+  }
+
+  .knowledge-node-detail__list {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
   .knowledge-edge-list {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -501,11 +540,52 @@ export const BRAND_CSS = `
     color: #8a5a00;
   }
 
+  .knowledge-edge-row[data-relation="confusable"] .knowledge-edge-row__relation {
+    background: rgba(196, 71, 71, 0.14);
+    color: #9f2f2f;
+  }
+
+  .knowledge-edge-row[data-relation="application"] .knowledge-edge-row__relation {
+    background: rgba(47, 125, 87, 0.14);
+    color: #246848;
+  }
+
+  .knowledge-edge-row[data-relation="procedure_step"] .knowledge-edge-row__relation {
+    background: rgba(109, 92, 197, 0.14);
+    color: #5547a8;
+  }
+
+  .knowledge-edge-row[data-relation="extends"] .knowledge-edge-row__relation,
+  .knowledge-edge-row[data-relation="co_occurs"] .knowledge-edge-row__relation {
+    background: rgba(95, 111, 130, 0.13);
+    color: #526070;
+  }
+
   .knowledge-edge-row__target {
+    display: grid;
+    gap: 2px;
     min-width: 0;
     color: var(--muted);
     font-weight: 800;
     overflow-wrap: anywhere;
+  }
+
+  .knowledge-edge-row__reason {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .knowledge-edge-row__meta {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0;
+    opacity: 0.78;
   }
 
   .knowledge-edge-more {

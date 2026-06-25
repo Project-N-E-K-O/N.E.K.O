@@ -14,7 +14,49 @@
       "related": [
         {
           "id": "pol_junior_rights_obligations",
-          "relation": "next",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "分析规则和法治案例时，通常先判断规则依据，再进入公民权利与义务边界的判断。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_junior_collective_responsibility",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82,
+          "reason": "校园规则、公共秩序和法治意识常落实到集体生活中的责任承担。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rule_morality",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "学生容易把法律规范、校纪规则和道德要求混为一谈，需要在诊断中对比边界。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rights_obligations",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
           "reason": "Practice 权利与义务 after 规则与法治意识; it is the next topic in the junior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -84,13 +126,88 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_junior_rule_morality",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "pol_junior_collective_responsibility",
-          "relation": "next",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rule_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_junior_collective_responsibility",
+          "relation": "extends",
           "reason": "Practice 集体与责任 after 权利与义务; it is the next topic in the junior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "history_senior_institution_change",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Rights and obligations help explain how institutional change redefines citizen-state boundaries.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "history",
+            "bridge_direction": "politics_to_history"
+          }
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Rights-obligations cases can be converted into point-by-point evidence and conclusion answers.",
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "chinese",
+            "bridge_direction": "politics_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -142,6 +259,14 @@
         "daily_practice",
         "unit_test",
         "zhongkao_style"
+      ],
+      "aliases": [
+        "权利和义务",
+        "公民权利",
+        "公民义务",
+        "权利义务关系",
+        "权利和义务有什么关系",
+        "公民怎样正确行使权利履行义务"
       ]
     },
     {
@@ -155,8 +280,50 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_junior_rights_obligations",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "分析个人与集体关系题时，应先确认个人权利和应履行义务，再判断责任承担是否合理。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "pol_junior_national_security",
-          "relation": "next",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "维护国家安全是个人责任、集体责任和社会责任在公共生活中的典型应用场景。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rule_law",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.78,
+          "reason": "学生容易把集体责任简化为服从规则，忽略规则背后的法治意识和责任边界。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_national_security",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.79,
           "reason": "Practice 国家安全教育 after 集体与责任; it is the next topic in the junior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -227,12 +394,123 @@
       "related": [
         {
           "id": "pol_senior_political_participation",
-          "relation": "next",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.78,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_socialism_market",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_senior_political_participation",
+          "relation": "extends",
           "reason": "Practice 人民民主与政治参与 after 市场机制与宏观调控; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Market mechanism questions transfer directly to demand-supply shifts and equilibrium analysis.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "economics",
+            "bridge_direction": "politics_to_economics"
+          }
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Macro-control materials often require fiscal-policy tools such as spending, taxation, and deficits.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "economics",
+            "bridge_direction": "politics_to_economics"
+          }
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Macro-control also maps to monetary-policy levers that affect credit, rates, and aggregate demand.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "economics",
+            "bridge_direction": "politics_to_economics"
+          }
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "reason": "Policy evaluation in politics benefits from economics tradeoff language about goals, costs, and constraints.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "economics",
+            "bridge_direction": "politics_to_economics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -286,6 +564,13 @@
         "school_exam",
         "academic_level_exam",
         "gaokao_style"
+      ],
+      "aliases": [
+        "市场机制",
+        "宏观调控",
+        "市场机制和宏观调控",
+        "市场调节和宏观调控怎么区分",
+        "政府为什么要进行宏观调控"
       ]
     },
     {
@@ -300,7 +585,49 @@
       "related": [
         {
           "id": "pol_senior_rule_of_law",
-          "relation": "next",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "政治参与材料通常要先识别参与主体和渠道，再用法治框架判断程序、权责和制度保障。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "application",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.82,
+          "reason": "基层治理、民主协商和监督参与常以法治化治理作为材料应用场景。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rights_obligations",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.77,
+          "reason": "政治参与中的民主权利容易被误答成一般公民权利义务，需要区分主体、渠道和制度层次。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
           "reason": "Practice 全面依法治国 after 人民民主与政治参与; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -372,13 +699,104 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_junior_rule_morality",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_political_participation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rule_law",
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "This topic should be understood first and is used for diagnosis and learning-path guidance.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "法治案例题需要界定主体和权责后，用规范逻辑组织原因、意义和措施链条。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "pol_senior_philosophy_dialectics",
-          "relation": "next",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.79,
           "reason": "Practice 唯物辩证法 after 全面依法治国; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "history_senior_institution_change",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Rule-of-law analysis connects to historical explanations of institutional change and state governance.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "history",
+            "bridge_direction": "politics_to_history"
+          }
+        },
+        {
+          "id": "chinese_senior_task_driven_writing",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.83,
+          "reason": "Rule-of-law materials support task-driven writing that balances standpoint, evidence, and action proposals.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "chinese",
+            "bridge_direction": "politics_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -432,6 +850,14 @@
         "school_exam",
         "academic_level_exam",
         "gaokao_style"
+      ],
+      "aliases": [
+        "依法治国",
+        "全面依法治国",
+        "法治材料题",
+        "依法治国材料题",
+        "全面依法治国材料题怎么答",
+        "法治政府和依法治国有什么关系"
       ]
     },
     {
@@ -445,13 +871,88 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_senior_rule_of_law",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.76,
+          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "pol_senior_culture_confidence",
-          "relation": "next",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.78,
+          "reason": "This edge points to a common application context for practice planning.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_senior_culture_confidence",
+          "relation": "extends",
           "reason": "Practice 文化传承与文化自信 after 唯物辩证法; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Dialectical analysis maps to layered argumentative writing with thesis, contrast, development, and synthesis.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "chinese",
+            "bridge_direction": "politics_to_chinese"
+          }
+        },
+        {
+          "id": "chinese_senior_modern_argument_structure",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Dialectical categories help identify claim hierarchy and relation logic in argumentative texts.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "chinese",
+            "bridge_direction": "politics_to_chinese"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -505,6 +1006,14 @@
         "school_exam",
         "academic_level_exam",
         "gaokao_style"
+      ],
+      "aliases": [
+        "唯物辩证法",
+        "辩证法",
+        "矛盾观",
+        "联系发展观点",
+        "唯物辩证法材料题怎么答",
+        "矛盾观点和联系发展观点怎么用"
       ]
     },
     {
@@ -518,8 +1027,50 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_senior_philosophy_dialectics",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "文化材料题通常先提取文化载体和变化过程，再用辩证方法分析传承、创新和自信。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "pol_senior_socialism_market",
-          "relation": "next",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.78,
+          "reason": "文化自信常应用于高质量发展、文化产业和社会价值引领等经济社会材料。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_philosophy_dialectics",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.76,
+          "reason": "学生容易把文化传承题泛化为哲学辩证法题，忽略文化主体、载体和价值认同。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_socialism_market",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78,
           "reason": "Practice 社会主义市场经济体制 after 文化传承与文化自信; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -591,8 +1142,50 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_junior_collective_responsibility",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "国家安全材料应先识别安全领域和风险行为，再落实到个人、集体和社会责任。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_junior_rule_law",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "维护国家安全常通过遵守法律、规则和公共秩序来考查法治意识的应用。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_junior_rights_obligations",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "学生容易只强调个人权利，忽略维护国家安全时权利行使和义务履行的边界。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
           "id": "pol_junior_rule_morality",
-          "relation": "next",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.77,
           "reason": "Practice 道德与法律关系 after 国家安全教育; it is the next topic in the junior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
@@ -661,7 +1254,47 @@
       "depth": 2,
       "difficulty": 0.46,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "pol_junior_rule_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "辨析道德和法律关系时，应先区分规范来源、约束方式和后果，再回到法治意识判断。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
+          "id": "pol_junior_rights_obligations",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
+          "reason": "公共生活中的权利行使和义务履行常同时涉及道德约束与法律规范。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.78,
+          "reason": "道德与法律关系容易被误答成全面依法治国的制度措施题，需要区分初中辨析和高中法治体系层次。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "只背术语不扣材料",
         "主体和角度错位",
@@ -725,13 +1358,73 @@
       "prerequisites": [],
       "related": [
         {
+          "id": "pol_senior_economy_market",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "分析社会主义市场经济体制时，应先判断市场机制和宏观调控如何分别发挥作用。",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
+        },
+        {
           "id": "pol_senior_international_relations",
-          "relation": "next",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.79,
+          "reason": "开放型经济、高质量发展和国际合作材料常用于考查社会主义市场经济体制的应用。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "学生容易把一般市场机制与社会主义市场经济体制混同，忽略制度优势和政府作用。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "pol_senior_international_relations",
+          "relation": "extends",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.78,
           "reason": "Practice 国际关系与中国外交 after 社会主义市场经济体制; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Socialist market economy materials often ask why market failure requires coordinated public action.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "economics",
+            "bridge_direction": "politics_to_economics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -800,12 +1493,66 @@
       "related": [
         {
           "id": "pol_senior_logical_thinking",
-          "relation": "next",
+          "relation": "extends",
           "reason": "Practice 逻辑与思维方法 after 国际关系与中国外交; it is the next topic in the senior_high politics learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "history_senior_globalization",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "International-relations materials connect to globalization, world markets, and historical interaction patterns.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "history",
+            "bridge_direction": "politics_to_history"
+          }
+        },
+        {
+          "id": "history_senior_modernization_comparison",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "Foreign-policy analysis can be compared with historical modernization paths and changing power structures.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "history",
+            "bridge_direction": "politics_to_history"
+          }
+        },
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "International cooperation questions often require regional analysis of resources, development, and sustainability.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "geography",
+            "bridge_direction": "politics_to_geography"
+          }
         }
       ],
       "typical_misconceptions": [
