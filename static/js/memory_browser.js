@@ -11,6 +11,8 @@
     let memoryParticleContext = null;
     let memoryParticleFrame = 0;
     let memoryParticles = [];
+    let memoryParticleCanvasResizeBound = false;
+    let memoryDissolveRunId = 0;
     let storageLocationState = {
         bootstrap: null,
         blockingReason: '',
@@ -1036,8 +1038,15 @@
             document.body.appendChild(memoryParticleCanvas);
             memoryParticleContext = memoryParticleCanvas.getContext('2d');
         }
+        ensureMemoryParticleResizeListener();
         resizeMemoryParticleCanvas();
         return memoryParticleCanvas;
+    }
+
+    function ensureMemoryParticleResizeListener() {
+        if (memoryParticleCanvasResizeBound) return;
+        window.addEventListener('resize', resizeMemoryParticleCanvas);
+        memoryParticleCanvasResizeBound = true;
     }
 
     function resizeMemoryParticleCanvas() {
@@ -1048,6 +1057,26 @@
         memoryParticleCanvas.style.width = window.innerWidth + 'px';
         memoryParticleCanvas.style.height = window.innerHeight + 'px';
         memoryParticleContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function teardownMemoryParticleCanvas() {
+        if (memoryParticleCanvasResizeBound) {
+            window.removeEventListener('resize', resizeMemoryParticleCanvas);
+            memoryParticleCanvasResizeBound = false;
+        }
+        cancelAnimationFrame(memoryParticleFrame);
+        memoryParticleFrame = 0;
+        memoryParticles = [];
+        memoryDissolveInProgress = false;
+        memoryDissolveRunId++;
+        if (memoryParticleContext) {
+            memoryParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        }
+        if (memoryParticleCanvas && memoryParticleCanvas.parentNode) {
+            memoryParticleCanvas.parentNode.removeChild(memoryParticleCanvas);
+        }
+        memoryParticleCanvas = null;
+        memoryParticleContext = null;
     }
 
     function randomBetween(min, max) {
@@ -1223,7 +1252,7 @@
     }
 
     function collapseMemoryItem(item) {
-        const height = item.getBoundingClientRect().height;
+        const height = item.offsetHeight;
         item.style.height = height + 'px';
         item.classList.add('is-collapsing');
         requestAnimationFrame(() => {
@@ -1245,8 +1274,18 @@
             if (typeof onComplete === 'function') onComplete();
             return;
         }
+        const reduceMotion = window.matchMedia
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const maxStaggeredItems = 6;
+        const maxParticleItems = 40;
+
+        if (reduceMotion || targets.length > maxParticleItems) {
+            if (typeof onComplete === 'function') onComplete();
+            return;
+        }
 
         memoryDissolveInProgress = true;
+        const dissolveRunId = ++memoryDissolveRunId;
         setChatActionButtonsEnabled(false);
         memoryParticles = [];
         cancelAnimationFrame(memoryParticleFrame);
@@ -1254,18 +1293,23 @@
 
         targets.forEach((item, sequence) => {
             window.setTimeout(() => {
+                if (dissolveRunId !== memoryDissolveRunId) return;
                 addMemoryItemParticles(item, sequence);
                 item.classList.add('is-dissolving');
                 startMemoryParticles();
-                window.setTimeout(() => collapseMemoryItem(item), 620);
-            }, sequence * 145);
+                window.setTimeout(() => {
+                    if (dissolveRunId !== memoryDissolveRunId) return;
+                    collapseMemoryItem(item);
+                }, 620);
+            }, Math.min(sequence, maxStaggeredItems) * 145);
         });
 
         window.setTimeout(() => {
+            if (dissolveRunId !== memoryDissolveRunId) return;
             if (typeof onComplete === 'function') onComplete();
             memoryDissolveInProgress = false;
             setChatActionButtonsEnabled(true);
-        }, 1120 + targets.length * 145);
+        }, 1120 + Math.min(targets.length, maxStaggeredItems) * 145);
     }
 
     async function loadMemoryFileList() {
@@ -1694,6 +1738,7 @@
     }
     function closeMemoryBrowser() {
         teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
         if (window.opener) {
             // 如果是通过 window.open() 打开的，直接关闭
             window.close();
@@ -1720,9 +1765,14 @@
     }
     // 将函数暴露到全局作用域，供 HTML onclick 调用
     window.closeMemoryBrowser = closeMemoryBrowser;
-    window.addEventListener('pagehide', teardownMemoryChatPanelHeightSync);
-    window.addEventListener('beforeunload', teardownMemoryChatPanelHeightSync);
-    window.addEventListener('resize', resizeMemoryParticleCanvas);
+    window.addEventListener('pagehide', function () {
+        teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
+    });
+    window.addEventListener('beforeunload', function () {
+        teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
+    });
     // 页面加载时隐藏保存按钮
     document.addEventListener('DOMContentLoaded', async function () {
         initMemoryChatPanelHeightSync();
