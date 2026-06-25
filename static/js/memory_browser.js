@@ -1077,6 +1077,7 @@
         }
         memoryParticleCanvas = null;
         memoryParticleContext = null;
+        setChatActionButtonsEnabled(true);
     }
 
     function randomBetween(min, max) {
