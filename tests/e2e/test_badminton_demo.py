@@ -1482,13 +1482,8 @@ def test_badminton_yui_voice_defer_releases_stuck_playback_state(
         timeout=1500,
     )
 
-    deadline = time.time() + 3
-    while time.time() < deadline and not speak_payloads:
-        page.wait_for_timeout(50)
-
-    assert speak_payloads
-    assert speak_payloads[-1]["event"]["kind"] == "yui_cheat_item"
-    assert speak_payloads[-1]["interrupt_audio"] is True
+    item_payload = _wait_for_badminton_speak_payload(page, speak_payloads, "yui_cheat_item")
+    assert item_payload["interrupt_audio"] is True
 
 
 @pytest.mark.e2e
@@ -1536,14 +1531,9 @@ def test_badminton_yui_cheat_voice_does_not_wait_for_mirror_assistant(
         }"""
     )
 
-    deadline = time.time() + 3
-    while time.time() < deadline and not speak_payloads:
-        page.wait_for_timeout(25)
-
+    item_payload = _wait_for_badminton_speak_payload(page, speak_payloads, "yui_cheat_item")
     assert page.evaluate("window.__badmintonBlockedMirrorAssistant") >= 1
-    assert speak_payloads
-    assert speak_payloads[-1]["event"]["kind"] == "yui_cheat_item"
-    assert speak_payloads[-1]["interrupt_audio"] is True
+    assert item_payload["interrupt_audio"] is True
 
 
 @pytest.mark.e2e

@@ -4015,11 +4015,11 @@
     if (event.kind === 'very_long_aim') return 'long_aim';
     return shotTypeLabelKey(event.shot_type) || event.kind;
   }
-  function shouldSuppressChatFallback(res, event) {
+  function shouldSuppressChatFallback(res) {
     return !!(res && res.suppress_fallback);
   }
   function pickChatFallbackLine(res, event) {
-    if (shouldSuppressChatFallback(res, event)) return '';
+    if (shouldSuppressChatFallback(res)) return '';
     return pickLine(getFallbackLineKey(event), null, {});
   }
   function buildBadmintonCurrentStatePayload() {
@@ -6070,6 +6070,7 @@
   function checkShuttleLanding(ball) {
     if (!ball || ball.resolved) return;
     var direction = ball.direction === -1 ? -1 : 1;
+    // This is a no-op after the main physics loop, but required by stepAwaitingPlayerReturn.
     if (updateShuttleNetCrossing(ball)) return;
     var ballRadius = ball.radius || BALL_R;
     if (ball.y >= FLOOR_Y - ballRadius * 0.25) {

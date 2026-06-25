@@ -1735,7 +1735,7 @@ def test_badminton_reset_game_clears_game_over_line_gate():
 @pytest.mark.unit
 def test_badminton_chat_empty_or_inactive_response_uses_safe_fallback():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
-    helper_start = html.index("function shouldSuppressChatFallback(res, event) {")
+    helper_start = html.index("function shouldSuppressChatFallback(res) {")
     helper_section = html[helper_start:html.index("function buildBadmintonCurrentStatePayload()", helper_start)]
     send_event_start = html.index("function sendGameEvent(")
     send_event = html[send_event_start:html.index("function loadLocalLeaderboard(", send_event_start)]
@@ -1746,9 +1746,9 @@ def test_badminton_chat_empty_or_inactive_response_uses_safe_fallback():
     assert "reason === 'route_not_active'" not in helper_section
     assert "reason === 'client_timeout'" not in helper_section
     assert "function pickChatFallbackLine(res, event) {" in helper_section
-    assert "if (shouldSuppressChatFallback(res, event)) return '';" in helper_section
+    assert "if (shouldSuppressChatFallback(res)) return '';" in helper_section
     assert "return pickLine(getFallbackLineKey(event), null, {});" in helper_section
-    assert helper_section.index("if (shouldSuppressChatFallback(res, event)) return '';") < helper_section.index("return pickLine(getFallbackLineKey(event), null, {});")
+    assert helper_section.index("if (shouldSuppressChatFallback(res)) return '';") < helper_section.index("return pickLine(getFallbackLineKey(event), null, {});")
     assert "if (res && res.line) speakLine(moodStyleLine(res.line, currentMood), res.control || {}, event);" in send_event
     assert "var fallbackLine = pickChatFallbackLine(res, event);" in send_event
     assert "if (fallbackLine) speakLine(fallbackLine, {}, event);" in send_event
