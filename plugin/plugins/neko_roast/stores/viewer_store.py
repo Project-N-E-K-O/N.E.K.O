@@ -190,3 +190,13 @@ class ViewerStore:
         profiles = await self._load_all()
         ordered = sorted(profiles.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
         return [dict(item) for item in ordered[:limit]]
+
+    async def clear_profiles(self) -> dict[str, Any]:
+        async with self._lock:
+            profiles = await self._load_all()
+            cleared = len(profiles)
+            await self._save_all({})
+            file, _custom = self._resolve_file()
+            if self._active_fallback_file is not None:
+                file = self._active_fallback_file
+            return {"cleared": cleared, "path": str(file)}

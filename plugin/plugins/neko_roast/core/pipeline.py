@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from .contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerProfile
+
+ENTRANCE_ROAST_MIN_INTERVAL_SECONDS = 45.0
 
 
 class RoastPipeline:
@@ -13,9 +16,21 @@ class RoastPipeline:
         self.ctx = ctx
         self._uid_locks: dict[str, asyncio.Lock] = {}
         self._dry_run_roasted_uids: set[str] = set()
+        self._last_avatar_roast_at: float | None = None
 
     def clear_dry_run_session_state(self) -> None:
         self._dry_run_roasted_uids.clear()
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def _entrance_pacing_active(self) -> bool:
+        if self._last_avatar_roast_at is None:
+            return False
+        return (self._now() - self._last_avatar_roast_at) < ENTRANCE_ROAST_MIN_INTERVAL_SECONDS
+
+    def _record_avatar_roast_sent(self) -> None:
+        self._last_avatar_roast_at = self._now()
 
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
@@ -69,6 +84,14 @@ class RoastPipeline:
                     and bool((event.danmaku_text or "").strip())
                     and already_roasted
                 )
+                is_entrance_paced_live_danmaku = (
+                    uid_lock is not None
+                    and event.source == "live_danmaku"
+                    and event.live_mode == "solo_stream"
+                    and bool((event.danmaku_text or "").strip())
+                    and not already_roasted
+                    and self._entrance_pacing_active()
+                )
                 if uid_lock is not None and already_roasted and not is_repeat_live_danmaku:
                     reason = "uid already roasted"
                     steps.append(PipelineStep("viewer_gate", "skipped", reason))
@@ -95,6 +118,11 @@ class RoastPipeline:
                     steps.append(PipelineStep("viewer_gate", "ok", "repeat_danmaku"))
                     request = self.ctx.danmaku_response.build_request(event, identity, profile)
                     should_mark_roasted = False
+                    response_module_id = "danmaku_response"
+                elif is_entrance_paced_live_danmaku:
+                    steps.append(PipelineStep("viewer_gate", "ok", "entrance_pacing"))
+                    request = self.ctx.danmaku_response.build_request(event, identity, profile)
+                    should_mark_roasted = True
                     response_module_id = "danmaku_response"
                 else:
                     steps.append(PipelineStep("viewer_gate", "ok"))
@@ -139,6 +167,8 @@ class RoastPipeline:
                     )
                     self.ctx.audit.record("dispatcher_dry_run", "roast request completed as dry_run", detail={"uid": identity.uid, "source": event.source})
                     self.ctx.record_result(result)
+                    if response_module_id == "avatar_roast":
+                        self._record_avatar_roast_sent()
                     return result
 
                 if not request.should_push or str(output).startswith("skipped_to_neko"):
@@ -160,6 +190,8 @@ class RoastPipeline:
                     return result
 
                 steps.append(PipelineStep("neko_dispatcher", "ok", output))
+                if response_module_id == "avatar_roast":
+                    self._record_avatar_roast_sent()
                 if should_mark_roasted:
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)

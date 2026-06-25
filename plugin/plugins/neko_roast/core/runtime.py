@@ -50,6 +50,7 @@ class RoastRuntime:
     _IDLE_HOSTING_MIN_INTERVAL_SECONDS = 120.0
     _IDLE_HOSTING_FAILURE_LIMIT = 3
     _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 150.0
+    _ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS = 15.0
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -85,8 +86,16 @@ class RoastRuntime:
         self._idle_hosting_consecutive_failures: int = 0
         self._idle_hosting_sleep = asyncio.sleep
         self._idle_hosting_now = time.monotonic
+        self._idle_hosting_recent_beat_keys: deque[str] = deque(maxlen=4)
+        self._idle_hosting_beat_index: int = 0
         self._active_engagement_last_attempt_at: float = 0.0
         self._active_engagement_now = time.monotonic
+        self._active_engagement_topic_fetcher: Any = None
+        self._active_engagement_topic_cache: list[dict[str, Any]] = []
+        self._active_engagement_topic_cache_at: float = 0.0
+        self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=8)
+        self._active_engagement_recent_shapes: deque[str] = deque(maxlen=4)
+        self._active_engagement_shape_index: int = 0
         self._config_lock: asyncio.Lock | None = None
 
         self.bili_live_ingest = BiliLiveIngestModule()
@@ -506,6 +515,7 @@ class RoastRuntime:
         return result
 
     def _idle_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+        host_beat = self._next_idle_hosting_beat()
         return ViewerEvent(
             uid="__neko_idle__",
             nickname="NEKO",
@@ -515,8 +525,55 @@ class RoastRuntime:
             raw={
                 "trigger": "manual_idle_hosting",
                 "live_state": dict(live_state),
+                "host_beat": host_beat,
             },
         )
+
+    def _next_idle_hosting_beat(self) -> dict[str, Any]:
+        candidates = self._idle_hosting_beat_candidates()
+        fallback = candidates[0]
+        chosen = fallback
+        for offset in range(len(candidates)):
+            candidate = candidates[(self._idle_hosting_beat_index + offset) % len(candidates)]
+            key = str(candidate.get("key") or "").strip()
+            if key and key not in self._idle_hosting_recent_beat_keys:
+                chosen = candidate
+                self._idle_hosting_beat_index = (self._idle_hosting_beat_index + offset + 1) % len(candidates)
+                break
+        else:
+            self._idle_hosting_beat_index = (self._idle_hosting_beat_index + 1) % len(candidates)
+        key = str(chosen.get("key") or fallback["key"]).strip()
+        self._idle_hosting_recent_beat_keys.append(key)
+        return dict(chosen)
+
+    @staticmethod
+    def _idle_hosting_beat_candidates() -> list[dict[str, Any]]:
+        return [
+            {
+                "key": "idle:soft-observation",
+                "shape": "soft_observation",
+                "title": "\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b",
+                "hint": "Say one soft concrete observation, not a direct question.",
+            },
+            {
+                "key": "idle:tiny-choice",
+                "shape": "tiny_choice",
+                "title": "\u732b\u732b\u7ed9\u89c2\u4f17\u7684\u5c0f\u9009\u62e9",
+                "hint": "Offer one tiny A/B choice viewers can answer in a few words.",
+            },
+            {
+                "key": "idle:light-tease",
+                "shape": "light_tease",
+                "title": "\u732b\u732b\u5f0f\u8f7b\u5410\u69fd",
+                "hint": "Make one harmless NEKO-flavored tease about the current quiet mood.",
+            },
+            {
+                "key": "idle:small-mood",
+                "shape": "small_mood",
+                "title": "\u732b\u732b\u73b0\u5728\u7684\u5c0f\u72b6\u6001",
+                "hint": "Share one tiny NEKO mood line with a small opening for viewers.",
+            },
+        ]
 
     def _record_idle_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
         result = InteractionResult(
@@ -590,19 +647,20 @@ class RoastRuntime:
         health_rows = self.runtime_health_rows()
         live_state = self.live_state_summary(live_status, health_rows)
         active_status = self.active_engagement_status(live_status, live_state)
-        event = self._active_engagement_event(live_state)
+        skip_event = self._active_engagement_basic_event(live_state)
 
         if self.config.live_mode != "solo_stream":
-            return self._record_active_engagement_skip(event, "active_engagement.not_solo_stream")
+            return self._record_active_engagement_skip(skip_event, "active_engagement.not_solo_stream")
         state = str(live_state.get("state") or "")
         if state == "paused":
-            return self._record_active_engagement_skip(event, "active_engagement.paused")
+            return self._record_active_engagement_skip(skip_event, "active_engagement.paused")
         if state == "blocked":
-            return self._record_active_engagement_skip(event, "active_engagement.blocked")
+            return self._record_active_engagement_skip(skip_event, "active_engagement.blocked")
         if state != "quiet":
-            return self._record_active_engagement_skip(event, "active_engagement.not_quiet")
+            return self._record_active_engagement_skip(skip_event, "active_engagement.not_quiet")
         if not bool(active_status.get("candidate")):
-            return self._record_active_engagement_skip(event, "active_engagement.not_candidate")
+            return self._record_active_engagement_skip(skip_event, "active_engagement.not_candidate")
+        event = await self._active_engagement_event(live_state)
         return await self.pipeline.handle_event(event)
 
     async def maybe_trigger_active_engagement(self) -> InteractionResult | None:
@@ -620,7 +678,13 @@ class RoastRuntime:
         self._active_engagement_last_attempt_at = now
         return await self.trigger_active_engagement()
 
-    def _active_engagement_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+    async def _active_engagement_event(self, live_state: dict[str, Any]) -> ViewerEvent:
+        topic_material = await self._select_active_engagement_topic()
+        event = self._active_engagement_basic_event(live_state)
+        event.raw["topic_material"] = topic_material
+        return event
+
+    def _active_engagement_basic_event(self, live_state: dict[str, Any]) -> ViewerEvent:
         return ViewerEvent(
             uid="__neko_active__",
             nickname="NEKO",
@@ -632,6 +696,179 @@ class RoastRuntime:
                 "live_state": dict(live_state),
             },
         )
+
+    async def _select_active_engagement_topic(self) -> dict[str, Any]:
+        candidates = await self._active_engagement_topic_candidates()
+        fallback_candidates = self._active_engagement_fallback_topic_candidates()
+        fallback = fallback_candidates[0]
+        shape = self._next_active_engagement_shape()
+        chosen = fallback
+        for candidate in [*candidates, *fallback_candidates]:
+            key = str(candidate.get("key") or candidate.get("title") or "").strip()
+            if not key or key in self._active_engagement_recent_topic_keys:
+                continue
+            chosen = candidate
+            break
+        key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
+        self._active_engagement_recent_topic_keys.append(key)
+        self._active_engagement_recent_shapes.append(shape)
+        title = str(chosen.get("title") or fallback["title"]).strip()
+        return {
+            "source": str(chosen.get("source") or "fallback"),
+            "shape": shape,
+            "key": key,
+            "title": title,
+            "hook": self._active_engagement_hook_text(shape, title),
+            "pattern": self._active_engagement_pattern_text(shape),
+            "hint": str(chosen.get("hint") or fallback["hint"]).strip(),
+        }
+
+    @staticmethod
+    def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
+        return [
+            {
+                "source": "fallback",
+                "key": "fallback:small-choice",
+                "title": "\u76f4\u64ad\u95f4\u5c0f\u9009\u62e9",
+                "hint": "Turn this into one low-pressure A/B or tiny stance that viewers can answer quickly.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:late-night-energy",
+                "title": "\u76f4\u64ad\u95f4\u73b0\u5728\u7684\u7cbe\u795e\u72b6\u6001",
+                "hint": "Make one tiny NEKO-flavored observation that invites a quick answer.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:cat-choice",
+                "title": "\u732b\u732b\u5f0f\u4e8c\u9009\u4e00",
+                "hint": "Ask one concrete A/B choice, not a broad topic survey.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:tiny-confession",
+                "title": "\u732b\u732b\u7684\u5c0f\u5766\u767d",
+                "hint": "Make one tiny confession about NEKO's current mood, then leave a small opening for viewers.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:room-temperature",
+                "title": "\u76f4\u64ad\u95f4\u6c14\u6c1b\u6e29\u5ea6",
+                "hint": "Describe the room mood in one playful concrete image, then invite one short reaction.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:viewer-mini-vote",
+                "title": "\u89c2\u4f17\u5c0f\u6295\u7968",
+                "hint": "Ask one tiny vote that can be answered with a short phrase, not a long explanation.",
+            },
+        ]
+
+    async def _active_engagement_topic_candidates(self) -> list[dict[str, Any]]:
+        candidates = await self._bili_trending_topic_candidates()
+        if candidates:
+            return candidates
+        recent = self._recent_danmaku_topic_candidates()
+        if recent:
+            return recent
+        return []
+
+    async def _bili_trending_topic_candidates(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        if self._active_engagement_topic_cache and now - self._active_engagement_topic_cache_at < 600.0:
+            return list(self._active_engagement_topic_cache)
+        fetcher = self._active_engagement_topic_fetcher
+        if fetcher is None:
+            try:
+                from utils.web_scraper import fetch_bilibili_trending
+
+                fetcher = fetch_bilibili_trending
+            except Exception:
+                fetcher = None
+        if not callable(fetcher):
+            return []
+        try:
+            try:
+                payload = await asyncio.wait_for(fetcher(limit=6), timeout=2.0)
+            except TypeError:
+                payload = await asyncio.wait_for(fetcher(), timeout=2.0)
+        except Exception:
+            return []
+        videos = []
+        if isinstance(payload, dict):
+            videos = payload.get("videos") or payload.get("video") or payload.get("items") or []
+        if not isinstance(videos, list):
+            return []
+        candidates: list[dict[str, Any]] = []
+        for item in videos:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            key = str(item.get("bvid") or item.get("id") or title).strip()
+            candidates.append(
+                {
+                    "source": "bili_trending",
+                    "key": f"bili:{key}",
+                    "title": title,
+                    "hint": "Use this Bilibili topic as material for one playful live-room line; do not read it like news.",
+                }
+            )
+            if len(candidates) >= 6:
+                break
+        self._active_engagement_topic_cache = candidates
+        self._active_engagement_topic_cache_at = now
+        return list(candidates)
+
+    def _recent_danmaku_topic_candidates(self) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            if str(event.get("source") or "") != "live_danmaku":
+                continue
+            text = str(event.get("danmaku_text") or "").strip()
+            if not text:
+                continue
+            compact = self._compact_context_text(text, limit=40)
+            candidates.append(
+                {
+                    "source": "recent_danmaku",
+                    "key": f"danmaku:{compact}",
+                    "title": compact,
+                    "hint": "Extend this recent danmaku into one small live-room hook without pretending a new viewer spoke.",
+                }
+            )
+            if len(candidates) >= 3:
+                break
+        return candidates
+
+    def _next_active_engagement_shape(self) -> str:
+        shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
+        shape = shapes[self._active_engagement_shape_index % len(shapes)]
+        self._active_engagement_shape_index += 1
+        return shape
+
+    @staticmethod
+    def _active_engagement_hook_text(shape: str, title: str) -> str:
+        compact_title = title.strip() or "this live-room topic"
+        return {
+            "either_or": f"Make '{compact_title}' into one concrete A/B choice viewers can answer with one side.",
+            "light_stance": f"Take one small, playful NEKO stance about '{compact_title}' so viewers can agree or push back.",
+            "tiny_tease": f"Turn '{compact_title}' into one tiny playful tease, not a news recap or generic question.",
+            "small_challenge": f"Turn '{compact_title}' into one tiny low-pressure challenge viewers can answer in a few words.",
+        }.get(shape, f"Turn '{compact_title}' into one specific low-pressure hook viewers can answer quickly.")
+
+    @staticmethod
+    def _active_engagement_pattern_text(shape: str) -> str:
+        return {
+            "either_or": "two concrete sides, then let viewers pick one",
+            "light_stance": "one tiny NEKO opinion, then leave room for pushback",
+            "tiny_tease": "one small playful jab, then stop before it becomes a bit",
+            "small_challenge": "one tiny challenge viewers can answer in a few words",
+        }.get(shape, "one concrete reply point viewers can answer quickly")
 
     def _record_active_engagement_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
         result = InteractionResult(
@@ -685,7 +922,7 @@ class RoastRuntime:
         idle_hosting_status = self.idle_hosting_status(live_state)
         active_engagement_status = self.active_engagement_status(live_status, live_state)
         live_director_status = self.live_director_status(live_status, live_state, idle_hosting_status, active_engagement_status)
-        solo_test_readiness = self.solo_test_readiness(live_status, live_state, live_director_status)
+        solo_test_readiness = self.solo_test_readiness(live_status, live_state, live_director_status, profile_count=len(profiles))
         return {
             "config": self.config.to_dict(),
             "live_connection": live_connection,
@@ -786,7 +1023,9 @@ class RoastRuntime:
 
         state = "engaged"
         reason = "recent_activity"
-        last_activity_age_sec = self._last_live_activity_age_sec(rows)
+        last_viewer_activity_age_sec = self._last_viewer_activity_age_sec(rows)
+        last_output_age_sec = self._last_output_age_sec(rows)
+        warmup_observed = self._has_recent_response_module("warmup_hosting")
 
         if status.get("summary") == "cannot_stream" or safety_status in {"tripped", "degraded", "disconnected"}:
             state = "blocked"
@@ -794,13 +1033,13 @@ class RoastRuntime:
         elif safety_status == "paused":
             state = "paused"
             reason = "manual_paused"
-        elif last_activity_age_sec is None and self.config.live_mode == "solo_stream":
+        elif last_viewer_activity_age_sec is None and self.config.live_mode == "solo_stream" and not warmup_observed:
             state = "warmup"
             reason = "solo_stream_warmup"
-        elif last_activity_age_sec is None or last_activity_age_sec > idle_threshold:
+        elif last_viewer_activity_age_sec is None or last_viewer_activity_age_sec > idle_threshold:
             state = "idle"
             reason = "no_recent_activity"
-        elif last_activity_age_sec > engaged_threshold:
+        elif last_viewer_activity_age_sec > engaged_threshold:
             state = "quiet"
             reason = "quiet_activity_gap"
 
@@ -824,7 +1063,9 @@ class RoastRuntime:
             "mode_role": mode_role,
             "warmup_hosting_candidate": warmup_hosting_candidate,
             "idle_hosting_candidate": idle_hosting_candidate,
-            "last_activity_age_sec": last_activity_age_sec,
+            "last_activity_age_sec": last_viewer_activity_age_sec,
+            "last_viewer_activity_age_sec": last_viewer_activity_age_sec,
+            "last_output_age_sec": last_output_age_sec,
             "engaged_threshold_seconds": float(engaged_threshold),
             "idle_threshold_seconds": float(idle_threshold),
         }
@@ -878,11 +1119,13 @@ class RoastRuntime:
         cooldown_remaining = 0.0
         if self._active_engagement_last_attempt_at > 0:
             cooldown_remaining = round(max(0.0, min_interval - elapsed), 1)
+        minimum_interval_remaining = cooldown_remaining
         recent_danmaku_output_age = self._recent_live_danmaku_output_age_sec()
-        recent_danmaku_wait = float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS)
+        recent_danmaku_wait = self._active_engagement_after_danmaku_interval_seconds()
         recent_danmaku_cooldown = 0.0
         if recent_danmaku_output_age is not None:
             recent_danmaku_cooldown = round(max(0.0, recent_danmaku_wait - recent_danmaku_output_age), 1)
+        idle_hosting_wait_remaining = self._idle_hosting_wait_remaining_for_quiet_state(state)
         eligible = bool(candidate)
         reason = "eligible"
         if self.config.live_mode != "solo_stream":
@@ -902,11 +1145,18 @@ class RoastRuntime:
             reason = "recent_danmaku_output"
             cooldown_remaining = recent_danmaku_cooldown
             eligible = False
+        elif idle_hosting_wait_remaining is not None and idle_hosting_wait_remaining <= self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS:
+            reason = "approaching_idle_hosting"
+            cooldown_remaining = idle_hosting_wait_remaining
+            eligible = False
         return {
             "candidate": bool(candidate),
             "eligible": eligible,
             "reason": reason,
             "cooldown_remaining": cooldown_remaining,
+            "minimum_interval_remaining": minimum_interval_remaining,
+            "recent_danmaku_cooldown_remaining": recent_danmaku_cooldown,
+            "idle_hosting_wait_remaining": idle_hosting_wait_remaining,
             "min_interval_seconds": float(min_interval),
         }
 
@@ -941,11 +1191,18 @@ class RoastRuntime:
             eligible = bool(state.get("warmup_hosting_candidate"))
             reason = "solo_warmup" if eligible else "warmup_hosting_not_ready"
         elif state_name == "quiet":
-            next_auto_action = "active_engagement"
-            eligible = bool(active_status.get("eligible"))
-            reason = "solo_quiet" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
-            cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
-            min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
+            if str(active_status.get("reason") or "") == "approaching_idle_hosting":
+                next_auto_action = "idle_hosting"
+                eligible = False
+                reason = "approaching_idle_hosting"
+                cooldown_remaining = float(active_status.get("idle_hosting_wait_remaining") or 0.0)
+                min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
+            else:
+                next_auto_action = "active_engagement"
+                eligible = bool(active_status.get("eligible"))
+                reason = "solo_quiet" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
+                cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
+                min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
         elif state_name == "idle":
             next_auto_action = "idle_hosting"
             eligible = bool(idle_status.get("eligible"))
@@ -970,6 +1227,7 @@ class RoastRuntime:
         live_status: dict[str, Any] | None = None,
         live_state: dict[str, Any] | None = None,
         live_director_status: dict[str, Any] | None = None,
+        profile_count: int = 0,
     ) -> dict[str, Any]:
         status = live_status or self.live_status_summary()
         state = live_state or self.live_state_summary(status)
@@ -995,6 +1253,11 @@ class RoastRuntime:
                 "id": "preflight",
                 "status": "ready" if live_ready else "blocked",
                 "reason": str(status.get("reason") or ""),
+            },
+            {
+                "id": "test_isolation",
+                "status": "warning" if int(profile_count or 0) > 0 else blocked_status,
+                "reason": "viewer_profiles_present" if int(profile_count or 0) > 0 else ("clean" if ready else summary),
             },
             {
                 "id": "warmup_hosting",
@@ -1032,6 +1295,7 @@ class RoastRuntime:
             "summary": summary,
             "mode": mode,
             "dry_run": bool(status.get("dry_run")),
+            "profile_count": int(profile_count or 0),
             "next_auto_action": str(director.get("next_auto_action") or "none"),
             "items": items,
         }
@@ -1053,6 +1317,30 @@ class RoastRuntime:
             "active": 120.0,
             "standard": 180.0,
         }.get(str(getattr(self.config, "activity_level", "standard")), 180.0)
+
+    def _active_engagement_after_danmaku_interval_seconds(self) -> float:
+        return {
+            "quiet": 210.0,
+            "active": 60.0,
+            "standard": float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS),
+        }.get(
+            str(getattr(self.config, "activity_level", "standard")),
+            float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS),
+        )
+
+    def _idle_hosting_wait_remaining_for_quiet_state(self, live_state: dict[str, Any]) -> float | None:
+        if str(live_state.get("state") or "") != "quiet":
+            return None
+        viewer_age = live_state.get("last_viewer_activity_age_sec")
+        if viewer_age is None:
+            return None
+        try:
+            age = float(viewer_age)
+        except (TypeError, ValueError):
+            return None
+        idle_threshold = float(live_state.get("idle_threshold_seconds") or self._live_state_threshold_seconds()[1])
+        remaining = round(max(0.0, idle_threshold - age), 1)
+        return remaining
 
     def _idle_hosting_min_interval_seconds(self) -> float:
         return {
@@ -1152,11 +1440,22 @@ class RoastRuntime:
             source = str(event.get("source") or "unknown")
             route = self._route_from_result(result)
             if source == "idle_hosting":
-                line = f"{route} / idle_hosting: solo quiet-room host beat"
+                beat_shape = str(event.get("host_beat_shape") or "").strip()
+                beat_title = str(event.get("host_beat_title") or "").strip()
+                beat_bits = " ".join(bit for bit in (beat_shape,) if bit)
+                if beat_title:
+                    beat_bits = f"{beat_bits} - {self._compact_context_text(beat_title, limit=50)}".strip()
+                line = f"{route} / idle_hosting: {beat_bits or 'solo quiet-room host beat'}"
             elif source == "warmup_hosting":
                 line = f"{route} / warmup_hosting: solo opening host beat"
             elif source == "active_engagement":
-                line = f"{route} / active_engagement: solo engagement beat"
+                topic_source = str(event.get("topic_source") or "").strip()
+                topic_shape = str(event.get("topic_shape") or "").strip()
+                topic_title = str(event.get("topic_title") or "").strip()
+                topic_bits = " ".join(bit for bit in (topic_source, topic_shape) if bit)
+                if topic_title:
+                    topic_bits = f"{topic_bits} - {self._compact_context_text(topic_title, limit=50)}".strip()
+                line = f"{route} / active_engagement: {topic_bits or 'solo engagement beat'}"
             else:
                 identity = result.get("identity") if isinstance(result.get("identity"), dict) else {}
                 who = str(identity.get("nickname") or event.get("nickname") or event.get("uid") or "viewer")
@@ -1229,13 +1528,12 @@ class RoastRuntime:
                 return float(age)
         return None
 
-    @staticmethod
-    def _last_live_activity_age_sec(rows: list[dict[str, Any]]) -> float | None:
+    def _last_viewer_activity_age_sec(self, rows: list[dict[str, Any]]) -> float | None:
         ages: list[float] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if row.get("id") not in {"live_ingest", "event_bus", "selection", "pipeline", "dispatcher"}:
+            if row.get("id") not in {"live_ingest", "event_bus", "selection"}:
                 continue
             age = row.get("age_sec")
             if age is None:
@@ -1244,7 +1542,47 @@ class RoastRuntime:
                 ages.append(float(age))
             except (TypeError, ValueError):
                 continue
+        recent_age = self._recent_live_danmaku_event_age_sec()
+        if recent_age is not None:
+            ages.append(float(recent_age))
         return min(ages) if ages else None
+
+    def _last_output_age_sec(self, rows: list[dict[str, Any]]) -> float | None:
+        ages: list[float] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("id") not in {"pipeline", "dispatcher"}:
+                continue
+            age = row.get("age_sec")
+            if age is None:
+                continue
+            try:
+                ages.append(float(age))
+            except (TypeError, ValueError):
+                continue
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            age = self._iso_age_sec(result.get("created_at"))
+            if age is not None:
+                ages.append(float(age))
+                break
+        return min(ages) if ages else None
+
+    def _recent_live_danmaku_event_age_sec(self) -> float | None:
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            if str(event.get("source") or "") != "live_danmaku":
+                continue
+            age = self._iso_age_sec(result.get("created_at"))
+            if age is not None:
+                return float(age)
+        return None
 
     @staticmethod
     def _age_sec(timestamp: Any) -> float | None:
@@ -1392,6 +1730,7 @@ class RoastRuntime:
             "trigger_active_engagement",
             "submit_viewer_event",
             "clear_sandbox_data",
+            "clear_viewer_profiles",
             "bili_login",
             "bili_login_check",
             "bili_login_status",
@@ -1408,6 +1747,11 @@ class RoastRuntime:
     def clear_queue(self) -> None:
         self.safety_guard.clear_queue()
         self.audit.record("queue_clear", "queue cleared")
+
+    async def clear_viewer_profiles(self) -> dict[str, Any]:
+        result = await self.viewer_store.clear_profiles()
+        self.audit.record("viewer_profiles_clear", "viewer profiles cleared", detail=result)
+        return result
 
     def live_connection_snapshot(self) -> dict[str, Any]:
         if self.bili_live_ingest.is_listening():

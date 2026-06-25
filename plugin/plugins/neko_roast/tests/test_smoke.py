@@ -102,6 +102,34 @@ def test_panel_recent_results_show_route_and_signal_labels():
     assert "panel.eventSignal.danmaku_signal" in source
 
 
+def test_panel_shows_independent_pacing_and_active_topic_observability():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+
+    assert "last_viewer_activity_age_sec" in source
+    assert "last_output_age_sec" in source
+    assert "panel.liveState.lastViewerActivityAge" in source
+    assert "panel.liveState.lastOutputAge" in source
+    assert "topic_source" in source
+    assert "topic_shape" in source
+    assert "topic_hook" in source
+    assert "panel.interaction.currentDecision.topic" in source
+    assert "host_beat_shape" in source
+    assert "host_beat_title" in source
+    assert "panel.interaction.currentDecision.hostBeat" in source
+
+    required_keys = {
+        "panel.liveState.lastViewerActivityAge",
+        "panel.liveState.lastOutputAge",
+        "panel.interaction.currentDecision.topic",
+        "panel.interaction.currentDecision.hostBeat",
+    }
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        missing = required_keys - set(data)
+        assert not missing, f"{locale_path.name} missing UI observability labels: {sorted(missing)}"
+
+
 def test_panel_renders_solo_stream_test_readiness():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
@@ -110,6 +138,19 @@ def test_panel_renders_solo_stream_test_readiness():
     assert "panel.soloTestReadiness.title" in source
     assert "panel.soloTestReadiness.summary" in source
     assert "panel.soloTestReadiness.item" in source
+    assert "panel.soloTestReadiness.profileCount" in source
+    assert "clearViewerProfiles" in source
+    assert "panel.messages.clearViewerProfilesConfirm" in source
+
+
+def test_panel_confirms_before_clearing_viewer_profiles():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+
+    assert "async function clearViewerProfiles()" in source
+    assert "window.confirm" in source
+    assert 'callSimple("clear_viewer_profiles")' in source
+    assert 'onClick={clearViewerProfiles}' in source
 
 
 def test_once_per_uid_copy_scopes_to_first_appearance_roast():
@@ -196,6 +237,15 @@ def test_trigger_active_engagement_is_exposed_as_hosted_ui_action():
     assert meta is not None
     assert meta["id"] == "trigger_active_engagement"
     assert meta["group"] == "safety"
+    assert meta["refresh_context"] is True
+
+
+def test_clear_viewer_profiles_is_exposed_as_hosted_ui_action():
+    meta = getattr(NekoRoastPlugin.clear_viewer_profiles, UI_ACTION_META_ATTR, None)
+
+    assert meta is not None
+    assert meta["id"] == "clear_viewer_profiles"
+    assert meta["group"] == "developer"
     assert meta["refresh_context"] is True
 
 
@@ -340,10 +390,13 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.soloTestReadiness.summary.ready",
         "panel.soloTestReadiness.summary.not_solo_stream",
         "panel.soloTestReadiness.summary.live_not_ready",
+        "panel.soloTestReadiness.profileCount",
         "panel.soloTestReadiness.status.ready",
         "panel.soloTestReadiness.status.blocked",
         "panel.soloTestReadiness.status.observed",
+        "panel.soloTestReadiness.status.warning",
         "panel.soloTestReadiness.item.preflight",
+        "panel.soloTestReadiness.item.test_isolation",
         "panel.soloTestReadiness.item.warmup_hosting",
         "panel.soloTestReadiness.item.avatar_roast",
         "panel.soloTestReadiness.item.danmaku_response",
@@ -361,8 +414,15 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.activeEngagementStatus.reason.cooldown",
         "panel.activeEngagementStatus.reason.minimum_interval",
         "panel.activeEngagementStatus.reason.live_status_not_ready",
+        "panel.activeEngagementStatus.minimumIntervalRemaining",
+        "panel.activeEngagementStatus.recentDanmakuWait",
         "panel.actions.triggerActiveEngagement",
         "panel.actions.triggerWarmupHosting",
+        "panel.actions.clearViewerProfiles",
+        "panel.messages.clearViewerProfilesConfirm",
+        "actions.clear_viewer_profiles.label",
+        "entries.clear_viewer_profiles.name",
+        "entries.clear_viewer_profiles.description",
         "entries.trigger_warmup_hosting.name",
         "entries.trigger_warmup_hosting.description",
         "entries.trigger_active_engagement.name",

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, ViewerEvent
+from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerIdentity
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
 
 
@@ -96,6 +96,34 @@ def test_dashboard_actions_include_manual_hosting_actions(runtime: RoastRuntime)
     assert "trigger_idle_hosting" in action_ids
     assert "trigger_warmup_hosting" in action_ids
     assert "trigger_active_engagement" in action_ids
+
+
+def test_dashboard_actions_include_clear_viewer_profiles(runtime: RoastRuntime) -> None:
+    action_ids = {action["id"] for action in runtime.dashboard_actions()}
+
+    assert "clear_viewer_profiles" in action_ids
+
+
+@pytest.mark.asyncio
+async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: RoastRuntime) -> None:
+    await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
+    await runtime.viewer_store.mark_roasted("1001", "first roast")
+    runtime.recent_results.appendleft(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="1001", nickname="viewer", danmaku_text="hello", source="live"),
+            output="keep result",
+        )
+    )
+
+    result = await runtime.clear_viewer_profiles()
+
+    assert result["cleared"] == 1
+    assert await runtime.viewer_store.recent_profiles() == []
+    assert len(runtime.recent_results) == 1
+    assert runtime.recent_results[0].output == "keep result"
+    assert runtime.audit.recent(1)[0]["op"] == "viewer_profiles_clear"
 
 
 @pytest.mark.asyncio
@@ -432,6 +460,34 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
         "avatar_roast / live_danmaku from viewer: 第一次来",
     ]
 
+def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="__neko_active__",
+        nickname="NEKO",
+        source="active_engagement",
+        raw={
+            "topic_material": {
+                "source": "bili_trending",
+                "shape": "either_or",
+                "title": "猫猫今天怎么这么安静",
+                "key": "bili:BV1",
+            }
+        },
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("active_engagement", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert context == ["active_engagement / active_engagement: bili_trending either_or - 猫猫今天怎么这么安静"]
+
+
 def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRuntime) -> None:
     event = ViewerEvent(
         uid="42",
@@ -524,6 +580,34 @@ async def test_live_state_marks_activity_gap_as_quiet(runtime: RoastRuntime) -> 
 
 
 @pytest.mark.asyncio
+async def test_live_state_uses_viewer_activity_not_neko_output_for_idle(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=240)
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
+            steps=[PipelineStep("active_engagement", "ok"), PipelineStep("neko_dispatcher", "ok")],
+            created_at=_created_at_age(10),
+        )
+    )
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["reason"] == "no_recent_activity"
+    assert state["live_state"]["last_viewer_activity_age_sec"] >= 200
+    assert state["live_state"]["last_output_age_sec"] <= 20
+    assert state["live_state"]["idle_hosting_candidate"] is True
+
+
+@pytest.mark.asyncio
 async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -539,6 +623,32 @@ async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: 
     assert state["live_state"]["warmup_hosting_candidate"] is True
     assert state["live_director_status"]["next_auto_action"] == "warmup_hosting"
     assert state["live_director_status"]["reason"] == "solo_warmup"
+
+
+@pytest.mark.asyncio
+async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream"),
+            steps=[PipelineStep("warmup_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+            created_at=_created_at_age(240),
+        )
+    )
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["reason"] == "no_recent_activity"
+    assert state["live_state"]["warmup_hosting_candidate"] is False
+    assert state["live_state"]["idle_hosting_candidate"] is True
 
 
 @pytest.mark.asyncio
@@ -711,6 +821,8 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
     assert "one short live-host line" in result.request.prompt_text
     assert "tiny live-room topic" in result.request.prompt_text
     assert "sound like NEKO hosting" in result.request.prompt_text
+    assert "low-pressure reply hook" in result.request.prompt_text
+    assert "Do not announce that nobody is talking" in result.request.prompt_text
     assert "last_activity_age_sec" not in result.request.prompt_text
     assert "nobody is here" not in result.request.prompt_text
     assert "beg for comments" not in result.request.prompt_text
@@ -719,6 +831,43 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
     assert runtime.recent_results[-1]["status"] == "dry_run"
     assert runtime.recent_results[-1]["event"]["source"] == "idle_hosting"
     assert runtime.plugin.pushed_messages == []
+
+
+def test_idle_hosting_event_rotates_host_beats(runtime: RoastRuntime) -> None:
+    events = [runtime._idle_hosting_event({"state": "idle"}) for _ in range(4)]
+    beats = [event.raw["host_beat"] for event in events]
+
+    assert len({beat["key"] for beat in beats}) == 4
+    assert all(beat["shape"] for beat in beats)
+    assert all(beat["hint"] for beat in beats)
+
+
+def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime) -> None:
+    event = runtime._idle_hosting_event({"state": "idle"})
+
+    public = event.to_dict()
+
+    assert public["host_beat_key"]
+    assert public["host_beat_shape"]
+    assert public["host_beat_title"]
+
+
+def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: RoastRuntime) -> None:
+    event = runtime._idle_hosting_event({"state": "idle"})
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=event,
+            steps=[PipelineStep("idle_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert "idle_hosting / idle_hosting:" in context[0]
+    assert event.raw["host_beat"]["shape"] in context[0]
+    assert event.raw["host_beat"]["title"] in context[0]
 
 
 @pytest.mark.asyncio
@@ -842,9 +991,57 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     assert state["active_engagement_status"]["candidate"] is True
     assert state["active_engagement_status"]["eligible"] is False
     assert state["active_engagement_status"]["reason"] == "recent_danmaku_output"
+    assert state["active_engagement_status"]["minimum_interval_remaining"] == 0.0
+    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 30.0
     assert state["live_director_status"]["next_auto_action"] == "active_engagement"
     assert state["live_director_status"]["eligible"] is False
     assert state["live_director_status"]["reason"] == "recent_danmaku_output"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_active_pacing_allows_shorter_post_danmaku_wait(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime.config.activity_level = "active"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(
+        runtime,
+        age_seconds=70,
+        steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+    )
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["active_engagement_status"]["candidate"] is True
+    assert state["active_engagement_status"]["eligible"] is True
+    assert state["active_engagement_status"]["reason"] == "eligible"
+    assert state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=175)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["active_engagement_status"]["candidate"] is True
+    assert state["active_engagement_status"]["eligible"] is False
+    assert state["active_engagement_status"]["reason"] == "approaching_idle_hosting"
+    assert 0.0 < state["active_engagement_status"]["idle_hosting_wait_remaining"] <= 5.0
+    assert state["live_director_status"]["next_auto_action"] == "idle_hosting"
+    assert state["live_director_status"]["eligible"] is False
+    assert state["live_director_status"]["reason"] == "approaching_idle_hosting"
 
 
 @pytest.mark.asyncio
@@ -863,6 +1060,120 @@ async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: R
     assert result.event.source == "active_engagement"
     assert any(step.id == "active_engagement" and step.status == "ok" for step in result.steps)
     assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "测试热梗：猫猫为什么突然安静", "bvid": "BV1"},
+                {"title": "测试热梗：今天直播间最适合选边站", "bvid": "BV2"},
+            ],
+        }
+
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=160)
+
+    result = await runtime.trigger_active_engagement()
+
+    topic = result.event.raw["topic_material"]
+    assert topic["source"] == "bili_trending"
+    assert topic["title"] == "测试热梗：猫猫为什么突然安静"
+    assert topic["shape"] in {"either_or", "light_stance", "tiny_tease", "small_challenge"}
+    assert topic["hook"]
+    assert topic["pattern"]
+    assert "Topic material" in result.request.prompt_text
+    assert runtime.recent_results[-1]["event"]["topic_source"] == "bili_trending"
+    assert runtime.recent_results[-1]["event"]["topic_shape"] == topic["shape"]
+    assert runtime.recent_results[-1]["event"]["topic_hook"] == topic["hook"]
+    assert runtime.recent_results[-1]["event"]["topic_pattern"] == topic["pattern"]
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "重复检查用话题 A", "bvid": "BV_A"},
+                {"title": "重复检查用话题 B", "bvid": "BV_B"},
+                {"title": "重复检查用话题 C", "bvid": "BV_C"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["key"] != second["key"]
+    assert first["shape"] != second["shape"]
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_uses_fallback_instead_of_repeating_recent_single_topic(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "閲嶅妫€鏌ョ敤鍗曚竴鐑悳", "bvid": "BV_ONLY"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["source"] == "bili_trending"
+    assert second["source"] == "fallback"
+    assert second["key"] != first["key"]
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stream(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topics = [await runtime._select_active_engagement_topic() for _ in range(6)]
+
+    assert all(topic["source"] == "fallback" for topic in topics)
+    assert len({topic["key"] for topic in topics}) == 6
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_topic_shapes_keep_rotating_after_full_cycle(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": f"轮换检查用话题 {index}", "bvid": f"BV_ROTATE_{index}"}
+                for index in range(8)
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    shapes = [(await runtime._select_active_engagement_topic())["shape"] for _ in range(6)]
+
+    assert shapes == [
+        "either_or",
+        "light_stance",
+        "tiny_tease",
+        "small_challenge",
+        "either_or",
+        "light_stance",
+    ]
 
 
 @pytest.mark.asyncio
@@ -914,6 +1225,10 @@ async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRu
     result = await runtime.maybe_trigger_active_engagement()
 
     assert result is None
+    state = await runtime.dashboard_state()
+    assert state["active_engagement_status"]["reason"] == "minimum_interval"
+    assert state["active_engagement_status"]["minimum_interval_remaining"] == 130.0
+    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 30.0
     assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
 
 
@@ -1038,6 +1353,7 @@ async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: 
     items = {item["id"]: item for item in readiness["items"]}
     assert set(items) == {
         "preflight",
+        "test_isolation",
         "warmup_hosting",
         "avatar_roast",
         "danmaku_response",
@@ -1046,6 +1362,44 @@ async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: 
         "pacing_control",
     }
     assert all(item["status"] == "ready" for item in items.values())
+
+
+@pytest.mark.asyncio
+async def test_solo_test_readiness_warns_when_viewer_profiles_are_present(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
+
+    state = await runtime.dashboard_state()
+
+    readiness = state["solo_test_readiness"]
+    items = {item["id"]: item for item in readiness["items"]}
+    assert readiness["profile_count"] == 1
+    assert items["test_isolation"]["status"] == "warning"
+    assert items["test_isolation"]["reason"] == "viewer_profiles_present"
+
+
+@pytest.mark.asyncio
+async def test_solo_test_readiness_marks_test_isolation_ready_after_profile_clear(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
+    await runtime.clear_viewer_profiles()
+
+    state = await runtime.dashboard_state()
+
+    items = {item["id"]: item for item in state["solo_test_readiness"]["items"]}
+    assert state["solo_test_readiness"]["profile_count"] == 0
+    assert items["test_isolation"]["status"] == "ready"
+    assert items["test_isolation"]["reason"] == "clean"
 
 
 @pytest.mark.asyncio

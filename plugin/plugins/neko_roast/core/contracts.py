@@ -154,6 +154,30 @@ class ViewerEvent:
             event_type = str(self.raw.get("event_type") or "").strip()
             if event_type:
                 data["event_type"] = event_type
+            topic = self.raw.get("topic_material")
+            if isinstance(topic, dict):
+                for raw_key, public_key in (
+                    ("source", "topic_source"),
+                    ("shape", "topic_shape"),
+                    ("title", "topic_title"),
+                    ("key", "topic_key"),
+                    ("hook", "topic_hook"),
+                    ("pattern", "topic_pattern"),
+                ):
+                    value = str(topic.get(raw_key) or "").strip()
+                    if value:
+                        data[public_key] = value
+            host_beat = self.raw.get("host_beat")
+            if isinstance(host_beat, dict):
+                for raw_key, public_key in (
+                    ("key", "host_beat_key"),
+                    ("shape", "host_beat_shape"),
+                    ("title", "host_beat_title"),
+                    ("hint", "host_beat_hint"),
+                ):
+                    value = str(host_beat.get(raw_key) or "").strip()
+                    if value:
+                        data[public_key] = value
         return data
 
 

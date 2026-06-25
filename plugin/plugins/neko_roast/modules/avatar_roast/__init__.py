@@ -74,6 +74,7 @@ class AvatarRoastModule(BaseModule):
             "active": "You may ask one specific, low-pressure question.",
             "standard": "Use a balanced host beat: one small observation or one easy question.",
         }.get(str(activity_level), "Use a balanced host beat: one small observation or one easy question.")
+        host_beat_block = self._idle_hosting_beat_block(event.raw.get("host_beat") if isinstance(event.raw, dict) else None)
         facts = [
             "scene: NEKO is the only host on stage in solo_stream",
             "task: solo idle hosting",
@@ -85,8 +86,11 @@ class AvatarRoastModule(BaseModule):
         rules = [
             "Say exactly one short live-host line as NEKO.",
             "Create one tiny live-room topic: a small observation, a light tease, or an easy question that a quiet viewer can answer.",
+            "Use the host beat material as direction, but make the final line sound natural.",
+            "Add a low-pressure reply hook: one concrete choice, tiny stance, or small playful prompt.",
             "Make it feel like a spontaneous host beat, with a little NEKO personality and no formal opening.",
             "Do not pretend a viewer sent a message.",
+            "Do not announce that nobody is talking or that the room is silent.",
             "Do not use generic welcome slogans, direct interaction requests, or attendance-check lines.",
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
@@ -99,9 +103,28 @@ class AvatarRoastModule(BaseModule):
             + "\n".join(facts)
             + "\n\n"
             + recent_context
+            + host_beat_block
             + "\nRules:\n"
             + "\n".join(f"- {rule}" for rule in rules)
         )
+
+    @staticmethod
+    def _idle_hosting_beat_block(host_beat: object | None) -> str:
+        if not isinstance(host_beat, dict):
+            return ""
+        shape = str(host_beat.get("shape") or "").strip()
+        title = str(host_beat.get("title") or "").strip()
+        hint = str(host_beat.get("hint") or "").strip()
+        if not any((shape, title, hint)):
+            return ""
+        lines = ["Host beat material:"]
+        if shape:
+            lines.append(f"- shape: {shape}")
+        if title:
+            lines.append(f"- title: {title}")
+        if hint:
+            lines.append(f"- hint: {hint}")
+        return "\n" + "\n".join(lines) + "\n\n"
 
     def _build_prompt(self, event: ViewerEvent, identity: ViewerIdentity, strength: str) -> str:
         nickname = identity.nickname or identity.uid or "这位观众"
@@ -123,9 +146,19 @@ class AvatarRoastModule(BaseModule):
         if identity.pendant:
             facts.append(f"头像挂件/装扮：{identity.pendant}")
 
+        solo_danmaku_priority_rules = (
+            [
+                "solo_stream first-appearance priority: current danmaku first.",
+                "Use avatar and nickname only as accents after answering the current danmaku.",
+                "Do not turn a first appearance into a pure avatar or ID roast when the viewer sent a danmaku.",
+            ]
+            if event.live_mode == "solo_stream" and danmaku
+            else []
+        )
         rules = [
             "自适应焦点：昵称和头像哪个更有梗就主打哪个；两个都有料就抓它们之间的反差或呼应；都平淡就拿这条弹幕、进场时机或当前直播节奏发挥，别硬尬夸。",
             "抓一个具体细节切入并给个有依据的小判断，别泛泛说“好可爱”，别逐字复述上面的字段。",
+            *solo_danmaku_priority_rules,
             avatar_rule,
             *short_reply_rules(),
             "别和你最近几条锐评用同样的开头和句式。",

@@ -126,6 +126,7 @@ function soloReadinessTone(ready: boolean, summary: string): "success" | "warnin
 function soloReadinessItemTone(status: string): "success" | "warning" | "danger" | "default" {
   if (status === "observed") return "success"
   if (status === "ready") return "success"
+  if (status === "warning") return "warning"
   if (status === "blocked") return "warning"
   return "default"
 }
@@ -307,6 +308,13 @@ function formatLatencyMs(value: any): string {
   if (!Number.isFinite(ms) || ms < 0) return "-"
   if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.round(ms / 1000)}s`
+}
+
+function formatAgeSec(value: any): string {
+  if (value === null || value === undefined) return "-"
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return "-"
+  return `${seconds.toFixed(1)}s`
 }
 
 function interactionRoute(result: any): string {
@@ -733,6 +741,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
   }
 
+  async function clearViewerProfiles() {
+    if (!window.confirm(t("panel.messages.clearViewerProfilesConfirm"))) {
+      return
+    }
+    await callSimple("clear_viewer_profiles")
+  }
+
   async function toggleDeveloperTools(value: boolean) {
     const previous = !!configForm.values.developer_tools_enabled
     configForm.setField("developer_tools_enabled", value)
@@ -766,7 +781,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveModeRole = String(liveState.mode_role || (liveMode === "solo_stream" ? "solo_host" : "companion"))
   const liveStateName = String(liveState.state || "blocked")
   const liveStateReason = String(liveState.reason || "blocked_by_live_status")
-  const liveStateLastActivityAge = liveState.last_activity_age_sec === null || liveState.last_activity_age_sec === undefined ? "-" : `${Number(liveState.last_activity_age_sec || 0).toFixed(1)}s`
+  const liveStateLastActivityAge = formatAgeSec(liveState.last_activity_age_sec)
+  const liveStateLastViewerActivityAge = formatAgeSec(liveState.last_viewer_activity_age_sec ?? liveState.last_activity_age_sec)
+  const liveStateLastOutputAge = formatAgeSec(liveState.last_output_age_sec)
   const liveStateQuietAfter = `${Number(liveState.engaged_threshold_seconds || 0).toFixed(0)}s`
   const liveStateIdleAfter = `${Number(liveState.idle_threshold_seconds || 0).toFixed(0)}s`
   const warmupHostingCandidate = !!liveState.warmup_hosting_candidate
@@ -780,6 +797,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const activeEngagementReason = String(activeEngagementStatus.reason || "not_quiet")
   const activeEngagementCooldown = Number(activeEngagementStatus.cooldown_remaining || 0)
   const activeEngagementMinInterval = Number(activeEngagementStatus.min_interval_seconds || 0)
+  const activeEngagementMinimumRemaining = Number(activeEngagementStatus.minimum_interval_remaining || 0)
+  const activeEngagementDanmakuWait = Number(activeEngagementStatus.recent_danmaku_cooldown_remaining || 0)
   const speechSummary = String(speechExplanation.summary || "cannot_stream")
   const speechReason = String(speechExplanation.reason || "room_not_configured")
   const speechLastStatus = String(speechExplanation.last_result_status || "")
@@ -791,6 +810,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveDirectorCooldown = Number(liveDirectorStatus.cooldown_remaining || 0)
   const soloTestReady = !!soloTestReadiness.ready
   const soloTestSummary = String(soloTestReadiness.summary || "live_not_ready")
+  const soloTestProfileCount = Number(soloTestReadiness.profile_count || 0)
   const soloTestItems = Array.isArray(soloTestReadiness.items) ? soloTestReadiness.items : []
   const dynamicLabel = (group: string, keyPrefix: string, value: string): string => (
     panelText(t, `${keyPrefix}.${value}`, labelFallback(group, value))
@@ -875,7 +895,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveStateReason", "panel.liveStateReason", liveStateReason)} />
           </Grid>
           <Grid cols={3}>
+            <StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} />
+            <StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} />
             <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
+          </Grid>
+          <Grid cols={2}>
             <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
             <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
           </Grid>
@@ -914,6 +938,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
               label={t("panel.columns.status")}
               value={<StatusBadge tone={soloReadinessTone(soloTestReady, soloTestSummary)} label={dynamicLabel("soloReadinessSummary", "panel.soloTestReadiness.summary", soloTestSummary)} />}
             />
+            <StatCard label={t("panel.soloTestReadiness.profileCount")} value={soloTestProfileCount} />
             <StatCard
               label={t("panel.liveDirector.nextAutoAction")}
               value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />}
@@ -945,6 +970,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                 </div>
               )
             })}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Button tone="danger" onClick={clearViewerProfiles}>{t("panel.actions.clearViewerProfiles")}</Button>
           </div>
         </Stack>
       </Card>
@@ -1098,6 +1126,21 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const latestResultStatus = latestResult ? String(latestResult.status || "-") : "-"
   const latestResultReason = latestResult ? String(latestResult.reason || "") : ""
   const latestLatency = latestResult ? formatLatencyMs(latestResult.response_latency_ms) : "-"
+  const latestTopic = latestResult && latestResult.event
+    ? [
+        latestResult.event.topic_source,
+        latestResult.event.topic_shape,
+        latestResult.event.topic_title,
+        latestResult.event.topic_hook,
+      ].filter(Boolean).join(" / ")
+    : ""
+  const latestHostBeat = latestResult && latestResult.event
+    ? [
+        latestResult.event.host_beat_shape,
+        latestResult.event.host_beat_title,
+        latestResult.event.host_beat_hint,
+      ].filter(Boolean).join(" / ")
+    : ""
 
   // Live roast card header state.
   const roastEnabled = !!config.live_enabled
@@ -1133,6 +1176,16 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.columns.reason")} value={dynamicLabel("liveDirectorReason", "panel.liveDirector.reason", liveDirectorReason)} />
           <StatCard label={t("panel.liveDirector.cooldown")} value={`${liveDirectorCooldown.toFixed(1)}s`} />
         </Grid>
+        {latestTopic ? (
+          <Grid cols={1}>
+            <StatCard label={t("panel.interaction.currentDecision.topic")} value={latestTopic} />
+          </Grid>
+        ) : null}
+        {latestHostBeat ? (
+          <Grid cols={1}>
+            <StatCard label={t("panel.interaction.currentDecision.hostBeat")} value={latestHostBeat} />
+          </Grid>
+        ) : null}
         <Alert tone={speechExplanationTone(speechSummary)}>
           {t("panel.speechExplanation.title")} · {dynamicLabel("speechSummary", "panel.speechExplanation.summary", speechSummary)} · {dynamicLabel("speechReason", "panel.speechExplanation.reason", speechReason)}
         </Alert>
@@ -1202,6 +1255,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
         </Grid>
         <Grid cols={2}>
+          <StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} />
+          <StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} />
+        </Grid>
+        <Grid cols={2}>
           <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
           <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
         </Grid>
@@ -1252,6 +1309,20 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${activeEngagementCooldown.toFixed(1)}s`} />
           <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${activeEngagementMinInterval.toFixed(1)}s`} />
         </Grid>
+        <Grid cols={2}>
+          <StatCard label={t("panel.activeEngagementStatus.minimumIntervalRemaining")} value={`${activeEngagementMinimumRemaining.toFixed(1)}s`} />
+          <StatCard label={t("panel.activeEngagementStatus.recentDanmakuWait")} value={`${activeEngagementDanmakuWait.toFixed(1)}s`} />
+        </Grid>
+        {latestTopic ? (
+          <Grid cols={1}>
+            <StatCard label={t("panel.interaction.currentDecision.topic")} value={latestTopic} />
+          </Grid>
+        ) : null}
+        {latestHostBeat ? (
+          <Grid cols={1}>
+            <StatCard label={t("panel.interaction.currentDecision.hostBeat")} value={latestHostBeat} />
+          </Grid>
+        ) : null}
         {renderTagRow([
           { key: "panel.interaction.tags.activeQuestion", tone: "success" },
           { key: "panel.interaction.tags.safetyRequired" },
@@ -1408,6 +1479,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         )}
       </Card>
       <Card title={t("panel.profiles.title")}>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+          <Button tone="danger" onClick={clearViewerProfiles}>{t("panel.actions.clearViewerProfiles")}</Button>
+        </div>
         {profiles.length ? (
           <DataTable
             data={profiles.map((item, index) => ({ ...item, id: item.uid || String(index) }))}
