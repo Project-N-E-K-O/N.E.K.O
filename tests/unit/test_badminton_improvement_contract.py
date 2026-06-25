@@ -3294,7 +3294,10 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "function isYuiShortDropSaveReachable(incomingBall) {" in html
     short_drop_save_start = html.index("function isYuiShortDropSaveReachable(incomingBall) {")
     short_drop_save_section = html[short_drop_save_start:html.index("function getYuiSmashHeightQuality(incomingBall)", short_drop_save_start)]
+    assert "var shuttleCourtY = getShuttleCourtY(incomingBall, false);" in short_drop_save_section
+    assert "var nearNetLeft = BADMINTON.netX + shuttleRadius * 0.5;" in short_drop_save_section
     assert "var nearNetRight = nearNetLeft + YUI_SHORT_DROP_SAVE_NET_WINDOW_PX;" in short_drop_save_section
+    assert "if (shuttleCourtY < nearNetLeft || shuttleCourtY > nearNetRight) return false;" in short_drop_save_section
     assert "var shuttleZ = getShuttleCourtZ(incomingBall, false);" in short_drop_save_section
     assert "var minSaveZ = Math.max(YUI_SHORT_DROP_SAVE_MIN_Z, shuttleRadius * 0.25 + 0.5);" in short_drop_save_section
     assert "if (shuttleZ <= minSaveZ || shuttleZ > YUI_SHORT_DROP_SAVE_MAX_Z) return false;" in short_drop_save_section
