@@ -3261,16 +3261,22 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "return getYuiVisibleRacketContactPoint() || getYuiShotOrigin();" in html
     assert "function getYuiNeutralRacketContactPoint() {" in html
     assert "source: 'neutral-racket-anchor'" in html
+    assert "function getYuiRacketRangeStateForPoint(incomingBall, racket, reachX, reachY) {" in html
+    assert "var contact = racket || getYuiNeutralRacketContactPoint();" in html
     assert "function getYuiRacketRangeState(incomingBall, reachX, reachY) {" in html
     assert "var neutral = getYuiNeutralRacketContactPoint();" in html
     assert "var visible = getYuiVisibleRacketContactPoint();" in html
+    assert "var best = getYuiRacketRangeStateForPoint(incomingBall, neutral, reachX, reachY);" in html
+    assert "var visibleState = getYuiRacketRangeStateForPoint(incomingBall, visible, reachX, reachY);" in html
     assert "if (visibleState.normalized < best.normalized) best = visibleState;" in html
+    assert "function getYuiVisibleOrNeutralRacketRangeState(incomingBall, reachX, reachY) {" in html
+    assert "return getYuiRacketRangeStateForPoint(incomingBall, visible || getYuiNeutralRacketContactPoint(), reachX, reachY);" in html
     assert "function getYuiRacketHitRangeState(incomingBall) {" in html
-    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);" in html
+    assert "return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);" in html
     assert "function isYuiRacketHitInRange(incomingBall) {" in html
     assert "return getYuiRacketHitRangeState(incomingBall).normalized <= 1;" in html
     assert "function getYuiRacketRescueGateState(incomingBall) {" in html
-    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);" in html
+    assert "return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);" in html
     assert "var YUI_RACKET_SAVE_REACH_X = 84;" in html
     assert "var YUI_RACKET_SAVE_REACH_Y = 86;" in html
     assert "var YUI_SHORT_DROP_SAVE_REACH_X = 96;" in html
@@ -3280,9 +3286,9 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "var YUI_SHORT_DROP_SAVE_MIN_Z = 4;" in html
     assert "var YUI_SHORT_DROP_SAVE_POWER_MAX = 32;" in html
     assert "function getYuiRacketSaveRangeState(incomingBall) {" in html
-    assert "return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);" in html
+    assert "return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);" in html
     assert "function getYuiShortDropSaveRangeState(incomingBall) {" in html
-    assert "return getYuiRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);" in html
+    assert "return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);" in html
     assert "function isYuiSmashSaveReachable(incomingBall) {" in html
     assert "return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;" in html
     assert "function isYuiShortDropSaveReachable(incomingBall) {" in html
@@ -3305,15 +3311,17 @@ def test_badminton_yui_returns_incoming_shuttle_before_landing():
     assert "headY: racketHead.y," in html
     assert "var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;" in html
     assert "var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;" in html
+    assert "var yuiRacketHitState = getYuiRacketHitRangeState(ball);" in html
+    assert "var yuiRacketHitInRange = yuiRacketHitState.normalized <= 1;" in html
     assert "var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft" in html
     assert "&& Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;" in html
-    assert "var inYuiReach = crossesYuiReach" in html
+    assert "var inYuiReach = yuiRacketHitInRange || (crossesYuiReach" in html
     assert "&& shuttleZ <= yuiContactTopZ" in html
-    assert "&& shuttleZ >= yuiContactBottomZ" in html
+    assert "&& shuttleZ >= yuiContactBottomZ);" in html
     assert "var yuiShortDropSave = isYuiShortDropSaveReachable(ball);" in html
-    assert "if (!inYuiReach && !yuiShortDropSave) return false;" in html
     assert "var yuiSave = isYuiSmashSaveReachable(ball) || yuiShortDropSave;" in html
-    assert "if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;" in html
+    assert "if (!inYuiReach && !yuiSave) return false;" in html
+    assert "if (!yuiRacketHitInRange && !yuiSave) return false;" in html
     assert "game.duel.activeShooter = 'neko';" in html
     assert "game.duel.rallyHits += 1;" in html
     assert "var returnPressureBoost = Math.min(5, game.duel.rallyHits * 0.30);" in html
@@ -3523,9 +3531,10 @@ def test_badminton_player_can_receive_and_return_yui_shuttle():
     assert "function drawPlayerChargeMeter(" in draw_section
     assert "drawPlayerChargeMeter(game.charging && canPlayerChargeShot() ? clamp(game.power, 0, 100) : 0, t);" in draw_section
     assert "if (!isIncomingPlayerReturnCandidate()) return;" in draw_section
-    assert "if (!canReturnNow) return;" not in draw_section
-    assert "var cueAlpha = canReturnNow ? 1 : 0.46;" in draw_section
-    assert "'rgba(114,216,255,.055)'" in draw_section
+    assert "if (!canReturnNow) return;" in draw_section
+    assert "var cueAlpha = 1;" in draw_section
+    assert "'rgba(114,216,255,.055)'" not in draw_section
+    assert "'rgba(114,216,255,.25)'" not in draw_section
     assert "var returnPercent = clamp(returnDeadlineMs / 2400 * 100, 0, 100);" not in draw_section
     assert "drawReturnChargeTrace" not in draw_section
 

@@ -4796,38 +4796,43 @@
     var contact = getYuiShotOrigin();
     return { x: contact.x, y: contact.y, source: 'neutral-racket-anchor' };
   }
+  function getYuiRacketRangeStateForPoint(incomingBall, racket, reachX, reachY) {
+    var contact = racket || getYuiNeutralRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : contact.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : contact.y;
+    var dx = Math.abs(ballX - contact.x);
+    var dy = Math.abs(ballY - contact.y);
+    var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
+    return { dx: dx, dy: dy, normalized: normalized, racket: contact, source: contact.source || '' };
+  }
   function getYuiRacketRangeState(incomingBall, reachX, reachY) {
     var neutral = getYuiNeutralRacketContactPoint();
     var visible = getYuiVisibleRacketContactPoint();
-    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : neutral.x;
-    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : neutral.y;
-    function stateFor(racket) {
-      var dx = Math.abs(ballX - racket.x);
-      var dy = Math.abs(ballY - racket.y);
-      var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
-      return { dx: dx, dy: dy, normalized: normalized, racket: racket, source: racket.source || '' };
-    }
-    var best = stateFor(neutral);
+    var best = getYuiRacketRangeStateForPoint(incomingBall, neutral, reachX, reachY);
     if (visible) {
-      var visibleState = stateFor(visible);
+      var visibleState = getYuiRacketRangeStateForPoint(incomingBall, visible, reachX, reachY);
       if (visibleState.normalized < best.normalized) best = visibleState;
     }
     return best;
   }
+  function getYuiVisibleOrNeutralRacketRangeState(incomingBall, reachX, reachY) {
+    var visible = getYuiVisibleRacketContactPoint();
+    return getYuiRacketRangeStateForPoint(incomingBall, visible || getYuiNeutralRacketContactPoint(), reachX, reachY);
+  }
   function getYuiRacketHitRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
   }
   function isYuiRacketHitInRange(incomingBall) {
     return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
   }
   function getYuiRacketRescueGateState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
   }
   function getYuiRacketSaveRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
   }
   function getYuiShortDropSaveRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);
   }
   function isYuiSmashSaveReachable(incomingBall) {
     return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
@@ -6137,15 +6142,17 @@
     var shuttleRadius = ball.radius || BALL_R;
     var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;
     var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;
+    var yuiRacketHitState = getYuiRacketHitRangeState(ball);
+    var yuiRacketHitInRange = yuiRacketHitState.normalized <= 1;
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
-    var inYuiReach = crossesYuiReach
+    var inYuiReach = yuiRacketHitInRange || (crossesYuiReach
       && shuttleZ <= yuiContactTopZ
-      && shuttleZ >= yuiContactBottomZ;
+      && shuttleZ >= yuiContactBottomZ);
     var yuiShortDropSave = isYuiShortDropSaveReachable(ball);
-    if (!inYuiReach && !yuiShortDropSave) return false;
     var yuiSave = isYuiSmashSaveReachable(ball) || yuiShortDropSave;
-    if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;
+    if (!inYuiReach && !yuiSave) return false;
+    if (!yuiRacketHitInRange && !yuiSave) return false;
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
     maybeTriggerYuiCheat('rally_return');
@@ -9064,6 +9071,8 @@
     var contact = getRacketContactPoint('player');
     var yui = getYuiShotOrigin();
     if (!ball || !contact || !yui) return;
+    var canReturnNow = canPlayerReturnIncomingShuttle();
+    if (!canReturnNow) return;
     var dx = yui.x - contact.x;
     var dy = yui.y - contact.y;
     var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -9081,11 +9090,10 @@
     var controlY = ball.y + uy * 2 + ny * 24;
     var endX = ball.x + ux * 38 + nx * 7;
     var endY = ball.y + uy * 38 + ny * 7;
-    var canReturnNow = canPlayerReturnIncomingShuttle();
-    var cueAlpha = canReturnNow ? 1 : 0.46;
+    var cueAlpha = 1;
 
     aimingCtx.save();
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,236,168,.075)' : 'rgba(114,216,255,.055)';
+    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
     aimingCtx.lineWidth = 5.8 + pulse * 0.8;
     aimingCtx.lineCap = 'round';
     aimingCtx.globalAlpha = cueAlpha;
@@ -9094,7 +9102,7 @@
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
 
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)';
+    aimingCtx.strokeStyle = 'rgba(255,210,96,.30)';
     aimingCtx.lineWidth = 1.5 + pulse * 0.35;
     aimingCtx.beginPath();
     aimingCtx.moveTo(startX, startY);
