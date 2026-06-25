@@ -2,22 +2,24 @@
 
 ```
 N.E.K.O/
-├── main_server.py              # Main server entry point (port 48911)
-├── memory_server.py            # Memory server entry point (port 48912)
-├── agent_server.py             # Agent server entry point (port 48915)
 ├── launcher.py                 # Desktop launcher (Steam/exe)
-├── monitor.py                  # Monitor service
+│
+├── app/                        # Server entry points
+│   ├── main_server.py          # Main server entry point (port 48911)
+│   ├── memory_server.py        # Memory server entry point (port 48912)
+│   ├── agent_server.py         # Agent server entry point (port 48915)
+│   └── monitor.py              # Monitor service
 │
 ├── brain/                      # Agent & task execution
 │   ├── task_executor.py        # Main task execution engine
 │   ├── computer_use.py         # Computer vision/interaction
 │   ├── browser_use_adapter.py  # Browser automation adapter
-│   ├── mcp_client.py           # Model Context Protocol client
-│   ├── planner.py              # Task planning & decomposition
-│   ├── analyzer.py             # Result analysis
+│   ├── openclaw_adapter.py     # OpenClaw agent adapter
+│   ├── openfang_adapter.py     # OpenFang agent adapter
+│   ├── plugin_filter.py        # Plugin filtering for agent tools
 │   ├── deduper.py              # Duplicate detection
-│   ├── processor.py            # Task processing pipeline
-│   └── agent_session.py        # Agent session management
+│   ├── agent_session.py        # Agent session management
+│   └── cua/                    # Computer-use agent subpackage
 │
 ├── config/                     # Configuration
 │   ├── __init__.py             # Constants, defaults, port definitions
@@ -30,7 +32,7 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager (central session handler)
 │   ├── omni_realtime_client.py # Realtime API WebSocket client
 │   ├── omni_offline_client.py  # Text/Response API client (offline fallback)
-│   ├── tts_client.py           # TTS engine adapter (CosyVoice, GPT-SoVITS)
+│   ├── tts_client/             # TTS engine adapters package (CosyVoice, GPT-SoVITS, ElevenLabs, ...)
 │   ├── cross_server.py         # Inter-server communication
 │   └── agent_event_bus.py      # ZeroMQ event bridge (main ↔ agent)
 │
@@ -108,6 +110,6 @@ N.E.K.O/
 |------|-------|------|
 | `main_logic/core.py` | ~2300 | Central session manager — the heart of the system |
 | `utils/config_manager.py` | ~1500 | Configuration loading, validation, persistence |
-| `main_logic/tts_client.py` | ~2300 | TTS synthesis with multi-provider support |
+| `main_logic/tts_client/` | ~1300 | TTS synthesis package with multi-provider support |
 | `brain/task_executor.py` | ~1600 | Agent task planning and execution |
 | `utils/web_scraper.py` | ~1900 | Web content scraping for proactive chat |

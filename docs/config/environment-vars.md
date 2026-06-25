@@ -36,17 +36,8 @@ All environment variables use the `NEKO_` prefix.
 | `NEKO_AGENT_MQ_PORT` | `48917` | Agent message queue |
 | `NEKO_MAIN_AGENT_EVENT_PORT` | `48918` | Agent event port |
 
-## Model overrides
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEKO_SUMMARY_MODEL` | `qwen-plus` | Summarization model |
-| `NEKO_CORRECTION_MODEL` | `qwen-max` | Text correction model |
-| `NEKO_EMOTION_MODEL` | `qwen-turbo` / `qwen-flash` | Emotion analysis model |
-| `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | Vision/image understanding model |
-
 ## Service URLs
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEKO_MCP_ROUTER_URL` | `http://localhost:3282` | MCP Router endpoint |
+| `NEKO_MCP_ROUTER_URL` | `http://localhost:3283` | MCP Router endpoint |

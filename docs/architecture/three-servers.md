@@ -9,13 +9,13 @@ The main server is a FastAPI application that serves as the user-facing entry po
 1. **Configuration loading** — Load `config_manager`, initialize character data
 2. **Session creation** — Create an `LLMSessionManager` for each defined character
 3. **Static file mounting** — Mount `/static`, `/user_live2d`, `/user_vrm`, `/workshop`
-4. **Router registration** — Include all 10 API routers
+4. **Router registration** — Include all 26 API routers
 5. **Event handlers** — Initialize Steamworks, start ZeroMQ bridge, preload audio modules, detect language
 6. **Uvicorn launch** — Bind to `127.0.0.1:48911`
 
 ### What it handles
 
-- All REST API endpoints (10 routers)
+- All REST API endpoints (26 routers)
 - WebSocket connections for real-time chat (`/ws/{lanlan_name}`)
 - TTS synthesis (threaded workers)
 - Audio resampling (24kHz → 48kHz via soxr)
@@ -58,10 +58,10 @@ The agent server handles background task execution triggered by conversation con
 ### Task execution pipeline
 
 1. Main server publishes a task via ZeroMQ
-2. Agent server receives and creates a task plan (`planner.py`)
+2. Agent server receives the task and creates a plan (`task_executor.py`, the `DirectTaskExecutor` class merges the former Analyzer + Planner roles)
 3. Actions execute through adapters:
    - **MCP Client** — Model Context Protocol tool calls
    - **Computer Use** — Screenshot analysis, mouse/keyboard actions
    - **Browser Use** — Web browsing automation
-4. Results are analyzed (`analyzer.py`) and deduped (`deduper.py`)
+4. Results are analyzed by the same `DirectTaskExecutor` (`task_executor.py`) and deduped (`deduper.py`)
 5. Final results stream back via ZeroMQ (`task_result`, `proactive_message`)

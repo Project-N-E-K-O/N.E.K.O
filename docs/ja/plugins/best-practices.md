@@ -171,8 +171,9 @@ async def on_shutdown(self, **_):
     if self.session:
         await self.session.close()
 
-    # 保留中のデータをフラッシュ
-    await self.store.flush()
+    # self.store のフラッシュは不要です：各 set() は同期的にコミットされます。
+    # 自分で store を開いた場合は、ここで閉じてください（任意）：
+    # await self.store.close()
 
     # タイマーをキャンセル（自動的に処理されますが、ログに記録）
     self.logger.info("Plugin shutting down gracefully")

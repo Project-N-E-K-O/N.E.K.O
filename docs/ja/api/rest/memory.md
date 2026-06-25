@@ -25,13 +25,14 @@
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "user", "text": "Hello!" },
+    { "role": "assistant", "text": "Hi there!" }
   ]
 }
 ```
+
+キャラクター名は `filename` から（`extract_catgirl_name_from_recent_filename` を介して）導出され、ボディからは読み取られません。各チャットエントリには `role` 文字列が必要で、メッセージ本文は `text` フィールドから読み取られます。
 
 ::: info
 キャラクター名は CJK 文字をサポートする正規表現で検証されます。チャット履歴エントリは必須フィールドが検証されます。

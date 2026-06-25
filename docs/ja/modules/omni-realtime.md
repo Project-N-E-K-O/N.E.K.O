@@ -20,17 +20,25 @@
 
 プロバイダーの Realtime API エンドポイントへの WebSocket 接続を確立します。
 
-### `send_text(text)`
+### `prime_context(text, skipped=False)`
 
-ユーザーのテキスト入力を LLM に送信します。
+ユーザーのテキストをコンテキストとして会話に注入します。`skipped=True`（または Qwen）の場合、テキストはモデルのレスポンスをトリガーせずにセッション指示へ追記されます。`skipped=False`（GPT/GLM/Step）の場合は、ワンショットのユーザーメッセージを注入してレスポンスをトリガーします。
 
-### `send_audio(audio_bytes, sample_rate)`
+### `create_response(instructions, skipped=False)`
 
-ユーザーのオーディオチャンクを LLM にストリーミングします。オーディオは生の PCM データとして送信されます。
+user ロールの会話メッセージを作成し、LLM のレスポンスをトリガーします。会話の途中でモデルの即時返信が必要な場面で使用します。
 
-### `send_screenshot(base64_data)`
+### `inject_text_and_request_response(text, *, on_rejected=None)`
 
-マルチモーダル理解のためにスクリーンショットを送信します。`NATIVE_IMAGE_MIN_INTERVAL`（デフォルト 1.5 秒）によりレート制限されます。
+user ロールのテキスト項目を注入し、1 回の呼び出しでレスポンスを明示的にトリガーします。音声モードの能動的な発話パス（agent タスクのコールバック / プラグインの `push_message` `ai_behavior="respond"`）で使用され、次のユーザーターンを待たずに結果を即座に話させます。
+
+### `stream_audio(audio_chunk)`
+
+生の PCM オーディオチャンクを LLM にストリーミングします。入力サンプルレートはチャンクサイズから自動検出されるため（480 サンプル = PC からの 48 kHz で、RNNoise でノイズ除去して 16 kHz にダウンサンプリング。512 サンプル = モバイルからの 16 kHz でそのまま透過）、サンプルレート引数は不要です。
+
+### `stream_image(image_b64, *, bypass_rate_limit=False)`
+
+マルチモーダル理解のためにスクリーンショット / カメラフレームをストリーミングします。`NATIVE_IMAGE_MIN_INTERVAL`（デフォルト 1.5 秒）によりレート制限されます。`bypass_rate_limit=True` を渡すと、意図的に送信する単一の手がかり画像（例: 能動的コールバックのスクリーンショット）に対してスロットルをスキップできます。
 
 ## イベントハンドラー
 
