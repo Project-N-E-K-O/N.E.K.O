@@ -461,6 +461,90 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     expect(mock_page.locator("#save-row")).to_be_visible()
 
 
+@pytest.mark.frontend
+def test_memory_browser_clear_all_dissolves_chat_items_before_removing(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """The Clear button should animate human/AI rows away and keep the system memo."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3)
+
+    mock_page.locator("#clear-memory-btn").click()
+
+    expect(mock_page.locator("#memory-chat-edit .chat-item.is-dissolving")).to_have_count(2)
+    expect(mock_page.locator("#memory-particle-canvas")).to_have_count(1)
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(1, timeout=3000)
+    expect(mock_page.locator("#memory-chat-edit .memo-textarea").first).to_have_value("这是测试备忘录内容。")
+    expect(mock_page.locator("#save-status")).to_contain_text("已清空对话记录，备忘录已保留")
+
+
+@pytest.mark.frontend
+def test_memory_browser_delete_single_chat_item_dissolves_before_removing(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Per-row delete should use the same particle dissolve instead of vanishing instantly."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-chat-edit .delete-btn", timeout=5000)
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3)
+
+    mock_page.locator("#memory-chat-edit .delete-btn").first.click()
+
+    expect(mock_page.locator("#memory-chat-edit .chat-item.is-dissolving")).to_have_count(1)
+    expect(mock_page.locator("#memory-particle-canvas")).to_have_count(1)
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(2, timeout=3000)
+    expect(mock_page.locator("#memory-chat-edit")).not_to_contain_text("你好，测试猫娘！")
+    expect(mock_page.locator("#memory-chat-edit")).to_contain_text("你好主人！我是测试猫娘喵~")
+
+
+@pytest.mark.frontend
+def test_memory_browser_clear_respects_reduced_motion(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Reduced-motion users should not wait for the particle canvas animation."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.emulate_media(reduced_motion="reduce")
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(3)
+
+    mock_page.locator("#clear-memory-btn").click()
+
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(1)
+    expect(mock_page.locator("#memory-particle-canvas")).to_have_count(0)
+    expect(mock_page.locator("#save-status")).to_contain_text("已清空对话记录，备忘录已保留")
+
+
+@pytest.mark.frontend
+def test_memory_browser_particle_canvas_is_removed_on_pagehide(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """The temporary particle canvas should not linger when the page unloads."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-chat-edit .delete-btn", timeout=5000)
+    mock_page.locator("#memory-chat-edit .delete-btn").first.click()
+    expect(mock_page.locator("#memory-particle-canvas")).to_have_count(1)
+
+    mock_page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+
+    expect(mock_page.locator("#memory-particle-canvas")).to_have_count(0)
+
+
 _BODY_SENTENCE = "博士正在和小猫娘一起挖铁矿，刚找到一批可以做铁镐。"
 _OLDER_SENTENCE = "几天前两人养过一株窗台幼苗，并烤了草莓蛋糕。"
 

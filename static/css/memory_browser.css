@@ -1155,6 +1155,31 @@ body.storage-location-memory-modal-open {
     position: relative;
 }
 
+.chat-item.is-dissolving {
+    pointer-events: none;
+    animation: memory-chat-ghost-out 720ms ease forwards;
+}
+
+.chat-item.is-collapsing {
+    overflow: hidden;
+    margin-bottom: 0;
+    padding-top: 0;
+    transition: height 360ms ease, margin 360ms ease, padding 360ms ease;
+}
+
+@keyframes memory-chat-ghost-out {
+    0% {
+        opacity: 1;
+        filter: blur(0);
+        transform: translateY(0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        filter: blur(6px);
+        transform: translateY(-6px) scale(0.985);
+    }
+}
+
 .chat-item + .chat-item {
     padding-top: 18px;
 }
@@ -1412,6 +1437,14 @@ html.neko-window-maximized .chat-item + .chat-item:hover::before {
     transform: translateY(0) scale(0.98);
 }
 
+.memory-particle-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 1000;
+}
 
 #save-status {
     font-size: 0.9em;
