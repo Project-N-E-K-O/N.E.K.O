@@ -123,14 +123,14 @@ def test_persona_game_line_prompt_marks_user_correct_as_user_draw_transition():
     payload = json.loads(payload_raw)
     roles = payload["event_roles"]
 
-    assert "next drawing turn belongs to the user" in system_prompt
+    assert "keep the turn transition clear" in system_prompt
     assert "transition to the next turn" in payload["premise"]
     assert roles["completed_turn"]["character_role"] == "drawer"
     assert roles["completed_turn"]["user_role"] == "guesser"
     assert roles["next_turn"]["character_role"] == "guesser"
     assert roles["next_turn"]["user_role"] == "drawer"
-    assert "轮到我画" in roles["must_not_say"]
-    assert "I will draw next" in roles["must_not_say"]
+    assert "role_boundary" in roles
+    assert "must_not_say" not in roles
 
 
 @pytest.mark.unit

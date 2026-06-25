@@ -1642,19 +1642,7 @@ def _drawing_guess_event_roles(event: str) -> dict[str, Any]:
                 "character_action": "guess_the_user_drawing",
                 "user_action": "choose_card_and_draw_picture",
             },
-            "must_not_say": [
-                "it is my turn to draw",
-                "I will draw next",
-                "let me draw next",
-                "the character will draw next",
-                "my next drawing",
-                "轮到我画",
-                "该我画",
-                "我来画",
-                "我要开始画",
-                "我下一张画",
-                "角色接下来画",
-            ],
+            "role_boundary": "Do not mix up the turns: the character is done drawing for now; the next drawing belongs to the user.",
         }
     if event.startswith("ai_guess"):
         return {
@@ -2482,7 +2470,7 @@ def _build_drawing_guess_game_line_prompts(
             "- If public_details.previous_safe_hints is present, do not repeat those hints; say the current safe_hint in fresh character wording.\n"
             "- If public_details.direct_hint is present, use direct_hint or answer_label naturally as the hint; do not mention policy, rules, or that you are allowed to reveal anything.\n"
             "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
-            "- For user_guess_correct and user_guess_timeout, the character's drawing turn has ended. The next drawing turn belongs to the user, and the character will guess; never say or imply that the character will draw next.\n"
+            "- For user_guess_correct and user_guess_timeout, keep the turn transition clear: the character's drawing turn has ended, the next drawing belongs to the user, and the character will guess.\n"
             "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
             "- For ai_guess_* events, do not present guess_label as a confirmed hidden answer unless public_details.allow_answer_reveal is true.\n"
             "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
