@@ -5225,6 +5225,12 @@
             "downloadSvg": "고양이 소녀 그림 저장",
             "downloadPng": "내 그림 저장"
         },
+        "debug": {
+            "wordPoolsStatus": "단어 풀 상태",
+            "wordPool1": "단어 풀 1",
+            "wordPool2": "단어 풀 2",
+            "requestLock": "요청 잠금"
+        },
         "voice": {
             "connected": "이 라운드에 음성이 연결되어 있어요.",
             "connectHint": "메인 화면에서 먼저 음성을 켜면 이 라운드가 이어받아요.",

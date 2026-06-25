@@ -1927,7 +1927,11 @@
       exportContext.drawImage(els.canvas, 0, 0);
       return exportCanvas.toDataURL('image/png');
     } catch (_) {
-      return '';
+      try {
+        return els.canvas.toDataURL('image/png');
+      } catch (_) {
+        return '';
+      }
     }
   }
 
@@ -3042,8 +3046,9 @@
   }
 
   function isPointerInsideCanvas(event) {
-    if (!event || !els.canvas || els.canvas.classList.contains('dg-hidden')) return false;
+    if (!event || !els.canvas || !isCanvasEditablePhase()) return false;
     var rect = els.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
     return event.clientX >= rect.left
       && event.clientX <= rect.right
       && event.clientY >= rect.top
@@ -3229,18 +3234,15 @@
     try { els.colorWheel.releasePointerCapture(event.pointerId); } catch (_) {}
   }
 
-  function activeStrokeSize() {
-    return Number(state.brushMode === 'eraser' ? (els.eraserSize.value || 13) : (els.brushSize.value || 7));
-  }
-
   function configureStrokeContext() {
     els.ctx.lineCap = 'round';
     els.ctx.lineJoin = 'round';
-    els.ctx.lineWidth = activeStrokeSize();
     if (state.brushMode === 'eraser') {
+      els.ctx.lineWidth = Number(els.eraserSize.value || 13);
       els.ctx.globalCompositeOperation = 'destination-out';
       els.ctx.strokeStyle = 'rgba(0,0,0,1)';
     } else {
+      els.ctx.lineWidth = Number(els.brushSize.value || 7);
       els.ctx.globalCompositeOperation = 'source-over';
       els.ctx.strokeStyle = currentBrushColor();
     }

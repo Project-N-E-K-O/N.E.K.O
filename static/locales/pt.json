@@ -5225,6 +5225,12 @@
             "downloadSvg": "Baixar desenho dela",
             "downloadPng": "Baixar meu desenho"
         },
+        "debug": {
+            "wordPoolsStatus": "Estado do banco de palavras",
+            "wordPool1": "Banco 1",
+            "wordPool2": "Banco 2",
+            "requestLock": "Bloqueio de solicitação"
+        },
         "voice": {
             "connected": "A voz está conectada a esta rodada.",
             "connectHint": "Ative a voz na página principal para esta rodada assumir.",

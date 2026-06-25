@@ -5225,6 +5225,12 @@
             "downloadSvg": "猫娘の絵を保存",
             "downloadPng": "自分の絵を保存"
         },
+        "debug": {
+            "wordPoolsStatus": "単語プールの状態",
+            "wordPool1": "単語プール 1",
+            "wordPool2": "単語プール 2",
+            "requestLock": "リクエストロック"
+        },
         "voice": {
             "connected": "このラウンドに音声が接続されています。",
             "connectHint": "メイン画面で音声を先にオンにすると、このラウンドが引き継ぎます。",

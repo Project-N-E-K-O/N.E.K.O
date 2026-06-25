@@ -3728,7 +3728,7 @@ async def _run_drawing_guess_vision_turn(
         message = model_guess.get("message") or ""
         confidence = float(model_guess.get("confidence") or 0.0)
     else:
-        correct = _matches_word(user_hint, answer) or attempts >= 2
+        correct = _matches_word(user_hint, answer)
         guessed_word = answer if correct else _wrong_word(answer)
         message = ""
         confidence = 1.0 if correct else 0.2

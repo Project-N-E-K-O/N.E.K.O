@@ -5225,6 +5225,12 @@
             "downloadSvg": "Download SVG",
             "downloadPng": "Download PNG"
         },
+        "debug": {
+            "wordPoolsStatus": "Word pool status",
+            "wordPool1": "Word pool 1",
+            "wordPool2": "Word pool 2",
+            "requestLock": "Request lock"
+        },
         "voice": {
             "connected": "Voice is connected to this round.",
             "connectHint": "Open voice on the main page to let this round take it over.",

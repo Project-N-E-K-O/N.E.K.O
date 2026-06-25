@@ -1783,7 +1783,7 @@ async def test_vision_guess_revalidates_phase_after_session_lock(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_vision_guess_fallback_respects_three_attempt_contract(monkeypatch):
+async def test_vision_guess_fallback_does_not_force_success_by_attempt_count(monkeypatch):
     async def no_text_context_guess(**_kwargs):
         return None
 
@@ -1820,9 +1820,24 @@ async def test_vision_guess_fallback_respects_three_attempt_contract(monkeypatch
     assert second["ok"] is True
     assert second["attempt"] == 2
     assert second["max_attempts"] == 3
-    assert second["correct"] is True
-    assert second["state"]["phase"] == "summary"
-    assert second["state"]["scores"]["neko"] == 1
+    assert second["correct"] is False
+    assert second["can_retry"] is True
+    assert second["state"]["phase"] == "ai_guess_feedback"
+
+    third = await dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-3",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-logged",
+        "user_hint": "maybe it is food",
+    }))
+    assert third["ok"] is True
+    assert third["attempt"] == 3
+    assert third["max_attempts"] == 3
+    assert third["correct"] is False
+    assert third["can_retry"] is False
+    assert third["state"]["phase"] == "summary"
+    assert third["state"]["scores"]["neko"] == 0
 
 
 @pytest.mark.unit

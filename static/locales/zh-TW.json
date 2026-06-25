@@ -5225,6 +5225,12 @@
             "downloadSvg": "下載貓娘畫作",
             "downloadPng": "下載我的畫"
         },
+        "debug": {
+            "wordPoolsStatus": "詞庫狀態",
+            "wordPool1": "詞庫 1",
+            "wordPool2": "詞庫 2",
+            "requestLock": "請求鎖"
+        },
         "voice": {
             "connected": "語音已接入這一局。",
             "connectHint": "先在主頁面開啟語音，這一局會自動接管。",

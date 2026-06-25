@@ -1249,14 +1249,21 @@
                 requestAnimationFrame(_hideChatForDrawingGuess);
                 return;
             }
-            W.getBounds().then(function(b0) {
+            function hideWithSnap(b0) {
                 if (!_drawingGuessChatHideActive || !_gameWindowActive || _drawingGuessChatHiddenSnap) return;
                 _drawingGuessChatHiddenSnap = {
                     bounds: b0 ? { x: b0.x, y: b0.y, width: b0.width, height: b0.height } : null,
                     savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null
                 };
                 W.hide();
-            }).catch(function() {});
+            }
+            if (typeof W.getBounds !== 'function') {
+                hideWithSnap(null);
+                return;
+            }
+            W.getBounds().then(hideWithSnap).catch(function() {
+                hideWithSnap(null);
+            });
         }
 
         function _restoreChatAfterDrawingGuess() {
@@ -1272,7 +1279,7 @@
             }
             W.show();
             if (!snap) return;
-            if (snap.bounds) {
+            if (snap.bounds && typeof W.setBounds === 'function') {
                 W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
             }
             if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
