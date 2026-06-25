@@ -1134,12 +1134,13 @@ def test_cross_server_avatar_drop_image_queue_skips_metadata_only_entries():
 @pytest.mark.unit
 def test_avatar_drop_recent_message_marks_latest_user_for_analyzer_skip():
     """Avatar Drop handoff turns are chat content, not Agent task requests."""
+    metadata = {"sources": [cross_server_module.AVATAR_DROP_SOURCE]}
     recent = cross_server_module._build_recent_analyze_messages(
         [{
             "role": "user",
             "content": [{"type": "text", "text": "Handed over: note.txt"}],
             "source": cross_server_module.AVATAR_DROP_SOURCE,
-            "metadata": {"sources": [cross_server_module.AVATAR_DROP_SOURCE]},
+            "metadata": metadata,
         }],
         [{
             "data": "data:image/png;base64,current",
@@ -1162,6 +1163,7 @@ def test_avatar_drop_recent_message_marks_latest_user_for_analyzer_skip():
             "source": cross_server_module.AVATAR_DROP_SOURCE,
         }],
     }]
+    assert recent[0]["metadata"] is not metadata
     assert cross_server_module._latest_user_message_has_source(
         recent,
         cross_server_module.AVATAR_DROP_SOURCE,

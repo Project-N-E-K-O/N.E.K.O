@@ -434,7 +434,7 @@ def _build_recent_analyze_messages(
         if item.get("source"):
             recent_item["source"] = item.get("source")
         if isinstance(item.get("metadata"), dict) and item.get("metadata"):
-            recent_item["metadata"] = item.get("metadata")
+            recent_item["metadata"] = item.get("metadata").copy()
         recent.append(recent_item)
         if item.get('role') == 'user':
             last_user_idx = len(recent) - 1
@@ -857,7 +857,7 @@ async def run_sync_connector(
                     elif message["type"] == "user":  # 准备转录
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
-                        if input_type == "transcript":
+                        if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
                             for source_value in _iter_source_values(message["data"].get("source")):
                                 user_input_sources.add(source_value)
                             transcript_metadata = message["data"].get("metadata")
@@ -866,7 +866,6 @@ async def run_sync_connector(
                                     user_input_sources.add(source_value)
                                 for source_value in _iter_source_values(transcript_metadata.get("sources")):
                                     user_input_sources.add(source_value)
-                        if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
                             if user_input_cache == '':
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
                             user_input_cache += data

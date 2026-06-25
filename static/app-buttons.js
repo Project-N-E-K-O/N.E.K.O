@@ -2558,9 +2558,7 @@
             window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
             window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
             var isReactWindowSource = options.source === 'react-chat-window';
-            var messageSource = (typeof options.source === 'string' && options.source.trim())
-                ? options.source.trim()
-                : '';
+            var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
