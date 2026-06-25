@@ -4425,6 +4425,8 @@
              "yuiCheatInk": "Yui бросила чернила",
              "yuiCheatBanana": "Yui бросила банановую кожуру",
              "yuiCheatBananaSlip": "Ты наступил на банановую кожуру",
+             "playerIcePowerup": "Лед активирован. Yui заморожена",
+             "yuiFrozen": "Yui все еще заморожена, удар задержан",
              "nekoThinking": "Neko думает",
              "nekoTurn": "Ход Neko",
              "copyNeko": "Повторите Neko",

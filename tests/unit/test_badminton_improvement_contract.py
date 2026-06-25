@@ -577,6 +577,8 @@ def test_badminton_i18n_keys_are_registered_in_main_locales():
         "badminton.toast.yuiCheatInk",
         "badminton.toast.yuiCheatBanana",
         "badminton.toast.yuiCheatBananaSlip",
+        "badminton.toast.playerIcePowerup",
+        "badminton.toast.yuiFrozen",
         "badminton.toast.nekoThinking",
         "badminton.toast.nekoTurn",
         "badminton.toast.copyNeko",

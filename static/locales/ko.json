@@ -4425,6 +4425,8 @@
              "yuiCheatInk": "Yui가 먹물을 던졌어",
              "yuiCheatBanana": "Yui가 바나나 껍질을 던졌어",
              "yuiCheatBananaSlip": "바나나 껍질을 밟았어",
+             "playerIcePowerup": "얼음 발동. Yui가 얼어붙었어",
+             "yuiFrozen": "Yui가 아직 얼어 있어서 샷이 늦어져",
              "nekoThinking": "Neko 생각 중",
              "nekoTurn": "Neko 차례",
              "copyNeko": "Neko 따라 하기",

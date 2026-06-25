@@ -4425,6 +4425,8 @@
              "yuiCheatInk": "Yui 扔了墨汁",
              "yuiCheatBanana": "Yui 丢了香蕉皮",
              "yuiCheatBananaSlip": "踩到香蕉皮了",
+             "playerIcePowerup": "冰块生效，Yui 被冻住了",
+             "yuiFrozen": "Yui 还被冰住，出拍延后",
              "nekoThinking": "Yui 思考中",
              "nekoTurn": "Yui 回合",
              "copyNeko": "复刻Neko",

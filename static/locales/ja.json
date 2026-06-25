@@ -4425,6 +4425,8 @@
              "yuiCheatInk": "Yui が墨を投げた",
              "yuiCheatBanana": "Yui がバナナの皮を投げた",
              "yuiCheatBananaSlip": "バナナの皮を踏んだ",
+             "playerIcePowerup": "氷が発動。Yui が凍った",
+             "yuiFrozen": "Yui はまだ凍結中、ショットが遅れる",
              "nekoThinking": "Neko が考え中",
              "nekoTurn": "Neko の番",
              "copyNeko": "Neko を再現",

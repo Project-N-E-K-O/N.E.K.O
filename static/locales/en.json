@@ -4425,6 +4425,8 @@
              "yuiCheatInk": "Yui tossed ink",
              "yuiCheatBanana": "Yui tossed a banana peel",
              "yuiCheatBananaSlip": "You stepped on the banana peel",
+             "playerIcePowerup": "Ice activated. Yui is frozen",
+             "yuiFrozen": "Yui is still frozen, shot delayed",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
