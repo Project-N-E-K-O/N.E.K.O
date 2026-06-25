@@ -1,0 +1,877 @@
+{
+  "version": "1.0",
+  "subject": "history",
+  "topics": [
+    {
+      "id": "history_junior_qin_unification",
+      "name": "秦统一与中央集权",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国古代史",
+      "depth": 2,
+      "difficulty": 0.46,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "制度与统一",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "史实理解",
+        "影响分析"
+      ],
+      "examples": [
+        {
+          "prompt": "概括秦统一措施，并评价中央集权制度的历史影响。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_tang_song_change",
+      "name": "唐宋社会变化",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国古代史",
+      "depth": 2,
+      "difficulty": 0.52,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "制度与统一",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "阶段特征",
+        "材料分析"
+      ],
+      "examples": [
+        {
+          "prompt": "从经济、城市、文化角度说明唐宋时期社会变化。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_mingqing_transition",
+      "name": "明清强化君主专制",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国古代史",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "制度与统一",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "史实理解",
+        "原因影响"
+      ],
+      "examples": [
+        {
+          "prompt": "分析明清君主专制强化的表现和影响。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_opium_war",
+      "name": "鸦片战争与近代开端",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国近现代史",
+      "depth": 2,
+      "difficulty": 0.5,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "近代转型",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "材料题",
+        "原因影响"
+      ],
+      "examples": [
+        {
+          "prompt": "结合条约内容说明中国社会性质变化。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_reform_revolution",
+      "name": "戊戌变法与辛亥革命",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国近现代史",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "近代转型",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "比较题",
+        "历史评价"
+      ],
+      "examples": [
+        {
+          "prompt": "比较戊戌变法和辛亥革命的目标、方式和影响。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_new_china",
+      "name": "新中国建设道路",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "中国近现代史",
+      "depth": 2,
+      "difficulty": 0.56,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "近代转型",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "时间线",
+        "史论结合"
+      ],
+      "examples": [
+        {
+          "prompt": "按时间线整理新中国成立后制度建设和经济探索。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_senior_material_analysis",
+      "name": "史料实证方法",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "高中历史",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "史料实证与综合",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "材料解析",
+        "史料实证"
+      ],
+      "examples": [
+        {
+          "prompt": "判断一则史料的作者立场、时代背景和史料价值。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "history_senior_globalization",
+      "name": "世界市场与全球化",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "高中历史",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "史料实证与综合",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "阶段特征",
+        "比较题"
+      ],
+      "examples": [
+        {
+          "prompt": "从新航路开辟、工业革命和信息技术说明世界联系加强。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "history_senior_modernization_comparison",
+      "name": "中西现代化比较",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "高中历史",
+      "depth": 3,
+      "difficulty": 0.74,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只记结论，不说明时代背景和因果链",
+        "材料题照抄原文，不结合所学知识",
+        "评价题只站单一角度，缺少辩证表达"
+      ],
+      "unit": "史料实证与综合",
+      "skills": [
+        "按时间、空间和主体整理史实",
+        "分析历史事件的原因、过程、影响和评价",
+        "从材料中提取观点并结合所学论证"
+      ],
+      "question_types": [
+        "综合探究",
+        "比较题"
+      ],
+      "examples": [
+        {
+          "prompt": "比较中国近代化探索和西方工业化道路的差异。",
+          "answer_outline": [
+            "定位时代、地区、主体和材料出处。",
+            "整理背景、措施、过程、结果和影响。",
+            "结合材料关键词与所学史实作答。",
+            "用多角度评价并注意史论结合。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "history_junior_world_ancient",
+      "name": "世界古代文明",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "世界史",
+      "depth": 2,
+      "difficulty": 0.44,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背结论不讲背景",
+        "材料信息和所学知识割裂",
+        "评价缺少多角度"
+      ],
+      "unit": "古代文明",
+      "skills": [
+        "定位时代背景、历史主体和材料出处",
+        "用史实解释原因、过程、影响和评价",
+        "组织史论结合的分层答案"
+      ],
+      "question_types": [
+        "史实理解",
+        "比较题"
+      ],
+      "examples": [
+        {
+          "prompt": "比较古埃及、古巴比伦、古印度和古希腊文明特点。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_junior_industrial_revolution",
+      "name": "工业革命",
+      "subject": "history",
+      "stage": "junior_high",
+      "chapter": "世界近现代史",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背结论不讲背景",
+        "材料信息和所学知识割裂",
+        "评价缺少多角度"
+      ],
+      "unit": "工业化",
+      "skills": [
+        "定位时代背景、历史主体和材料出处",
+        "用史实解释原因、过程、影响和评价",
+        "组织史论结合的分层答案"
+      ],
+      "question_types": [
+        "原因影响",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "分析工业革命对生产方式、城市和世界市场的影响。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "history_senior_institution_change",
+      "name": "制度变迁与国家治理",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "国家制度与社会治理",
+      "depth": 3,
+      "difficulty": 0.7,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背结论不讲背景",
+        "材料信息和所学知识割裂",
+        "评价缺少多角度"
+      ],
+      "unit": "制度史",
+      "skills": [
+        "定位时代背景、历史主体和材料出处",
+        "用史实解释原因、过程、影响和评价",
+        "组织史论结合的分层答案"
+      ],
+      "question_types": [
+        "综合探究",
+        "史论结合"
+      ],
+      "examples": [
+        {
+          "prompt": "比较古代中国中央集权与近代西方代议制的治理逻辑。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "history_senior_economic_history",
+      "name": "经济史专题",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "经济与社会生活",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背结论不讲背景",
+        "材料信息和所学知识割裂",
+        "评价缺少多角度"
+      ],
+      "unit": "经济史",
+      "skills": [
+        "定位时代背景、历史主体和材料出处",
+        "用史实解释原因、过程、影响和评价",
+        "组织史论结合的分层答案"
+      ],
+      "question_types": [
+        "阶段特征",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "说明明清商品经济、近代工业化和现代市场化之间的变化线索。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "history_senior_cultural_exchange",
+      "name": "中外文化交流",
+      "subject": "history",
+      "stage": "senior_high",
+      "chapter": "文化交流传播",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背结论不讲背景",
+        "材料信息和所学知识割裂",
+        "评价缺少多角度"
+      ],
+      "unit": "文化史",
+      "skills": [
+        "定位时代背景、历史主体和材料出处",
+        "用史实解释原因、过程、影响和评价",
+        "组织史论结合的分层答案"
+      ],
+      "question_types": [
+        "材料分析",
+        "影响评价"
+      ],
+      "examples": [
+        {
+          "prompt": "从丝绸之路到全球化分析文化交流的双向影响。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "history",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    }
+  ]
+}

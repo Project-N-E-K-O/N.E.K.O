@@ -1,0 +1,3621 @@
+{
+  "version": "1.0",
+  "subject": "biology",
+  "topics": [
+    {
+      "id": "bio_junior_cell_structure",
+      "name": "细胞结构",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "生命系统",
+      "depth": 1,
+      "difficulty": 0.36,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "细胞与人体",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "概念辨析",
+        "图像识别"
+      ],
+      "examples": [
+        {
+          "prompt": "识别植物细胞和动物细胞结构差异，并说明细胞壁和叶绿体作用。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_junior_photosynthesis_respiration",
+      "name": "光合作用与呼吸作用",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "生命系统",
+      "depth": 2,
+      "difficulty": 0.52,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "细胞与人体",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "过程分析",
+        "实验探究"
+      ],
+      "examples": [
+        {
+          "prompt": "比较光合作用和呼吸作用的场所、原料、产物和能量变化。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_junior_human_body_systems",
+      "name": "人体系统协调",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "生命系统",
+      "depth": 2,
+      "difficulty": 0.5,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "细胞与人体",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "概念网络",
+        "实际应用"
+      ],
+      "examples": [
+        {
+          "prompt": "说明消化、呼吸、循环系统如何共同为运动供能。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_junior_ecology_food_chain",
+      "name": "食物链与生态系统",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "生命系统",
+      "depth": 2,
+      "difficulty": 0.48,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "细胞与人体",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "生态分析",
+        "图表题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据食物网判断某种生物减少后其他种群可能变化。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_senior_genetics_law",
+      "name": "孟德尔遗传定律",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "遗传稳态生态",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "遗传计算",
+        "概率推理"
+      ],
+      "examples": [
+        {
+          "prompt": "根据亲本基因型推断后代表现型比例。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_dna_expression",
+      "name": "DNA复制与基因表达",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "遗传稳态生态",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "过程分析",
+        "概念辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "比较 DNA 复制、转录、翻译的模板、原料和场所。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_homeostasis",
+      "name": "稳态与调节",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "遗传稳态生态",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "调节过程",
+        "图表分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析血糖调节过程中胰岛素和胰高血糖素的作用。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_ecology_energy_flow",
+      "name": "生态系统能量流动",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物",
+      "depth": 2,
+      "difficulty": 0.64,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "遗传稳态生态",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "生态分析",
+        "计算题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据能量金字塔计算相邻营养级能量传递效率。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_experiment_design",
+      "name": "生物实验设计",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "把相近概念机械背诵，缺少过程联系",
+        "实验题不区分自变量、因变量和无关变量",
+        "遗传题没有写清基因型、表现型和概率路径"
+      ],
+      "unit": "遗传稳态生态",
+      "skills": [
+        "建立结构、功能、过程和调节之间的联系",
+        "从图表或实验中提取变量和结论",
+        "用生命系统层次解释现象"
+      ],
+      "question_types": [
+        "实验探究",
+        "变量控制"
+      ],
+      "examples": [
+        {
+          "prompt": "设计实验验证某环境因素对酶活性的影响，写出自变量和对照组。",
+          "answer_outline": [
+            "识别考查层次：分子、细胞、个体、种群或生态系统。",
+            "圈出结构、过程、变量或遗传关系。",
+            "按因果链、调节链或概率链推理。",
+            "检查结论是否符合生物学术语和实验设计。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_junior_microscope",
+      "name": "显微镜使用",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "生命系统",
+      "depth": 1,
+      "difficulty": 0.36,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "概念背诵和过程理解脱节",
+        "实验变量与对照组不清",
+        "遗传概率路径写不完整"
+      ],
+      "unit": "实验技能",
+      "skills": [
+        "识别生命系统层次、结构和过程",
+        "用图表、遗传图解或实验变量推理",
+        "用规范术语表达因果链和结论"
+      ],
+      "question_types": [
+        "实验操作",
+        "图像识别"
+      ],
+      "examples": [
+        {
+          "prompt": "说明从低倍镜换高倍镜观察细胞时视野亮度和调焦变化。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_junior_inheritance_intro",
+      "name": "性状遗传初步",
+      "subject": "biology",
+      "stage": "junior_high",
+      "chapter": "遗传与进化",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "概念背诵和过程理解脱节",
+        "实验变量与对照组不清",
+        "遗传概率路径写不完整"
+      ],
+      "unit": "遗传基础",
+      "skills": [
+        "识别生命系统层次、结构和过程",
+        "用图表、遗传图解或实验变量推理",
+        "用规范术语表达因果链和结论"
+      ],
+      "question_types": [
+        "遗传推理",
+        "概率计算"
+      ],
+      "examples": [
+        {
+          "prompt": "根据亲代和子代表现推断显隐性关系。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "bio_senior_meiosis",
+      "name": "减数分裂",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "遗传与进化",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "概念背诵和过程理解脱节",
+        "实验变量与对照组不清",
+        "遗传概率路径写不完整"
+      ],
+      "unit": "细胞分裂",
+      "skills": [
+        "识别生命系统层次、结构和过程",
+        "用图表、遗传图解或实验变量推理",
+        "用规范术语表达因果链和结论"
+      ],
+      "question_types": [
+        "过程分析",
+        "图像识别"
+      ],
+      "examples": [
+        {
+          "prompt": "根据细胞分裂图判断时期、染色体数和 DNA 数变化。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_gene_frequency",
+      "name": "种群基因频率",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "遗传与进化",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "概念背诵和过程理解脱节",
+        "实验变量与对照组不清",
+        "遗传概率路径写不完整"
+      ],
+      "unit": "进化",
+      "skills": [
+        "识别生命系统层次、结构和过程",
+        "用图表、遗传图解或实验变量推理",
+        "用规范术语表达因果链和结论"
+      ],
+      "question_types": [
+        "计算题",
+        "概念辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "计算某种群中显性和隐性基因频率，并判断是否发生进化。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_biotech_engineering",
+      "name": "现代生物技术工程",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "生物技术",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "概念背诵和过程理解脱节",
+        "实验变量与对照组不清",
+        "遗传概率路径写不完整"
+      ],
+      "unit": "工程应用",
+      "skills": [
+        "识别生命系统层次、结构和过程",
+        "用图表、遗传图解或实验变量推理",
+        "用规范术语表达因果链和结论"
+      ],
+      "question_types": [
+        "流程分析",
+        "实际应用"
+      ],
+      "examples": [
+        {
+          "prompt": "概括基因工程从目的基因获取到表达检测的基本步骤。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只写教材关键词，没有补出结构和功能之间的因果。",
+            "遗传、稳态、生态或实验层次混用。",
+            "实验题漏写自变量、因变量、对照或无关变量控制。"
+          ],
+          "grading_points": [
+            "核心概念表述准确，并能扣住题干情境。",
+            "因果链条、图表信息或实验变量分析完整。",
+            "答案使用规范生物术语并说明结论边界。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_biology",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_cell_structure_function",
+      "name": "细胞结构与功能对应",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物细胞与代谢",
+      "unit": "细胞结构",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_genetics_law",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_membrane_transport",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据细胞器结构解释分泌、能量转换或物质运输。",
+          "answer_outline": [
+            "先判断题目属于细胞结构与功能对应的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_membrane_transport",
+      "name": "物质跨膜运输",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物细胞与代谢",
+      "unit": "细胞结构",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_cell_structure_function",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_cell_structure_function",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_enzyme_curve",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断自由扩散、协助扩散、主动运输和胞吞胞吐。",
+          "answer_outline": [
+            "先判断题目属于物质跨膜运输的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_enzyme_curve",
+      "name": "酶活性曲线分析",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物细胞与代谢",
+      "unit": "酶与 ATP",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_membrane_transport",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_membrane_transport",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_cell_respiration",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据温度、pH 或底物浓度曲线解释酶活性变化。",
+          "answer_outline": [
+            "先判断题目属于酶活性曲线分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_cell_respiration",
+      "name": "细胞呼吸过程与计算",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物细胞与代谢",
+      "unit": "细胞呼吸",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_enzyme_curve",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_enzyme_curve",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_photosynthesis_curve",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "比较有氧呼吸、无氧呼吸阶段和物质能量变化。",
+          "answer_outline": [
+            "先判断题目属于细胞呼吸过程与计算的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_photosynthesis_curve",
+      "name": "光合作用曲线分析",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物细胞与代谢",
+      "unit": "光合作用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_cell_respiration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_cell_respiration",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_mitosis_image",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析光照、CO2、温度对净光合速率的影响。",
+          "answer_outline": [
+            "先判断题目属于光合作用曲线分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_mitosis_image",
+      "name": "有丝分裂图像判断",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "细胞分裂",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_photosynthesis_curve",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_photosynthesis_curve",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据染色体形态和数量判断分裂时期。",
+          "answer_outline": [
+            "先判断题目属于有丝分裂图像判断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_meiosis_abnormal",
+      "name": "减数分裂异常与配子",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "细胞分裂",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_mitosis_image",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_mitosis_image",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析同源染色体或姐妹染色单体异常分离的结果。",
+          "answer_outline": [
+            "先判断题目属于减数分裂异常与配子的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_mendel_ratio_variant",
+      "name": "孟德尔比例变式",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "遗传规律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_linkage_exchange",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据子代表型比例判断显隐性、基因型和致死因素。",
+          "answer_outline": [
+            "先判断题目属于孟德尔比例变式的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_linkage_exchange",
+      "name": "连锁互换与遗传图谱",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "遗传规律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "由重组率判断连锁关系和基因距离。",
+          "answer_outline": [
+            "先判断题目属于连锁互换与遗传图谱的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_pedigree_analysis",
+      "name": "遗传系谱图分析",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "遗传规律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_linkage_exchange",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_linkage_exchange",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据系谱图判断遗传方式和个体基因型概率。",
+          "answer_outline": [
+            "先判断题目属于遗传系谱图分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_dna_replication_experiment",
+      "name": "DNA 半保留复制实验",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "分子遗传",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析同位素标记和密度梯度结果。",
+          "answer_outline": [
+            "先判断题目属于DNA 半保留复制实验的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_gene_expression_regulation",
+      "name": "基因表达与调控",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "分子遗传",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_mutation_variation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "解释转录、翻译和基因选择性表达。",
+          "answer_outline": [
+            "先判断题目属于基因表达与调控的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_mutation_variation",
+      "name": "变异类型与育种应用",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "变异育种",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_evolution_selection",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "区分基因突变、基因重组和染色体变异。",
+          "answer_outline": [
+            "先判断题目属于变异类型与育种应用的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_evolution_selection",
+      "name": "自然选择与进化证据",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物遗传与进化",
+      "unit": "生物进化",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_mutation_variation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_mutation_variation",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_neural_regulation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "用种群基因频率和适应性解释进化过程。",
+          "answer_outline": [
+            "先判断题目属于自然选择与进化证据的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_neural_regulation",
+      "name": "神经调节与反射弧",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物稳态与调节",
+      "unit": "神经体液调节",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_evolution_selection",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_evolution_selection",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析兴奋传导、突触传递和反射弧完整性。",
+          "answer_outline": [
+            "先判断题目属于神经调节与反射弧的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_hormone_regulation",
+      "name": "激素调节与反馈",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物稳态与调节",
+      "unit": "神经体液调节",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_neural_regulation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_neural_regulation",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_immunity_process",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "解释甲状腺激素、血糖调节和反馈机制。",
+          "answer_outline": [
+            "先判断题目属于激素调节与反馈的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_immunity_process",
+      "name": "免疫调节过程",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物稳态与调节",
+      "unit": "免疫调节",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_hormone_regulation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_plant_hormone",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "区分非特异性免疫、体液免疫和细胞免疫。",
+          "answer_outline": [
+            "先判断题目属于免疫调节过程的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_plant_hormone",
+      "name": "植物激素调节",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物稳态与调节",
+      "unit": "植物生命活动",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_immunity_process",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_immunity_process",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析生长素运输、浓度效应和实验现象。",
+          "answer_outline": [
+            "先判断题目属于植物激素调节的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_population_growth",
+      "name": "种群数量变化曲线",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物生态",
+      "unit": "种群群落",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_plant_hormone",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_plant_hormone",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_community_succession",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断 J 型、S 型增长和环境容纳量变化。",
+          "answer_outline": [
+            "先判断题目属于种群数量变化曲线的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_community_succession",
+      "name": "群落结构与演替",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物生态",
+      "unit": "种群群落",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_population_growth",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据物种组成和环境变化判断演替方向。",
+          "answer_outline": [
+            "先判断题目属于群落结构与演替的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_ecosystem_material_cycle",
+      "name": "生态系统物质循环",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物生态",
+      "unit": "生态系统",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_community_succession",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_community_succession",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析碳循环、能量流动和生态系统稳定性。",
+          "answer_outline": [
+            "先判断题目属于生态系统物质循环的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_ecology_calculation",
+      "name": "生态能量流动计算",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物生态",
+      "unit": "生态系统",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据营养级能量关系计算传递效率和同化量。",
+          "answer_outline": [
+            "先判断题目属于生态能量流动计算的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_experiment_control",
+      "name": "生物实验对照设计",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物实验",
+      "unit": "实验设计",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_ecology_calculation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "设计空白对照、条件对照或自身对照并控制变量。",
+          "answer_outline": [
+            "先判断题目属于生物实验对照设计的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_experiment_curve_table",
+      "name": "实验图表信息提取",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物实验",
+      "unit": "实验设计",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_experiment_control",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "从曲线或表格提取趋势并写出实验结论。",
+          "answer_outline": [
+            "先判断题目属于实验图表信息提取的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_experiment_error_analysis",
+      "name": "实验误差与结论评价",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物实验",
+      "unit": "实验评价",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断实验操作导致的误差方向和结论可靠性。",
+          "answer_outline": [
+            "先判断题目属于实验误差与结论评价的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_pcr_electrophoresis",
+      "name": "PCR 与电泳结果分析",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物技术",
+      "unit": "现代生物技术",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "解释 PCR 扩增、凝胶电泳条带和结果判断。",
+          "answer_outline": [
+            "先判断题目属于PCR 与电泳结果分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_gene_engineering",
+      "name": "基因工程流程",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物技术",
+      "unit": "现代生物技术",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_cell_engineering",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "梳理目的基因、载体、受体细胞和筛选鉴定流程。",
+          "answer_outline": [
+            "先判断题目属于基因工程流程的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_cell_engineering",
+      "name": "植物组织培养与细胞工程",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物技术",
+      "unit": "现代生物技术",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_gene_engineering",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析脱分化、再分化、细胞融合和应用场景。",
+          "answer_outline": [
+            "先判断题目属于植物组织培养与细胞工程的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_exam_integrated_context",
+      "name": "生物综合情境题",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物综合",
+      "unit": "综合应用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_cell_engineering",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_cell_engineering",
+          "relation": "nearby"
+        },
+        {
+          "id": "bio_senior_answer_standardization",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "把遗传、稳态、生态或实验信息整合成因果解释。",
+          "answer_outline": [
+            "先判断题目属于生物综合情境题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "bio_senior_answer_standardization",
+      "name": "生物规范表述",
+      "subject": "biology",
+      "stage": "senior_high",
+      "chapter": "高中生物综合",
+      "unit": "答题规范",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只记关键词但没有说明因果链条",
+        "把细胞层次、个体层次和生态层次混用",
+        "实验题漏写自变量、因变量或无关变量控制"
+      ],
+      "skills": [
+        "把概念放入结构、功能和调节链条中解释",
+        "识别实验变量、对照组和结论边界",
+        "用图表信息和教材概念共同支持判断"
+      ],
+      "question_types": [
+        "概念辨析",
+        "实验分析"
+      ],
+      "examples": [
+        {
+          "prompt": "用教材术语、因果连接和限定条件组织答案。",
+          "answer_outline": [
+            "先判断题目属于生物规范表述的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用生物核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "biology",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_biology"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    }
+  ]
+}

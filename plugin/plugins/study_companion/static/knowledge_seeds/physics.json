@@ -1,0 +1,5924 @@
+{
+  "version": "1.0",
+  "subject": "physics",
+  "topics": [
+    {
+      "id": "physics_junior_speed",
+      "name": "速度与运动图像",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "力学",
+      "depth": 2,
+      "difficulty": 0.42,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "运动与力",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "计算题",
+        "图像分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据 s-t 图像判断物体各段运动状态并计算平均速度。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_force_balance",
+      "name": "二力平衡",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "力学",
+      "depth": 2,
+      "difficulty": 0.48,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "运动与力",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "概念辨析",
+        "受力分析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断静止物体受力是否平衡，并画出力的示意图。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_pressure_buoyancy",
+      "name": "压强与浮力",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "力学",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "运动与力",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "计算题",
+        "实验探究"
+      ],
+      "examples": [
+        {
+          "prompt": "分析物体浸入液体前后弹簧测力计示数变化，求浮力。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_work_power",
+      "name": "功和功率",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "力学",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "运动与力",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "计算题",
+        "实际应用"
+      ],
+      "examples": [
+        {
+          "prompt": "计算搬运物体做功和功率，并说明哪些力没有做功。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_circuit_recognition",
+      "name": "串并联电路识别",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "电学",
+      "depth": 2,
+      "difficulty": 0.46,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "电路与欧姆定律",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "电路分析",
+        "概念辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断一个含开关和电表的电路中哪些用电器串联或并联。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_ohm_law",
+      "name": "欧姆定律",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "电学",
+      "depth": 2,
+      "difficulty": 0.56,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "电路与欧姆定律",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "计算题",
+        "电路分析"
+      ],
+      "examples": [
+        {
+          "prompt": "已知电压和电阻求电流，再讨论滑动变阻器变化对电表示数的影响。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_electric_power",
+      "name": "电功率",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "电学",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "电路与欧姆定律",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "计算题",
+        "实际应用"
+      ],
+      "examples": [
+        {
+          "prompt": "比较两个灯泡在额定电压和实际电压下的亮度。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_junior_experiment_resistance",
+      "name": "测电阻实验",
+      "subject": "physics",
+      "stage": "junior_high",
+      "chapter": "电学",
+      "depth": 2,
+      "difficulty": 0.64,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "电路与欧姆定律",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "实验探究",
+        "误差分析"
+      ],
+      "examples": [
+        {
+          "prompt": "设计伏安法测电阻实验，说明电路连接、表格和误差来源。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "physics_senior_newton_laws",
+      "name": "牛顿运动定律综合",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中力学",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "牛顿运动与能量",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "受力分析",
+        "计算题"
+      ],
+      "examples": [
+        {
+          "prompt": "物块在斜面上受拉力运动，求加速度和支持力。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_energy_momentum",
+      "name": "动量能量综合",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中力学",
+      "depth": 3,
+      "difficulty": 0.76,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "牛顿运动与能量",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "综合应用",
+        "守恒思想"
+      ],
+      "examples": [
+        {
+          "prompt": "两个小球碰撞后进入轨道，判断用动量守恒还是机械能守恒。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_circular_motion",
+      "name": "圆周运动",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中力学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "牛顿运动与能量",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "模型分析",
+        "临界问题"
+      ],
+      "examples": [
+        {
+          "prompt": "小球过竖直圆轨道最高点，求不断轨的最小速度。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_electric_magnetic_field",
+      "name": "电场磁场综合",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中力学",
+      "depth": 3,
+      "difficulty": 0.78,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "没有先确定研究对象和过程",
+        "公式套用时忽略方向、单位或能量损失",
+        "电路、力学图像和文字条件没有互相校验"
+      ],
+      "unit": "牛顿运动与能量",
+      "skills": [
+        "画出过程图或受力/电路/光路图",
+        "选择适合的物理规律并明确适用条件",
+        "用单位、数量级和极端情况检查答案"
+      ],
+      "question_types": [
+        "综合应用",
+        "轨迹分析"
+      ],
+      "examples": [
+        {
+          "prompt": "带电粒子进入匀强磁场，求半径、周期和偏转方向。",
+          "answer_outline": [
+            "明确研究对象、已知量、未知量和物理过程。",
+            "画出受力图、电路图、光路图或状态变化图。",
+            "选择公式并代入统一单位。",
+            "用单位、方向和实际意义检查结论。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_data",
+      "name": "高中物理实验数据处理",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中实验",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "研究对象不清",
+        "公式条件误用",
+        "单位方向遗漏"
+      ],
+      "unit": "数据处理",
+      "skills": [
+        "建立物理模型并画图",
+        "选择规律并统一单位",
+        "用方向单位和极端情况检验"
+      ],
+      "question_types": [
+        "实验探究",
+        "误差分析"
+      ],
+      "examples": [
+        {
+          "prompt": "用纸带数据求加速度，画 v-t 图并分析误差来源。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_ac_circuit_intro",
+      "name": "交变电流初步",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "电磁学",
+      "depth": 3,
+      "difficulty": 0.7,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "研究对象不清",
+        "公式条件误用",
+        "单位方向遗漏"
+      ],
+      "unit": "交变电流",
+      "skills": [
+        "建立物理模型并画图",
+        "选择规律并统一单位",
+        "用方向单位和极端情况检验"
+      ],
+      "question_types": [
+        "图像分析",
+        "计算题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据正弦交流电图像求周期、频率、有效值和最大值。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "没有先画过程图或受力/电路图就直接套公式。",
+            "把标量大小、矢量方向和正负号混在一起。",
+            "忽略临界状态、能量损失或单位换算。"
+          ],
+          "grading_points": [
+            "研究对象和物理过程划分清楚。",
+            "所用物理规律及适用条件准确。",
+            "方程、单位、方向和结论检查完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_physics",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_motion_graph_synthesis",
+      "name": "运动图像综合",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "直线运动与图像",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_newton_laws",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_newton_laws",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "结合 x-t、v-t 图像判断运动过程、位移和加速度变化。",
+          "answer_outline": [
+            "先判断题目属于运动图像综合的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_force_decomposition",
+      "name": "力的分解与正交分析",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "受力分析",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "斜面或连接体中建立坐标系并列平衡/动力学方程。",
+          "answer_outline": [
+            "先判断题目属于力的分解与正交分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_connected_body",
+      "name": "连接体与整体隔离法",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "牛顿运动定律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_force_decomposition",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_friction_critical",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "用整体法和隔离法求连接体加速度、拉力或摩擦力。",
+          "answer_outline": [
+            "先判断题目属于连接体与整体隔离法的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_friction_critical",
+      "name": "摩擦力临界问题",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "牛顿运动定律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_connected_body",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "判断静摩擦转动摩擦、临界加速度和临界外力。",
+          "answer_outline": [
+            "先判断题目属于摩擦力临界问题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_projectile_motion",
+      "name": "平抛与斜抛运动",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "曲线运动",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_friction_critical",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_friction_critical",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "分解平抛运动并求落点、时间或速度方向。",
+          "answer_outline": [
+            "先判断题目属于平抛与斜抛运动的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_circular_critical",
+      "name": "圆周运动临界条件",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "曲线运动",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_projectile_motion",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "分析竖直圆周、轨道压力和恰好通过条件。",
+          "answer_outline": [
+            "先判断题目属于圆周运动临界条件的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_work_energy_path",
+      "name": "功和动能定理路径选择",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "功和能",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_circular_critical",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "选择动能定理处理变力、摩擦和多过程问题。",
+          "answer_outline": [
+            "先判断题目属于功和动能定理路径选择的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_mechanical_energy_loss",
+      "name": "机械能守恒与能量损失",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "功和能",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_work_energy_path",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_momentum_collision",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "判断系统机械能是否守恒并计算热损失或弹性势能。",
+          "answer_outline": [
+            "先判断题目属于机械能守恒与能量损失的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_momentum_collision",
+      "name": "碰撞与动量守恒",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "动量",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_impulse_graph",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "判断碰撞类型并联立动量、能量或恢复系数关系。",
+          "answer_outline": [
+            "先判断题目属于碰撞与动量守恒的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_impulse_graph",
+      "name": "冲量与力时图像",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "动量",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_momentum_collision",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_momentum_collision",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_gravitation_orbit",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "由 F-t 图像求冲量并分析速度变化。",
+          "answer_outline": [
+            "先判断题目属于冲量与力时图像的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_gravitation_orbit",
+      "name": "万有引力与天体运动",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "万有引力",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_impulse_graph",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_impulse_graph",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "比较轨道半径、周期、线速度和机械能。",
+          "answer_outline": [
+            "先判断题目属于万有引力与天体运动的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_simple_harmonic",
+      "name": "简谐运动图像",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "振动与波",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_gravitation_orbit",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_gravitation_orbit",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "由振动图像判断周期、相位、能量转化和回复力。",
+          "answer_outline": [
+            "先判断题目属于简谐运动图像的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_wave_interference",
+      "name": "机械波传播与干涉",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理力学",
+      "unit": "振动与波",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_simple_harmonic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_electric_field_force",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "根据波形图和传播方向求质点振动、波速和干涉条件。",
+          "answer_outline": [
+            "先判断题目属于机械波传播与干涉的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_electric_field_force",
+      "name": "电场力与电势能",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_wave_interference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "分析带电粒子在电场中的运动和能量变化。",
+          "answer_outline": [
+            "先判断题目属于电场力与电势能的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_electric_potential_graph",
+      "name": "电势与场强图像",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_electric_field_force",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_electric_field_force",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_capacitor_dynamic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "由 φ-x 或 E-x 图像判断场强方向、做功和电势能。",
+          "answer_outline": [
+            "先判断题目属于电势与场强图像的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_capacitor_dynamic",
+      "name": "电容器动态分析",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "判断充放电、极板变化和电场能变化。",
+          "answer_outline": [
+            "先判断题目属于电容器动态分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_dc_circuit_dynamic",
+      "name": "闭合电路动态分析",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "恒定电流",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_capacitor_dynamic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_capacitor_dynamic",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_power_extreme",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "分析滑动变阻器变化导致的电流、电压和功率变化。",
+          "answer_outline": [
+            "先判断题目属于闭合电路动态分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_power_extreme",
+      "name": "电路功率极值",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "恒定电流",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "用等效电路和函数关系求输出功率或效率极值。",
+          "answer_outline": [
+            "先判断题目属于电路功率极值的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_magnetic_force",
+      "name": "带电粒子在磁场中运动",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "磁场",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_power_extreme",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_power_extreme",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_composite_field",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "由洛伦兹力建立圆周运动半径、周期和边界条件。",
+          "answer_outline": [
+            "先判断题目属于带电粒子在磁场中运动的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_composite_field",
+      "name": "复合场粒子运动",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "复合场",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_magnetic_force",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "在电场、磁场和重力叠加下分段分析粒子轨迹。",
+          "answer_outline": [
+            "先判断题目属于复合场粒子运动的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_electromagnetic_induction_law",
+      "name": "法拉第电磁感应定律",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "电磁感应",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_composite_field",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_composite_field",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_induction_rod",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "判断磁通量变化、感应电动势和感应电流方向。",
+          "answer_outline": [
+            "先判断题目属于法拉第电磁感应定律的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_induction_rod",
+      "name": "导体棒切割磁感线",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "电磁感应",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "联立受力、能量和电路关系分析导体棒运动。",
+          "answer_outline": [
+            "先判断题目属于导体棒切割磁感线的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_ac_transformer",
+      "name": "变压器与远距离输电",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理电磁学",
+      "unit": "交变电流",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_induction_rod",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_induction_rod",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_experiment_vernier",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "分析理想变压器电压电流关系和输电损耗。",
+          "answer_outline": [
+            "先判断题目属于变压器与远距离输电的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_vernier",
+      "name": "游标卡尺与螺旋测微器读数",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理实验",
+      "unit": "基本仪器",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_ac_transformer",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "完成长度测量读数并处理有效数字。",
+          "answer_outline": [
+            "先判断题目属于游标卡尺与螺旋测微器读数的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_acceleration",
+      "name": "探究加速度与力质量关系",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理实验",
+      "unit": "力学实验",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_vernier",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_experiment_vernier",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_experiment_energy",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "设计控制变量并由图像求加速度和结论。",
+          "answer_outline": [
+            "先判断题目属于探究加速度与力质量关系的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_energy",
+      "name": "验证机械能守恒实验",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理实验",
+      "unit": "力学实验",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_experiment_resistance",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "处理打点计时器数据并判断误差来源。",
+          "answer_outline": [
+            "先判断题目属于验证机械能守恒实验的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_resistance",
+      "name": "测电阻与伏安法选择",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理实验",
+      "unit": "电学实验",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_energy",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_experiment_energy",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_experiment_battery",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "根据内外接误差选择电路并计算电阻。",
+          "answer_outline": [
+            "先判断题目属于测电阻与伏安法选择的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_experiment_battery",
+      "name": "测电源电动势和内阻",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理实验",
+      "unit": "电学实验",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_resistance",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_experiment_resistance",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_model_boundary",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "由 U-I 图像求电动势、内阻并分析误差。",
+          "answer_outline": [
+            "先判断题目属于测电源电动势和内阻的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_model_boundary",
+      "name": "物理压轴边界条件",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理综合",
+      "unit": "压轴模型",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_battery",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_experiment_battery",
+          "relation": "nearby"
+        },
+        {
+          "id": "physics_senior_multistage_synthesis",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "在多过程题中识别恰好、最大、最小和脱离条件。",
+          "answer_outline": [
+            "先判断题目属于物理压轴边界条件的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "physics_senior_multistage_synthesis",
+      "name": "多过程综合建模",
+      "subject": "physics",
+      "stage": "senior_high",
+      "chapter": "高中物理综合",
+      "unit": "压轴模型",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "physics_senior_model_boundary",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_model_boundary",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只套公式但没有界定研究对象和过程",
+        "忽略方向、单位、符号或临界条件",
+        "图像、文字条件和物理模型没有互相校验"
+      ],
+      "skills": [
+        "抽象研究对象并画出关键过程图",
+        "选择适用规律并写明成立条件",
+        "用单位、方向、极端情况或守恒量检查结论"
+      ],
+      "question_types": [
+        "模型建构",
+        "计算推理"
+      ],
+      "examples": [
+        {
+          "prompt": "把力学、电磁学或能量动量过程拆成连续方程组。",
+          "answer_outline": [
+            "先判断题目属于多过程综合建模的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用物理核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_physics"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "college_physics_vector_calculus",
+      "name": "矢量与物理量",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理基础",
+      "unit": "数学工具",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_vector_space",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_vector_space",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用矢量分解描述位移、速度和力，并说明坐标系选择。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_kinematics_calculus",
+      "name": "质点运动学微积分表述",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "质点运动学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_vector_calculus",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_vector_calculus",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_newton_laws_system",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由位置函数求速度、加速度，并解释曲线运动中的切向/法向分量。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_newton_laws_system",
+      "name": "牛顿定律与参考系",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "动力学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_kinematics_calculus",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "对非惯性参考系或多物体系统建立动力学方程。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_work_energy_theorem",
+      "name": "功和动能定理",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "功和能",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_newton_laws_system",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_newton_laws_system",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_potential_energy_conservation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "计算变力做功，并由动能定理判断速度变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_potential_energy_conservation",
+      "name": "势能与机械能守恒",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "功和能",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_work_energy_theorem",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由保守力定义势能，并判断系统机械能守恒条件。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_momentum_center_mass",
+      "name": "动量与质心运动",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "动量与质心",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_potential_energy_conservation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_potential_energy_conservation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_rigid_body_rotation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用质心运动定理分析碰撞或爆炸问题。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_rigid_body_rotation",
+      "name": "刚体定轴转动",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "刚体力学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_momentum_center_mass",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_angular_momentum",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "建立转动惯量、角加速度和力矩之间的关系。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_angular_momentum",
+      "name": "角动量守恒",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理力学",
+      "unit": "刚体力学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_rigid_body_rotation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_rigid_body_rotation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_simple_harmonic_oscillation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断外力矩是否为零，并用角动量守恒求角速度变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_simple_harmonic_oscillation",
+      "name": "简谐振动微分方程",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理振动与波",
+      "unit": "机械振动",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_angular_momentum",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_angular_momentum",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_damped_forced_oscillation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由受力方程推出简谐振动方程并解释周期。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_damped_forced_oscillation",
+      "name": "阻尼与受迫振动",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理振动与波",
+      "unit": "机械振动",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_simple_harmonic_oscillation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_simple_harmonic_oscillation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_mechanical_wave_equation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "比较欠阻尼、临界阻尼、过阻尼和共振条件。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_mechanical_wave_equation",
+      "name": "机械波与波动方程",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理振动与波",
+      "unit": "波动",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_damped_forced_oscillation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_damped_forced_oscillation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_interference_diffraction",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据波函数求振幅、波速、频率和质点速度。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_interference_diffraction",
+      "name": "干涉与衍射",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理振动与波",
+      "unit": "波动光学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_mechanical_wave_equation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_mechanical_wave_equation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_ideal_gas_state",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "分析双缝干涉或单缝衍射条纹位置。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_ideal_gas_state",
+      "name": "理想气体状态方程",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理热学",
+      "unit": "气体动理论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_interference_diffraction",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_interference_diffraction",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用状态方程分析气体过程中的压强、体积和温度变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_thermo_first_law",
+      "name": "热力学第一定律",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理热学",
+      "unit": "热力学定律",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_ideal_gas_state",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_ideal_gas_state",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "区分吸热、做功和内能变化，并判断符号。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_thermo_second_law_entropy",
+      "name": "热力学第二定律与熵",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理热学",
+      "unit": "热力学定律",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_thermo_first_law",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_coulomb_field",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用熵变或不可逆性解释热机效率限制。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_coulomb_field",
+      "name": "库仑定律与电场叠加",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_gauss_law",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "计算点电荷系的电场并判断方向。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_gauss_law",
+      "name": "高斯定理",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_coulomb_field",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_coulomb_field",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_electric_potential",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "选择高斯面求具有对称性的电场分布。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_electric_potential",
+      "name": "电势与电势能",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_gauss_law",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_gauss_law",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_capacitance_dielectric",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由电场积分求电势差并解释电势能变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_capacitance_dielectric",
+      "name": "电容与介质",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "静电场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_electric_potential",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_electric_potential",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_current_circuit",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "分析插入介质或改变极板距离后的电容和能量变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_current_circuit",
+      "name": "稳恒电流与电路",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "稳恒电流",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_capacitance_dielectric",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_capacitance_dielectric",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_magnetic_field_biot_savart",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用基尔霍夫定律求复杂电路电流和电势差。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_magnetic_field_biot_savart",
+      "name": "毕奥-萨伐尔定律",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "磁场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_current_circuit",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_current_circuit",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_ampere_law",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "计算载流导线在空间某点产生的磁感应强度。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_ampere_law",
+      "name": "安培环路定理",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "磁场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_magnetic_field_biot_savart",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_magnetic_field_biot_savart",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_lorentz_force",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "利用对称性和环路定理求磁场。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_lorentz_force",
+      "name": "洛伦兹力与带电粒子运动",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "磁场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_ampere_law",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_ampere_law",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_faraday_induction",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "求带电粒子在匀强磁场中的半径、周期和轨迹。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_faraday_induction",
+      "name": "法拉第电磁感应定律",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "电磁感应",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_lorentz_force",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_lorentz_force",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_maxwell_equations_intro",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由磁通量变化求感应电动势并判断方向。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_maxwell_equations_intro",
+      "name": "麦克斯韦方程组初步",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理电磁学",
+      "unit": "电磁场",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_faraday_induction",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_faraday_induction",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_geometric_optics",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "解释四个积分形式方程对应的物理含义。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_geometric_optics",
+      "name": "几何光学成像",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理光学",
+      "unit": "几何光学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_maxwell_equations_intro",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_maxwell_equations_intro",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_polarization",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用薄透镜成像公式求像距、放大率和成像性质。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_polarization",
+      "name": "光的偏振",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理光学",
+      "unit": "波动光学",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_geometric_optics",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_geometric_optics",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_special_relativity_postulates",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用马吕斯定律分析偏振片后的光强变化。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_special_relativity_postulates",
+      "name": "狭义相对论基本假设",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理近代物理",
+      "unit": "相对论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_polarization",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_polarization",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_photoelectric_effect",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用光速不变和相对性原理解释时间膨胀。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_photoelectric_effect",
+      "name": "光电效应",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理近代物理",
+      "unit": "量子物理",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_special_relativity_postulates",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_special_relativity_postulates",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_physics_de_broglie_atom",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由截止频率和遏止电压求普朗克常量或逸出功。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_physics_de_broglie_atom",
+      "name": "德布罗意波与原子结构",
+      "subject": "physics",
+      "stage": "college",
+      "chapter": "大学物理近代物理",
+      "unit": "量子物理",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_physics_photoelectric_effect",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_physics_photoelectric_effect",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "把高中公式直接套到连续模型而不说明条件",
+        "忽略矢量方向、参考系或边界条件",
+        "只算结果不解释物理意义和量纲"
+      ],
+      "skills": [
+        "建立物理模型并明确近似条件",
+        "用微积分或矢量方法推导核心关系",
+        "结合单位、量纲和极限情形检查结论"
+      ],
+      "question_types": [
+        "概念推导",
+        "计算应用"
+      ],
+      "examples": [
+        {
+          "prompt": "计算物质波波长并解释能级跃迁。",
+          "answer_outline": [
+            "先识别题目考查的大学物理模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "把高中公式直接套到连续模型而不说明条件",
+            "忽略矢量方向、参考系或边界条件"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "physics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_physics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    }
+  ]
+}

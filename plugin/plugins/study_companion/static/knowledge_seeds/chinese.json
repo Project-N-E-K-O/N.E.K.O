@@ -1,0 +1,3652 @@
+{
+  "version": "1.0",
+  "subject": "chinese",
+  "topics": [
+    {
+      "id": "chinese_primary_pinyin_character",
+      "name": "拼音与识字",
+      "subject": "chinese",
+      "stage": "primary",
+      "chapter": "语文基础",
+      "depth": 1,
+      "difficulty": 0.22,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "字词句段",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "基础积累",
+        "字音字形"
+      ],
+      "examples": [
+        {
+          "prompt": "给一组多音字注音并根据语境组词。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "chinese_primary_sentence_expansion",
+      "name": "扩句缩句",
+      "subject": "chinese",
+      "stage": "primary",
+      "chapter": "语文基础",
+      "depth": 1,
+      "difficulty": 0.34,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "字词句段",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "句子训练",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "把“花开了”扩写成包含时间、地点、颜色和感受的句子。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "chinese_primary_paragraph_main_idea",
+      "name": "段落主要内容",
+      "subject": "chinese",
+      "stage": "primary",
+      "chapter": "语文基础",
+      "depth": 1,
+      "difficulty": 0.38,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "字词句段",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "现代文阅读",
+        "概括题"
+      ],
+      "examples": [
+        {
+          "prompt": "读一段写景文字，用一句话概括主要内容。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "chinese_primary_observation_writing",
+      "name": "观察作文",
+      "subject": "chinese",
+      "stage": "primary",
+      "chapter": "语文基础",
+      "depth": 2,
+      "difficulty": 0.44,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "字词句段",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "习作",
+        "观察表达"
+      ],
+      "examples": [
+        {
+          "prompt": "写一段观察植物变化的短文，包含顺序、细节和感受。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "chinese_junior_narrative_reading",
+      "name": "记叙文阅读",
+      "subject": "chinese",
+      "stage": "junior_high",
+      "chapter": "现代文阅读",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "阅读方法",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "现代文阅读",
+        "人物形象"
+      ],
+      "examples": [
+        {
+          "prompt": "分析人物一次选择背后的性格特点，并找出两处文本依据。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chinese_junior_expository_reading",
+      "name": "说明文阅读",
+      "subject": "chinese",
+      "stage": "junior_high",
+      "chapter": "现代文阅读",
+      "depth": 2,
+      "difficulty": 0.52,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "阅读方法",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "说明文阅读",
+        "说明方法"
+      ],
+      "examples": [
+        {
+          "prompt": "判断文中使用的说明方法，并说明它如何帮助读者理解对象。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chinese_junior_argumentative_reading",
+      "name": "议论文阅读",
+      "subject": "chinese",
+      "stage": "junior_high",
+      "chapter": "现代文阅读",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "阅读方法",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "议论文阅读",
+        "论证思路"
+      ],
+      "examples": [
+        {
+          "prompt": "找出中心论点、分论点和论证方法，概括论证思路。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chinese_junior_classical_function_words",
+      "name": "文言虚词",
+      "subject": "chinese",
+      "stage": "junior_high",
+      "chapter": "现代文阅读",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "阅读方法",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "文言文阅读",
+        "词义辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "解释“之、其、而、以”在不同句子中的用法。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chinese_senior_literary_text",
+      "name": "文学类文本阅读",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "高考阅读写作",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "文学类阅读",
+        "作用题"
+      ],
+      "examples": [
+        {
+          "prompt": "分析小说中环境描写对人物心理和主题表达的作用。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_practical_text",
+      "name": "实用类文本阅读",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "高考阅读写作",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "信息类阅读",
+        "材料整合"
+      ],
+      "examples": [
+        {
+          "prompt": "整合两则材料，概括某项政策的背景、措施和效果。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_poetry_appreciation",
+      "name": "古诗词鉴赏",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "高考阅读写作",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "诗歌鉴赏",
+        "情感手法"
+      ],
+      "examples": [
+        {
+          "prompt": "分析诗句中的意象、炼字和情感转折。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_argument",
+      "name": "议论文写作",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "高考阅读写作",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "作文",
+        "论证结构"
+      ],
+      "examples": [
+        {
+          "prompt": "围绕“技术与人的成长”写议论文提纲，包含论点、分论点和材料。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_use",
+      "name": "语言文字运用",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈主题",
+        "文言词义只记现代义，忽略语境",
+        "作文有观点但缺少材料展开和结构层次"
+      ],
+      "unit": "高考阅读写作",
+      "skills": [
+        "提取文本内容、结构和表达手法",
+        "结合语境解释字词、句意或材料观点",
+        "按题型组织阅读、文言或写作答案"
+      ],
+      "question_types": [
+        "语用题",
+        "表达得体"
+      ],
+      "examples": [
+        {
+          "prompt": "修改一段病句和语体不当的邀请函。",
+          "answer_outline": [
+            "判断题型：基础积累、阅读理解、文言诗词或写作。",
+            "回到文本圈画关键词句、结构层次和表达手法。",
+            "用“内容+作用+情感/观点”的方式组织答案。",
+            "检查是否答到题干限定和分值要点。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_translation",
+      "name": "文言翻译",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈",
+        "答题角度不全",
+        "表达缺少层次"
+      ],
+      "unit": "文言文阅读",
+      "skills": [
+        "回到文本提取内容结构和手法",
+        "结合语境解释词句和观点",
+        "按题型组织规范答案"
+      ],
+      "question_types": [
+        "文言文阅读",
+        "翻译题"
+      ],
+      "examples": [
+        {
+          "prompt": "翻译含省略、倒装和词类活用的文言句子，并补出省略成分。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_task_driven_writing",
+      "name": "任务驱动作文",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文",
+      "depth": 3,
+      "difficulty": 0.74,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离文本空谈",
+        "答题角度不全",
+        "表达缺少层次"
+      ],
+      "unit": "作文",
+      "skills": [
+        "回到文本提取内容结构和手法",
+        "结合语境解释词句和观点",
+        "按题型组织规范答案"
+      ],
+      "question_types": [
+        "作文",
+        "材料写作"
+      ],
+      "examples": [
+        {
+          "prompt": "围绕青年责任的多材料任务写作，明确对象意识和文体要求。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只摘原文词句，没有归纳分析角度。",
+            "忽略文本语境、表达手法和题干限定。",
+            "作文观点泛化，材料扣合、论据分析和结构层次不足。"
+          ],
+          "grading_points": [
+            "答题角度明确，能回到文本或材料依据。",
+            "概括、分析和作用说明层次清楚。",
+            "语言规范，分点完整，扣合题干任务。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_chinese",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_modern_argument_structure",
+      "name": "论述类文本论证结构",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "论述类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_literary_text",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_literary_text",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_modern_info_comparison",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "梳理论点、论据和论证方法并判断选项正误。",
+          "answer_outline": [
+            "先判断题目属于论述类文本论证结构的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_modern_info_comparison",
+      "name": "信息类文本比较整合",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "信息类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_modern_argument_structure",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_modern_argument_structure",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "比较多则材料的对象、角度和结论差异。",
+          "answer_outline": [
+            "先判断题目属于信息类文本比较整合的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_literary_image",
+      "name": "小说人物形象分析",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "文学类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_modern_info_comparison",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_modern_info_comparison",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "从情节、描写、环境和主题分析人物形象。",
+          "answer_outline": [
+            "先判断题目属于小说人物形象分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_literary_plot_effect",
+      "name": "小说情节作用题",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "文学类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_literary_image",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_literary_image",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_literary_environment",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "说明情节对人物、主题、结构和读者效果的作用。",
+          "answer_outline": [
+            "先判断题目属于小说情节作用题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_literary_environment",
+      "name": "环境描写作用",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "文学类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_prose_language_appreciation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "分析自然/社会环境对氛围、人物和主题的作用。",
+          "answer_outline": [
+            "先判断题目属于环境描写作用的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_prose_language_appreciation",
+      "name": "散文语言赏析",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "文学类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_literary_environment",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_literary_environment",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "从修辞、句式、词语和情感角度赏析语言。",
+          "answer_outline": [
+            "先判断题目属于散文语言赏析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_practical_filter",
+      "name": "实用类文本信息筛选",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文现代文阅读",
+      "unit": "实用类文本",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_prose_language_appreciation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_prose_language_appreciation",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_content_words",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "从材料中筛选事实、观点、数据和条件限制。",
+          "answer_outline": [
+            "先判断题目属于实用类文本信息筛选的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_content_words",
+      "name": "文言实词语境义",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文文言文",
+      "unit": "文言基础",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_practical_filter",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_practical_filter",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_function_words",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "结合语境、词类活用和古今异义判断实词含义。",
+          "answer_outline": [
+            "先判断题目属于文言实词语境义的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_function_words",
+      "name": "文言虚词用法",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文文言文",
+      "unit": "文言基础",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_classical_content_words",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_classical_content_words",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_sentence_patterns",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "比较之、其、以、而等虚词的语法作用。",
+          "answer_outline": [
+            "先判断题目属于文言虚词用法的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_sentence_patterns",
+      "name": "文言特殊句式",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文文言文",
+      "unit": "文言翻译",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_classical_function_words",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_classical_function_words",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_summary",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "识别判断句、被动句、省略句、倒装句并落实翻译。",
+          "answer_outline": [
+            "先判断题目属于文言特殊句式的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_summary",
+      "name": "文言内容概括",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文文言文",
+      "unit": "文言阅读",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_classical_sentence_patterns",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_classical_sentence_patterns",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_image_emotion",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "梳理人物、事件和评价，判断选项曲解。",
+          "answer_outline": [
+            "先判断题目属于文言内容概括的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_poetry_image_emotion",
+      "name": "诗歌意象与情感",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文古诗词",
+      "unit": "诗歌鉴赏",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_classical_summary",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_classical_summary",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "由意象、关键词和背景判断诗歌情感。",
+          "answer_outline": [
+            "先判断题目属于诗歌意象与情感的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_poetry_expression_technique",
+      "name": "诗歌表达技巧",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文古诗词",
+      "unit": "诗歌鉴赏",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_poetry_image_emotion",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_poetry_image_emotion",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "识别借景抒情、虚实结合、对比和用典等手法。",
+          "answer_outline": [
+            "先判断题目属于诗歌表达技巧的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_poetry_language_style",
+      "name": "诗歌炼字与语言风格",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文古诗词",
+      "unit": "诗歌鉴赏",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_poetry_expression_technique",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_poetry_compare",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "分析关键词的画面、情感和结构作用。",
+          "answer_outline": [
+            "先判断题目属于诗歌炼字与语言风格的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_poetry_compare",
+      "name": "诗歌比较鉴赏",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文古诗词",
+      "unit": "诗歌鉴赏",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_poetry_language_style",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_language_cohesion",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "比较两首诗的题材、手法、情感和语言差异。",
+          "answer_outline": [
+            "先判断题目属于诗歌比较鉴赏的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_cohesion",
+      "name": "语句衔接排序",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文语言运用",
+      "unit": "语言文字运用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_poetry_compare",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_poetry_compare",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "根据话题、指代、逻辑和句式完成排序或补写。",
+          "answer_outline": [
+            "先判断题目属于语句衔接排序的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_compression",
+      "name": "压缩语段与概括",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文语言运用",
+      "unit": "语言文字运用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_language_cohesion",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_language_cohesion",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "提取对象、事件、原因和结果并压缩成规范表达。",
+          "answer_outline": [
+            "先判断题目属于压缩语段与概括的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_sentence_rewrite",
+      "name": "句式变换与仿写",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文语言运用",
+      "unit": "语言文字运用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_language_compression",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_language_error_correction",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "保持语义和修辞一致完成句式变换或仿写。",
+          "answer_outline": [
+            "先判断题目属于句式变换与仿写的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_error_correction",
+      "name": "病句辨析修改",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文语言运用",
+      "unit": "语言文字运用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_language_graphic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "从成分残缺、搭配不当、语序和逻辑角度修改病句。",
+          "answer_outline": [
+            "先判断题目属于病句辨析修改的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_language_graphic",
+      "name": "图文转换",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文语言运用",
+      "unit": "图文转换",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_language_error_correction",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_language_error_correction",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_material_review",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "描述图表信息并提炼趋势、寓意或建议。",
+          "answer_outline": [
+            "先判断题目属于图文转换的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_material_review",
+      "name": "材料作文审题立意",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_language_graphic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_language_graphic",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "提炼材料核心关系，确定立意边界和写作任务。",
+          "answer_outline": [
+            "先判断题目属于材料作文审题立意的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_argument_layer",
+      "name": "议论文论证层次",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_material_review",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_material_review",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "用提出问题、分析问题、解决问题组织论证。",
+          "answer_outline": [
+            "先判断题目属于议论文论证层次的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_example_argument",
+      "name": "论据选择与分析",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_argument_layer",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_task_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "选择典型论据并完成因果、对比或假设分析。",
+          "answer_outline": [
+            "先判断题目属于论据选择与分析的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_task_context",
+      "name": "任务驱动作文情境",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_example_argument",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_opening_ending",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "扣住身份、对象、场合和文体完成表达任务。",
+          "answer_outline": [
+            "先判断题目属于任务驱动作文情境的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_opening_ending",
+      "name": "作文开头结尾设计",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_task_context",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_task_context",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_composition_language_polish",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "用材料切入、观点亮明和回扣升华提升结构。",
+          "answer_outline": [
+            "先判断题目属于作文开头结尾设计的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_composition_language_polish",
+      "name": "作文语言打磨",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文写作",
+      "unit": "作文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_opening_ending",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_opening_ending",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_classical_culture",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "通过句式节奏、关键词复现和修辞提升表达。",
+          "answer_outline": [
+            "先判断题目属于作文语言打磨的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_classical_culture",
+      "name": "古代文化常识",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文文言文",
+      "unit": "文言基础",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_composition_language_polish",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_composition_language_polish",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "识别官职、礼俗、科举、纪年等文化常识。",
+          "answer_outline": [
+            "先判断题目属于古代文化常识的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_text_answer_template",
+      "name": "阅读题规范分点",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文综合",
+      "unit": "答题规范",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_classical_culture",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_classical_culture",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_new_gaokao_mixed_text",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "按角度、依据、效果组织现代文和古诗文答案。",
+          "answer_outline": [
+            "先判断题目属于阅读题规范分点的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_new_gaokao_mixed_text",
+      "name": "新高考多文本阅读",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文综合",
+      "unit": "新高考题型",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_text_answer_template",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "nearby"
+        },
+        {
+          "id": "chinese_senior_exam_revision_strategy",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "整合论述类、信息类或文学类多材料完成比较分析。",
+          "answer_outline": [
+            "先判断题目属于新高考多文本阅读的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chinese_senior_exam_revision_strategy",
+      "name": "语文考试复盘策略",
+      "subject": "chinese",
+      "stage": "senior_high",
+      "chapter": "高中语文综合",
+      "unit": "考试策略",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chinese_senior_new_gaokao_mixed_text",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_senior_new_gaokao_mixed_text",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只摘抄原文但没有概括分析角度",
+        "文言、诗歌题忽略语境和手法作用",
+        "作文观点泛化，材料扣合和论证层次不足"
+      ],
+      "skills": [
+        "抓住文本对象、结构和表达手法",
+        "把材料信息转成观点、依据和作用分析",
+        "按题型组织分点作答并扣合语境"
+      ],
+      "question_types": [
+        "文本分析",
+        "规范表达"
+      ],
+      "examples": [
+        {
+          "prompt": "按题型归因错因并沉淀可复用答题步骤。",
+          "answer_outline": [
+            "先判断题目属于语文考试复盘策略的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用语文核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chinese",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_chinese"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    }
+  ]
+}

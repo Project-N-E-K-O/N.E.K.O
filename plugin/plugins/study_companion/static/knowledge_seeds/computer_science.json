@@ -1,0 +1,3083 @@
+{
+  "version": "1.0",
+  "subject": "computer_science",
+  "topics": [
+    {
+      "id": "college_c_basic_program_structure",
+      "name": "C 程序结构",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "程序基础",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_discrete_logic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_discrete_logic",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_variables_types",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "阅读一个含 main 函数的 C 程序，指出头文件、语句和返回值作用。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_variables_types",
+      "name": "变量与基本数据类型",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "数据类型",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_basic_program_structure",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_basic_program_structure",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_expression_precedence",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "判断 int、double、char 运算中的类型转换和结果。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_expression_precedence",
+      "name": "表达式与运算符优先级",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "表达式",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_variables_types",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_variables_types",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_branch_control",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "根据优先级和结合性求复合表达式的值。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_branch_control",
+      "name": "条件分支结构",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "控制结构",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_expression_precedence",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_expression_precedence",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_loop_invariant",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用 if-else 或 switch 处理分段函数。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_loop_invariant",
+      "name": "循环与循环不变量",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "控制结构",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_branch_control",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_branch_control",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_array_traversal",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "分析 for/while 循环每轮变量变化并判断输出。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_array_traversal",
+      "name": "一维数组遍历",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "数组",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_loop_invariant",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_loop_invariant",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_2d_array_matrix",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "编写遍历数组求最大值、均值或计数的程序。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_2d_array_matrix",
+      "name": "二维数组与矩阵操作",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "数组",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_array_traversal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_array_traversal",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_string_char_array",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用二维数组完成矩阵转置或行列求和。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_string_char_array",
+      "name": "字符串与字符数组",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "字符串",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_2d_array_matrix",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_2d_array_matrix",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_function_parameter",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "处理以 \\0 结尾的字符串长度、复制或查找。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_function_parameter",
+      "name": "函数与参数传递",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "函数",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_string_char_array",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_string_char_array",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_recursion_basic",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "区分值传递和数组参数，并跟踪函数调用结果。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_recursion_basic",
+      "name": "递归函数基础",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "函数",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_function_parameter",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_function_parameter",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "写出阶乘、斐波那契或递归求和的终止条件和递推式。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_pointer_address",
+      "name": "指针与地址",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "指针",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_recursion_basic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_recursion_basic",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_pointer_array",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "根据指针变量和取地址/解引用操作判断内存值变化。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_pointer_array",
+      "name": "指针与数组关系",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "指针",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_pointer_address",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_pointer_address",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_struct_record",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "解释数组名、指针偏移和下标访问之间的关系。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_struct_record",
+      "name": "结构体与记录建模",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "结构体",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_pointer_array",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_pointer_array",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_file_io",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用结构体表示学生成绩并完成排序或统计。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_file_io",
+      "name": "文件读写基础",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "文件",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_struct_record",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_struct_record",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "使用 fopen/fscanf/fprintf 读取数据并输出统计结果。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_c_debug_boundary",
+      "name": "C 程序边界调试",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "C 语言程序设计",
+      "unit": "调试",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_file_io",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_file_io",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "给定代码找出数组越界、未初始化或死循环风险。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_algorithm_complexity",
+      "name": "算法复杂度分析",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "算法分析",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_c_debug_boundary",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_linear_list",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "判断循环、递归或嵌套结构的时间复杂度。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_linear_list",
+      "name": "线性表顺序存储",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "线性表",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_algorithm_complexity",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_linked_list",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "分析顺序表插入、删除和查找的移动次数。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_linked_list",
+      "name": "单链表操作",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "线性表",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_linear_list",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_linear_list",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_stack",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "画出单链表插入、删除和反转中的指针变化。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_stack",
+      "name": "栈与表达式求值",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "栈和队列",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_linked_list",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_linked_list",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_queue_circular",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用栈完成括号匹配或后缀表达式求值。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_queue_circular",
+      "name": "循环队列",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "栈和队列",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_stack",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_stack",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_tree_traversal",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "根据 front/rear 判断队空、队满和入队出队结果。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_tree_traversal",
+      "name": "二叉树遍历",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "树",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_queue_circular",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_queue_circular",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_binary_search_tree",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "根据先序、中序、后序遍历序列还原二叉树。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_binary_search_tree",
+      "name": "二叉搜索树",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "树",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_tree_traversal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_tree_traversal",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_heap_priority_queue",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "完成二叉搜索树插入、查找和删除的过程分析。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_heap_priority_queue",
+      "name": "堆与优先队列",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "树",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_binary_search_tree",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_binary_search_tree",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_graph_representation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "由数组表示的堆执行上滤、下滤和删除堆顶。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_graph_representation",
+      "name": "图的存储结构",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "图",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_heap_priority_queue",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_heap_priority_queue",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "比较邻接矩阵和邻接表的空间复杂度和适用场景。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_graph_traversal",
+      "name": "图的 BFS 与 DFS",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "图",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_graph_representation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_graph_representation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_shortest_path",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "按给定邻接表写出 BFS/DFS 访问序列。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_shortest_path",
+      "name": "最短路径算法",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "图",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_graph_traversal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_minimum_spanning_tree",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用 Dijkstra 或 Floyd 算法求图中最短路径。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_minimum_spanning_tree",
+      "name": "最小生成树",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "图",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_shortest_path",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_shortest_path",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_sorting_basic",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "比较 Prim 和 Kruskal 算法构造过程。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_sorting_basic",
+      "name": "基础排序算法",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "排序",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_minimum_spanning_tree",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_minimum_spanning_tree",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_quick_merge_sort",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "分析冒泡、选择、插入排序每趟结果和复杂度。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_quick_merge_sort",
+      "name": "快速排序与归并排序",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "排序",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_sorting_basic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_sorting_basic",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_hash_table",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "写出一次划分或合并过程并分析复杂度。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_hash_table",
+      "name": "散列表与冲突处理",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "查找",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_quick_merge_sort",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_quick_merge_sort",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_search_binary",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用开放定址或链地址法处理哈希冲突。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_search_binary",
+      "name": "折半查找",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "查找",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_hash_table",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_hash_table",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_cs_memory_model_intro",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "在有序表中跟踪 low/mid/high 并判断查找次数。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_cs_memory_model_intro",
+      "name": "程序内存模型初步",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "计算机基础",
+      "unit": "程序运行",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_search_binary",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_search_binary",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_cs_bit_binary",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "解释栈、堆、静态区和局部变量生命周期。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming",
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_cs_bit_binary",
+      "name": "二进制与位运算",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "计算机基础",
+      "unit": "数据表示",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_cs_memory_model_intro",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_cs_memory_model_intro",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_cs_modular_design",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "完成二进制、十六进制转换和按位与或异或运算。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_cs_modular_design",
+      "name": "模块化程序设计",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "计算机基础",
+      "unit": "程序设计方法",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_cs_bit_binary",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_cs_bit_binary",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_cs_test_cases",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "把一个统计任务拆成输入、计算、输出三个函数。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_cs_test_cases",
+      "name": "测试用例设计",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "计算机基础",
+      "unit": "程序质量",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_cs_modular_design",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_cs_modular_design",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "为数组处理函数设计正常、边界和异常用例。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_c_programming"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_recursion_iteration",
+      "name": "递归与迭代转换",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "算法设计",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_cs_test_cases",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_cs_test_cases",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_dynamic_array",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "把递归求和或树遍历改写成迭代过程。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_dynamic_array",
+      "name": "动态数组扩容",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "线性表",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_recursion_iteration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_union_find",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "分析动态数组扩容策略和摊还复杂度。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_union_find",
+      "name": "并查集",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "集合结构",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_dynamic_array",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_dynamic_array",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_topological_sort",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "用路径压缩和按秩合并处理连通性问题。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_topological_sort",
+      "name": "拓扑排序",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "图",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_union_find",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_union_find",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_ds_greedy_dp_intro",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "根据依赖关系图判断是否存在拓扑序列。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_ds_greedy_dp_intro",
+      "name": "贪心与动态规划初步",
+      "subject": "computer_science",
+      "stage": "college",
+      "chapter": "数据结构",
+      "unit": "算法设计",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_ds_topological_sort",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_ds_topological_sort",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背语法但不追踪变量和内存状态",
+        "忽略边界条件、空输入或重复元素",
+        "把能运行的程序误当成复杂度和鲁棒性都正确"
+      ],
+      "skills": [
+        "把问题拆成输入、状态、操作和输出",
+        "用代码、图示或复杂度分析表达算法过程",
+        "通过边界用例和不变量检查实现正确性"
+      ],
+      "question_types": [
+        "程序阅读",
+        "算法设计"
+      ],
+      "examples": [
+        {
+          "prompt": "比较局部最优选择和状态转移方程的适用条件。",
+          "answer_outline": [
+            "先识别题目考查的计算机基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "只背语法但不追踪变量和内存状态",
+            "忽略边界条件、空输入或重复元素"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "computer_science",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "college_data_structures"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    }
+  ]
+}

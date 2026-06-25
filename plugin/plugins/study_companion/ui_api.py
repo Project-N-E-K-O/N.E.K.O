@@ -44,6 +44,9 @@ def build_knowledge_map_payload(
     edges = []
     weak_node_count = 0
     stage_counts: dict[str, int] = {}
+    subject_counts: dict[str, int] = {}
+    chapter_counts: dict[str, int] = {}
+    unit_counts: dict[str, int] = {}
     for topic in topic_items:
         topic_id = str(topic.get("id") or "").strip()
         if not topic_id:
@@ -55,7 +58,13 @@ def build_knowledge_map_payload(
             or topic.get("course_level")
             or ""
         )
+        subject = str(topic.get("subject") or "")
+        chapter = str(topic.get("chapter") or "")
+        unit = str(topic.get("unit") or chapter)
         stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        subject_counts[subject] = subject_counts.get(subject, 0) + 1
+        chapter_counts[chapter] = chapter_counts.get(chapter, 0) + 1
+        unit_counts[unit] = unit_counts.get(unit, 0) + 1
         mastery = mastery_by_topic.get(topic_id) or {}
         weak = topic_id in weak_topic_ids
         if weak:
@@ -64,10 +73,14 @@ def build_knowledge_map_payload(
             {
                 "id": topic_id,
                 "label": str(topic.get("name") or topic_id),
-                "subject": str(topic.get("subject") or ""),
-                "chapter": str(topic.get("chapter") or ""),
+                "subject": subject,
+                "chapter": chapter,
+                "unit": unit,
                 "stage": stage,
                 "grade_level": stage,  # backward-compat alias for older consumers
+                "skills": list(topic.get("skills") or []),
+                "question_types": list(topic.get("question_types") or []),
+                "examples": list(topic.get("examples") or []),
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),
                 "weak": weak,
@@ -104,6 +117,9 @@ def build_knowledge_map_payload(
             "weak_topic_count": weak_node_count,
             "wrong_question_count": len(wrong_items),
             "stage_counts": stage_counts,
+            "subject_counts": subject_counts,
+            "chapter_counts": chapter_counts,
+            "unit_counts": unit_counts,
         },
     }
 

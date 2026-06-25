@@ -29,6 +29,7 @@ HOSTED_SURFACE_ACTION_IDS = [
     "study_goal_delete",
     "study_goals",
     "study_knowledge_map",
+    "study_review_knowledge_candidate",
     "study_memory_create_deck",
     "study_memory_delete_deck",
     "study_memory_due_reviews",
@@ -81,6 +82,9 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeCandidateType,
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
+)
+from plugin.plugins.study_companion.knowledge_seed_validator import (
+    validate_knowledge_seed_manifest,
 )
 from plugin.plugins.study_companion.knowledge_contribution import (
     PublicGraphContributionBuilder,
@@ -1042,6 +1046,11 @@ def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -
                 "name": "Seed Topic",
                 "subject": "math",
                 "chapter": "Seed Chapter",
+                "stage": "junior_high",
+                "unit": "Seed Unit",
+                "skills": ["seed skill"],
+                "question_types": ["seed question type"],
+                "examples": [{"prompt": "seed example", "answer_outline": ["seed step"]}],
                 "depth": 2,
                 "difficulty": 0.7,
                 "prerequisites": [{"id": "pre_seed", "required_mastery": 0.5}],
@@ -1056,6 +1065,11 @@ def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -
                 "name": "Runtime Topic",
                 "subject": "science",
                 "chapter": "Runtime Chapter",
+                "stage": "college",
+                "unit": "Runtime Unit",
+                "skills": ["runtime skill"],
+                "question_types": ["runtime question type"],
+                "examples": [{"prompt": "runtime example"}],
                 "depth": 5,
                 "difficulty": 0.2,
                 "prerequisites": [{"id": "pre_runtime", "required_mastery": 0.9}],
@@ -1070,6 +1084,11 @@ def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -
         assert topic["name"] == "Seed Topic"
         assert topic["subject"] == "math"
         assert topic["chapter"] == "Seed Chapter"
+        assert topic["stage"] == "junior_high"
+        assert topic["unit"] == "Seed Unit"
+        assert topic["skills"] == ["seed skill"]
+        assert topic["question_types"] == ["seed question type"]
+        assert topic["examples"] == [{"prompt": "seed example", "answer_outline": ["seed step"]}]
         assert topic["depth"] == 2
         assert topic["difficulty"] == 0.7
         assert topic["prerequisites"] == [{"id": "pre_seed", "required_mastery": 0.5}]
@@ -1078,6 +1097,551 @@ def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -
         assert topic["source"] == "seed"
     finally:
         store.close()
+
+
+def test_study_store_knowledge_seed_inherits_top_level_stage(
+    tmp_path: Path,
+) -> None:
+    knowledge_seed = tmp_path / "knowledge_seed.json"
+    knowledge_seed.write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "grade_level": "junior_high",
+                "topics": [
+                    {
+                        "id": "linear_equation",
+                        "name": "一元一次方程",
+                        "chapter": "方程与不等式",
+                        "unit": "一元方程",
+                        "skills": ["识别一元一次方程", "求解一元一次方程"],
+                        "question_types": ["解方程", "应用题"],
+                        "examples": [
+                            {
+                                "prompt": "解方程 2x + 3 = 9。",
+                                "answer_outline": ["移项", "合并同类项", "求出 x = 3"],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "calculus_intro",
+                        "name": "微积分入门",
+                        "chapter": "高等数学",
+                        "stage": "college",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = StudyStore(
+        tmp_path / "study.db",
+        tmp_path / "seed.json",
+        _Logger(),
+        knowledge_seed,
+    )
+    store.open()
+    try:
+        inherited = store.get_topic("linear_equation")
+        explicit = store.get_topic("calculus_intro")
+
+        assert inherited is not None
+        assert inherited["stage"] == "junior_high"
+        assert inherited["unit"] == "一元方程"
+        assert inherited["skills"] == ["识别一元一次方程", "求解一元一次方程"]
+        assert inherited["question_types"] == ["解方程", "应用题"]
+        assert inherited["examples"] == [
+            {
+                "prompt": "解方程 2x + 3 = 9。",
+                "answer_outline": ["移项", "合并同类项", "求出 x = 3"],
+            }
+        ]
+        assert explicit is not None
+        assert explicit["stage"] == "college"
+        assert [item["id"] for item in store.list_topics(stage="junior_high")] == [
+            "linear_equation"
+        ]
+    finally:
+        store.close()
+
+
+def test_study_store_knowledge_seed_repairs_empty_seed_stage(
+    tmp_path: Path,
+) -> None:
+    knowledge_seed = tmp_path / "knowledge_seed.json"
+    knowledge_seed.write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "grade_level": "junior_high",
+                "topics": [
+                    {
+                        "id": "absolute_value",
+                        "name": "绝对值",
+                        "chapter": "实数与代数式",
+                        "unit": "Seed Unit",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.upsert_topic(
+            {
+                "id": "absolute_value",
+                "name": "绝对值",
+                "subject": "math",
+                "chapter": "实数与代数式",
+                "stage": "",
+                "source": "seed",
+            }
+        )
+
+        assert store.get_topic("absolute_value")["stage"] == ""
+        assert store.load_knowledge_seed(knowledge_seed) == 1
+        repaired = store.get_topic("absolute_value")
+        assert repaired["stage"] == "junior_high"
+        assert repaired["unit"] == "Seed Unit"
+    finally:
+        store.close()
+
+
+def test_study_store_knowledge_seed_skips_incomplete_topics(
+    tmp_path: Path,
+) -> None:
+    knowledge_seed = tmp_path / "knowledge_seed.json"
+    knowledge_seed.write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "grade_level": "junior_high",
+                "topics": [
+                    {"id": "missing_chapter", "name": "Missing Chapter"},
+                    {"id": "complete_topic", "name": "完整知识点", "chapter": "基础章节"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    logger = _Logger()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    try:
+        assert store.load_knowledge_seed(knowledge_seed) == 1
+        assert store.get_topic("missing_chapter") is None
+        assert store.get_topic("complete_topic") is not None
+        assert any(
+            "study knowledge seed skipped incomplete topic" in str(args[0])
+            for args, _kwargs in logger.warnings
+        )
+    finally:
+        store.close()
+
+
+def test_study_store_knowledge_seed_manifest_loads_multiple_files(
+    tmp_path: Path,
+) -> None:
+    seed_dir = tmp_path / "knowledge_seeds"
+    seed_dir.mkdir()
+    (seed_dir / "math.json").write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "grade_level": "junior_high",
+                "topics": [
+                    {
+                        "id": "manifest_math_topic",
+                        "name": "Manifest Math Topic",
+                        "chapter": "Manifest Math",
+                        "unit": "Manifest Unit",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (seed_dir / "english.json").write_text(
+        json.dumps(
+            {
+                "subject": "english",
+                "stage": "senior_high",
+                "topics": [
+                    {
+                        "id": "manifest_english_topic",
+                        "name": "Manifest English Topic",
+                        "chapter": "Manifest English",
+                        "unit": "Manifest Unit",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "knowledge_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "type": "knowledge_seed_manifest",
+                "files": [
+                    {"path": "knowledge_seeds/math.json"},
+                    {"path": "knowledge_seeds/english.json"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        assert store.load_knowledge_seed(manifest_path) == 2
+        assert store.get_topic("manifest_math_topic")["subject"] == "math"
+        assert store.get_topic("manifest_math_topic")["stage"] == "junior_high"
+        assert store.get_topic("manifest_english_topic")["subject"] == "english"
+        assert store.get_topic("manifest_english_topic")["stage"] == "senior_high"
+    finally:
+        store.close()
+
+
+def test_study_store_schema_includes_standard_knowledge_fields(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        columns = {
+            str(row["name"])
+            for row in store._require_conn().execute("PRAGMA table_info(topics)")
+        }
+        assert {"unit", "skills", "question_types", "examples"}.issubset(columns)
+    finally:
+        store.close()
+
+
+def _read_static_knowledge_seed_payload() -> dict[str, object]:
+    seed_path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+    payload = json.loads(seed_path.read_text(encoding="utf-8"))
+    topics = payload.get("topics")
+    if isinstance(topics, list):
+        return payload
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return {**payload, "topics": []}
+    merged_topics: list[dict[str, object]] = []
+    for item in files:
+        raw_path = item.get("path") if isinstance(item, dict) else item
+        if not raw_path:
+            continue
+        child_payload = json.loads(
+            (seed_path.parent / str(raw_path)).read_text(encoding="utf-8")
+        )
+        child_topics = child_payload.get("topics")
+        if isinstance(child_topics, list):
+            default_subject = str(child_payload.get("subject") or "")
+            default_stage = str(
+                child_payload.get("stage")
+                or child_payload.get("grade_level")
+                or child_payload.get("education_level")
+                or child_payload.get("course_level")
+                or ""
+            )
+            for topic in child_topics:
+                if not isinstance(topic, dict):
+                    continue
+                merged = dict(topic)
+                merged.setdefault("subject", default_subject)
+                merged.setdefault("stage", default_stage)
+                merged_topics.append(merged)
+    return {**payload, "topics": merged_topics}
+
+
+def test_study_static_knowledge_seed_contains_standard_base_library_fields() -> None:
+    payload = _read_static_knowledge_seed_payload()
+    topics = payload["topics"]
+
+    topic_ids = {str(topic.get("id") or "") for topic in topics}
+    stages = {
+        str(topic.get("stage") or payload.get("grade_level") or "")
+        for topic in topics
+    }
+    subjects = {
+        str(topic.get("subject") or payload.get("subject") or "")
+        for topic in topics
+    }
+    college_subject_counts = {
+        subject: sum(
+            1
+            for topic in topics
+            if topic.get("subject") == subject and topic.get("stage") == "college"
+        )
+        for subject in ("math", "physics", "computer_science", "economics")
+    }
+    curriculum_versions = {
+        str(value)
+        for topic in topics
+        for value in (
+            topic.get("curriculum_version")
+            if isinstance(topic.get("curriculum_version"), list)
+            else []
+        )
+    }
+    exam_regions = {
+        str(value)
+        for topic in topics
+        for value in (
+            topic.get("exam_region") if isinstance(topic.get("exam_region"), list) else []
+        )
+    }
+    exam_types = {
+        str(value)
+        for topic in topics
+        for value in (
+            topic.get("exam_type") if isinstance(topic.get("exam_type"), list) else []
+        )
+    }
+    senior_subject_counts = {
+        subject: sum(
+            1
+            for topic in topics
+            if topic.get("subject") == subject and topic.get("stage") == "senior_high"
+        )
+        for subject in ("physics", "chemistry", "biology", "english", "chinese")
+    }
+    senior_core_topics = [
+        topic
+        for topic in topics
+        if topic.get("subject") in senior_subject_counts
+        and topic.get("stage") == "senior_high"
+    ]
+    tagged_topics = [
+        topic for topic in topics if isinstance(topic.get("curriculum_tags"), list)
+    ]
+    rich_example_topics = [
+        topic
+        for topic in topics
+        if any(
+            isinstance(example, dict)
+            and example.get("common_traps")
+            and example.get("grading_points")
+            for example in topic.get("examples", [])
+        )
+    ]
+    assert len(topics) >= 750
+    assert len({topic.get("chapter") for topic in topics}) >= 100
+    assert len({topic.get("unit") for topic in topics}) >= 240
+    assert len(tagged_topics) >= 300
+    assert all(count >= 35 for count in senior_subject_counts.values())
+    assert college_subject_counts["math"] >= 70
+    assert college_subject_counts["physics"] >= 30
+    assert college_subject_counts["computer_science"] >= 40
+    assert college_subject_counts["economics"] >= 30
+    assert len(rich_example_topics) >= 180
+    assert all(topic in rich_example_topics for topic in senior_core_topics)
+    assert all(topic.get("curriculum_version") for topic in topics)
+    assert all(topic.get("exam_region") for topic in topics)
+    assert all(topic.get("exam_type") for topic in topics)
+    assert {
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary",
+    }.issubset(curriculum_versions)
+    assert {
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style",
+    }.issubset(exam_regions)
+    assert {
+        "gaokao_style",
+        "zhongkao_style",
+        "primary_term_exam",
+        "college_course_exam",
+    }.issubset(exam_types)
+    assert {
+        "math",
+        "english",
+        "chinese",
+        "physics",
+        "chemistry",
+        "biology",
+        "history",
+        "geography",
+        "politics",
+        "computer_science",
+        "economics",
+    }.issubset(subjects)
+    assert {"primary", "junior_high", "senior_high", "college"}.issubset(stages)
+    assert {
+        "function_composite_application",
+        "geometric_proof_strategy",
+        "mathematical_modeling",
+        "exam_error_checklist",
+        "senior_derivative_extrema",
+        "senior_derivative_constant_problem",
+        "senior_conic_synthesis",
+        "senior_conic_fixed_point",
+        "senior_solid_vector_angle",
+        "senior_new_gaokao_statistics_context",
+        "college_limit_concept",
+        "college_epsilon_delta_limit",
+        "college_eigenvalue",
+        "college_lagrange_multiplier",
+        "college_confidence_interval",
+        "college_hypothesis_testing",
+        "college_physics_gauss_law",
+        "college_physics_maxwell_equations_intro",
+        "college_c_pointer_address",
+        "college_ds_graph_traversal",
+        "college_micro_demand_supply",
+        "english_senior_continuation_writing",
+        "chinese_senior_poetry_appreciation",
+        "physics_senior_energy_momentum",
+        "physics_senior_multistage_synthesis",
+        "chem_senior_experiment_design",
+        "chem_senior_industrial_process_flow",
+        "bio_senior_experiment_design",
+        "bio_senior_gene_engineering",
+        "english_senior_cloze_logic",
+        "history_senior_material_analysis",
+        "geo_senior_regional_sustainability",
+        "pol_senior_rule_of_law",
+        "chinese_senior_new_gaokao_mixed_text",
+    }.issubset(topic_ids)
+    for topic in topics:
+        assert topic.get("stage") or payload.get("grade_level")
+        assert topic.get("subject") or payload.get("subject")
+        assert topic.get("chapter")
+        assert topic.get("unit")
+        assert topic.get("skills")
+        assert topic.get("question_types")
+        assert topic.get("examples")
+
+
+def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
+    seed_path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+
+    result = validate_knowledge_seed_manifest(seed_path)
+
+    assert result.is_valid
+    assert not result.issues
+    assert len(result.topics) >= 650
+
+
+def test_study_knowledge_seed_validator_reports_schema_errors(
+    tmp_path: Path,
+) -> None:
+    seed_dir = tmp_path / "knowledge_seeds"
+    seed_dir.mkdir()
+    (tmp_path / "knowledge_seed_taxonomy.json").write_text(
+        json.dumps(
+            {
+                "curriculum_version": {"generic_cn_high_school": {}},
+                "exam_region": {"new_gaokao_i": {}},
+                "exam_type": {"gaokao_style": {}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (seed_dir / "math.json").write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "grade_level": "senior_high",
+                "topics": [
+                    {
+                        "id": "duplicate_topic",
+                        "name": "Bad Topic",
+                        "chapter": "Bad Chapter",
+                        "unit": "Bad Unit",
+                        "prerequisites": [],
+                        "related": [{"id": "missing_topic"}],
+                        "skills": [],
+                        "question_types": ["综合题"],
+                        "examples": [{"prompt": "", "answer_outline": []}],
+                        "typical_misconceptions": ["忽略条件"],
+                        "exam_region": "",
+                    },
+                    {
+                        "id": "duplicate_topic",
+                        "name": "Duplicate Topic",
+                        "chapter": "Bad Chapter",
+                        "unit": "Bad Unit",
+                        "prerequisites": [],
+                        "related": [],
+                        "skills": ["识别重复知识点"],
+                        "question_types": ["综合题"],
+                        "examples": [
+                            {
+                                "prompt": "指出该知识点和前一条为什么冲突。",
+                                "answer_outline": ["比较 id。"],
+                            }
+                        ],
+                        "typical_misconceptions": ["把同名条目当成不同知识点"],
+                        "curriculum_version": ["unknown_curriculum"],
+                        "exam_region": ["new_gaokao_i"],
+                        "exam_type": ["gaokao_style"],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "knowledge_graph_seed.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "type": "knowledge_seed_manifest",
+                "files": [
+                    {"path": "knowledge_seeds/math.json", "topic_count": 99},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_knowledge_seed_manifest(manifest_path)
+
+    issue_codes = {issue.code for issue in result.issues}
+    assert not result.is_valid
+    assert {
+        "duplicate_topic_id",
+        "empty_required_list",
+        "invalid_example",
+        "missing_reference",
+        "empty_reserved_field",
+        "manifest_topic_count_mismatch",
+        "unknown_reserved_field_value",
+    }.issubset(issue_codes)
 
 
 def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
@@ -1685,6 +2249,53 @@ def test_trusted_knowledge_candidate_is_deprecated_after_conflict(
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_study_review_knowledge_candidate_approves_topic_into_base_library(
+    tmp_path: Path,
+) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._store = store
+    plugin._knowledge_tracker = KnowledgeTracker(store)
+
+    try:
+        candidate = store.upsert_candidate_item(
+            item_type=KnowledgeCandidateType.TOPIC.value,
+            payload={
+                "id": "candidate_linear_equation",
+                "name": "Linear equation candidate",
+                "subject": "math",
+                "chapter": "Equations",
+                "unit": "One-variable equations",
+                "stage": "junior_high",
+                "skills": ["solve one-variable linear equations"],
+                "question_types": ["calculation"],
+                "examples": [{"prompt": "Solve 2x + 3 = 9."}],
+            },
+            source="unit-test",
+            dedupe_key="math:linear equation candidate",
+        )
+
+        result = await plugin.study_review_knowledge_candidate(
+            candidate_id=candidate["id"], decision="approve"
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["decision"] == "approve"
+        assert result.value["topic"]["id"] == "candidate_linear_equation"
+        assert result.value["topic"]["source"] == "seed"
+        assert result.value["candidate"]["status"] == KnowledgeCandidateStatus.TRUSTED.value
+        topic = store.get_topic("candidate_linear_equation")
+        assert topic is not None
+        assert topic["unit"] == "One-variable equations"
+        assert topic["skills"] == ["solve one-variable linear equations"]
+        assert topic["question_types"] == ["calculation"]
+        assert topic["examples"] == [{"prompt": "Solve 2x + 3 = 9."}]
+    finally:
+        store.close()
+
+
 def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
     english = classify_screen_from_ocr(
         "## Summary\n\nThe learner reviewed photosynthesis."
@@ -1783,6 +2394,10 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
                 "id": "number_axis",
                 "name": "Number Axis",
                 "stage": "junior_high",
+                "unit": "Number system",
+                "skills": ["read coordinates", "compare signed numbers"],
+                "question_types": ["concept", "calculation"],
+                "examples": [{"prompt": "Place -2 on the number line."}],
                 "prerequisites": [
                     {"id": "real_number_concept", "required_mastery": 0.55}
                 ],
@@ -1805,6 +2420,10 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         "relation": "next",
     } in payload["edges"]
     assert payload["nodes"][0]["stage"] == "junior_high"
+    assert payload["nodes"][0]["unit"] == "Number system"
+    assert payload["nodes"][0]["skills"] == ["read coordinates", "compare signed numbers"]
+    assert payload["nodes"][0]["question_types"] == ["concept", "calculation"]
+    assert payload["nodes"][0]["examples"] == [{"prompt": "Place -2 on the number line."}]
     assert payload["summary"]["stage_counts"]["junior_high"] == 1
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
@@ -3064,6 +3683,18 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
         answer_meta.timeout,
     ):
         assert entry_timeout > llm_timeout + 0.5
+
+
+def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+
+    assert "knowledge-subject-group" in source
+    assert "knowledge-chapter-group" in source
+    assert "knowledge-unit-group" in source
+    assert "valueLabel(node.subject" in source
+    assert "valueLabel(node.chapter" in source
+    assert "valueLabel(node.unit" in source
 
 
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:

@@ -1,0 +1,877 @@
+{
+  "version": "1.0",
+  "subject": "geography",
+  "topics": [
+    {
+      "id": "geo_junior_map_skills",
+      "name": "地图三要素",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "自然地理",
+      "depth": 1,
+      "difficulty": 0.34,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "地图与地球",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "读图题",
+        "基础技能"
+      ],
+      "examples": [
+        {
+          "prompt": "根据比例尺、方向和图例判断两地距离和方位。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_climate_types",
+      "name": "世界气候类型",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "自然地理",
+      "depth": 2,
+      "difficulty": 0.5,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "地图与地球",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "图表判读",
+        "区域分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据气温曲线和降水柱状图判断气候类型。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_river_landform",
+      "name": "河流与地形",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "自然地理",
+      "depth": 2,
+      "difficulty": 0.52,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "地图与地球",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "过程分析",
+        "区域分析"
+      ],
+      "examples": [
+        {
+          "prompt": "解释河流上中下游地貌差异及成因。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_population_city",
+      "name": "人口与城市",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "人文地理",
+      "depth": 2,
+      "difficulty": 0.48,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "区域发展",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "图表分析",
+        "原因影响"
+      ],
+      "examples": [
+        {
+          "prompt": "根据人口统计图分析城市化带来的问题和措施。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_agriculture_industry",
+      "name": "农业工业区位",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "人文地理",
+      "depth": 2,
+      "difficulty": 0.56,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "区域发展",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "区位分析",
+        "综合题"
+      ],
+      "examples": [
+        {
+          "prompt": "分析某地发展水稻种植或电子工业的区位条件。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_china_regions",
+      "name": "中国区域差异",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "人文地理",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "区域发展",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "区域认知",
+        "比较题"
+      ],
+      "examples": [
+        {
+          "prompt": "比较南方地区和北方地区自然、人文差异。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_atmospheric_circulation",
+      "name": "大气环流与天气系统",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "高中地理",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "综合思维",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "过程分析",
+        "图像题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据等压线图判断风向、天气和气压系统。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_water_cycle",
+      "name": "水循环与水资源",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "高中地理",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "综合思维",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "过程分析",
+        "措施题"
+      ],
+      "examples": [
+        {
+          "prompt": "分析城市内涝成因并提出海绵城市措施。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_industrial_location",
+      "name": "产业区位与区域发展",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "高中地理",
+      "depth": 3,
+      "difficulty": 0.7,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "读图不看图例、比例尺和方向",
+        "只列自然因素，忽略人类活动或区域差异",
+        "原因题和措施题混写，缺少针对性"
+      ],
+      "unit": "综合思维",
+      "skills": [
+        "读图提取位置、要素和空间关系",
+        "从自然和人文两类因素解释地理现象",
+        "用区域尺度和综合思维组织答案"
+      ],
+      "question_types": [
+        "区位分析",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "评价某地区承接产业转移的优势和风险。",
+          "answer_outline": [
+            "先读图名、图例、坐标、比例尺和区域位置。",
+            "分自然因素与人文因素提取信息。",
+            "按因果链解释分布、变化或区域差异。",
+            "措施题要对应问题、条件和可持续性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_natural_disaster",
+      "name": "自然灾害与防灾减灾",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "自然地理",
+      "depth": 2,
+      "difficulty": 0.52,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "忽略图例比例尺方向",
+        "原因和措施混写",
+        "只列因素不建因果链"
+      ],
+      "unit": "灾害地理",
+      "skills": [
+        "读图提取位置、图例和空间关系",
+        "分自然与人文因素解释区域现象",
+        "给出针对区域问题的措施"
+      ],
+      "question_types": [
+        "区域分析",
+        "措施题"
+      ],
+      "examples": [
+        {
+          "prompt": "分析某地洪涝灾害成因并提出防灾减灾措施。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_junior_transport_trade",
+      "name": "交通运输与区域联系",
+      "subject": "geography",
+      "stage": "junior_high",
+      "chapter": "人文地理",
+      "depth": 2,
+      "difficulty": 0.5,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "忽略图例比例尺方向",
+        "原因和措施混写",
+        "只列因素不建因果链"
+      ],
+      "unit": "交通与贸易",
+      "skills": [
+        "读图提取位置、图例和空间关系",
+        "分自然与人文因素解释区域现象",
+        "给出针对区域问题的措施"
+      ],
+      "question_types": [
+        "区位分析",
+        "实际应用"
+      ],
+      "examples": [
+        {
+          "prompt": "说明高铁开通对沿线城市旅游和产业联系的影响。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_earth_movement",
+      "name": "地球运动",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "自然地理过程",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "忽略图例比例尺方向",
+        "原因和措施混写",
+        "只列因素不建因果链"
+      ],
+      "unit": "地球运动",
+      "skills": [
+        "读图提取位置、图例和空间关系",
+        "分自然与人文因素解释区域现象",
+        "给出针对区域问题的措施"
+      ],
+      "question_types": [
+        "图像题",
+        "计算题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据太阳直射点移动判断昼夜长短和正午太阳高度变化。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_geomorphology",
+      "name": "外力作用与地貌",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "自然地理过程",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "忽略图例比例尺方向",
+        "原因和措施混写",
+        "只列因素不建因果链"
+      ],
+      "unit": "地貌过程",
+      "skills": [
+        "读图提取位置、图例和空间关系",
+        "分自然与人文因素解释区域现象",
+        "给出针对区域问题的措施"
+      ],
+      "question_types": [
+        "过程分析",
+        "图像题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据河流阶地或冲积扇示意图解释形成过程。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "geo_senior_regional_sustainability",
+      "name": "区域可持续发展",
+      "subject": "geography",
+      "stage": "senior_high",
+      "chapter": "区域发展",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "忽略图例比例尺方向",
+        "原因和措施混写",
+        "只列因素不建因果链"
+      ],
+      "unit": "可持续发展",
+      "skills": [
+        "读图提取位置、图例和空间关系",
+        "分自然与人文因素解释区域现象",
+        "给出针对区域问题的措施"
+      ],
+      "question_types": [
+        "区域分析",
+        "措施题"
+      ],
+      "examples": [
+        {
+          "prompt": "评价资源型城市转型的优势、问题和可持续路径。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "geography",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    }
+  ]
+}

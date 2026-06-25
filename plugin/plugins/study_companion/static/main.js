@@ -1,4 +1,4 @@
-const PLUGIN_ID = 'study_companion';
+﻿const PLUGIN_ID = 'study_companion';
 const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
@@ -1405,6 +1405,27 @@ function renderKnowledgeNodes(nodes = []) {
     const stage = stageValueFromNode(node);
     groups.set(stage, [...(groups.get(stage) || []), node]);
   });
+  const valueLabel = (value, fallback) => {
+    const text = String(value || '').trim();
+    return text || fallback;
+  };
+  const pushGrouped = (map, key, node) => {
+    map.set(key, [...(map.get(key) || []), node]);
+  };
+  const renderNodeButton = (node) => {
+    const item = drawerElement('button', 'knowledge-node');
+    item.type = 'button';
+    item.dataset.mastery = masteryLevelForPanel(node);
+    const mastery = Number(node.mastery);
+    const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
+    item.textContent = `${node.label || node.name || node.topic_name || node.topic_id || node.id || '-'}${masteryText}`;
+    item.title = [
+      valueLabel(node.subject, ''),
+      valueLabel(node.chapter, ''),
+      valueLabel(node.unit, ''),
+    ].filter(Boolean).join(' / ');
+    return item;
+  };
   const selectedStage = normalizeLearningStage(learningProfile.stage);
   [...groups.entries()].sort(([stageA], [stageB]) => (
     stageA === selectedStage ? -1 : stageB === selectedStage ? 1 : [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageA) - [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageB)
@@ -1412,26 +1433,45 @@ function renderKnowledgeNodes(nodes = []) {
     const section = drawerElement('section', 'knowledge-stage-group');
     section.dataset.stage = stage || 'uncategorized';
     if (stage === selectedStage) section.dataset.selected = 'true';
-    const list = drawerElement('div', 'study-panel__actions');
-    items.slice(0, 24).forEach((node) => {
-      const item = drawerElement('button', 'knowledge-node');
-      item.type = 'button';
-      item.dataset.mastery = masteryLevelForPanel(node);
-      const mastery = Number(node.mastery);
-      const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
-      const subject = node.subject ? ` · ${node.subject}` : '';
-      item.textContent = `${node.label || node.name || node.topic_name || node.topic_id || node.id || '-'}${subject}${masteryText}`;
-      list.appendChild(item);
+    const subjectGroups = new Map();
+    items.forEach((node) => {
+      pushGrouped(subjectGroups, valueLabel(node.subject, t('ui.knowledge.subject_uncategorized', 'Uncategorized subject')), node);
     });
-    if (items.length > 24) {
-      list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: items.length - 24 })));
-    }
-    section.append(drawerElement('h3', '', `${knowledgeStageLabel(stage)} · ${items.length}`), list);
+    section.appendChild(drawerElement('h3', '', `${knowledgeStageLabel(stage)} / ${items.length}`));
+    [...subjectGroups.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([subject, subjectItems]) => {
+      const subjectSection = drawerElement('section', 'knowledge-subject-group');
+      subjectSection.appendChild(drawerElement('h4', '', `${subject} / ${subjectItems.length}`));
+      const chapterGroups = new Map();
+      subjectItems.forEach((node) => {
+        pushGrouped(chapterGroups, valueLabel(node.chapter, t('ui.knowledge.chapter_uncategorized', 'Uncategorized chapter')), node);
+      });
+      [...chapterGroups.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([chapter, chapterItems]) => {
+        const chapterSection = drawerElement('section', 'knowledge-chapter-group');
+        chapterSection.appendChild(drawerElement('h5', '', `${chapter} / ${chapterItems.length}`));
+        const unitGroups = new Map();
+        chapterItems.forEach((node) => {
+          pushGrouped(unitGroups, valueLabel(node.unit, chapter), node);
+        });
+        [...unitGroups.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([unit, unitItems]) => {
+          const unitSection = drawerElement('section', 'knowledge-unit-group');
+          const list = drawerElement('div', 'study-panel__actions');
+          unitItems.slice(0, 24).forEach((node) => {
+            list.appendChild(renderNodeButton(node));
+          });
+          if (unitItems.length > 24) {
+            list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: unitItems.length - 24 })));
+          }
+          unitSection.append(drawerElement('h6', '', `${unit} / ${unitItems.length}`), list);
+          chapterSection.appendChild(unitSection);
+        });
+        subjectSection.appendChild(chapterSection);
+      });
+      section.appendChild(subjectSection);
+    });
     root.appendChild(section);
   });
   return root;
 }
-
 function knowledgeNodeLabel(node) {
   return String(node?.label || node?.name || node?.topic_name || node?.topic_id || node?.id || '-');
 }

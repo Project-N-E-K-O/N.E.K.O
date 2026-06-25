@@ -1,0 +1,3621 @@
+{
+  "version": "1.0",
+  "subject": "chemistry",
+  "topics": [
+    {
+      "id": "chem_junior_substance_classification",
+      "name": "物质分类",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "物质与变化",
+      "depth": 1,
+      "difficulty": 0.34,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "基础概念",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "概念辨析",
+        "分类题"
+      ],
+      "examples": [
+        {
+          "prompt": "判断空气、氧气、盐水、铁粉分别属于混合物还是纯净物。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_junior_chemical_equation",
+      "name": "化学方程式配平",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "物质与变化",
+      "depth": 2,
+      "difficulty": 0.48,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "基础概念",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "基础计算",
+        "方程式书写"
+      ],
+      "examples": [
+        {
+          "prompt": "配平铁在氧气中燃烧的方程式，并说明质量守恒。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_junior_solution_solubility",
+      "name": "溶液与溶解度",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "物质与变化",
+      "depth": 2,
+      "difficulty": 0.54,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "基础概念",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "图像分析",
+        "计算题"
+      ],
+      "examples": [
+        {
+          "prompt": "根据溶解度曲线判断降温后是否有晶体析出。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_junior_acid_base_salt",
+      "name": "酸碱盐基础",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "物质与变化",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "基础概念",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "物质推断",
+        "实验现象"
+      ],
+      "examples": [
+        {
+          "prompt": "根据酸碱盐反应现象判断生成物并写方程式。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_senior_ionic_reaction",
+      "name": "离子反应与离子方程式",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "平衡与电化学",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "离子方程式",
+        "反应判断"
+      ],
+      "examples": [
+        {
+          "prompt": "写出氢氧化钡和硫酸反应的离子方程式并说明删去旁观离子。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_redox",
+      "name": "氧化还原反应",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "平衡与电化学",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "电子守恒",
+        "方程式配平"
+      ],
+      "examples": [
+        {
+          "prompt": "用化合价升降法配平一个氧化还原反应。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_equilibrium",
+      "name": "化学平衡移动",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 3,
+      "difficulty": 0.72,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "平衡与电化学",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "平衡分析",
+        "图像题"
+      ],
+      "examples": [
+        {
+          "prompt": "改变温度、压强、浓度后判断平衡移动方向和转化率变化。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_electrochemistry",
+      "name": "原电池与电解池",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 3,
+      "difficulty": 0.76,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "平衡与电化学",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "电化学",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断原电池正负极、电极反应和电子流向。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_organic_functional_group",
+      "name": "有机官能团",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背方程式，不判断反应条件和现象",
+        "离子方程式漏写沉淀、气体或弱电解质",
+        "实验题忽略安全、除杂顺序和变量控制"
+      ],
+      "unit": "平衡与电化学",
+      "skills": [
+        "识别物质类别、反应类型和实验目的",
+        "配平方程式并追踪元素、离子或电子守恒",
+        "用现象、条件和计算验证化学结论"
+      ],
+      "question_types": [
+        "有机推断",
+        "结构识别"
+      ],
+      "examples": [
+        {
+          "prompt": "根据分子式和反应现象判断醇、醛、羧酸或酯。",
+          "answer_outline": [
+            "判断物质类别、反应类型和实验目标。",
+            "写出方程式、离子方程式或守恒关系。",
+            "结合现象、条件、装置或数据作推理。",
+            "检查配平、单位、过量少量和实验可行性。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_junior_gas_preparation",
+      "name": "气体制取与检验",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "化学实验",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "方程式与实验条件混淆",
+        "忽略守恒关系或离子共存限制",
+        "实验结论没有对应现象和对照"
+      ],
+      "unit": "气体实验",
+      "skills": [
+        "判断反应条件、现象和守恒关系",
+        "用方程式、离子方程式或结构式解释问题",
+        "检查实验变量、过量少量和数据单位"
+      ],
+      "question_types": [
+        "实验探究",
+        "现象判断"
+      ],
+      "examples": [
+        {
+          "prompt": "实验室制取氧气并检验，写出装置选择、操作步骤和验满方法。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_junior_metal_activity",
+      "name": "金属活动性顺序",
+      "subject": "chemistry",
+      "stage": "junior_high",
+      "chapter": "金属与材料",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "方程式与实验条件混淆",
+        "忽略守恒关系或离子共存限制",
+        "实验结论没有对应现象和对照"
+      ],
+      "unit": "金属活动性",
+      "skills": [
+        "判断反应条件、现象和守恒关系",
+        "用方程式、离子方程式或结构式解释问题",
+        "检查实验变量、过量少量和数据单位"
+      ],
+      "question_types": [
+        "物质推断",
+        "实验探究"
+      ],
+      "examples": [
+        {
+          "prompt": "根据金属与盐溶液反应现象判断三种金属活动性强弱。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "chem_senior_mole_calculation",
+      "name": "物质的量计算",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学计量",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "方程式与实验条件混淆",
+        "忽略守恒关系或离子共存限制",
+        "实验结论没有对应现象和对照"
+      ],
+      "unit": "物质的量",
+      "skills": [
+        "判断反应条件、现象和守恒关系",
+        "用方程式、离子方程式或结构式解释问题",
+        "检查实验变量、过量少量和数据单位"
+      ],
+      "question_types": [
+        "计算题",
+        "守恒关系"
+      ],
+      "examples": [
+        {
+          "prompt": "由气体体积和溶液浓度计算反应生成物的物质的量。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_thermochemistry",
+      "name": "反应热与盖斯定律",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学反应原理",
+      "depth": 3,
+      "difficulty": 0.7,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "方程式与实验条件混淆",
+        "忽略守恒关系或离子共存限制",
+        "实验结论没有对应现象和对照"
+      ],
+      "unit": "反应热",
+      "skills": [
+        "判断反应条件、现象和守恒关系",
+        "用方程式、离子方程式或结构式解释问题",
+        "检查实验变量、过量少量和数据单位"
+      ],
+      "question_types": [
+        "计算题",
+        "反应原理"
+      ],
+      "examples": [
+        {
+          "prompt": "利用两个热化学方程式求目标反应的焓变。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_experiment_design",
+      "name": "化学实验方案评价",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "化学实验",
+      "depth": 3,
+      "difficulty": 0.76,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "方程式与实验条件混淆",
+        "忽略守恒关系或离子共存限制",
+        "实验结论没有对应现象和对照"
+      ],
+      "unit": "方案评价",
+      "skills": [
+        "判断反应条件、现象和守恒关系",
+        "用方程式、离子方程式或结构式解释问题",
+        "检查实验变量、过量少量和数据单位"
+      ],
+      "question_types": [
+        "实验探究",
+        "方案评价"
+      ],
+      "examples": [
+        {
+          "prompt": "评价除去 CO2 中少量 HCl 的实验方案，说明试剂选择和顺序。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "只背反应结论，没有检查元素、电荷和电子守恒。",
+            "忽略反应条件、过量关系、离子共存或实验目的。",
+            "把现象、操作和结论之间的对应关系写反。"
+          ],
+          "grading_points": [
+            "能把题干信息转化为反应、守恒或实验流程。",
+            "关键方程式、条件和计算关系正确。",
+            "结论能用现象、数据或微粒变化支撑。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "pep_high_school_chemistry",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_atomic_structure_periodic",
+      "name": "原子结构与元素周期律",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学物质结构",
+      "unit": "元素周期律",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_redox",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_redox",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_chemical_bonding",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据核外电子排布比较半径、金属性和非金属性。",
+          "answer_outline": [
+            "先判断题目属于原子结构与元素周期律的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_chemical_bonding",
+      "name": "化学键与晶体类型",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学物质结构",
+      "unit": "结构与性质",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_atomic_structure_periodic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_atomic_structure_periodic",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_material_structure_inference",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断离子键、共价键、分子间作用力和晶体性质。",
+          "answer_outline": [
+            "先判断题目属于化学键与晶体类型的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_material_structure_inference",
+      "name": "结构性质信息推断",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学物质结构",
+      "unit": "结构与性质",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_chemical_bonding",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_chemical_bonding",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "从新材料信息中提取结构单元并解释性质差异。",
+          "answer_outline": [
+            "先判断题目属于结构性质信息推断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_stoichiometry_limiting",
+      "name": "过量与不足量计算",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学计量",
+      "unit": "物质的量",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_material_structure_inference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_material_structure_inference",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据反应方程式判断限制试剂并计算产物或剩余量。",
+          "answer_outline": [
+            "先判断题目属于过量与不足量计算的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_solution_concentration",
+      "name": "溶液浓度与稀释",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学计量",
+      "unit": "溶液",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "进行物质的量浓度、质量分数和稀释混合计算。",
+          "answer_outline": [
+            "先判断题目属于溶液浓度与稀释的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_ion_coexistence",
+      "name": "离子共存判断",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "离子反应",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_solution_concentration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "结合沉淀、气体、弱电解质和氧化还原判断共存。",
+          "answer_outline": [
+            "先判断题目属于离子共存判断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_ionic_equation_writing",
+      "name": "离子方程式书写正误",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "离子反应",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_ion_coexistence",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "从拆写、守恒和条件三个角度判断离子方程式。",
+          "answer_outline": [
+            "先判断题目属于离子方程式书写正误的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_redox_balance",
+      "name": "氧化还原配平",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "氧化还原",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用化合价升降和电子守恒配平反应。",
+          "answer_outline": [
+            "先判断题目属于氧化还原配平的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_redox_titration",
+      "name": "氧化还原滴定",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学实验",
+      "unit": "定量实验",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_redox_balance",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_reaction_heat_diagram",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由滴定数据计算浓度并分析终点误差。",
+          "answer_outline": [
+            "先判断题目属于氧化还原滴定的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_reaction_heat_diagram",
+      "name": "反应热图像与盖斯定律",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "反应热",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_redox_titration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "从能量图或热化学方程式求目标反应热。",
+          "answer_outline": [
+            "先判断题目属于反应热图像与盖斯定律的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_rate_factors",
+      "name": "化学反应速率影响因素",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "速率与平衡",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_reaction_heat_diagram",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_reaction_heat_diagram",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_equilibrium_constant",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断浓度、温度、压强和催化剂对速率的影响。",
+          "answer_outline": [
+            "先判断题目属于化学反应速率影响因素的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_equilibrium_constant",
+      "name": "平衡常数与转化率",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "速率与平衡",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_rate_factors",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_equilibrium_graph",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "列三段式计算平衡常数、转化率和浓度。",
+          "answer_outline": [
+            "先判断题目属于平衡常数与转化率的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_equilibrium_graph",
+      "name": "平衡图像综合",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "速率与平衡",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_equilibrium_constant",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_equilibrium_constant",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由速率或浓度图像判断平衡移动和条件变化。",
+          "answer_outline": [
+            "先判断题目属于平衡图像综合的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_acid_base_titration",
+      "name": "酸碱中和滴定",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "水溶液",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_equilibrium_graph",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_equilibrium_graph",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_ph_ionization",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "选择指示剂、读取滴定数据并分析误差方向。",
+          "answer_outline": [
+            "先判断题目属于酸碱中和滴定的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_ph_ionization",
+      "name": "弱电解质电离与 pH",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "水溶液",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_acid_base_titration",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "比较弱酸弱碱电离、盐类水解和 pH 变化。",
+          "answer_outline": [
+            "先判断题目属于弱电解质电离与 pH的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_precipitation_equilibrium",
+      "name": "沉淀溶解平衡",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "水溶液",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_ph_ionization",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_ph_ionization",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_primary_battery",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "利用 Ksp 判断沉淀生成、转化和溶解。",
+          "answer_outline": [
+            "先判断题目属于沉淀溶解平衡的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_primary_battery",
+      "name": "原电池原理与电极判断",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "电化学",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断正负极、电极反应和电子/离子移动方向。",
+          "answer_outline": [
+            "先判断题目属于原电池原理与电极判断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_electrolysis_product",
+      "name": "电解产物判断",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "电化学",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_primary_battery",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_primary_battery",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据放电顺序和电极材料判断电解产物。",
+          "answer_outline": [
+            "先判断题目属于电解产物判断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_electrochem_calculation",
+      "name": "电化学定量计算",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学反应原理",
+      "unit": "电化学",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_electrolysis_product",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_organic_isomer",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用电子守恒和法拉第关系计算质量、气体或电量。",
+          "answer_outline": [
+            "先判断题目属于电化学定量计算的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_organic_isomer",
+      "name": "有机同分异构体",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学有机化学",
+      "unit": "结构与性质",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据官能团、碳链和位置关系枚举同分异构体。",
+          "answer_outline": [
+            "先判断题目属于有机同分异构体的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_organic_reaction_route",
+      "name": "有机合成路线推断",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学有机化学",
+      "unit": "合成推断",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_organic_isomer",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_organic_isomer",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_organic_polymer",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "由官能团转化关系补全反应条件和中间体。",
+          "answer_outline": [
+            "先判断题目属于有机合成路线推断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_organic_polymer",
+      "name": "高分子与聚合反应",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学有机化学",
+      "unit": "材料与高分子",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_experiment_separation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "识别加聚、缩聚单体和结构单元。",
+          "answer_outline": [
+            "先判断题目属于高分子与聚合反应的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_experiment_separation",
+      "name": "物质分离提纯实验",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学实验",
+      "unit": "实验操作",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_organic_polymer",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_organic_polymer",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "选择过滤、蒸馏、萃取、结晶等操作并说明依据。",
+          "answer_outline": [
+            "先判断题目属于物质分离提纯实验的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_experiment_gas",
+      "name": "气体制备与检验",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学实验",
+      "unit": "实验操作",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_experiment_separation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_experiment_separation",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "设计气体发生、净化、收集和尾气处理流程。",
+          "answer_outline": [
+            "先判断题目属于气体制备与检验的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_experiment_variable_control",
+      "name": "实验变量控制与评价",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学实验",
+      "unit": "方案评价",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_experiment_gas",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_industrial_process_flow",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "识别对照、变量和干扰因素并评价方案可行性。",
+          "answer_outline": [
+            "先判断题目属于实验变量控制与评价的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_industrial_process_flow",
+      "name": "工业流程信息题",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学综合",
+      "unit": "工业流程",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "从流程图中提取除杂、转化、循环和产品分离逻辑。",
+          "answer_outline": [
+            "先判断题目属于工业流程信息题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_unknown_substance_inference",
+      "name": "无机物推断综合",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学综合",
+      "unit": "推断综合",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_industrial_process_flow",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_industrial_process_flow",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据颜色、沉淀、气体和转化关系推断物质。",
+          "answer_outline": [
+            "先判断题目属于无机物推断综合的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_data_table_reasoning",
+      "name": "化学数据表格推理",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学综合",
+      "unit": "信息题",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_green_chemistry_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "用表格数据比较趋势并建立定量或定性结论。",
+          "answer_outline": [
+            "先判断题目属于化学数据表格推理的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_green_chemistry_context",
+      "name": "绿色化学与情境应用",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学综合",
+      "unit": "真实情境",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "relation": "nearby"
+        },
+        {
+          "id": "chem_senior_exam_synthesis_strategy",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "结合原子利用率、污染控制和能源利用评价方案。",
+          "answer_outline": [
+            "先判断题目属于绿色化学与情境应用的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "chem_senior_exam_synthesis_strategy",
+      "name": "化学压轴综合策略",
+      "subject": "chemistry",
+      "stage": "senior_high",
+      "chapter": "高中化学综合",
+      "unit": "压轴策略",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "chem_senior_green_chemistry_context",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "chem_senior_green_chemistry_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只背结论但没有守恒、电荷和条件校验",
+        "忽略反应条件、过量关系或离子共存限制",
+        "把实验现象、操作目的和结论对应错位"
+      ],
+      "skills": [
+        "从微粒、守恒和能量变化三个角度分析反应",
+        "把题干条件转成方程、图像或实验流程",
+        "用电荷守恒、元素守恒和现象一致性校验答案"
+      ],
+      "question_types": [
+        "信息推断",
+        "综合应用"
+      ],
+      "examples": [
+        {
+          "prompt": "把平衡、电化学、实验或流程题拆成守恒和条件链条。",
+          "answer_outline": [
+            "先判断题目属于化学压轴综合策略的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用化学核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "chemistry",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "science_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "pep_high_school_chemistry"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    }
+  ]
+}

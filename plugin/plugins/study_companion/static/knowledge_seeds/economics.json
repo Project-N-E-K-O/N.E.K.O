@@ -1,0 +1,2342 @@
+{
+  "version": "1.0",
+  "subject": "economics",
+  "topics": [
+    {
+      "id": "college_econ_scarcity_opportunity_cost",
+      "name": "稀缺性与机会成本",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "经济学导论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "mathematical_modeling",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "mathematical_modeling",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_ppf",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用机会成本解释一个学习或消费选择。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_ppf",
+      "name": "生产可能性边界",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "经济学导论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_scarcity_opportunity_cost",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_scarcity_opportunity_cost",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "由 PPF 图判断效率、机会成本和经济增长。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_demand_supply",
+      "name": "需求供给模型",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场均衡",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_ppf",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_ppf",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_elasticity",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "分析需求或供给变动对均衡价格和数量的影响。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_elasticity",
+      "name": "弹性分析",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场均衡",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_demand_supply",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_consumer_choice",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "计算需求价格弹性并判断总收益变化。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_consumer_choice",
+      "name": "消费者选择",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "消费者理论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_elasticity",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_elasticity",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_utility_marginal",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用预算线和无差异曲线解释最优消费组合。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_utility_marginal",
+      "name": "边际效用递减",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "消费者理论",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_consumer_choice",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_consumer_choice",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_cost_short_run",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "根据边际效用表判断消费决策。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_cost_short_run",
+      "name": "短期成本曲线",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "生产与成本",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_utility_marginal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_utility_marginal",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "区分固定成本、可变成本、平均成本和边际成本。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_firm_profit",
+      "name": "厂商利润最大化",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "生产与成本",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_cost_short_run",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_cost_short_run",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用 MR=MC 判断产量选择和利润。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_perfect_competition",
+      "name": "完全竞争市场",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场结构",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_firm_profit",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_firm_profit",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_monopoly",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "分析完全竞争厂商短期供给和停产条件。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_monopoly",
+      "name": "垄断市场",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场结构",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_perfect_competition",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_externality",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "比较垄断定价、产量和社会福利损失。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_externality",
+      "name": "外部性与矫正政策",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场失灵",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_monopoly",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_monopoly",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_micro_public_goods",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用图像解释污染税或补贴如何改变社会最优。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_micro_public_goods",
+      "name": "公共物品与搭便车",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "微观经济学",
+      "unit": "市场失灵",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_externality",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_externality",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_gdp_accounting",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "判断非竞争性、非排他性和公共供给理由。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_gdp_accounting",
+      "name": "GDP 核算",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "国民收入核算",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_micro_public_goods",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_micro_public_goods",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用支出法计算 GDP 并识别不计入项目。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_cpi_inflation",
+      "name": "CPI 与通货膨胀",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "价格水平",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_gdp_accounting",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_gdp_accounting",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_unemployment",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "根据价格篮子计算 CPI 和通胀率。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_unemployment",
+      "name": "失业类型",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "就业与失业",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_cpi_inflation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "区分摩擦性、结构性、周期性失业。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_aggregate_demand_supply",
+      "name": "总需求总供给模型",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "宏观波动",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_unemployment",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_unemployment",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_multiplier",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "分析 AD 或 AS 移动对产出和价格水平的影响。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_multiplier",
+      "name": "乘数效应",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "宏观政策",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "由边际消费倾向计算政府支出乘数。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_fiscal_policy",
+      "name": "财政政策",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "宏观政策",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_multiplier",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_multiplier",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_money_banking",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "解释扩张性财政政策对总需求和债务的影响。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_money_banking",
+      "name": "货币与银行体系",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "货币金融",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_fiscal_policy",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "计算存款创造过程中的货币乘数。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_monetary_policy",
+      "name": "货币政策",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "货币金融",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_money_banking",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_money_banking",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_macro_exchange_rate",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "分析降准、降息或公开市场操作对经济的影响。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_macro_exchange_rate",
+      "name": "汇率与国际收支",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "开放经济",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_monetary_policy",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_growth_productivity",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "判断汇率变动对出口、进口和资本流动的影响。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_growth_productivity",
+      "name": "经济增长与生产率",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "宏观经济学",
+      "unit": "长期增长",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_macro_exchange_rate",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_macro_exchange_rate",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_game_prisoner",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用资本、劳动、技术解释长期增长来源。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_game_prisoner",
+      "name": "博弈论囚徒困境",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "策略互动",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_growth_productivity",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_growth_productivity",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_information_asymmetry",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用支付矩阵判断占优策略和纳什均衡。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_information_asymmetry",
+      "name": "信息不对称",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "市场失灵",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_game_prisoner",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_game_prisoner",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "解释逆向选择或道德风险的机制。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_cost_benefit",
+      "name": "成本收益分析",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "决策分析",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_information_asymmetry",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_information_asymmetry",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "比较一个项目的显性成本、隐性成本和收益。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_data_graph",
+      "name": "经济数据图表解读",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "数据分析",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_cost_benefit",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "根据折线图或柱状图描述经济指标趋势。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_index_real_nominal",
+      "name": "名义量与实际量",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "数据分析",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_data_graph",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_data_graph",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "用价格指数把名义收入调整为实际收入。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_policy_tradeoff",
+      "name": "政策权衡分析",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "政策分析",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_index_real_nominal",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "比较效率、公平和稳定目标之间的取舍。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_market_failure_synthesis",
+      "name": "市场失灵综合",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "综合应用",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_policy_tradeoff",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "nearby"
+        },
+        {
+          "id": "college_econ_exam_model_answer",
+          "relation": "next"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "判断外部性、公共物品、垄断和信息不对称的政策应对。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    },
+    {
+      "id": "college_econ_exam_model_answer",
+      "name": "经济学规范作答",
+      "subject": "economics",
+      "stage": "college",
+      "chapter": "经济学基础",
+      "unit": "答题规范",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "脱离模型假设直接套结论",
+        "把相关关系当成因果关系",
+        "忽略机会成本、边际变化或外部性"
+      ],
+      "skills": [
+        "识别模型假设、变量和约束条件",
+        "用图像、公式或边际分析解释经济机制",
+        "区分短期长期、个体整体和相关因果"
+      ],
+      "question_types": [
+        "模型分析",
+        "情境解释"
+      ],
+      "examples": [
+        {
+          "prompt": "按概念、图形、机制、结论组织经济学简答题。",
+          "answer_outline": [
+            "先识别题目考查的经济学基础模型或概念。",
+            "列出关键变量、条件、公式或过程图。",
+            "按课程方法完成推导、计算或结构化解释。",
+            "检查结论的单位、边界条件和现实含义。"
+          ],
+          "common_traps": [
+            "脱离模型假设直接套结论",
+            "把相关关系当成因果关系"
+          ],
+          "grading_points": [
+            "模型选择和核心概念准确。",
+            "推理步骤完整，关键条件有回应。",
+            "结论表达规范，并能解释结果含义。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "economics",
+        "college",
+        "college_course_track"
+      ],
+      "curriculum_version": [
+        "generic_college",
+        "college_economics"
+      ],
+      "exam_region": [
+        "college_course_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "college_course_exam"
+      ]
+    }
+  ]
+}

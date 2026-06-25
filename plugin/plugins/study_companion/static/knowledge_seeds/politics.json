@@ -1,0 +1,820 @@
+{
+  "version": "1.0",
+  "subject": "politics",
+  "topics": [
+    {
+      "id": "pol_junior_rule_law",
+      "name": "规则与法治意识",
+      "subject": "politics",
+      "stage": "junior_high",
+      "chapter": "道德与法治",
+      "depth": 1,
+      "difficulty": 0.4,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "成长与法治",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "材料题",
+        "观点说明"
+      ],
+      "examples": [
+        {
+          "prompt": "结合校园案例说明规则意识和法治意识的关系。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "pol_junior_rights_obligations",
+      "name": "权利与义务",
+      "subject": "politics",
+      "stage": "junior_high",
+      "chapter": "道德与法治",
+      "depth": 2,
+      "difficulty": 0.46,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "成长与法治",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "概念辨析",
+        "材料分析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断网络表达案例中公民权利和义务的边界。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "pol_junior_collective_responsibility",
+      "name": "集体与责任",
+      "subject": "politics",
+      "stage": "junior_high",
+      "chapter": "道德与法治",
+      "depth": 2,
+      "difficulty": 0.42,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "成长与法治",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "价值判断",
+        "措施题"
+      ],
+      "examples": [
+        {
+          "prompt": "说明班级合作中个人责任和集体利益如何统一。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_economy_market",
+      "name": "市场机制与宏观调控",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "高中政治",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "经济政治哲学",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "材料题",
+        "经济分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析价格变化、供需关系和政府调控措施。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_political_participation",
+      "name": "人民民主与政治参与",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "高中政治",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "经济政治哲学",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "材料题",
+        "主体分析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据基层治理材料说明人民当家作主的制度优势。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_rule_of_law",
+      "name": "全面依法治国",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "高中政治",
+      "depth": 2,
+      "difficulty": 0.64,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "经济政治哲学",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "法治分析",
+        "措施题"
+      ],
+      "examples": [
+        {
+          "prompt": "结合行政执法案例说明严格规范公正文明执法。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_philosophy_dialectics",
+      "name": "唯物辩证法",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "高中政治",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "经济政治哲学",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "哲学分析",
+        "观点说明"
+      ],
+      "examples": [
+        {
+          "prompt": "用联系观和发展观分析科技创新与社会生活变化。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_culture_confidence",
+      "name": "文化传承与文化自信",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "高中政治",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背概念，不扣材料主体和设问角度",
+        "原因、意义、措施混答",
+        "答案缺少政治学科术语和逻辑层次"
+      ],
+      "unit": "经济政治哲学",
+      "skills": [
+        "识别材料对应的核心概念和主体关系",
+        "按设问类型组织原因、意义、措施或评析",
+        "用规范术语连接材料和教材观点"
+      ],
+      "question_types": [
+        "文化分析",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "结合传统节日创新传播材料说明文化自信。",
+          "answer_outline": [
+            "判断模块和设问类型：经济、政治、法治、哲学或文化。",
+            "圈出材料主体、行为、结果和关键词。",
+            "匹配教材概念并展开“材料+观点+分析”。",
+            "检查角度是否完整、术语是否规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_junior_national_security",
+      "name": "国家安全教育",
+      "subject": "politics",
+      "stage": "junior_high",
+      "chapter": "道德与法治",
+      "depth": 2,
+      "difficulty": 0.44,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背术语不扣材料",
+        "主体和角度错位",
+        "答案层次不清"
+      ],
+      "unit": "国家安全",
+      "skills": [
+        "识别材料主体、行为和设问类型",
+        "匹配教材核心概念并扣材料分析",
+        "按原因意义措施评析组织答案"
+      ],
+      "question_types": [
+        "材料题",
+        "价值判断"
+      ],
+      "examples": [
+        {
+          "prompt": "结合生活案例说明维护国家安全与青少年行为的关系。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "pol_junior_rule_morality",
+      "name": "道德与法律关系",
+      "subject": "politics",
+      "stage": "junior_high",
+      "chapter": "道德与法治",
+      "depth": 2,
+      "difficulty": 0.46,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背术语不扣材料",
+        "主体和角度错位",
+        "答案层次不清"
+      ],
+      "unit": "法治与德治",
+      "skills": [
+        "识别材料主体、行为和设问类型",
+        "匹配教材核心概念并扣材料分析",
+        "按原因意义措施评析组织答案"
+      ],
+      "question_types": [
+        "观点说明",
+        "材料分析"
+      ],
+      "examples": [
+        {
+          "prompt": "分析某公共事件中道德约束和法律规范的不同作用。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "junior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_socialism_market",
+      "name": "社会主义市场经济体制",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "经济与社会",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背术语不扣材料",
+        "主体和角度错位",
+        "答案层次不清"
+      ],
+      "unit": "经济制度",
+      "skills": [
+        "识别材料主体、行为和设问类型",
+        "匹配教材核心概念并扣材料分析",
+        "按原因意义措施评析组织答案"
+      ],
+      "question_types": [
+        "经济分析",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "说明有效市场和有为政府如何共同促进高质量发展。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_international_relations",
+      "name": "国际关系与中国外交",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "当代国际政治",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背术语不扣材料",
+        "主体和角度错位",
+        "答案层次不清"
+      ],
+      "unit": "国际关系",
+      "skills": [
+        "识别材料主体、行为和设问类型",
+        "匹配教材核心概念并扣材料分析",
+        "按原因意义措施评析组织答案"
+      ],
+      "question_types": [
+        "政治分析",
+        "材料题"
+      ],
+      "examples": [
+        {
+          "prompt": "结合国际合作材料分析国家利益、和平发展与人类命运共同体。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    },
+    {
+      "id": "pol_senior_logical_thinking",
+      "name": "逻辑与思维方法",
+      "subject": "politics",
+      "stage": "senior_high",
+      "chapter": "逻辑与思维",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只背术语不扣材料",
+        "主体和角度错位",
+        "答案层次不清"
+      ],
+      "unit": "科学思维",
+      "skills": [
+        "识别材料主体、行为和设问类型",
+        "匹配教材核心概念并扣材料分析",
+        "按原因意义措施评析组织答案"
+      ],
+      "question_types": [
+        "逻辑推理",
+        "观点辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "判断一个三段论推理是否有效，并说明大项中项小项关系。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "politics",
+        "senior_high",
+        "subject_depth_boost",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "humanities_elective_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "academic_level_exam",
+        "gaokao_style"
+      ]
+    }
+  ]
+}

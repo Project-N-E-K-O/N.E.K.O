@@ -1,0 +1,3652 @@
+{
+  "version": "1.0",
+  "subject": "english",
+  "topics": [
+    {
+      "id": "english_primary_phonics",
+      "name": "自然拼读",
+      "subject": "english",
+      "stage": "primary",
+      "chapter": "英语启蒙与基础",
+      "depth": 1,
+      "difficulty": 0.26,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "自然拼读与词汇",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "拼读规则",
+        "听说基础"
+      ],
+      "examples": [
+        {
+          "prompt": "根据字母组合 sh/ch/th 的发音，读出 ship、chair、three 并归类。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "english_primary_sight_words",
+      "name": "小学高频词",
+      "subject": "english",
+      "stage": "primary",
+      "chapter": "英语启蒙与基础",
+      "depth": 1,
+      "difficulty": 0.24,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "自然拼读与词汇",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "词汇记忆",
+        "语境填空"
+      ],
+      "examples": [
+        {
+          "prompt": "用 I, you, he, she, like, have 完成 5 个简单句。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "english_primary_daily_dialogue",
+      "name": "日常交际用语",
+      "subject": "english",
+      "stage": "primary",
+      "chapter": "英语启蒙与基础",
+      "depth": 1,
+      "difficulty": 0.3,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "自然拼读与词汇",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "口语表达",
+        "情景交际"
+      ],
+      "examples": [
+        {
+          "prompt": "根据“问候、感谢、道歉、请求帮助”四个场景各写一句英文回应。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "english_primary_picture_writing",
+      "name": "看图写句",
+      "subject": "english",
+      "stage": "primary",
+      "chapter": "英语启蒙与基础",
+      "depth": 1,
+      "difficulty": 0.36,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "自然拼读与词汇",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "写作入门",
+        "图文表达"
+      ],
+      "examples": [
+        {
+          "prompt": "看图写 4 句英文，至少包含人物、动作、地点和感受。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "primary",
+        "curriculum_context",
+        "primary_local_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_primary",
+        "renjiao_primary",
+        "beishi_primary",
+        "sujiao_primary"
+      ],
+      "exam_region": [
+        "primary_local_generic"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "primary_term_exam"
+      ]
+    },
+    {
+      "id": "english_junior_tense_system",
+      "name": "初中时态体系",
+      "subject": "english",
+      "stage": "junior_high",
+      "chapter": "英语语法",
+      "depth": 2,
+      "difficulty": 0.48,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "时态与句法",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "语法填空",
+        "句型转换"
+      ],
+      "examples": [
+        {
+          "prompt": "用一般现在、一般过去、现在进行、现在完成分别描述同一学习计划。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "english_junior_clause_intro",
+      "name": "宾语从句与状语从句",
+      "subject": "english",
+      "stage": "junior_high",
+      "chapter": "英语语法",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "时态与句法",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "语法填空",
+        "句子合并"
+      ],
+      "examples": [
+        {
+          "prompt": "把两个简单句合并成含 because/if/when/that 的复合句。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "english_junior_reading_detail",
+      "name": "阅读细节定位",
+      "subject": "english",
+      "stage": "junior_high",
+      "chapter": "英语语法",
+      "depth": 2,
+      "difficulty": 0.46,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "时态与句法",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "阅读理解",
+        "信息定位"
+      ],
+      "examples": [
+        {
+          "prompt": "阅读一段校园活动通知，找出时间、地点、报名方式和注意事项。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "english_junior_cloze_context",
+      "name": "完形填空语境推断",
+      "subject": "english",
+      "stage": "junior_high",
+      "chapter": "英语语法",
+      "depth": 2,
+      "difficulty": 0.56,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "时态与句法",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "完形填空",
+        "词义辨析"
+      ],
+      "examples": [
+        {
+          "prompt": "根据上下文情绪变化选择合适动词和连词，并说明线索。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "junior_high",
+        "curriculum_context",
+        "zhongkao_regional_style"
+      ],
+      "curriculum_version": [
+        "generic_cn_junior",
+        "renjiao_junior",
+        "beishi_junior",
+        "sujiao_junior"
+      ],
+      "exam_region": [
+        "zhongkao_local_generic",
+        "zhongkao_beijing_style",
+        "zhongkao_shanghai_style",
+        "zhongkao_jiangsu_style"
+      ],
+      "exam_type": [
+        "daily_practice",
+        "unit_test",
+        "zhongkao_style"
+      ]
+    },
+    {
+      "id": "english_senior_long_reading_structure",
+      "name": "长篇阅读篇章结构",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 2,
+      "difficulty": 0.62,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "高中阅读与写作",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "阅读理解",
+        "篇章结构"
+      ],
+      "examples": [
+        {
+          "prompt": "分析一篇说明文每段主旨，判断哪一句适合放回文中空缺处。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_inference",
+      "name": "推理判断题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 2,
+      "difficulty": 0.64,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "高中阅读与写作",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "阅读理解",
+        "推理判断"
+      ],
+      "examples": [
+        {
+          "prompt": "根据作者用词和例证判断作者对 AI tutoring 的态度。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_grammar_filling",
+      "name": "语法填空",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 2,
+      "difficulty": 0.6,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "高中阅读与写作",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "语法填空",
+        "语篇语法"
+      ],
+      "examples": [
+        {
+          "prompt": "在一篇短文中填入动词形式、冠词、介词和连词，并解释依据。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_application_letter",
+      "name": "应用文写作",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 2,
+      "difficulty": 0.66,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "高中阅读与写作",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "应用文写作",
+        "表达润色"
+      ],
+      "examples": [
+        {
+          "prompt": "给交换生写一封邀请信，包含活动时间、内容、意义和期待回复。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_continuation_writing",
+      "name": "读后续写",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 3,
+      "difficulty": 0.76,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "只凭中文直觉选词，忽略搭配和语境",
+        "阅读题只看单句，不回到段落逻辑",
+        "写作表达有结论但缺少支撑句和连接词"
+      ],
+      "unit": "高中阅读与写作",
+      "skills": [
+        "定位语篇线索并判断题目考查的语言点",
+        "在语境中选择词汇、语法或篇章策略",
+        "用原文证据或表达规则解释答案"
+      ],
+      "question_types": [
+        "读后续写",
+        "叙事写作"
+      ],
+      "examples": [
+        {
+          "prompt": "根据故事开头续写两段，保持人物动机、冲突和情感转折一致。",
+          "answer_outline": [
+            "识别题型：词汇、语法、阅读或写作任务。",
+            "圈出关键词、连接词、时态、人称或段落主旨。",
+            "依据语境、结构或题干要求作答。",
+            "检查语法一致性、表达自然度和证据是否充分。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_summary_writing",
+      "name": "概要写作",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语阅读写作",
+      "depth": 3,
+      "difficulty": 0.68,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离语境选词",
+        "阅读答案没有证据",
+        "写作缺少结构和连接"
+      ],
+      "unit": "高中写作",
+      "skills": [
+        "用语境判断词汇语法和篇章关系",
+        "定位原文证据或写作任务要求",
+        "检查表达准确性和连贯性"
+      ],
+      "question_types": [
+        "概要写作",
+        "信息整合"
+      ],
+      "examples": [
+        {
+          "prompt": "把一篇介绍环保行动的短文压缩成 60 词概要，保留主旨和关键支撑。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_listening_note",
+      "name": "听力速记策略",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "英语听力口语",
+      "depth": 2,
+      "difficulty": 0.58,
+      "prerequisites": [],
+      "related": [],
+      "typical_misconceptions": [
+        "脱离语境选词",
+        "阅读答案没有证据",
+        "写作缺少结构和连接"
+      ],
+      "unit": "听力策略",
+      "skills": [
+        "用语境判断词汇语法和篇章关系",
+        "定位原文证据或写作任务要求",
+        "检查表达准确性和连贯性"
+      ],
+      "question_types": [
+        "听力理解",
+        "信息记录"
+      ],
+      "examples": [
+        {
+          "prompt": "听一段活动安排，记录时间、地点、人物、数字和转折信息。",
+          "answer_outline": [
+            "判断题目材料和设问类型。",
+            "提取关键词、图表数据或实验条件。",
+            "调用对应概念、模型或方法分步分析。",
+            "检查结论是否扣题、规范且完整。"
+          ],
+          "common_traps": [
+            "脱离原文定位，按中文经验猜选项或表达。",
+            "忽略上下文逻辑、指代关系和语篇目的。",
+            "写作只完成句子堆叠，缺少任务要点和衔接。"
+          ],
+          "grading_points": [
+            "信息定位、语法判断或写作任务回应准确。",
+            "能说明上下文依据、语篇逻辑或表达选择理由。",
+            "语言自然，结构完整，符合题型评分要求。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "subject_depth_boost",
+        "gaokao_style_example",
+        "senior_high_core",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "new_gaokao_english",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_tense_voice_context",
+      "name": "时态语态语境判断",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "动词系统",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_inference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_inference",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_nonfinite_verbs",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据时间线、语境和主被动关系选择谓语形式。",
+          "answer_outline": [
+            "先判断题目属于时态语态语境判断的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_nonfinite_verbs",
+      "name": "非谓语动词",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "动词系统",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_tense_voice_context",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_tense_voice_context",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_clause_connection",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "判断 to do、doing、done 在句中的逻辑主语和功能。",
+          "answer_outline": [
+            "先判断题目属于非谓语动词的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_clause_connection",
+      "name": "从句连接词选择",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "复合句",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_nonfinite_verbs",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_nonfinite_verbs",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_relative_clause",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "区分名词性从句、定语从句和状语从句连接词。",
+          "answer_outline": [
+            "先判断题目属于从句连接词选择的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_relative_clause",
+      "name": "定语从句限定与非限定",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "复合句",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_clause_connection",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_clause_connection",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_subject_verb_agreement",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据先行词、成分缺失和逗号判断关系词。",
+          "answer_outline": [
+            "先判断题目属于定语从句限定与非限定的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_subject_verb_agreement",
+      "name": "主谓一致",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "句法一致",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_relative_clause",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_relative_clause",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_special_sentence_patterns",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据真正主语、就近原则和意义一致确定谓语。",
+          "answer_outline": [
+            "先判断题目属于主谓一致的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_special_sentence_patterns",
+      "name": "倒装强调省略",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "特殊句式",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_subject_verb_agreement",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_subject_verb_agreement",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_word_formation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "识别倒装、强调句和省略结构的触发条件。",
+          "answer_outline": [
+            "先判断题目属于倒装强调省略的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_word_formation",
+      "name": "词性转换与派生",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "词汇运用",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_special_sentence_patterns",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_special_sentence_patterns",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_cloze_logic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据句法位置和语义关系完成词性转换。",
+          "answer_outline": [
+            "先判断题目属于词性转换与派生的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_cloze_logic",
+      "name": "完形填空逻辑线索",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "完形填空",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_word_formation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_word_formation",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_cloze_collocation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据转折、因果、复现和情感色彩选择词汇。",
+          "answer_outline": [
+            "先判断题目属于完形填空逻辑线索的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_cloze_collocation",
+      "name": "完形搭配与语义场",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "完形填空",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_cloze_logic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_cloze_logic",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_reading_main_idea",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "识别固定搭配、近义词差异和上下文语义场。",
+          "answer_outline": [
+            "先判断题目属于完形搭配与语义场的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_main_idea",
+      "name": "阅读主旨大意题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "阅读理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_cloze_collocation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_cloze_collocation",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_reading_detail_location",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "概括段落和全文中心，排除局部细节干扰。",
+          "answer_outline": [
+            "先判断题目属于阅读主旨大意题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_detail_location",
+      "name": "阅读细节定位题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "阅读理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_main_idea",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_main_idea",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_reading_word_guess",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "用题干关键词定位原文并完成同义替换。",
+          "answer_outline": [
+            "先判断题目属于阅读细节定位题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_word_guess",
+      "name": "词义猜测题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "阅读理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_detail_location",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_detail_location",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据定义、转折、例证和上下文推断词义。",
+          "answer_outline": [
+            "先判断题目属于词义猜测题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_author_attitude",
+      "name": "作者态度与观点题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "阅读理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_word_guess",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_word_guess",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_seven_choice_coherence",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "从评价词、让步转折和结论句判断态度。",
+          "answer_outline": [
+            "先判断题目属于作者态度与观点题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_seven_choice_coherence",
+      "name": "七选五衔接题",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "七选五",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_author_attitude",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_author_attitude",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据指代、逻辑关系和段落功能选择句子。",
+          "answer_outline": [
+            "先判断题目属于七选五衔接题的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_grammar_cloze_context",
+      "name": "语法填空上下文约束",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "语法填空",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_seven_choice_coherence",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_seven_choice_coherence",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_error_correction",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "综合句法成分、词性和上下文确定答案。",
+          "answer_outline": [
+            "先判断题目属于语法填空上下文约束的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_error_correction",
+      "name": "短文改错/语法纠错",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语语法",
+      "unit": "综合纠错",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_listening_inference",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "从动词、名词、代词、连词和冠词角度排查错误。",
+          "answer_outline": [
+            "先判断题目属于短文改错/语法纠错的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_listening_inference",
+      "name": "听力推断与态度",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语听力",
+      "unit": "听力理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_error_correction",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_error_correction",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_application_email",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据重音、转折和场景信息推断说话人意图。",
+          "answer_outline": [
+            "先判断题目属于听力推断与态度的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_application_email",
+      "name": "应用文邮件写作",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "应用文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_listening_inference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_listening_inference",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_application_notice",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "按目的、对象和礼貌程度组织邮件结构。",
+          "answer_outline": [
+            "先判断题目属于应用文邮件写作的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_application_notice",
+      "name": "通知与倡议书写作",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "应用文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_application_email",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_application_email",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_application_speech",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "写清活动信息、对象、行动要求和呼吁。",
+          "answer_outline": [
+            "先判断题目属于通知与倡议书写作的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_application_speech",
+      "name": "演讲稿写作",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "应用文",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_application_notice",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_application_notice",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_continuation_plot_logic",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "用开场、观点、理由和号召完成演讲稿。",
+          "answer_outline": [
+            "先判断题目属于演讲稿写作的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_continuation_plot_logic",
+      "name": "读后续写情节推进",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "读后续写",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_application_speech",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_application_speech",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_continuation_emotion_arc",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "根据原文冲突、人物动机和伏笔设计后续情节。",
+          "answer_outline": [
+            "先判断题目属于读后续写情节推进的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_continuation_emotion_arc",
+      "name": "读后续写情绪弧线",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "读后续写",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_continuation_plot_logic",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_continuation_plot_logic",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_continuation_language_imitation",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "用动作、心理和环境描写推动人物情绪变化。",
+          "answer_outline": [
+            "先判断题目属于读后续写情绪弧线的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_continuation_language_imitation",
+      "name": "读后续写语言协同",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "读后续写",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_continuation_emotion_arc",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_continuation_emotion_arc",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_summary_paraphrase",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "模仿原文时态、人称、语气和细节密度。",
+          "answer_outline": [
+            "先判断题目属于读后续写语言协同的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_summary_paraphrase",
+      "name": "概要写作转述压缩",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "概要写作",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_continuation_language_imitation",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_continuation_language_imitation",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "抓主干信息并用同义改写压缩细节。",
+          "answer_outline": [
+            "先判断题目属于概要写作转述压缩的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_writing_cohesion",
+      "name": "写作衔接与句式升级",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "表达提升",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_summary_paraphrase",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_summary_paraphrase",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_exam_time_strategy",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "用连接词、非谓语和从句提升段落连贯性。",
+          "answer_outline": [
+            "先判断题目属于写作衔接与句式升级的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_exam_time_strategy",
+      "name": "英语考试时间分配",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语综合",
+      "unit": "考试策略",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_writing_cohesion",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_vocabulary_context_review",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "按题型难度和分值安排阅读、完形和写作时间。",
+          "answer_outline": [
+            "先判断题目属于英语考试时间分配的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_vocabulary_context_review",
+      "name": "语境词汇复习",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语综合",
+      "unit": "词汇策略",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_exam_time_strategy",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_exam_time_strategy",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_translation_chinese_interference",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "按主题语境、搭配和派生词建立词汇网络。",
+          "answer_outline": [
+            "先判断题目属于语境词汇复习的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_translation_chinese_interference",
+      "name": "中式表达纠偏",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语综合",
+      "unit": "表达提升",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_vocabulary_context_review",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_vocabulary_context_review",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_reading_new_gaokao_information",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "识别中文直译造成的搭配、语序和逻辑问题。",
+          "answer_outline": [
+            "先判断题目属于中式表达纠偏的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_reading_new_gaokao_information",
+      "name": "新高考信息类阅读",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语阅读",
+      "unit": "阅读理解",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_translation_chinese_interference",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_translation_chinese_interference",
+          "relation": "nearby"
+        },
+        {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "处理说明文、科普文和应用文中的信息结构。",
+          "answer_outline": [
+            "先判断题目属于新高考信息类阅读的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    },
+    {
+      "id": "english_senior_writing_rubric_revision",
+      "name": "写作评分标准自查",
+      "subject": "english",
+      "stage": "senior_high",
+      "chapter": "高中英语写作",
+      "unit": "表达提升",
+      "depth": 3,
+      "difficulty": 0.66,
+      "prerequisites": [
+        {
+          "id": "english_senior_reading_new_gaokao_information",
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "english_senior_reading_new_gaokao_information",
+          "relation": "nearby"
+        }
+      ],
+      "typical_misconceptions": [
+        "只按中文直译导致语法和搭配不自然",
+        "阅读题脱离原文定位凭感觉推断",
+        "写作缺少语篇衔接和情节/任务约束"
+      ],
+      "skills": [
+        "定位原文信息并识别语篇逻辑",
+        "根据语法、搭配和上下文约束选择表达",
+        "组织符合题型要求的段落和衔接句"
+      ],
+      "question_types": [
+        "语篇理解",
+        "表达运用"
+      ],
+      "examples": [
+        {
+          "prompt": "从内容、结构、语言和书写四项修订作文。",
+          "answer_outline": [
+            "先判断题目属于写作评分标准自查的哪一种设问。",
+            "提取题干中的限制条件、隐含关系和关键数据。",
+            "调用英语核心概念或题型步骤完成推理。",
+            "回到题干检查答案是否完整、规范且符合情境。"
+          ],
+          "common_traps": [
+            "只看到关键词就套固定结论。",
+            "漏掉题干中的限制条件或设问角度。"
+          ],
+          "grading_points": [
+            "核心概念或方法选择正确。",
+            "推理步骤完整，关键条件有回应。",
+            "答案表述符合该题型规范。"
+          ]
+        }
+      ],
+      "curriculum_tags": [
+        "multi_subject_seed",
+        "english",
+        "senior_high",
+        "core_track",
+        "curriculum_context",
+        "gaokao_regional_style",
+        "required_subject_track"
+      ],
+      "curriculum_version": [
+        "generic_cn_high_school",
+        "renjiao_high_school",
+        "beishi_high_school",
+        "sujiao_high_school",
+        "new_gaokao_english"
+      ],
+      "exam_region": [
+        "new_gaokao_generic",
+        "new_gaokao_i",
+        "new_gaokao_ii",
+        "national_a",
+        "national_b"
+      ],
+      "exam_type": [
+        "school_exam",
+        "gaokao_style",
+        "academic_level_exam"
+      ]
+    }
+  ]
+}

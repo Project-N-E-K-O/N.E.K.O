@@ -12,6 +12,11 @@ from .entry_common import (
     build_contribution_settings_payload,
     build_knowledge_map_payload,
 )
+from .knowledge_quality import (
+    KnowledgeCandidateStatus,
+    KnowledgeCandidateType,
+    KnowledgeEvidenceType,
+)
 
 
 class _KnowledgeEntriesMixin:
@@ -42,6 +47,140 @@ class _KnowledgeEntriesMixin:
         except Exception as exc:
             return _entry_exception_error(
                 self, exc, operation="study_knowledge_quality_status"
+            )
+
+    @ui.action()
+    @plugin_entry(
+        id="study_review_knowledge_candidate",
+        name=tr(
+            "entries.review_knowledge_candidate.name",
+            default="Review Study Knowledge Candidate",
+        ),
+        description=tr(
+            "entries.review_knowledge_candidate.description",
+            default="Approve or reject a candidate knowledge topic before it is merged into the base knowledge library.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "candidate_id": {"type": "string"},
+                "decision": {
+                    "type": "string",
+                    "enum": ["approve", "reject"],
+                    "default": "approve",
+                },
+            },
+            "required": ["candidate_id", "decision"],
+        },
+        llm_result_fields=["decision", "candidate", "topic"],
+    )
+    async def study_review_knowledge_candidate(
+        self, candidate_id: str = "", decision: str = "approve", **_
+    ):
+        try:
+            candidate_key = str(candidate_id or "").strip()
+            if not candidate_key:
+                raise ValueError("candidate_id is required")
+            normalized_decision = str(decision or "").strip().lower()
+            if normalized_decision not in {"approve", "reject"}:
+                raise ValueError("decision must be approve or reject")
+
+            def _review() -> dict[str, object]:
+                candidate = self._store.get_candidate_item(candidate_key)
+                if not candidate:
+                    raise KeyError(f"knowledge candidate not found: {candidate_key}")
+
+                if normalized_decision == "reject":
+                    self._knowledge_tracker.quality.add_evidence(
+                        candidate_key,
+                        KnowledgeEvidenceType.USER_REJECTED.value,
+                        -1.0,
+                        {"source": "candidate_review"},
+                    )
+                    refreshed = self._store.get_candidate_item(candidate_key) or candidate
+                    self._store.update_candidate_score_status(
+                        item_id=candidate_key,
+                        score=float(refreshed.get("score") or -1.0),
+                        status=KnowledgeCandidateStatus.DEPRECATED.value,
+                        evidence_count=int(refreshed.get("evidence_count") or 0),
+                        positive_count=int(refreshed.get("positive_count") or 0),
+                        negative_count=int(refreshed.get("negative_count") or 0),
+                        conflict_count=int(refreshed.get("conflict_count") or 0),
+                    )
+                    return {
+                        "decision": normalized_decision,
+                        "candidate": self._store.get_candidate_item(candidate_key) or refreshed,
+                        "topic": {},
+                    }
+
+                if candidate.get("item_type") != KnowledgeCandidateType.TOPIC.value:
+                    raise ValueError("only topic candidates can be approved into the base library")
+                payload = dict(candidate.get("payload") or {})
+                topic_id = str(payload.get("id") or payload.get("topic_id") or "").strip()
+                name = str(payload.get("name") or payload.get("topic") or topic_id).strip()
+                if not topic_id or not name:
+                    raise ValueError("topic candidate requires id/topic_id and name/topic")
+                self._store.upsert_topic(
+                    {
+                        "id": topic_id,
+                        "name": name,
+                        "subject": payload.get("subject") or "math",
+                        "chapter": payload.get("chapter") or "",
+                        "stage": payload.get("stage")
+                        or payload.get("grade_level")
+                        or payload.get("education_level")
+                        or payload.get("course_level")
+                        or "",
+                        "unit": payload.get("unit") or payload.get("chapter") or "",
+                        "depth": payload.get("depth") or 1,
+                        "difficulty": payload.get("difficulty") or 0.5,
+                        "prerequisites": payload.get("prerequisites")
+                        if isinstance(payload.get("prerequisites"), list)
+                        else [],
+                        "related": payload.get("related")
+                        if isinstance(payload.get("related"), list)
+                        else [],
+                        "typical_misconceptions": payload.get("typical_misconceptions")
+                        if isinstance(payload.get("typical_misconceptions"), list)
+                        else [],
+                        "skills": payload.get("skills")
+                        if isinstance(payload.get("skills"), list)
+                        else [],
+                        "question_types": payload.get("question_types")
+                        if isinstance(payload.get("question_types"), list)
+                        else [],
+                        "examples": payload.get("examples")
+                        if isinstance(payload.get("examples"), list)
+                        else [],
+                        "source": "seed",
+                    }
+                )
+                self._knowledge_tracker.quality.add_evidence(
+                    candidate_key,
+                    KnowledgeEvidenceType.USER_CONFIRMED.value,
+                    1.0,
+                    {"source": "candidate_review", "topic_id": topic_id},
+                )
+                refreshed = self._store.get_candidate_item(candidate_key) or candidate
+                self._store.update_candidate_score_status(
+                    item_id=candidate_key,
+                    score=max(float(refreshed.get("score") or 0.0), 1.0),
+                    status=KnowledgeCandidateStatus.TRUSTED.value,
+                    evidence_count=int(refreshed.get("evidence_count") or 0),
+                    positive_count=int(refreshed.get("positive_count") or 0),
+                    negative_count=int(refreshed.get("negative_count") or 0),
+                    conflict_count=int(refreshed.get("conflict_count") or 0),
+                )
+                return {
+                    "decision": normalized_decision,
+                    "candidate": self._store.get_candidate_item(candidate_key) or refreshed,
+                    "topic": self._store.get_topic(topic_id) or {},
+                }
+
+            return Ok(await asyncio.to_thread(_review))
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_review_knowledge_candidate"
             )
 
     @ui.action()
