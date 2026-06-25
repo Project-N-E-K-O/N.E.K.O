@@ -139,6 +139,25 @@ def _force_shot_result(page: Page, scored: bool = True) -> None:
     )
 
 
+def _wait_for_badminton_speak_payload(
+    page: Page, speak_payloads: list[dict], event_kind: str, timeout_ms: int = 3000
+) -> dict:
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        payload = next(
+            (
+                payload
+                for payload in reversed(speak_payloads)
+                if payload.get("event", {}).get("kind") == event_kind
+            ),
+            None,
+        )
+        if payload:
+            return payload
+        page.wait_for_timeout(50)
+    pytest.fail(f"Timed out waiting for badminton speak event: {event_kind}")
+
+
 @pytest.mark.e2e
 def test_badminton_legacy_modes_fall_back_to_duel(mock_page: Page, running_server: str):
     page = mock_page
@@ -1399,14 +1418,13 @@ def test_badminton_yui_banana_cheat_warns_player_with_bubble(mock_page: Page, ru
     assert page.evaluate(
         """() => window.getComputedStyle(document.getElementById('neko-bubble')).backgroundColor"""
     ) == "rgb(207, 234, 255)"
-    page.wait_for_timeout(500)
-    assert speak_payloads
-    assert re.search(r"香蕉皮|踩到|这一步|跳过去", speak_payloads[-1]["line"])
-    assert speak_payloads[-1]["event"]["kind"] == "yui_cheat_item"
-    assert speak_payloads[-1]["event"]["label"] == "yui_cheat_banana"
-    assert speak_payloads[-1]["event"]["item_kind"] == "banana"
-    assert speak_payloads[-1]["event"]["force_voice_in_debug"] is True
-    assert speak_payloads[-1]["event"]["voice_deadline_ms"] == 3600
+    item_payload = _wait_for_badminton_speak_payload(page, speak_payloads, "yui_cheat_item")
+    assert re.search(r"香蕉皮|踩到|这一步|跳过去", item_payload["line"])
+    assert item_payload["event"]["label"] == "yui_cheat_banana"
+    assert item_payload["event"]["item_kind"] == "banana"
+    assert item_payload["event"]["force_voice_in_debug"] is True
+    assert item_payload["event"]["voice_deadline_ms"] == 6200
+    assert item_payload["interrupt_audio"] is True
     page.evaluate("window.BadmintonDemo.showBubble('普通回合台词', { mood: 'happy' })")
     page.wait_for_timeout(120)
     expect(page.locator("#neko-bubble")).to_contain_text(re.compile("香蕉皮|踩到|这一步|跳过去"))
@@ -1470,6 +1488,62 @@ def test_badminton_yui_voice_defer_releases_stuck_playback_state(
 
     assert speak_payloads
     assert speak_payloads[-1]["event"]["kind"] == "yui_cheat_item"
+    assert speak_payloads[-1]["interrupt_audio"] is True
+
+
+@pytest.mark.e2e
+def test_badminton_yui_cheat_voice_does_not_wait_for_mirror_assistant(
+    mock_page: Page, running_server: str
+):
+    page = mock_page
+    speak_payloads = []
+    page.add_init_script(
+        """
+        (() => {
+          const originalFetch = window.fetch.bind(window);
+          window.__badmintonBlockedMirrorAssistant = 0;
+          window.fetch = (input, init) => {
+            const url = String(input && input.url ? input.url : input || '');
+            if (url.indexOf('/api/game/badminton/mirror-assistant') !== -1) {
+              window.__badmintonBlockedMirrorAssistant += 1;
+              return new Promise(() => {});
+            }
+            return originalFetch(input, init);
+          };
+        })();
+        """
+    )
+
+    def capture_speak(route):
+        speak_payloads.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":true,"audio_sent":true,"speech_id":"e2e-yui-cheat-no-mirror-wait"}',
+        )
+
+    page.route("**/api/game/badminton/speak", capture_speak)
+    _goto_badminton(page, running_server, "duel", debug=True, debug_voice=False)
+
+    page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
+    page.evaluate(
+        """() => {
+          const state = window.BadmintonDemo.getState();
+          window.BadmintonDemo._debugSpawnYuiCheat('banana', {
+            x: state.playerCourt.x + 92,
+            y: state.playerFootY
+          });
+        }"""
+    )
+
+    deadline = time.time() + 3
+    while time.time() < deadline and not speak_payloads:
+        page.wait_for_timeout(25)
+
+    assert page.evaluate("window.__badmintonBlockedMirrorAssistant") >= 1
+    assert speak_payloads
+    assert speak_payloads[-1]["event"]["kind"] == "yui_cheat_item"
+    assert speak_payloads[-1]["interrupt_audio"] is True
 
 
 @pytest.mark.e2e
@@ -1663,6 +1737,25 @@ def test_badminton_voice_selection_mutes_ordinary_hint_but_keeps_bubble(
 @pytest.mark.e2e
 def test_badminton_banana_peel_flips_and_slows_grounded_player(mock_page: Page, running_server: str):
     page = mock_page
+    speak_payloads = []
+
+    def capture_speak(route):
+        speak_payloads.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":true,"audio_sent":true,"speech_id":"e2e-yui-cheat-hit"}',
+        )
+
+    page.route(
+        "**/api/game/badminton/mirror-assistant",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":true}',
+        ),
+    )
+    page.route("**/api/game/badminton/speak", capture_speak)
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
@@ -1724,6 +1817,10 @@ def test_badminton_banana_peel_flips_and_slows_grounded_player(mock_page: Page, 
     assert movement["afterInput"]["playerCourt"]["targetX"] > before["targetX"] + 16
     assert movement["afterInput"]["yuiCheat"]["player_effect"]["slipping"] is True
     assert movement["afterInput"]["yuiCheat"]["player_effect"]["speed_multiplier"] == pytest.approx(0.22)
+    hit_payload = _wait_for_badminton_speak_payload(page, speak_payloads, "yui_cheat_hit")
+    assert hit_payload["event"]["label"] == "yui_cheat_hit_banana"
+    assert hit_payload["event"]["item_kind"] == "banana"
+    assert hit_payload["interrupt_audio"] is True
     assert max(movement["spinSamples"]) > 5.2
     slow_distance = state["playerCourt"]["x"] - before["x"]
     expected_slow_distance = (
@@ -1844,6 +1941,25 @@ def test_badminton_player_can_jump_over_banana_peel(mock_page: Page, running_ser
 @pytest.mark.e2e
 def test_badminton_octopus_ink_covers_player_screen(mock_page: Page, running_server: str):
     page = mock_page
+    speak_payloads = []
+
+    def capture_speak(route):
+        speak_payloads.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":true,"audio_sent":true,"speech_id":"e2e-yui-cheat-octopus"}',
+        )
+
+    page.route(
+        "**/api/game/badminton/mirror-assistant",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"ok":true}',
+        ),
+    )
+    page.route("**/api/game/badminton/speak", capture_speak)
     _goto_badminton(page, running_server, "duel")
 
     page.wait_for_function("window.BadmintonDemo.getState().state === 'ready'")
@@ -1863,6 +1979,10 @@ def test_badminton_octopus_ink_covers_player_screen(mock_page: Page, running_ser
     assert state["yuiCheat"]["last_used_kind"] == "octopus"
     assert state["yuiCheat"]["ink"]["active"] is True
     assert state["yuiCheat"]["ink"]["alpha"] >= 0.75
+    item_payload = _wait_for_badminton_speak_payload(page, speak_payloads, "yui_cheat_item")
+    assert item_payload["event"]["label"] == "yui_cheat_octopus"
+    assert item_payload["event"]["item_kind"] == "octopus"
+    assert item_payload["interrupt_audio"] is True
 
 
 @pytest.mark.e2e
@@ -1933,25 +2053,14 @@ def test_badminton_yui_taunts_after_cheat_hit_scores_point(
         timeout=2000,
     )
 
-    deadline = time.time() + 6
-    score_payload = None
-    while time.time() < deadline:
-        score_payload = next(
-            (
-                payload
-                for payload in reversed(speak_payloads)
-                if payload.get("event", {}).get("kind") == "yui_cheat_score"
-            ),
-            None,
-        )
-        if score_payload:
-            break
-        page.wait_for_timeout(50)
-    assert score_payload
+    score_payload = _wait_for_badminton_speak_payload(
+        page, speak_payloads, "yui_cheat_score", timeout_ms=6000
+    )
     event = score_payload["event"]
     assert event["kind"] == "yui_cheat_score"
     assert event["label"] == f"yui_cheat_score_{kind}"
     assert event["item_kind"] == kind
+    assert score_payload["interrupt_audio"] is True
 
 
 @pytest.mark.e2e
