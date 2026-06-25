@@ -14,11 +14,11 @@
 
 ```bash
 # ✅ 正しい
-uv run python main_server.py
+uv run python app/main_server.py
 uv run pytest tests/
 
 # ❌ 間違い
-python main_server.py
+python app/main_server.py
 pytest tests/
 ```
 
