@@ -418,7 +418,8 @@ def test_drawing_guess_static_route_contract():
     assert "animateAiDrawing" in script
     assert "state.aiSvg = serializeAiDrawingSvg(els.aiDrawing) || state.aiSvg" in script
     assert "function screenRectToSvgBounds" in script
-    assert "function measureSvgContentBounds" in script
+    assert "function measureSvgContentMetrics" in script
+    assert "function clampCenterForBounds" in script
     assert "var viewBoxRatio = 240 / 180;" in script
     assert "transform 180ms" not in script
     assert "prefers-reduced-motion: reduce" in script

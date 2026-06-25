@@ -1477,40 +1477,75 @@
     }, null);
   }
 
-  function measureSvgContentBounds(svg, viewBox) {
+  function mergeSvgBounds(bounds, nextBounds) {
+    if (!nextBounds) return bounds;
+    if (!bounds) {
+      return {
+        x1: nextBounds.x1,
+        y1: nextBounds.y1,
+        x2: nextBounds.x2,
+        y2: nextBounds.y2
+      };
+    }
+    bounds.x1 = Math.min(bounds.x1, nextBounds.x1);
+    bounds.y1 = Math.min(bounds.y1, nextBounds.y1);
+    bounds.x2 = Math.max(bounds.x2, nextBounds.x2);
+    bounds.y2 = Math.max(bounds.y2, nextBounds.y2);
+    return bounds;
+  }
+
+  function measureSvgContentMetrics(svg, viewBox) {
     var svgRect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
     if (!svgRect || svgRect.width <= 0 || svgRect.height <= 0) return null;
-    return Array.prototype.slice.call(svg.querySelectorAll('path,line,polyline,polygon,rect,circle,ellipse')).reduce(function (bounds, node) {
+    var metrics = Array.prototype.slice.call(svg.querySelectorAll('path,line,polyline,polygon,rect,circle,ellipse')).reduce(function (current, node) {
       var rect = null;
       try {
         rect = node.getBoundingClientRect();
       } catch (_) {}
-      if (!rect || rect.width < 0.5 || rect.height < 0.5) return bounds;
-      if (isFullCanvasRect(node, viewBox, rect, svgRect)) return bounds;
+      if (!rect || rect.width < 0.5 || rect.height < 0.5) return current;
+      if (isFullCanvasRect(node, viewBox, rect, svgRect)) return current;
       var nodeBounds = screenRectToSvgBounds(svg, rect);
-      if (!nodeBounds) return bounds;
-      if (!bounds) return nodeBounds;
-      bounds.x1 = Math.min(bounds.x1, nodeBounds.x1);
-      bounds.y1 = Math.min(bounds.y1, nodeBounds.y1);
-      bounds.x2 = Math.max(bounds.x2, nodeBounds.x2);
-      bounds.y2 = Math.max(bounds.y2, nodeBounds.y2);
-      return bounds;
-    }, null);
+      if (!nodeBounds) return current;
+      current.bounds = mergeSvgBounds(current.bounds, nodeBounds);
+      var width = Math.max(0, nodeBounds.x2 - nodeBounds.x1);
+      var height = Math.max(0, nodeBounds.y2 - nodeBounds.y1);
+      var weight = Math.max(1, width * height);
+      current.weight += weight;
+      current.centerX += ((nodeBounds.x1 + nodeBounds.x2) / 2) * weight;
+      current.centerY += ((nodeBounds.y1 + nodeBounds.y2) / 2) * weight;
+      return current;
+    }, { bounds: null, centerX: 0, centerY: 0, weight: 0 });
+    if (!metrics.bounds) return null;
+    return {
+      bounds: metrics.bounds,
+      centerX: metrics.weight > 0 ? metrics.centerX / metrics.weight : (metrics.bounds.x1 + metrics.bounds.x2) / 2,
+      centerY: metrics.weight > 0 ? metrics.centerY / metrics.weight : (metrics.bounds.y1 + metrics.bounds.y2) / 2
+    };
+  }
+
+  function clampCenterForBounds(center, minBound, maxBound, viewSize) {
+    var contentSize = Math.max(1, maxBound - minBound);
+    var margin = Math.max(0, Math.min((viewSize - contentSize) / 2, viewSize * 0.08));
+    var minCenter = maxBound + margin - viewSize / 2;
+    var maxCenter = minBound - margin + viewSize / 2;
+    if (minCenter > maxCenter) return (minBound + maxBound) / 2;
+    return Math.max(minCenter, Math.min(maxCenter, center));
   }
 
   function fitAiDrawingSvgToContent(svg) {
     if (!svg) return;
     var viewBox = parseSvgViewBox(svg);
     var viewBoxRatio = 240 / 180;
-    var bounds = measureSvgContentBounds(svg, viewBox);
-    if (!bounds) return;
+    var metrics = measureSvgContentMetrics(svg, viewBox);
+    if (!metrics || !metrics.bounds) return;
+    var bounds = metrics.bounds;
     var contentWidth = Math.max(1, bounds.x2 - bounds.x1);
     var contentHeight = Math.max(1, bounds.y2 - bounds.y1);
-    var centerX = (bounds.x1 + bounds.x2) / 2;
-    var centerY = (bounds.y1 + bounds.y2) / 2;
     var maxContentRatio = 0.62;
     var nextWidth = Math.max(contentWidth / maxContentRatio, (contentHeight / maxContentRatio) * viewBoxRatio);
     var nextHeight = nextWidth / viewBoxRatio;
+    var centerX = clampCenterForBounds(metrics.centerX, bounds.x1, bounds.x2, nextWidth);
+    var centerY = clampCenterForBounds(metrics.centerY, bounds.y1, bounds.y2, nextHeight);
     var nextX = centerX - nextWidth / 2;
     var nextY = centerY - nextHeight / 2;
     svg.setAttribute('viewBox', [nextX, nextY, nextWidth, nextHeight].map(function (value) {
