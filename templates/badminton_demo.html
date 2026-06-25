@@ -4837,7 +4837,8 @@
     var nearNetRight = nearNetLeft + YUI_SHORT_DROP_SAVE_NET_WINDOW_PX;
     if (shuttleCourtY < nearNetLeft || shuttleCourtY > nearNetRight) return false;
     var shuttleZ = getShuttleCourtZ(incomingBall, false);
-    if (shuttleZ < YUI_SHORT_DROP_SAVE_MIN_Z || shuttleZ > YUI_SHORT_DROP_SAVE_MAX_Z) return false;
+    var minSaveZ = Math.max(YUI_SHORT_DROP_SAVE_MIN_Z, shuttleRadius * 0.25 + 0.5);
+    if (shuttleZ <= minSaveZ || shuttleZ > YUI_SHORT_DROP_SAVE_MAX_Z) return false;
     var shotPower = Number.isFinite(incomingBall.power) ? incomingBall.power : ((incomingBall.swingForce || 0) * 100);
     if (shotPower > YUI_SHORT_DROP_SAVE_POWER_MAX) return false;
     return getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiShortDropSaveRangeState(incomingBall).normalized <= 1;
