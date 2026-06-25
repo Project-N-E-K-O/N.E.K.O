@@ -279,6 +279,9 @@ def test_drawing_guess_static_route_contract():
     assert "function renderColorHistory" in script
     assert "function setBrushColor" in script
     assert "function hsvToHex" in script
+    assert "function colorWheelGeometry" in script
+    assert "borderLeftWidth" in script
+    assert "angle * 180 / Math.PI + 450" in script
     assert "function pickColorFromWheel" in script
     assert "function beginColorWheelPick" in script
     assert "function hexToRgba" in script

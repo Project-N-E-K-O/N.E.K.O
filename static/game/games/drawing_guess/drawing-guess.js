@@ -2780,22 +2780,41 @@
     els.colorWheel.style.setProperty('--dg-color-cursor-y', y + '%');
   }
 
+  function colorWheelGeometry() {
+    if (!els.colorWheel) return null;
+    var rect = els.colorWheel.getBoundingClientRect();
+    var style = window.getComputedStyle ? window.getComputedStyle(els.colorWheel) : null;
+    var borderLeft = style ? parseFloat(style.borderLeftWidth || '0') || 0 : 0;
+    var borderTop = style ? parseFloat(style.borderTopWidth || '0') || 0 : 0;
+    var borderRight = style ? parseFloat(style.borderRightWidth || '0') || 0 : 0;
+    var borderBottom = style ? parseFloat(style.borderBottomWidth || '0') || 0 : 0;
+    var width = Math.max(1, rect.width - borderLeft - borderRight);
+    var height = Math.max(1, rect.height - borderTop - borderBottom);
+    return {
+      left: rect.left + borderLeft,
+      top: rect.top + borderTop,
+      width: width,
+      height: height,
+      cx: rect.left + borderLeft + width / 2,
+      cy: rect.top + borderTop + height / 2,
+      radius: Math.max(1, Math.min(width, height) / 2)
+    };
+  }
+
   function pickColorFromWheel(event, remember) {
     if (!els.colorWheel) return;
-    var rect = els.colorWheel.getBoundingClientRect();
-    var radius = Math.max(1, Math.min(rect.width, rect.height) / 2);
-    var cx = rect.left + rect.width / 2;
-    var cy = rect.top + rect.height / 2;
-    var dx = event.clientX - cx;
-    var dy = event.clientY - cy;
+    var geometry = colorWheelGeometry();
+    if (!geometry) return;
+    var dx = event.clientX - geometry.cx;
+    var dy = event.clientY - geometry.cy;
     var distance = Math.sqrt(dx * dx + dy * dy);
-    var clampedDistance = Math.min(radius, distance);
+    var clampedDistance = Math.min(geometry.radius, distance);
     var angle = Math.atan2(dy, dx);
     var x = Math.cos(angle) * clampedDistance;
     var y = Math.sin(angle) * clampedDistance;
-    var hue = (angle * 180 / Math.PI + 360) % 360;
-    var saturation = clampedDistance / radius;
-    setColorWheelCursor(50 + (x / radius) * 50, 50 + (y / radius) * 50);
+    var hue = (angle * 180 / Math.PI + 450) % 360;
+    var saturation = clampedDistance / geometry.radius;
+    setColorWheelCursor(50 + (x / geometry.radius) * 50, 50 + (y / geometry.radius) * 50);
     setBrushColor(hsvToHex(hue, saturation, 1), { remember: remember });
   }
 
