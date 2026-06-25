@@ -489,7 +489,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
           rem Built-in plugins are imported at runtime via their dotted entry path
-          rem (plugin.plugins.<name>:Class in plugin.toml), so they must be compiled
+          rem (plugin.plugins.[name]:Class in plugin.toml), so they must be compiled
           rem into the binary; --include-data-dir alone drops the .py. Synced with
           rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
