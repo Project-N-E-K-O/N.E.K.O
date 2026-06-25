@@ -776,6 +776,7 @@
         "pendingImagesAriaLabel": "待發送圖片",
         "pendingImageAlt": "圖片 {{index}}",
         "removePendingImage": "移除圖片",
+        "closeMemeAriaLabel": "關閉圖片",
         "emojiButtonAriaLabel": "表情",
         "toolIconsAriaLabel": "工具圖示",
         "toolLollipop": "棒棒糖",

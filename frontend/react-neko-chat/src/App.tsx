@@ -1742,6 +1742,9 @@ function CompactChatApp({
   const compactCapsuleEntryLocked = compactTextEntryLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  // 用户手动叉掉的表情包 id（会话级，不持久化）：overlay 的 meme id 命中即隐藏。下一张新 meme 是不同
+  // id，自然重新显示；刷新后状态重置（与 compactCaptionState 等紧凑挂件一致，均为 ephemeral state）。
+  const [dismissedMemeId, setDismissedMemeId] = useState<string | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
@@ -2492,7 +2495,7 @@ function CompactChatApp({
   // 主动分享的表情包是 image-only 消息（id 以 'meme-' 开头），原本只活在会折叠的历史里。把「最新一条
   // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到「用户开口」或「新一轮助手发言」出现即收起
   // （换场规则详见下方 memo 注释）。
-  const compactMemeOverlay = useMemo<{ url: string; alt: string } | null>(() => {
+  const compactMemeOverlay = useMemo<{ id: string; url: string; alt: string } | null>(() => {
     if (!isCompactSurface) return null;
     let memeIdx = -1;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -2524,7 +2527,7 @@ function CompactChatApp({
       }
     }
     for (const block of meme.blocks ?? []) {
-      if (block.type === 'image') return { url: block.url, alt: block.alt || 'Meme' };
+      if (block.type === 'image') return { id: meme.id, url: block.url, alt: block.alt || 'Meme' };
     }
     return null;
   }, [messages, isCompactSurface]);
@@ -7051,7 +7054,11 @@ function CompactChatApp({
   // 音乐条可见性与「聊天历史折叠」解耦：只要有音乐内容就常显（空态由 CSS `:empty { display:none }`
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
-  const compactMemeOverlayNode = isCompactSurface && !compactExportHistoryMounted && compactMemeOverlay ? (
+  const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
+  const compactMemeOverlayNode = isCompactSurface
+    && !compactExportHistoryMounted
+    && compactMemeOverlay
+    && compactMemeOverlay.id !== dismissedMemeId ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -7059,12 +7066,50 @@ function CompactChatApp({
       data-compact-geometry-item="meme"
       data-compact-geometry-hit-scope="children"
     >
-      {/* 被动弹出的单图挂件仅在历史区收起后显示；历史打开时由历史列表承载同一条图片消息，避免重复展示。
-          一渲染就 fixed 钉在视口内，没有「视口外延迟加载」的场景——lazy 对它零
-          收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
-          IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
-          的 role 收起逻辑，不是这个属性。 */}
-      <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
+      {/* frame 收紧到图片实际尺寸，让关闭叉贴在「图片」右上角而非更宽的 overlay 右上角（图片在 overlay
+          里居中、常比 overlay 窄）。 */}
+      <div className="compact-meme-overlay-frame">
+        {/* 被动弹出的单图挂件仅在历史区收起后显示；历史打开时由历史列表承载同一条图片消息，避免重复展示。
+            一渲染就 fixed 钉在视口内，没有「视口外延迟加载」的场景——lazy 对它零
+            收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
+            IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
+            的 role 收起逻辑，不是这个属性。 */}
+        <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
+        {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
+            auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
+            ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
+            只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+            漏了它，Electron pass-through 窗口会把按钮当穿透区、点击穿到桌面（普通浏览器窗口测不出，对齐音乐条）。 */}
+        <button
+          type="button"
+          className="compact-meme-overlay-close"
+          data-compact-hit-region="true"
+          data-compact-hit-region-id="meme:close"
+          data-compact-hit-region-kind="meme-close"
+          aria-label={closeMemeButtonAriaLabel}
+          title={closeMemeButtonAriaLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            setDismissedMemeId(compactMemeOverlay.id);
+          }}
+        >
+          <svg
+            className="compact-meme-overlay-close-icon"
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              d="M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
   ) : null;
   const compactMusicPlayerMountNode = isCompactSurface ? (
