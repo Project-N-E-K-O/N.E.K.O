@@ -202,6 +202,11 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png'" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS = 2" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS = 0.65" in source
+    assert "function _normalizeNekoIdleCat1PlaygroundBodyMass(mass)" in source
+    assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
+    assert "function _refreshNekoIdleCat1PlaygroundViewportBottom(button)" in source
     assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
     assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
     assert "disabledCapabilities: new Set(" in source
@@ -239,11 +244,26 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     )
     assert "id: 'cat'" in register_block
     assert "id: 'yarn'" in register_block
-    assert "id: 'desktop-chat'" in register_block
+    assert "id: 'desktop-yarn'" in register_block
+    assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS" in register_block
+    assert register_block.count("mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS") == 2
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_DESKTOP_CHAT_BODY_MASS" not in source
     assert "const mirror = _createNekoIdleCat1PlaygroundDesktopYarnMirror(target.rect);" in register_block
     assert "state.targetElement = mirror;" in register_block
     assert "desktop: true" in register_block
     assert "mirror.parentNode.removeChild(mirror)" in register_block
+
+    playground_bounds_block = _source_slice_between(
+        source,
+        "function _getNekoIdleCat1PlaygroundViewportBottomPx()",
+        "function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {})",
+        "cat1 playground platform bottom bounds",
+    )
+    assert "window.electronScreen" in playground_bounds_block
+    assert "getCurrentDisplay" in playground_bounds_block
+    assert "currentDisplay.workArea" in playground_bounds_block
+    assert "Math.min(windowBottom, workAreaHeight)" in playground_bounds_block
+    assert "window.innerHeight - body.height" not in source
 
     assert "function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect)" in source
     desktop_mirror_block = _source_slice_between(
@@ -262,6 +282,9 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "function _startNekoIdleCat1PlaygroundPhysics(button)",
         "cat1 playground physics tick",
     )
+    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in source
+    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)" in source
+    assert "_resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in physics_block
     assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
@@ -269,6 +292,29 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "body.y = body.floorY;" in physics_block
     assert "_getNekoIdleCat1PlaygroundBodyMinY" not in source
     assert "_dispatchNekoIdleDesktopChatPairMoveBounds" in source
+    collision_block = _source_slice_between(
+        source,
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "function _stepNekoIdleCat1PlaygroundPhysics(button, now)",
+        "cat1 playground generic body collision",
+    )
+    assert "Array.from(state.bodies.values())" in collision_block
+    assert "for (let i = 0; i < bodies.length; i += 1)" in collision_block
+    assert "for (let j = i + 1; j < bodies.length; j += 1)" in collision_block
+    assert "_resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, bodies[i], bodies[j])" in collision_block
+    assert "const mass = _normalizeNekoIdleCat1PlaygroundBodyMass(options.mass);" in source
+    assert "mass: mass" in source
+    assert "inverseMass: 1 / mass" in source
+    assert "first.inverseMass" in collision_block
+    assert "second.inverseMass" in collision_block
+    assert "first.mass" in collision_block
+    assert "second.mass" in collision_block
+    assert "totalInverseMass" in collision_block
+    assert "pusherMass / pushedMass" in collision_block
+    assert "draggedPushRatio" in collision_block
+    assert "firstShare = firstCanMove && secondCanMove ? 0.5" not in collision_block
+    assert "body.id === 'cat'" not in collision_block
+    assert "body.id === 'yarn'" not in collision_block
     set_position_block = _source_slice_between(
         source,
         "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
