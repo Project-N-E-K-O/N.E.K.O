@@ -7034,7 +7034,7 @@ function CompactChatApp({
   // 音乐条可见性与「聊天历史折叠」解耦：只要有音乐内容就常显（空态由 CSS `:empty { display:none }`
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
-  const compactMemeOverlayNode = isCompactSurface && compactMemeOverlay ? (
+  const compactMemeOverlayNode = isCompactSurface && !compactExportHistoryMounted && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -7042,7 +7042,8 @@ function CompactChatApp({
       data-compact-geometry-item="meme"
       data-compact-geometry-hit-scope="children"
     >
-      {/* 被动弹出的单图挂件，一渲染就 fixed 钉在视口内，没有「视口外延迟加载」的场景——lazy 对它零
+      {/* 被动弹出的单图挂件仅在历史区收起后显示；历史打开时由历史列表承载同一条图片消息，避免重复展示。
+          一渲染就 fixed 钉在视口内，没有「视口外延迟加载」的场景——lazy 对它零
           收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
           IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
           的 role 收起逻辑，不是这个属性。 */}
