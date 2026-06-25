@@ -271,6 +271,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     assert "window.getNekoGoodbyeIdleAppearance = getNekoGoodbyeIdleAppearance" in app_ui_source
     assert "window.addEventListener('neko:goodbye-idle-appearance'" in app_ui_source
     assert "function applyGoodbyeIdleAppearanceToReturnButton" in app_ui_source
+    assert "function getRestorableNekoIdleReturnTier(fallbackTier = '')" in app_ui_source
     assert "appearance: appearance" in app_ui_source
     assert "return-ball-legacy-ball" in app_ui_source
     assert "getReturnButtonAppearance(activeReturnButtonContainer) === NEKO_GOODBYE_IDLE_APPEARANCE_BALL" in app_ui_source
@@ -284,6 +285,22 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     assert "art.src = NEKO_GOODBYE_IDLE_BALL_ASSET;" in appearance_block
     assert "art.setAttribute('aria-hidden', 'true')" in appearance_block
     assert "art.src = art.dataset.nekoGoodbyeIdleCatSrc;" in appearance_block
+    assert "button.dataset.nekoGoodbyeIdleCatTier = getRestorableNekoIdleReturnTier(" in appearance_block
+    assert "const restoredTier = getRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);" in appearance_block
+    assert "if (!button.dataset.nekoGoodbyeIdleCatTier)" not in appearance_block
+    app_auto_goodbye_listener_block = _source_slice_between(
+        app_ui_source,
+        "window.addEventListener('neko:auto-goodbye:state-change'",
+        "window.addEventListener('neko:goodbye-idle-appearance'",
+        "app auto goodbye visual tier listener",
+    )
+    _assert_source_order(
+        app_auto_goodbye_listener_block,
+        "breathing ball state change sends one desktop bridge payload",
+        "if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
+        "syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');",
+        "return;\n        }\n        scheduleIdleReturnBallDesktopBridge(",
+    )
     dispatch_return_ball_block = _source_slice_between(
         app_ui_source,
         "function dispatchReturnBallClick()",

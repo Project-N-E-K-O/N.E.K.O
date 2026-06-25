@@ -3149,6 +3149,15 @@
         return 'cat1';
     }
 
+    function normalizeRestorableNekoIdleReturnTier(tier) {
+        return (tier === 'cat1' || tier === 'cat2' || tier === 'cat3') ? tier : '';
+    }
+
+    function getRestorableNekoIdleReturnTier(fallbackTier = '') {
+        const currentTier = normalizeRestorableNekoIdleReturnTier(getCurrentNekoIdleReturnTier());
+        return currentTier || normalizeRestorableNekoIdleReturnTier(fallbackTier) || 'cat1';
+    }
+
     function clearReturnButtonBallOnlyVisualState(container) {
         const button = getReturnButtonElement(container);
         if (!button || !button.classList) return;
@@ -3192,9 +3201,10 @@
         if (nextAppearance === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             clearReturnButtonBallOnlyVisualState(container);
             if (button) {
-                if (!button.dataset.nekoGoodbyeIdleCatTier) {
-                    button.dataset.nekoGoodbyeIdleCatTier = button.getAttribute('data-neko-idle-tier') || getCurrentNekoIdleReturnTier();
-                }
+                const previousTier = normalizeRestorableNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+                button.dataset.nekoGoodbyeIdleCatTier = getRestorableNekoIdleReturnTier(
+                    previousTier || button.dataset.nekoGoodbyeIdleCatTier
+                );
                 button.setAttribute('data-neko-idle-tier', 'none');
             }
             container.setAttribute('data-neko-idle-tier', 'none');
@@ -3225,9 +3235,7 @@
             return;
         }
 
-        const restoredTier = button && button.dataset.nekoGoodbyeIdleCatTier
-            ? button.dataset.nekoGoodbyeIdleCatTier
-            : getCurrentNekoIdleReturnTier();
+        const restoredTier = getRestorableNekoIdleReturnTier(button && button.dataset.nekoGoodbyeIdleCatTier);
         if (button) {
             button.setAttribute('data-neko-idle-tier', restoredTier);
             delete button.dataset.nekoGoodbyeIdleCatTier;
@@ -3460,6 +3468,7 @@
         if (!detail || detail.type !== 'visual-tier') return;
         if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');
+            return;
         }
         scheduleIdleReturnBallDesktopBridge(
             detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
