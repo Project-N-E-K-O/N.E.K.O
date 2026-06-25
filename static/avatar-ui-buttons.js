@@ -320,6 +320,26 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_BODY_MASS = 0.2;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MAX_BODY_MASS = 8;
 const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS = 2;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS = 0.65;
+const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS = 5;
+const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_CLICK_EVENT = 'neko:idle-cat1-playground-question-block-click';
+const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
+    left: 112 / 512,
+    top: 2 / 512,
+    right: 97 / 512,
+    bottom: 15 / 512
+});
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({
+    left: 35 / 963,
+    top: 36 / 930,
+    right: 36 / 963,
+    bottom: 35 / 930
+});
+const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS = Object.freeze({
+    left: 80 / 960,
+    top: 60 / 960,
+    right: 80 / 960,
+    bottom: 60 / 960
+});
 const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3;
 const _NEKO_IDLE_CAT1_PLAYGROUND_POINTER_SAMPLE_LIMIT = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX = 5;
@@ -845,11 +865,87 @@ function _dispatchNekoIdleCat1PlaygroundEntryRequest(button, source) {
     } catch (_) {}
 }
 
+function _dispatchNekoIdleCat1PlaygroundQuestionBlockClick(element) {
+    const rect = element && typeof element.getBoundingClientRect === 'function'
+        ? element.getBoundingClientRect()
+        : null;
+    try {
+        window.dispatchEvent(new CustomEvent(_NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_CLICK_EVENT, {
+            detail: {
+                source: 'cat1-playground',
+                bodyId: 'question-block',
+                timestamp: Date.now(),
+                rect: rect ? {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                } : null
+            }
+        }));
+    } catch (_) {}
+}
+
+function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, event) {
+    const state = button && button.__nekoIdleCat1PlaygroundDropState;
+    if (event) {
+        try { event.preventDefault(); } catch (_) {}
+        try { event.stopPropagation(); } catch (_) {}
+    }
+    if (state && (state.draggingBodyId || state.suppressClickBodyId === 'question-block')) return true;
+    _dispatchNekoIdleCat1PlaygroundQuestionBlockClick(element);
+    return true;
+}
+
+function _storeNekoIdleCat1PlaygroundQuestionBlockClone(button, element) {
+    if (!button) return null;
+    const previous = button.__nekoIdleCat1PlaygroundQuestionBlockClone;
+    if (previous && previous !== element && previous.parentNode) {
+        try { previous.parentNode.removeChild(previous); } catch (_) {}
+    }
+    button.__nekoIdleCat1PlaygroundQuestionBlockClone = element && element.isConnected ? element : null;
+    return button.__nekoIdleCat1PlaygroundQuestionBlockClone;
+}
+
+function _clearNekoIdleCat1PlaygroundQuestionBlockClone(button) {
+    _storeNekoIdleCat1PlaygroundQuestionBlockClone(button, null);
+}
+
+function _consumeNekoIdleCat1PlaygroundQuestionBlockClone(button) {
+    const element = button && button.__nekoIdleCat1PlaygroundQuestionBlockClone;
+    if (button) button.__nekoIdleCat1PlaygroundQuestionBlockClone = null;
+    return element && element.isConnected ? element : null;
+}
+
+function _createNekoIdleCat1PlaygroundQuestionBlockCloneFromMark(button) {
+    const state = button && button.__nekoIdleCat1QuestionMarkState;
+    const mark = state && state.mark && state.mark.isConnected ? state.mark : null;
+    if (!mark || typeof mark.getBoundingClientRect !== 'function') return null;
+    return _createNekoIdleCat1PlaygroundQuestionBlockClone(mark.getBoundingClientRect(), button);
+}
+
+function _createNekoIdleCat1PlaygroundQuestionBlockCloneFromScreenRect(screenRect, button) {
+    const normalized = _normalizeNekoIdleScreenRect(screenRect);
+    if (!normalized) return null;
+    const screenLeft = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0;
+    const screenTop = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : 0;
+    return _createNekoIdleCat1PlaygroundQuestionBlockClone({
+        left: normalized.left - screenLeft,
+        top: normalized.top - screenTop,
+        width: normalized.width,
+        height: normalized.height
+    }, button);
+}
+
 function _handleNekoIdleCat1QuestionMarkClick(button, event) {
     if (event) {
         try { event.preventDefault(); } catch (_) {}
         try { event.stopPropagation(); } catch (_) {}
     }
+    _storeNekoIdleCat1PlaygroundQuestionBlockClone(
+        button,
+        _createNekoIdleCat1PlaygroundQuestionBlockCloneFromMark(button)
+    );
     _clearNekoIdleCat1QuestionMark(button);
     _dispatchNekoIdleCat1PlaygroundEntryRequest(button, 'question-mark');
 }
@@ -1079,6 +1175,7 @@ function _getNekoIdleCat1PlaygroundDropState(button) {
             restoreSnapshot: {},
             releaseReason: '',
             previousArt: '',
+            entryQuestionBlockElement: null,
             cleanups: [],
             pointerHandlers: [],
             pointerBodyId: '',
@@ -1087,7 +1184,9 @@ function _getNekoIdleCat1PlaygroundDropState(button) {
             pointerOffsetY: 0,
             pointerStartX: 0,
             pointerStartY: 0,
-            pointerMoved: false
+            pointerMoved: false,
+            suppressClickBodyId: '',
+            suppressClickTimer: 0
         };
     }
     return button.__nekoIdleCat1PlaygroundDropState;
@@ -1116,7 +1215,6 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
         _clearNekoIdleCat1QuestionMark(button);
         return state;
     }
-
     state.active = true;
     state.released = false;
     state.phase = 'dropping';
@@ -1128,6 +1226,7 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     state.bodies = new Map();
     state.draggingBodyId = '';
     state.lastPointerSamples = [];
+    state.entryQuestionBlockElement = _consumeNekoIdleCat1PlaygroundQuestionBlockClone(button);
     state.cleanups = [];
     state.pointerHandlers = [];
     state.disabledCapabilities = new Set([
@@ -1186,6 +1285,12 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     state.pointerBodyId = '';
     state.pointerId = null;
     state.lastPointerSamples = [];
+    state.entryQuestionBlockElement = null;
+    state.suppressClickBodyId = '';
+    if (state.suppressClickTimer) {
+        clearTimeout(state.suppressClickTimer);
+        state.suppressClickTimer = 0;
+    }
     state.bodies.clear();
     state.disabledCapabilities.clear();
     const cleanups = state.cleanups.splice(0);
@@ -1200,6 +1305,7 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
 function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason) {
     _forEachNekoIdleReturnButton((button) => {
         _cancelNekoIdleCat1PlaygroundPendingEntry(button);
+        _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
         _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason || 'page-destroy');
     });
 }
@@ -1322,6 +1428,60 @@ function _normalizeNekoIdleCat1PlaygroundBodyMass(mass) {
     );
 }
 
+function _normalizeNekoIdleCat1PlaygroundInsetRatio(ratio) {
+    const normalized = Number(ratio);
+    if (!Number.isFinite(normalized) || normalized <= 0) return 0;
+    return Math.min(normalized, 0.45);
+}
+
+function _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(ratios) {
+    return {
+        left: _normalizeNekoIdleCat1PlaygroundInsetRatio(ratios && ratios.left),
+        top: _normalizeNekoIdleCat1PlaygroundInsetRatio(ratios && ratios.top),
+        right: _normalizeNekoIdleCat1PlaygroundInsetRatio(ratios && ratios.right),
+        bottom: _normalizeNekoIdleCat1PlaygroundInsetRatio(ratios && ratios.bottom)
+    };
+}
+
+function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body) {
+    const ratios = _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(body && body.visibleInsetRatios);
+    const width = Number(body && body.width);
+    const height = Number(body && body.height);
+    return {
+        left: Number.isFinite(width) && width > 0 ? width * ratios.left : 0,
+        top: Number.isFinite(height) && height > 0 ? height * ratios.top : 0,
+        right: Number.isFinite(width) && width > 0 ? width * ratios.right : 0,
+        bottom: Number.isFinite(height) && height > 0 ? height * ratios.bottom : 0
+    };
+}
+
+function _getNekoIdleCat1PlaygroundBodyCollisionRect(body) {
+    if (!body) return null;
+    const insets = _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+    const left = body.x + insets.left;
+    const top = body.y + insets.top;
+    const right = body.x + body.width - insets.right;
+    const bottom = body.y + body.height - insets.bottom;
+    if (right <= left || bottom <= top) {
+        return {
+            left: body.x,
+            top: body.y,
+            right: body.x + body.width,
+            bottom: body.y + body.height,
+            width: body.width,
+            height: body.height
+        };
+    }
+    return {
+        left: left,
+        top: top,
+        right: right,
+        bottom: bottom,
+        width: right - left,
+        height: bottom - top
+    };
+}
+
 function _getNekoIdleCat1PlaygroundWindowBottomPx() {
     const windowBottom = Number(window.innerHeight);
     return Number.isFinite(windowBottom) && windowBottom > 0 ? windowBottom : 0;
@@ -1390,12 +1550,13 @@ function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
     const width = Number(rect.width);
     const height = Number(rect.height);
     const mass = _normalizeNekoIdleCat1PlaygroundBodyMass(options.mass);
-    return {
+    const body = {
         id: id,
         element: element || null,
         desktop: !!options.desktop,
         mass: mass,
         inverseMass: 1 / mass,
+        visibleInsetRatios: _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(options.visibleInsetRatios),
         x: Number(rect.left) || 0,
         y: Number(rect.top) || 0,
         width: width,
@@ -1410,6 +1571,8 @@ function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
         screenOffsetX: Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0,
         screenOffsetY: Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : 0
     };
+    _updateNekoIdleCat1PlaygroundBodyBounds(body);
+    return body;
 }
 
 function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect) {
@@ -1447,6 +1610,44 @@ function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect) {
     return mirror;
 }
 
+function _createNekoIdleCat1PlaygroundQuestionBlockClone(rect, button) {
+    if (!rect || typeof document === 'undefined' || !document.body) return null;
+    const width = Math.max(1, Math.round(Number(rect.width) || 0));
+    const height = Math.max(1, Math.round(Number(rect.height) || 0));
+    if (!width || !height) return null;
+    const clone = document.createElement('button');
+    clone.type = 'button';
+    clone.className = 'neko-idle-cat1-playground-question-block';
+    clone.setAttribute('aria-label', '问号方块');
+    Object.assign(clone.style, {
+        position: 'fixed',
+        left: `${Math.round(Number(rect.left) || 0)}px`,
+        top: `${Math.round(Number(rect.top) || 0)}px`,
+        width: `${width}px`,
+        height: `${height}px`,
+        padding: '0',
+        border: '0',
+        borderRadius: '0',
+        backgroundColor: 'transparent',
+        backgroundImage: `url("${_getNekoIdleCat1QuestionMarkAssetUrl()}")`,
+        backgroundPosition: 'center center',
+        backgroundRepeat: 'no-repeat',
+        backgroundSize: 'contain',
+        boxShadow: 'none',
+        cursor: 'grab',
+        pointerEvents: 'auto',
+        touchAction: 'none',
+        userSelect: 'none',
+        webkitUserSelect: 'none',
+        zIndex: _NEKO_IDLE_RETURN_COMPACT_SURFACE_Z_INDEX
+    });
+    clone.addEventListener('click', (event) => {
+        _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, clone, event);
+    }, { capture: true });
+    document.body.appendChild(clone);
+    return clone;
+}
+
 function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
     const state = _getNekoIdleCat1PlaygroundDropState(button);
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -1459,7 +1660,8 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
 
     const body = _createNekoIdleCat1PlaygroundPhysicsBody('cat', container, {
         id: 'cat',
-        mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS
+        mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS,
+        visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS
     });
     if (body) state.bodies.set(body.id, body);
 
@@ -1468,7 +1670,8 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
         const body = _createNekoIdleCat1PlaygroundPhysicsBody('yarn', target.shell, {
             id: 'yarn',
             rect: target.rect,
-            mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS
+            mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS,
+            visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS
         });
         if (body) {
             state.targetMode = 'dom';
@@ -1481,7 +1684,8 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
             id: 'desktop-yarn',
             rect: target.rect,
             desktop: true,
-            mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS
+            mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS,
+            visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS
         });
         if (body) {
             state.targetMode = 'desktop';
@@ -1495,6 +1699,27 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
             });
         } else if (mirror && mirror.parentNode) {
             try { mirror.parentNode.removeChild(mirror); } catch (_) {}
+        }
+    }
+
+    const questionBlockElement = state.entryQuestionBlockElement && state.entryQuestionBlockElement.isConnected
+        ? state.entryQuestionBlockElement
+        : null;
+    if (questionBlockElement) {
+        const body = _createNekoIdleCat1PlaygroundPhysicsBody('question-block', questionBlockElement, {
+            id: 'question-block',
+            mass: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS,
+            visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS
+        });
+        if (body) {
+            state.bodies.set(body.id, body);
+            _registerNekoIdleCat1PlaygroundCleanup(button, () => {
+                if (questionBlockElement && questionBlockElement.parentNode) {
+                    try { questionBlockElement.parentNode.removeChild(questionBlockElement); } catch (_) {}
+                }
+            });
+        } else if (questionBlockElement.parentNode) {
+            try { questionBlockElement.parentNode.removeChild(questionBlockElement); } catch (_) {}
         }
     }
     return state.bodies.size > 0;
@@ -1523,9 +1748,10 @@ function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {}) {
 
 function _updateNekoIdleCat1PlaygroundBodyBounds(body) {
     if (!body) return;
-    body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height);
-    body.wallLeft = 0;
-    body.wallRight = Math.max(0, window.innerWidth - body.width);
+    const insets = _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+    body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);
+    body.wallLeft = -insets.left;
+    body.wallRight = Math.max(body.wallLeft, window.innerWidth - body.width + insets.right);
 }
 
 function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
@@ -1538,12 +1764,11 @@ function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
 
 function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second) {
     if (!state || !first || !second || first === second) return false;
-    const firstRight = first.x + first.width;
-    const secondRight = second.x + second.width;
-    const firstBottom = first.y + first.height;
-    const secondBottom = second.y + second.height;
-    const overlapX = Math.min(firstRight, secondRight) - Math.max(first.x, second.x);
-    const overlapY = Math.min(firstBottom, secondBottom) - Math.max(first.y, second.y);
+    const firstRect = _getNekoIdleCat1PlaygroundBodyCollisionRect(first);
+    const secondRect = _getNekoIdleCat1PlaygroundBodyCollisionRect(second);
+    if (!firstRect || !secondRect) return false;
+    const overlapX = Math.min(firstRect.right, secondRect.right) - Math.max(firstRect.left, secondRect.left);
+    const overlapY = Math.min(firstRect.bottom, secondRect.bottom) - Math.max(firstRect.top, secondRect.top);
     if (overlapX <= 0 || overlapY <= 0) return false;
 
     const firstCanMove = !first.dragging;
@@ -1567,10 +1792,10 @@ function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second) {
     const secondShare = firstCanMove && secondCanMove
         ? secondInverseMass / totalInverseMass
         : (secondCanMove ? getDraggedPushRatio(firstMass, secondMass) : 0);
-    const firstCenterX = first.x + first.width / 2;
-    const secondCenterX = second.x + second.width / 2;
-    const firstCenterY = first.y + first.height / 2;
-    const secondCenterY = second.y + second.height / 2;
+    const firstCenterX = firstRect.left + firstRect.width / 2;
+    const secondCenterX = secondRect.left + secondRect.width / 2;
+    const firstCenterY = firstRect.top + firstRect.height / 2;
+    const secondCenterY = secondRect.top + secondRect.height / 2;
 
     if (overlapX <= overlapY) {
         const direction = firstCenterX <= secondCenterX ? -1 : 1;
@@ -1711,10 +1936,10 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
     });
 
     if (_resolveNekoIdleCat1PlaygroundBodyCollisions(state)) {
-        needsNextFrame = true;
         allGrounded = true;
         state.bodies.forEach((body) => {
             if (!body) return;
+            if (body.dragging) needsNextFrame = true;
             if (!body.grounded) allGrounded = false;
             if (!body.grounded || Math.abs(body.vx) > 0.5 || Math.abs(body.vy) > 0.5) {
                 needsNextFrame = true;
@@ -1731,7 +1956,9 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
     }
     if (allGrounded && (state.phase === 'dropping' || state.phase === 'ballistic')) {
         state.phase = 'settled';
-        _installNekoIdleCat1PlaygroundPointerListeners(button);
+        if (!state.pointerHandlers || !state.pointerHandlers.length) {
+            _installNekoIdleCat1PlaygroundPointerListeners(button);
+        }
     }
 
     if (needsNextFrame) {
@@ -1834,6 +2061,11 @@ function _handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, event) {
     try { event.stopPropagation(); } catch (_) {}
     state.pointerBodyId = body.id;
     state.pointerId = event.pointerId !== undefined ? event.pointerId : null;
+    state.suppressClickBodyId = '';
+    if (state.suppressClickTimer) {
+        clearTimeout(state.suppressClickTimer);
+        state.suppressClickTimer = 0;
+    }
     state.pointerStartX = event.clientX;
     state.pointerStartY = event.clientY;
     state.pointerMoved = false;
@@ -1980,9 +2212,17 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
     state.draggingBodyId = '';
     state.pointerBodyId = '';
     state.pointerId = null;
-    setTimeout(() => {
+    state.suppressClickBodyId = body.id;
+    if (state.suppressClickTimer) {
+        clearTimeout(state.suppressClickTimer);
+    }
+    state.suppressClickTimer = setTimeout(() => {
         const latestState = button && button.__nekoIdleCat1PlaygroundDropState;
-        if (latestState === state) latestState.pointerMoved = false;
+        if (latestState === state) {
+            latestState.pointerMoved = false;
+            latestState.suppressClickBodyId = '';
+            latestState.suppressClickTimer = 0;
+        }
     }, 80);
     const container = state.container;
     if (container) container.removeAttribute('data-neko-cat1-playground-dragging');
@@ -2093,7 +2333,7 @@ function _dispatchNekoIdleReturnClickFromButton(button) {
 function _handleNekoIdleCat1PlaygroundCatClick(button, event) {
     if (!_isNekoIdleCat1PlaygroundDropActive(button)) return false;
     const state = button.__nekoIdleCat1PlaygroundDropState;
-    if (state && (state.draggingBodyId || state.pointerMoved)) {
+    if (state && (state.draggingBodyId || state.suppressClickBodyId === 'cat')) {
         if (event) {
             try { event.preventDefault(); } catch (_) {}
             try { event.stopPropagation(); } catch (_) {}
@@ -2168,6 +2408,7 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
         _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'no-bodies');
         return false;
     }
+    _installNekoIdleCat1PlaygroundPointerListeners(button);
     _refreshNekoIdleCat1PlaygroundViewportBottom(button);
     _startNekoIdleCat1PlaygroundPhysics(button);
     return true;
@@ -2176,7 +2417,15 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
 function _handleNekoIdleCat1PlaygroundEntryRequest(event) {
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;
-    return _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, event && event.detail ? event.detail : null);
+    const detail = event && event.detail ? event.detail : null;
+    if (detail && detail.questionBlockScreenRect &&
+        !_isNekoIdleCat1PlaygroundEntryOrDropActive(button, 'question-mark-entry')) {
+        _storeNekoIdleCat1PlaygroundQuestionBlockClone(
+            button,
+            _createNekoIdleCat1PlaygroundQuestionBlockCloneFromScreenRect(detail.questionBlockScreenRect, button)
+        );
+    }
+    return _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail);
 }
 
 if (typeof window !== 'undefined') {
@@ -6731,6 +6980,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     if (_isNekoIdleCat1PlaygroundEntryPending(button) && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1PlaygroundPendingEntry(button);
+        _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
     }
     if (_isNekoIdleCat1PlaygroundDropActive(button)) {
         if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
