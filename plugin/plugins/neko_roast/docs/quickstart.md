@@ -42,9 +42,12 @@ NEKO Live 当前有两条使用路径：
 - dry_run 状态符合本次目的：链路验证保持开启，真实陪跑前手动关闭。
 - 顶部状态刷新后，面板能解释 NEKO 为什么暂时没说话。
 - 节奏档位先用“标准”；如果 NEKO 太安静再切“活跃”，太吵再切“安静”。
-- 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once`，记录 `mode`、`live_status`、`live_state`、`idle_candidate`、`idle_ready` 和 `latency_status`。
+- 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once`，记录 `mode`、`live_status`、`live_state`、`viewer_age`、`output_age`、`profile_count`、`solo_readiness`、`test_isolation`、`readiness_warn`、`readiness_blocked`、`idle_candidate`、`idle_ready`、`active_min_wait`、`active_danmaku_wait`、`latest_topic_source` / `latest_topic_shape` / `latest_topic_key` / `latest_topic_hook` / `latest_topic_pattern` / `latest_topic_repeat` 和 `latency_status`。
+  - 不确定监控参数时先运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Help`。
+  - 真实输出测试建议加 `-ExpectRealOutput -BackendLogPath <backend-log>`，优先看 `alerts`；`alerts=-` 表示这一帧没有检测到已知真实输出风险。未显式传 `-BackendLogPath` 时，脚本会尝试读取当前目录或仓库根目录下的 `.codex-backend-live-test.log`；如果出现 `backend_log_missing`，说明监控没有读到后端日志，需要补传日志路径后再判断 watchdog、串台或长回复。
   - `checkout=mismatch`：当前插件服务来自另一个 N.E.K.O 工作区，先重启正确工作区的后端再继续直播测试。
   - `solo_test_focus=chain_only`：dry_run 开启，本轮只验证链路，不判断真实开口。
+  - `solo_test_focus=test_isolation`：受控测试隔离还没干净，先清空观众档案或确认本轮不需要首评基线。
   - `solo_test_focus=danmaku_response`：可以发一条真实弹幕，观察弹幕到回复。
   - `solo_test_focus=idle_hosting`：可以进入冷场补位观察。
   - `solo_test_focus=latency`：当前优先记录延迟。
@@ -52,6 +55,7 @@ NEKO Live 当前有两条使用路径：
   - `solo_test_hint=expect_idle_hosting`：当前可以观察冷场补位是否发生。
   - `solo_test_hint=watch_latency`：优先记录弹幕到回复的延迟。
   - `solo_test_hint=wait_idle_cooldown`：冷场候选已满足，但还在最小间隔内。
+  - `solo_test_hint=clear_viewer_profiles`：观众档案仍存在，若要测试首评基线先清档案。
   - `solo_test_hint=switch_to_solo_stream` / `fix_preflight` / `wait_until_unblocked`：先处理模式、开播前检查或阻断状态。
 
 30 分钟内按阶段观察：
