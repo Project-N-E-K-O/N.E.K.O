@@ -203,10 +203,14 @@
         }
 
         async openFromSettings(characterName) {
-            // _tutorialFlowAborted 是 manager 上的持久标志，而 handleHomeTutorialStartupRelease 监听的
-            // startup-greeting-release(released:true) 在教程正常完成/无 round 时也会派发并置位它。设置里的人格
-            // 重选属于独立的一次等待，进等待前清掉上一程教程遗留的 abort，避免越过当前仍在运行的教程锁直接弹出。
-            this._tutorialFlowAborted = false;
+            // _tutorialFlowAborted 是 manager 上的持久标志，handleHomeTutorialStartupRelease 在教程正常完成/夭折
+            // (released:true) 时也会置位它。设置里的人格重选是独立的一次等待：仅当此刻确有教程占屏(locked)时才清掉
+            // 遗留的 abort 去重新等待（治 Codex 指出的「遗留 abort 让重选越过运行中教程」）；若当前无锁则保留 abort，
+            // 否则清掉后 settle 会在新用户 observing/new 上无限轮询且不会再有 release（Greptile 指出的反向死锁）。
+            // 用可靠的 isHomeTutorialInteractionLocked 判定，而非会被 app-websocket 消费删除的 __NEKO_STARTUP_GREETING_RELEASED__。
+            if (this.isHomeTutorialInteractionLocked()) {
+                this._tutorialFlowAborted = false;
+            }
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
