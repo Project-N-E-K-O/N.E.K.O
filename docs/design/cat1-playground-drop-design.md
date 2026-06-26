@@ -633,7 +633,7 @@ compact top edge / 边缘探头：
 
 ## 15. 建议测试
 
-主项目静态测试：
+主项目静态测试与命令：
 
 - 存在 playground drop state / active gate。
 - `neko:idle-cat1-playground-entry-request` 有 listener。
@@ -672,13 +672,19 @@ compact top edge / 边缘探头：
 - compact ball ready listener 存在，并在 playground active 时补发 lock，同时继续同步 compact ball minimized/effective state。
 - React Chat 自最小化毛线球 screenRect 使用视觉尺寸归一化，避免 carrier 尺寸污染 playground 物理体。
 
-运行验证：
+主项目运行验证：
 
 - `node --check static/avatar-ui-buttons.js`
 - `.venv/bin/python -m pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q`
 - `.venv/bin/python -m pytest tests/unit/test_avatar_return_button_idle_tiers_static.py tests/unit/test_react_chat_idle_dock_static.py::test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync -q`
+
+桌面端运行验证：
+
 - `node --check src/main.js && node --check src/window-manager.js && node --check src/preload-chat-react.js && node --check src/preload-compact-chat-ball.js`
 - `node --test test/idle-cat-question-mark-layer-contract.test.js test/react-chat-compact-surface-drag-contract.test.js test/desktop-compact-layout-contract.test.js`
+
+通用验证：
+
 - `git diff --check`
 
 ## 16. 后续待设计

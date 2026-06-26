@@ -4761,8 +4761,9 @@
         };
     }
 
-    async function applyElectronCat1PairMoveBounds(bounds) {
-        if (isElectronLinuxRuntime()) return;
+    async function applyElectronCat1PairMoveBounds(bounds, options) {
+        var force = !!(options && options.force);
+        if (isElectronLinuxRuntime() && !force) return;
         var targetBounds = electronRectToBounds(bounds);
         if (!targetBounds) return;
         var bridge = getElectronIdleDockBridge();
@@ -4780,16 +4781,17 @@
         }
     }
 
-    function scheduleElectronCat1PairMoveBounds(bounds) {
+    function scheduleElectronCat1PairMoveBounds(bounds, options) {
+        var force = !!(options && options.force);
         if (!isElectronChatWindow()) return;
-        if (isElectronLinuxRuntime()) return;
+        if (isElectronLinuxRuntime() && !force) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
             var pendingBounds = electronCat1PairMovePendingBounds;
             electronCat1PairMovePendingBounds = null;
             electronCat1PairMoveBoundsFrame = 0;
-            applyElectronCat1PairMoveBounds(pendingBounds);
+            applyElectronCat1PairMoveBounds(pendingBounds, { force: force });
         });
     }
 
@@ -6806,7 +6808,7 @@
         window.addEventListener('neko:idle-chat-pair-move-bounds', function (event) {
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail) return;
-            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
+            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force });
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);

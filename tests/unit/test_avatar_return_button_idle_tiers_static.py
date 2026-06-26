@@ -2582,6 +2582,11 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "const force = !!(options && options.force);" in desktop_dispatch_block
     assert "if (_isNekoDesktopLinuxRuntime() && !force) return false;" in desktop_dispatch_block
     assert "new CustomEvent('neko:idle-chat-pair-move-bounds'" in desktop_dispatch_block
+    react_chat_source = (PROJECT_ROOT / "static" / "app-react-chat-window.js").read_text(encoding="utf-8")
+    assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
+    assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
+    assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source
+    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force });" in react_chat_source
     assert "chatMode: chatTarget ? chatTarget.mode : 'solo'" in source
     assert "dy: moveVector.dy" in source
     assert '_setNekoIdleCat1PairMoveChatPosition' in source
