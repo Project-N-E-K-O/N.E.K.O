@@ -779,8 +779,9 @@ def test_onboarding_does_not_open_while_home_tutorial_start_is_locked(mock_page:
 
 @pytest.mark.frontend
 def test_onboarding_does_not_open_while_home_tutorial_is_pending(mock_page: Page):
-    """新手教程上锁前的 pending 窗口（冷启动加载模型/首句演出）也应挡住选人格，
-    避免选人格抢在新手教程之前与其并发弹出。即使 15s 超时先到也要继续等。"""
+    """The pre-lock pending window (cold-start model / first-line intro load) must also
+    hold back persona onboarding so it cannot race ahead of the home tutorial; persona
+    keeps waiting even when the 15s settle timeout fires first."""
     _bootstrap_page(mock_page)
     mock_page.evaluate(
         """
@@ -833,9 +834,10 @@ def test_onboarding_does_not_open_while_home_tutorial_is_pending(mock_page: Page
 
 @pytest.mark.frontend
 def test_onboarding_opens_when_pending_home_tutorial_aborts_via_startup_release(mock_page: Page):
-    """死锁安全：新手教程在 pending 后夭折（未启动，无 tutorial-completed/skipped 事件、
-    后端仍是新用户 observing 永不 settle）时，凭教程派发的 startup-greeting-release(released:true)
-    放行选人格，避免选人格被永久挡住。"""
+    """Deadlock safety: when a pending home tutorial aborts (never starts, so there is no
+    tutorial-completed/skipped event and the backend stays new-user 'observing' which never
+    settles), persona onboarding is released by the tutorial's startup-greeting-release
+    (released:true) event instead of being blocked forever."""
     _bootstrap_page(mock_page)
     mock_page.evaluate(
         """
