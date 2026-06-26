@@ -23,7 +23,19 @@ The API does not require authentication for local access. API keys for LLM provi
 | [Memory](/api/rest/memory) | `/api/memory` | Memory files, review configuration |
 | [Agent](/api/rest/agent) | `/api/agent` | Agent flags, tasks, health checks |
 | [Workshop](/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop items, publishing |
+| [MMD](/api/rest/mmd) | `/api/model/mmd` | MMD model management |
+| [PNGTuber](/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber model management |
+| [Music](/api/rest/music) | `/api/music` | Music search and playback proxy |
+| [Jukebox](/api/rest/jukebox) | `/api/jukebox` | Song and action library |
+| [Game](/api/rest/game) | `/api/game` | Minigame backend |
+| [Galgame](/api/rest/galgame) | `/api/galgame` | Galgame reply options |
+| [Icebreaker](/api/rest/icebreaker) | `/api/icebreaker` | New-user onboarding |
+| [Proactive](/api/rest/proactive) | `/api/proactive` | Proactive-chat mode and settings |
 | [System](/api/rest/system) | `/api` | Emotion analysis, screenshots, utilities |
+
+### Other / internal routers
+
+The following routers are live but not individually documented here: `capture` (`/api/capture`), `cloudsave` (`/api/cloudsave`), `storage-location` (`/api/storage/location`), `avatar-drop` (`/api/avatar-drop`), `card-assist` (`/api/card-assist`), `auth`/cookies (`/api/auth`), `tool` (`/api/tools`), and `debug` (`/api/debug`).
 
 ## WebSocket
 

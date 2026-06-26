@@ -1,6 +1,6 @@
 # Three-Server Design
 
-## Main Server (`main_server.py`, port 48911)
+## Main Server (`app/main_server.py`, port 48911)
 
 The main server is a FastAPI application that serves as the user-facing entry point for all interactions.
 
@@ -22,7 +22,7 @@ The main server is a FastAPI application that serves as the user-facing entry po
 - Static file serving (models, CSS, JS, locales)
 - HTML page rendering (Jinja2 templates)
 
-## Memory Server (`memory_server.py`, port 48912)
+## Memory Server (`app/memory_server.py`, port 48912)
 
 The memory server manages persistent conversation history and semantic recall.
 
@@ -43,9 +43,9 @@ The memory server manages persistent conversation history and semantic recall.
 - **Compress**: Periodically summarize old conversations to save context window space
 - **Review**: Allow users to browse and correct stored memories
 
-## Agent Server (`agent_server.py`, port 48915)
+## Agent Server (`app/agent_server.py`, ports 48915 and 48916)
 
-The agent server handles background task execution triggered by conversation context.
+The agent server handles background task execution triggered by conversation context. The same process hosts the Tool Server on port 48915 and an embedded user-plugin server on port 48916.
 
 ### ZeroMQ addressing
 
