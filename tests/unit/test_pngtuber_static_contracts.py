@@ -417,3 +417,39 @@ def test_pngtuber_talking_hop_moves_whole_avatar_while_speaking():
     assert "this.startTalkingHopAnimation();" in lip_sync_block
     assert "this.stopTalkingHopAnimation();" in stop_speaking_block
     assert "talkingHopFrame: !!this.talkingHopFrame" in debug_block
+
+
+def test_pngtuber_animation_loops_throttle_overlay_position_updates():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    constructor_block = source[
+        source.index("constructor(containerId = 'pngtuber-container')"):
+        source.index("        ensureContainer()")
+    ]
+    helper_block = source[
+        source.index("updateOverlayPositionsForAnimation("):
+        source.index("        currentLayeredBreathingTransform(")
+    ]
+    breathing_loop_block = source[
+        source.index("        startLayeredBreathingLoop() {"):
+        source.index("        stopLayeredBreathingLoop()")
+    ]
+    bounce_loop_block = source[
+        source.index("        startSpeakingBounceAnimation() {"):
+        source.index("        currentTalkingHopTransform(")
+    ]
+    hop_loop_block = source[
+        source.index("        startTalkingHopAnimation() {"):
+        source.index("        stopTalkingHopAnimation()")
+    ]
+
+    assert "this.lastOverlayPositionUpdateAt = 0;" in constructor_block
+    assert "const minIntervalMs = 120;" in helper_block
+    assert "timestamp - this.lastOverlayPositionUpdateAt < minIntervalMs" in helper_block
+    assert "this.updateLockIconPosition();" in helper_block
+    assert "this.updateFloatingButtonsPosition();" in helper_block
+    assert "this.updateOverlayPositionsForAnimation(timestamp);" in breathing_loop_block
+    assert "this.updateOverlayPositionsForAnimation(timestamp);" in bounce_loop_block
+    assert "this.updateOverlayPositionsForAnimation(timestamp);" in hop_loop_block
+    assert "this.updateLockIconPosition();" not in breathing_loop_block
+    assert "this.updateLockIconPosition();" not in bounce_loop_block
+    assert "this.updateLockIconPosition();" not in hop_loop_block

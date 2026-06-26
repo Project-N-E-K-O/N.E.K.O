@@ -137,6 +137,7 @@
             this.talkingHopStart = 0;
             this.talkingHopAmplitude = 0;
             this.talkingHopPeriodMs = 0;
+            this.lastOverlayPositionUpdateAt = 0;
             this.clickTimer = null;
             this._suppressNextClick = false;
             this._boundSpeechStart = () => this.setSpeaking(true);
@@ -671,6 +672,16 @@
             return this.isLayeredActive();
         }
 
+        updateOverlayPositionsForAnimation(timestamp = performance.now()) {
+            const minIntervalMs = 120;
+            if (this.lastOverlayPositionUpdateAt && timestamp - this.lastOverlayPositionUpdateAt < minIntervalMs) return;
+            this.lastOverlayPositionUpdateAt = timestamp;
+            this.updateLockIconPosition();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+        }
+
         currentLayeredBreathingTransform(timestamp = performance.now()) {
             if (!this.layeredBreathingEnabled()) return { y: 0, scaleX: 1, scaleY: 1 };
             if (!this.layeredBreathingStart) {
@@ -694,10 +705,7 @@
                     return;
                 }
                 this.applyTransform(timestamp);
-                this.updateLockIconPosition();
-                if (typeof this.updateFloatingButtonsPosition === 'function') {
-                    this.updateFloatingButtonsPosition();
-                }
+                this.updateOverlayPositionsForAnimation(timestamp);
                 this.layeredBreathingFrame = requestAnimationFrame(tick);
             };
             this.layeredBreathingFrame = requestAnimationFrame(tick);
@@ -1394,19 +1402,16 @@
                 cancelAnimationFrame(this.speakingBounceFrame);
                 this.speakingBounceFrame = null;
             }
-            const tick = () => {
-                const progress = (performance.now() - this.speakingBounceStart) / this.speakingBounceDuration;
+            const tick = (timestamp = performance.now()) => {
+                const progress = (timestamp - this.speakingBounceStart) / this.speakingBounceDuration;
                 if (progress >= 1 || !this.container || this.container.style.display === 'none') {
                     this.speakingBounceFrame = null;
                     this.speakingBounceStart = 0;
                     this.applyTransform();
                     return;
                 }
-                this.applyTransform();
-                this.updateLockIconPosition();
-                if (typeof this.updateFloatingButtonsPosition === 'function') {
-                    this.updateFloatingButtonsPosition();
-                }
+                this.applyTransform(timestamp);
+                this.updateOverlayPositionsForAnimation(timestamp);
                 this.speakingBounceFrame = requestAnimationFrame(tick);
             };
             this.speakingBounceFrame = requestAnimationFrame(tick);
@@ -1437,10 +1442,7 @@
                     return;
                 }
                 this.applyTransform(timestamp);
-                this.updateLockIconPosition();
-                if (typeof this.updateFloatingButtonsPosition === 'function') {
-                    this.updateFloatingButtonsPosition();
-                }
+                this.updateOverlayPositionsForAnimation(timestamp);
                 this.talkingHopFrame = requestAnimationFrame(tick);
             };
             this.talkingHopFrame = requestAnimationFrame(tick);
