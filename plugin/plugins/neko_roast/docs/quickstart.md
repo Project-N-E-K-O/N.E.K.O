@@ -7,7 +7,7 @@ NEKO Live 当前有两条使用路径：
 
 “首次弹幕头像 / ID 锐评”仍是当前最稳定的底层链路；猫猫独播会在这个链路之上增加 Live Status、为什么没说话和 Idle Hosting 的基础能力。
 
-插件启动或配置重载后会先向当前猫猫注入轻量锐评语境，让她知道接下来收到的是直播间弹幕/头像锐评事件；真正的沙盒或直播弹幕仍会通过 `respond` 事件触发自然短句回应。
+插件启动或配置重载后只有在 `live_enabled=true` 时才会向当前猫猫注入轻量直播语境，让她知道接下来收到的是直播间弹幕/头像锐评事件；未开启直播插件时不会注入直播语境，避免影响 Warthunder 等其他插件发言。真正的沙盒或直播弹幕仍会通过 `respond` 事件触发自然短句回应。
 开发者模式开启时会在直播语境之上追加调试语境。手动从面板开启开发者模式时，猫猫会短句播报一次已进入调试状态；插件启动时如果配置已开启，只注入调试语境，不自动播报。
 插件关闭时会发送恢复语境，提醒猫猫回到日常聊天状态，不再把后续普通对话当成直播弹幕或头像锐评。
 
@@ -45,6 +45,7 @@ NEKO Live 当前有两条使用路径：
 - 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once` 做现场快照；字段解释先看 `-Help`，完整记录口径以 [`independent-mode-product-plan.md`](independent-mode-product-plan.md) 的 `Next Live Test Checklist` 为准。
   - 不确定监控参数时先运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Help`。
   - 真实输出测试建议加 `-ExpectRealOutput -BackendLogPath <backend-log>`，优先看 `alerts`；`alerts=-` 表示这一帧没有检测到已知真实输出风险。未显式传 `-BackendLogPath` 时，脚本会尝试读取当前目录或仓库根目录下的 `.codex-backend-live-test.log`；如果出现 `test_isolation`，先清理受控测试窗口；如果出现 `backend_log_missing`，说明监控没有读到后端日志，需要补传日志路径后再判断 watchdog、串台或长回复。
+  - 现场先看这 8 个信号：`alerts`、`solo_test_focus`、`solo_test_hint`、`director_action`、`latest_route`、`latest_output_length_status`、`recent_actual_idle_hosting`、`recent_actual_active_engagement`。只有这些指向异常时，再展开看下面的细分字段。
   - `recent_*` 是最近尝试数，包含 skipped / failed；`recent_actual_*` 是最近实际 pushed / dry_run 的输出数。判断开场暖场、冷场陪播、主动营业有没有真正说出口时，优先看 `recent_actual_warmup_hosting`、`recent_actual_idle_hosting` 和 `recent_actual_active_engagement`；如果出现 `warmup_missing`，说明导演认为开场暖场已经可以说，但最近窗口里还没有实际 warmup 输出；如果出现 `warmup_repeat`，说明开场暖场实际输出超过一次，需要确认 warmup 状态为什么重新出现。
   - 如果出现 `avatar_bias`，优先看 `avatar_roast_share`、`recent_danmaku_response` 和 `entrance_pacing_window`，确认猫猫是不是又把普通弹幕当成连续首评，以及当前活跃度下连续首评会被压多久；如果出现 `long_reply`，同时看 `latest_output_len`、`recent_long_reply_count` 和 `recent_long_reply_*`，确认长回复主要来自首评、后续接话、冷场陪播还是主动营业，避免旧长回复被最新短回复盖住。
   - 如果出现 `generic_host_prompt`，看 `recent_generic_host_prompt_count`、`log_generic_host_prompt` 和最新输出 / 后端日志，确认主动营业是不是退化成“大家快来互动 / 发弹幕 / get the chat moving”这类模板句。
