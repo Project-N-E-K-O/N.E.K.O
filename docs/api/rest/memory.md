@@ -25,13 +25,16 @@ Save an updated memory file.
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "哥哥", "text": "Hello!" },
+    { "role": "小天", "text": "Hi there!" }
   ]
 }
 ```
+
+The character name is derived from `filename` (via `extract_catgirl_name_from_recent_filename`), not read from the body. Each chat entry requires a `role` string; the message text is read from the `text` field.
+
+Note: `role` is the speaker's name as stored in `recent.json` — the master's configured name for the human's turns and the character's name for the AI's turns — NOT `"user"`/`"assistant"`. The handler writes each entry's `role` verbatim.
 
 ::: info
 Character names are validated with regex supporting CJK characters. Chat history entries are validated for required fields.

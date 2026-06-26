@@ -1,6 +1,6 @@
 # TTS 客户端
 
-**文件：** `main_logic/tts_client.py`（约 2300 行）
+**模块：** `main_logic/tts_client/`（Python 包，总计约 5900 行，包含 `__init__.py`、`_infra.py`、`_registry_meta.py`、`_telemetry.py` 以及 `workers/` 子包下各 provider 的 worker 模块）。工厂函数 `get_tts_worker` 定义在 `main_logic/tts_client/__init__.py`。
 
 TTS 客户端通过统一的基于队列的接口处理多个提供商的文本转语音合成。
 

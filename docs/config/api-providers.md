@@ -9,8 +9,8 @@ Core providers must support **Realtime API** (WebSocket-based streaming).
 | Provider | WebSocket URL | Default model |
 |----------|---------------|---------------|
 | `free` | Built-in server | `free-model` |
-| `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3-omni-flash-realtime` |
-| `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-mini` |
+| `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3.5-omni-flash-realtime-2026-03-15` |
+| `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-2` |
 | `step` | `wss://api.stepfun.com/v1/realtime` | `step-audio-2` |
 | `gemini` | Google GenAI SDK | `gemini-2.5-flash-native-audio-preview-12-2025` |
 

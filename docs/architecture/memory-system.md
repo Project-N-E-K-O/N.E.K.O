@@ -9,7 +9,7 @@ N.E.K.O.'s memory system provides persistent context across sessions, enabling c
 | **Recent memory** | JSON files (`recent_*.json`) | Sliding window | Direct read, per-character |
 | **Time-indexed original** | SQLite (`time_indexed_original`) | Permanent | Time range queries |
 | **Time-indexed compressed** | SQLite (`time_indexed_compressed`) | Permanent | Time range queries |
-| **Semantic memory** | Hybrid index: vector embeddings (`text-embedding-v4`) + BM25 | Permanent | Similarity search |
+| **Semantic memory** | Hybrid index: vector embeddings (local CPU ONNX model, see `memory/embeddings.py` `EmbeddingService`) + BM25 | Permanent | Similarity search |
 
 ## How memory flows into conversations
 
@@ -28,7 +28,7 @@ Raw conversation ──> Summary model (qwen-plus) ──> Compressed summary
                                                    Stored in time_indexed_compressed
 ```
 
-The summary tier model (configured via `NEKO_SUMMARY_MODEL`) compresses raw turns into stored conversation summaries.
+The summary tier model (`DEFAULT_SUMMARY_MODEL`, default `qwen-plus`; overridable via `core_config.json` or the selected assist provider's `summary_model` — not via an environment variable) compresses raw turns into stored conversation summaries.
 
 ## Memory review
 
