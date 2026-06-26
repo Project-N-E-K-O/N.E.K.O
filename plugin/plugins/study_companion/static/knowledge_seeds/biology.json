@@ -5088,7 +5088,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_population_growth"
+          }
         }
       ],
       "related": [
@@ -5148,6 +5156,42 @@
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
             "bridge_focus": "population_growth_function_model"
+          }
+        },
+        {
+          "id": "bio_senior_gene_frequency",
+          "relation": "confusable",
+          "reason": "Population size change is often confused with allele frequency change; one tracks individuals while the other tracks gene pool composition.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_population_growth"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "procedure_step",
+          "reason": "Population questions first identify growth rate and carrying capacity before applying energy or biomass calculations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_population_growth"
           }
         }
       ],
@@ -5233,7 +5277,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_community_succession"
+          }
         }
       ],
       "related": [
@@ -5256,6 +5308,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "application",
+          "reason": "Succession changes community composition and is applied when explaining nutrient cycling after disturbance.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_community_succession"
+          }
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "confusable",
+          "reason": "Succession describes community replacement over time, while population growth describes one species count change.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_community_succession"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "procedure_step",
+          "reason": "Succession analysis first identifies dominant species and trophic structure before explaining energy flow changes.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_community_succession"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5340,7 +5446,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecosystem_material_cycle"
+          }
         }
       ],
       "related": [
@@ -5363,6 +5477,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "application",
+          "reason": "Material-cycle reasoning is applied when separating cyclic matter movement from one-way energy transfer in calculation items.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecosystem_material_cycle"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "confusable",
+          "reason": "Matter cycles through ecosystems, while energy flows one way and is lost as heat.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecosystem_material_cycle"
+          }
+        },
+        {
+          "id": "bio_junior_ecology_food_chain",
+          "relation": "procedure_step",
+          "reason": "Material-cycle answers first locate producers consumers and decomposers in the food web.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecosystem_material_cycle"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5447,7 +5615,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_calculation"
+          }
         }
       ],
       "related": [
@@ -5488,6 +5664,44 @@
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
             "bridge_focus": "energy_flow_proportion"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "confusable",
+          "reason": "Qualitative energy-flow direction is often confused with quantitative transfer-efficiency calculation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_calculation"
+          }
+        },
+        {
+          "id": "direct_proportion",
+          "relation": "procedure_step",
+          "reason": "Energy-transfer items set up trophic-level ratios before solving for biomass or energy values.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "chapter_focus": "senior_ecology_calculation",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "energy_transfer_ratio_steps"
           }
         }
       ],
@@ -5573,7 +5787,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_control"
+          }
         }
       ],
       "related": [
@@ -5596,6 +5818,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "application",
+          "reason": "Control design is applied when judging whether an experimental conclusion is supported by the evidence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_control"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "confusable",
+          "reason": "Control design asks what changes and what stays fixed, while curve-table work asks how to read the resulting data.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_control"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "procedure_step",
+          "reason": "Experimental analysis first identifies independent variable dependent variable and control group before reading trends.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_control"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5680,7 +5956,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_curve_table"
+          }
         }
       ],
       "related": [
@@ -5740,6 +6024,44 @@
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
             "bridge_focus": "bio_experiment_chart_reading"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "confusable",
+          "reason": "Reading a trend from a graph is often confused with evaluating whether the conclusion exceeds the data.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_curve_table"
+          }
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "procedure_step",
+          "reason": "Graph-table questions first identify axes units groups and trend before making biological conclusions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "chapter_focus": "senior_experiment_curve_table",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "bio_chart_reading_steps"
           }
         }
       ],
@@ -5825,7 +6147,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_error_analysis"
+          }
         }
       ],
       "related": [
@@ -5854,8 +6184,8 @@
           "relation": "application",
           "priority": "core",
           "context": "practice",
-          "confidence": 0.86,
-          "reason": "Experimental error evaluation applies variance to judge dispersion among repeated measurements.",
+          "confidence": 0.97,
+          "reason": "实验误差与结论评价 uses 方差 to judge repeated-measurement dispersion before deciding whether the conclusion is reliable.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
@@ -5866,6 +6196,44 @@
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
             "bridge_focus": "experiment_variance_error"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "confusable",
+          "reason": "Error analysis judges reliability after data collection, while control design plans fair comparison before data collection.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_error_analysis"
+          }
+        },
+        {
+          "id": "variance",
+          "relation": "procedure_step",
+          "reason": "实验误差与结论评价 first compares repeated measurements, then uses 方差 to quantify dispersion before judging conclusion reliability.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.96,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "chapter_focus": "senior_experiment_error_analysis",
+            "bridge_direction": "biology_to_math",
+            "bridge_focus": "bio_error_dispersion_steps"
           }
         }
       ],
@@ -5951,7 +6319,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_pcr_electrophoresis"
+          }
         }
       ],
       "related": [
@@ -5974,6 +6350,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "application",
+          "reason": "PCR amplification and electrophoresis are applied to screen and verify target DNA in gene engineering workflows.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_pcr_electrophoresis"
+          }
+        },
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "relation": "confusable",
+          "reason": "PCR copies DNA in vitro with primers and polymerase, while DNA replication experiments trace replication in living cells.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_pcr_electrophoresis"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "procedure_step",
+          "reason": "Electrophoresis analysis first compares band position and brightness before inferring fragment size or genotype.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_pcr_electrophoresis"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6058,7 +6488,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_engineering"
+          }
         }
       ],
       "related": [
@@ -6081,6 +6519,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_biotech_engineering",
+          "relation": "application",
+          "reason": "Gene engineering is applied in broader biotechnology tasks such as transgenic production and molecular screening.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "confusable",
+          "reason": "Gene engineering changes or transfers DNA, while expression regulation explains when and how an existing gene is expressed.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "procedure_step",
+          "reason": "Gene engineering workflows verify target fragments by PCR or electrophoresis before screening transformants.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_engineering"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6165,7 +6657,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_cell_engineering"
+          }
         }
       ],
       "related": [
@@ -6188,6 +6688,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_biotech_engineering",
+          "relation": "application",
+          "reason": "Cell engineering applies tissue culture and cell fusion to cloning breeding and biotechnology production scenarios.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_cell_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "confusable",
+          "reason": "Cell engineering manipulates cells or tissues, while gene engineering manipulates DNA constructs and transfer.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_cell_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "procedure_step",
+          "reason": "Tissue culture tasks control asepsis hormones explant source and medium before evaluating differentiation results.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_cell_engineering"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6272,7 +6826,15 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_exam_integrated_context"
+          }
         }
       ],
       "related": [
@@ -6295,6 +6857,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_answer_standardization",
+          "relation": "application",
+          "reason": "Integrated scenarios require applying standard biological wording to connect evidence conditions and conclusion.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_exam_integrated_context"
+          }
+        },
+        {
+          "id": "bio_senior_answer_standardization",
+          "relation": "confusable",
+          "reason": "Finding the integrated scenario clue is often confused with writing a complete standardized answer.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_exam_integrated_context"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "procedure_step",
+          "reason": "Integrated biology items first classify the scenario as genetics regulation ecology engineering or experiment before combining evidence.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_exam_integrated_context"
+          }
         }
       ],
       "typical_misconceptions": [

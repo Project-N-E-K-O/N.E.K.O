@@ -1592,6 +1592,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_chemical_bonding",
+          "relation": "procedure_step",
+          "reason": "Periodic position and valence electrons are checked before predicting bond type and crystal structure.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_chemical_bonding",
+          "relation": "confusable",
+          "reason": "Periodic trends describe element behavior, while bonding and crystal type describe how particles are connected.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1699,6 +1737,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_material_structure_inference",
+          "relation": "procedure_step",
+          "reason": "Bond type and crystal category are used before inferring melting point, conductivity, and solubility patterns.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_atomic_structure_periodic",
+          "relation": "confusable",
+          "reason": "Atomic periodicity and chemical bonding are adjacent structure topics but answer different evidence questions.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1806,6 +1882,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "procedure_step",
+          "reason": "Structure-property inference narrows candidate substances before a broader unknown-substance conclusion is selected.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_chemical_bonding",
+          "relation": "confusable",
+          "reason": "Bonding classification is source evidence, while structure-property inference uses that evidence to explain observations.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "structure",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5033,6 +5147,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "procedure_step",
+          "reason": "Enumerating valid isomers is a step before selecting intermediates in an organic synthesis route.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_organic_functional_group",
+          "relation": "confusable",
+          "reason": "Functional-group recognition identifies reactive sites, while isomer counting also tracks carbon skeleton and position.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5140,6 +5292,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_organic_polymer",
+          "relation": "procedure_step",
+          "reason": "Functional-group conversion reasoning supports identifying monomers and repeat units in polymer problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_organic_isomer",
+          "relation": "confusable",
+          "reason": "Route inference asks for reaction order and conditions, not only all structures with the same formula.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5247,6 +5437,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "procedure_step",
+          "reason": "Tracing a repeat unit back to monomers is a step in many organic route inference tasks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_organic_reaction_route",
+          "relation": "confusable",
+          "reason": "Polymer questions focus on addition or condensation patterns, while route questions may include many small-molecule conversions.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "organic",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5354,6 +5582,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "procedure_step",
+          "reason": "Separation and purification choices come before deciding gas drying, collection, and impurity-removal steps.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "confusable",
+          "reason": "Separation operations isolate mixtures, while gas preparation problems center on generation, purification, collection, and testing.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5461,6 +5727,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "procedure_step",
+          "reason": "Gas preparation plans must control reagent amount, gas flow, drying, and tail-gas handling before evaluation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_junior_gas_preparation",
+          "relation": "confusable",
+          "reason": "Senior gas experiment items extend junior gas preparation with impurity removal, safety, and device evaluation.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5568,6 +5872,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_experiment_design",
+          "relation": "procedure_step",
+          "reason": "Identifying independent, dependent, and controlled variables is a core step in judging an experiment design.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_experiment_gas",
+          "relation": "confusable",
+          "reason": "A gas apparatus detail may be evidence, but variable-control questions ask what is changed, measured, or held constant.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "experiment",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5675,6 +6017,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "procedure_step",
+          "reason": "Reading each transformation in a process flow is a step before inferring substances from reactions and products.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "confusable",
+          "reason": "Process-flow questions track recycle, conversion, and separation logic, not only one controlled laboratory variable.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5782,6 +6162,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "relation": "procedure_step",
+          "reason": "Substance inference often converts color, precipitate, and gas clues into a table of possible identities.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_industrial_process_flow",
+          "relation": "confusable",
+          "reason": "Unknown-substance inference follows evidence clues, while process-flow tasks emphasize staged production and separation decisions.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5889,6 +6307,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_green_chemistry_context",
+          "relation": "procedure_step",
+          "reason": "Data-table comparison supports evaluating yield, atom economy, emissions, and energy use in real contexts.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "confusable",
+          "reason": "Data-table reasoning compares trends and constraints, while unknown-substance inference identifies species from diagnostic evidence.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5996,6 +6452,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "chem_senior_exam_synthesis_strategy",
+          "relation": "procedure_step",
+          "reason": "Green-chemistry checks are a final step when evaluating real-context synthesis and industrial-process answers.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
+        },
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "relation": "confusable",
+          "reason": "Green-chemistry context asks for environmental and resource evaluation, not just extracting a numerical table trend.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "synthesis",
+            "batch": "chemistry_ready_gap_2026_06"
+          }
         }
       ],
       "typical_misconceptions": [

@@ -2330,6 +2330,24 @@
       ],
       "related": [
         {
+          "id": "english_senior_special_sentence_patterns",
+          "relation": "procedure_step",
+          "reason": "After students identify the real subject and verb form, they can handle inversion, emphasis, and ellipsis without losing sentence control.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_subject_verb_agreement"
+          }
+        },
+        {
           "id": "english_senior_relative_clause",
           "relation": "co_occurs",
           "reason": "Review 主谓一致 together with 定语从句限定与非限定 when diagnosing adjacent english skills.",
@@ -2437,6 +2455,24 @@
       ],
       "related": [
         {
+          "id": "english_senior_word_formation",
+          "relation": "procedure_step",
+          "reason": "After special sentence patterns are recognized, students use part of speech and derivation clues to complete more precise forms.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_special_sentence_patterns"
+          }
+        },
+        {
           "id": "english_senior_subject_verb_agreement",
           "relation": "co_occurs",
           "reason": "Review 倒装强调省略 together with 主谓一致 when diagnosing adjacent english skills.",
@@ -2543,6 +2579,24 @@
         }
       ],
       "related": [
+        {
+          "id": "english_senior_cloze_logic",
+          "relation": "procedure_step",
+          "reason": "Once students can form the required word class, they apply those lexical clues inside cloze passages and test each option against discourse logic.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_word_formation"
+          }
+        },
         {
           "id": "english_senior_special_sentence_patterns",
           "relation": "co_occurs",
@@ -4430,6 +4484,24 @@
       ],
       "related": [
         {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "procedure_step",
+          "reason": "After drafting a speech for audience, purpose, and call to action, students use rubric revision to check task coverage, tone, and language accuracy.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_speech"
+          }
+        },
+        {
           "id": "english_senior_application_notice",
           "relation": "co_occurs",
           "reason": "Review 演讲稿写作 together with 通知与倡议书写作 when diagnosing adjacent english skills.",
@@ -4704,6 +4776,24 @@
       ],
       "related": [
         {
+          "id": "english_senior_continuation_language_imitation",
+          "relation": "procedure_step",
+          "reason": "After mapping the character emotion arc, students imitate tense, point of view, tone, and detail density so the continuation sounds consistent.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_emotion_arc"
+          }
+        },
+        {
           "id": "english_senior_continuation_plot_logic",
           "relation": "co_occurs",
           "reason": "Review 读后续写情绪弧线 together with 读后续写情节推进 when diagnosing adjacent english skills.",
@@ -4810,6 +4900,24 @@
         }
       ],
       "related": [
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "procedure_step",
+          "reason": "After matching the source style in continuation writing, students revise links between sentences so the new ending remains fluent and coherent.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_language_imitation"
+          }
+        },
         {
           "id": "english_senior_continuation_emotion_arc",
           "relation": "co_occurs",
@@ -5378,6 +5486,24 @@
       ],
       "related": [
         {
+          "id": "english_senior_translation_chinese_interference",
+          "relation": "procedure_step",
+          "reason": "After reviewing vocabulary in context, students correct Chinese-influenced wording by checking collocation, word order, and natural expression.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_vocabulary_context_review"
+          }
+        },
+        {
           "id": "english_senior_exam_time_strategy",
           "relation": "co_occurs",
           "reason": "Review 语境词汇复习 together with 英语考试时间分配 when diagnosing adjacent english skills.",
@@ -5484,6 +5610,24 @@
         }
       ],
       "related": [
+        {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "procedure_step",
+          "reason": "After removing Chinese-influenced wording, students use rubric revision to verify accuracy, cohesion, task response, and expression quality.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_translation_chinese_interference"
+          }
+        },
         {
           "id": "english_senior_vocabulary_context_review",
           "relation": "co_occurs",
@@ -5627,6 +5771,24 @@
         }
       ],
       "related": [
+        {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "procedure_step",
+          "reason": "After extracting purpose, data, and constraints from informational reading, students apply the same checklist to revise writing for complete task response.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_reading_new_gaokao_information"
+          }
+        },
         {
           "id": "english_senior_translation_chinese_interference",
           "relation": "co_occurs",

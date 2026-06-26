@@ -1849,7 +1849,26 @@
       "chapter": "高中实验",
       "depth": 3,
       "difficulty": 0.72,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "prerequisite",
+          "reason": "Experiment data processing depends on reading raw measurements and uncertainty patterns from motion experiments.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "motion_experiment_data_foundation"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_senior_ac_circuit_intro",
@@ -1859,6 +1878,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "procedure_step",
+          "reason": "After collecting readings, students should plot variables and read slope or intercept before selecting a formula.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "experiment_data_graph_reading"
+          }
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "reason": "Linear fitting of experiment data applies straight-line graphs to estimate constants and check systematic error.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "linear_fit_experiment_data"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4086,6 +4143,43 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "procedure_step",
+          "reason": "Wave interference solutions first express phase difference with sine or cosine relationships.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "wave_phase_trig_setup"
+          }
+        },
+        {
+          "id": "college_physics_interference_diffraction",
+          "relation": "application",
+          "reason": "Mechanical-wave interference prepares the same path-difference reasoning used in college interference and diffraction.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "wave_path_difference_transfer"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5993,6 +6087,42 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "procedure_step",
+          "reason": "Instrument reading should be recorded with resolution and uncertainty before data processing starts.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "instrument_reading_to_data_table"
+          }
+        },
+        {
+          "id": "physics_senior_experiment_acceleration",
+          "relation": "application",
+          "reason": "Accurate length and time readings support acceleration experiments and later uncertainty checks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "instrument_reading_in_motion_experiment"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6240,6 +6370,42 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "procedure_step",
+          "reason": "Energy-conservation experiments first identify the work-energy path before comparing measured losses.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "energy_experiment_work_energy_setup"
+          }
+        },
+        {
+          "id": "physics_senior_energy_momentum",
+          "relation": "application",
+          "reason": "Measured kinetic and potential energy changes apply conservation reasoning in multistage mechanics tasks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "energy_experiment_conservation_application"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6347,6 +6513,42 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "procedure_step",
+          "reason": "Resistance experiments require tabulating voltage-current pairs before choosing internal or external connection corrections.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "resistance_experiment_data_table"
+          }
+        },
+        {
+          "id": "college_physics_current_circuit",
+          "relation": "application",
+          "reason": "Volt-ampere measurement decisions prepare steady-current circuit modeling in college physics.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "resistance_measurement_to_current_circuit"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6454,6 +6656,44 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "procedure_step",
+          "reason": "Battery experiments use the U-I graph intercept and slope before solving for emf and internal resistance.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "battery_ui_graph_reading"
+          }
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "application",
+          "reason": "The emf and internal-resistance model applies a linear graph where intercept and slope have physical meaning.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "battery_linear_model"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6658,6 +6898,42 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_model_boundary",
+          "relation": "procedure_step",
+          "reason": "Multistage synthesis starts by marking process boundaries before choosing laws for each segment.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "multistage_boundary_partition"
+          }
+        },
+        {
+          "id": "physics_senior_energy_momentum",
+          "relation": "application",
+          "reason": "Complex mechanics tasks often combine energy and momentum conservation across connected stages.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "multistage_energy_momentum_transfer"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7962,6 +8238,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "procedure_step",
+          "reason": "Solving a wave equation starts by mapping phase, period, and wavelength to trigonometric form.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "wave_equation_phase_trig"
+          }
+        },
+        {
+          "id": "college_physics_interference_diffraction",
+          "relation": "application",
+          "reason": "The wave equation provides the amplitude and phase model used in interference and diffraction analysis.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "wave_equation_to_interference"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8059,6 +8372,42 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_mechanical_wave_equation",
+          "relation": "procedure_step",
+          "reason": "Interference and diffraction calculations first translate the physical setup into a wave phase relation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "interference_wave_phase_setup"
+          }
+        },
+        {
+          "id": "college_physics_polarization",
+          "relation": "application",
+          "reason": "Wave-optics reasoning transfers to polarization when comparing light intensity and field direction effects.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "wave_optics_to_polarization"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8466,6 +8815,43 @@
             "bridge_direction": "physics_to_math",
             "bridge_focus": "field_superposition_vector_space"
           }
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "procedure_step",
+          "reason": "Electric-field superposition starts by adding field vectors from each charge before applying symmetry.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "coulomb_field_vector_sum"
+          }
+        },
+        {
+          "id": "college_physics_gauss_law",
+          "relation": "application",
+          "reason": "Coulomb-field symmetry checks support choosing Gaussian surfaces in Gauss-law problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "coulomb_symmetry_to_gauss_law"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8563,6 +8949,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "procedure_step",
+          "reason": "Gauss-law problems require setting up flux as an integral over a closed surface before simplifying by symmetry.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "gauss_law_flux_integral"
+          }
+        },
+        {
+          "id": "college_physics_electric_potential",
+          "relation": "application",
+          "reason": "Fields found with Gauss law are often applied to potential-difference and energy calculations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "gauss_field_to_potential"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8660,6 +9083,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "procedure_step",
+          "reason": "Potential calculations first convert electric field along a path into an integral with correct sign.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "electric_potential_path_integral"
+          }
+        },
+        {
+          "id": "college_physics_capacitance_dielectric",
+          "relation": "application",
+          "reason": "Potential difference is applied directly when deriving capacitance and stored energy of conductors.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "potential_to_capacitance"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8757,6 +9217,42 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_electric_potential",
+          "relation": "procedure_step",
+          "reason": "Capacitance modeling first relates charge to potential difference before adding dielectric effects.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "capacitance_from_potential_difference"
+          }
+        },
+        {
+          "id": "college_physics_current_circuit",
+          "relation": "application",
+          "reason": "Capacitors and dielectrics extend into transient and steady-current circuit reasoning.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "capacitance_to_circuit_application"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8854,6 +9350,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "procedure_step",
+          "reason": "Circuit analysis often starts by reading I-V graphs and identifying slopes, intercepts, and operating points.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "current_circuit_iv_graph_reading"
+          }
+        },
+        {
+          "id": "college_physics_magnetic_field_biot_savart",
+          "relation": "application",
+          "reason": "Steady currents are the source model used when applying Biot-Savart magnetic-field calculations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "current_to_magnetic_field_source"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9067,6 +9600,42 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_magnetic_field_biot_savart",
+          "relation": "procedure_step",
+          "reason": "Ampere-law use should be checked against the magnetic-field direction and symmetry learned from Biot-Savart.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "ampere_symmetry_check"
+          }
+        },
+        {
+          "id": "college_physics_lorentz_force",
+          "relation": "application",
+          "reason": "Magnetic fields obtained from Ampere-law symmetry are applied to Lorentz-force motion problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "ampere_field_to_lorentz_force"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9280,6 +9849,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "procedure_step",
+          "reason": "Induction analysis starts by expressing magnetic flux through an area before evaluating its change.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "faraday_flux_integral_setup"
+          }
+        },
+        {
+          "id": "college_physics_maxwell_equations_intro",
+          "relation": "application",
+          "reason": "Faraday induction is one of the core field-change laws combined in Maxwell-equation form.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "faraday_to_maxwell_equations"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9512,6 +10118,82 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "procedure_step",
+          "reason": "Ray-tracing problems first use small-angle or triangle relations before applying lens and mirror equations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "geometric_optics_ray_triangle_setup"
+          }
+        },
+        {
+          "id": "similar_triangles",
+          "relation": "application",
+          "reason": "Geometric-optics ray diagrams use similar triangles to connect object height, image height, object distance, image distance, and magnification.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.97,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "geometric_optics_similar_triangle_magnification"
+          }
+        },
+        {
+          "id": "similarity_properties",
+          "relation": "procedure_step",
+          "reason": "Ray-tracing solutions first identify pairs of similar triangles, then use proportional sides to derive magnification or lens relations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.96,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "ray_diagram_similarity_proportion"
+          }
+        },
+        {
+          "id": "inverse_function_graph",
+          "relation": "application",
+          "reason": "Thin-lens equations apply inverse-function reasoning when object distance and image distance vary reciprocally.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "lens_equation_inverse_relation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9609,6 +10291,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_trig_definitions",
+          "relation": "procedure_step",
+          "reason": "Polarization intensity problems first resolve the angle between transmission axes before applying Malus-law form.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "polarization_axis_angle_setup"
+          }
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "application",
+          "reason": "Malus-law intensity variation applies trigonometric graph behavior as the analyzer angle changes.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "malus_law_trig_graph"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9803,6 +10523,43 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "procedure_step",
+          "reason": "Photoelectric-effect data should be linearized as stopping voltage versus frequency before interpreting slope and intercept.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "photoelectric_linear_fit"
+          }
+        },
+        {
+          "id": "college_physics_de_broglie_atom",
+          "relation": "application",
+          "reason": "Photon quantization in the photoelectric effect prepares particle-wave reasoning for de Broglie and atomic models.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "photoelectric_to_quantum_atom"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9891,6 +10648,43 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "inverse_function_graph",
+          "relation": "procedure_step",
+          "reason": "De Broglie wavelength calculations first recognize wavelength as inverse to momentum.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "bridge_direction": "physics_to_math",
+            "bridge_focus": "de_broglie_inverse_momentum"
+          }
+        },
+        {
+          "id": "college_physics_photoelectric_effect",
+          "relation": "application",
+          "reason": "Matter-wave calculations extend the quantum energy and photon evidence introduced by the photoelectric effect.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_focus": "matter_wave_quantum_evidence"
+          }
         }
       ],
       "typical_misconceptions": [

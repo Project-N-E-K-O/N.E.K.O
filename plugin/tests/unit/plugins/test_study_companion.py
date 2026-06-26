@@ -93,6 +93,9 @@ from plugin.plugins.study_companion.knowledge_graph_index import (
     build_relevant_subgraph,
     compress_subgraph_payload,
 )
+from plugin.plugins.study_companion.knowledge_retrieval_eval import (
+    evaluate_knowledge_retrieval_queries,
+)
 from plugin.plugins.study_companion.knowledge_seed_validator import (
     validate_knowledge_seed_manifest,
 )
@@ -3703,6 +3706,110 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
             "实验误差与结论评价和方差有什么关系？",
             {"bio_senior_experiment_error_analysis", "variance"},
         ),
+        (
+            "电势图像和函数图像分析有什么关系？",
+            {"physics_senior_electric_potential_graph", "college_function_graph_analysis"},
+        ),
+        (
+            "实验数据处理和方差有什么关系？",
+            {"physics_senior_experiment_data", "variance"},
+        ),
+        (
+            "几何光学和相似三角形有什么关系？",
+            {"college_physics_geometric_optics", "similar_triangles"},
+        ),
+        (
+            "反应速率图像和函数单调性有什么关系？",
+            {"chem_senior_rate_factors", "senior_function_monotonicity"},
+        ),
+        (
+            "平衡常数和反比例函数图像有什么关系？",
+            {"chem_senior_equilibrium_constant", "inverse_function_graph"},
+        ),
+        (
+            "滴定误差和一次函数交点有什么关系？",
+            {"chem_senior_acid_base_titration", "linear_function_intersection"},
+        ),
+        (
+            "氧化还原滴定和方程配平有什么关系？",
+            {"chem_senior_redox_titration", "chem_senior_redox_balance"},
+        ),
+        (
+            "有机同分异构和排列组合有什么关系？",
+            {"chem_senior_organic_isomer", "college_combination"},
+        ),
+        (
+            "PCR和电泳与指数增长有什么关系？",
+            {"bio_senior_pcr_electrophoresis", "senior_exponential_function"},
+        ),
+        (
+            "种群增长和指数函数有什么关系？",
+            {"bio_senior_population_growth", "senior_exponential_function"},
+        ),
+        (
+            "群落演替和地理可持续发展有什么关系？",
+            {"bio_senior_community_succession", "geo_senior_regional_sustainability"},
+        ),
+        (
+            "细胞工程和实验控制有什么关系？",
+            {"bio_senior_cell_engineering", "bio_senior_experiment_control"},
+        ),
+        (
+            "阅读主旨题和语文信息筛选有什么关系？",
+            {"english_senior_reading_main_idea", "chinese_senior_practical_filter"},
+        ),
+        (
+            "概要写作和语文压缩语段有什么关系？",
+            {"english_senior_summary_writing", "chinese_senior_language_compression"},
+        ),
+        (
+            "续写情节逻辑和小说情节作用有什么关系？",
+            {"english_senior_continuation_plot_logic", "chinese_senior_literary_plot_effect"},
+        ),
+        (
+            "英语应用文通知和语文信息筛选有什么关系？",
+            {"english_senior_application_notice", "chinese_senior_practical_filter"},
+        ),
+        (
+            "词汇语境复习和语文衔接连贯有什么关系？",
+            {"english_senior_vocabulary_context_review", "chinese_senior_language_cohesion"},
+        ),
+        (
+            "史料实证和语文材料概括有什么关系？",
+            {"history_senior_material_analysis", "chinese_senior_language_compression"},
+        ),
+        (
+            "制度变迁和政治参与有什么关系？",
+            {"history_senior_institution_change", "pol_senior_political_participation"},
+        ),
+        (
+            "文化交流和英语阅读主旨有什么关系？",
+            {"history_senior_cultural_exchange", "english_senior_reading_main_idea"},
+        ),
+        (
+            "经济史和经济增长模型有什么关系？",
+            {"history_senior_economic_history", "college_econ_growth_productivity"},
+        ),
+        (
+            "国际关系和博弈论囚徒困境有什么关系？",
+            {"pol_senior_international_relations", "college_econ_game_prisoner"},
+        ),
+        (
+            "逻辑思维和议论文论证有什么关系？",
+            {"pol_senior_logical_thinking", "chinese_senior_composition_argument_layer"},
+        ),
+        (
+            "地貌形成和函数图像读取有什么关系？",
+            {"geo_senior_geomorphology", "function_graph_reading"},
+        ),
+        (
+            "区域可持续发展和群落演替有什么关系？",
+            {"geo_senior_regional_sustainability", "bio_senior_community_succession"},
+        ),
+        (
+            "产业区位和经济成本收益有什么关系？",
+            {"geo_senior_industrial_location", "college_econ_cost_benefit"},
+        ),
     ]
 
     expected_subjects = {
@@ -3800,8 +3907,37 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
             "实验误差与结论评价和方差有什么关系？",
         }
 
-    assert len(cases) == 125
-    assert len(cross_subject_queries) >= 59
+    cross_subject_queries.update(
+        {
+            "电势图像和函数图像分析有什么关系？",
+            "实验数据处理和方差有什么关系？",
+            "几何光学和相似三角形有什么关系？",
+            "反应速率图像和函数单调性有什么关系？",
+            "平衡常数和反比例函数图像有什么关系？",
+            "滴定误差和一次函数交点有什么关系？",
+            "有机同分异构和排列组合有什么关系？",
+            "PCR和电泳与指数增长有什么关系？",
+            "种群增长和指数函数有什么关系？",
+            "群落演替和地理可持续发展有什么关系？",
+            "阅读主旨题和语文信息筛选有什么关系？",
+            "概要写作和语文压缩语段有什么关系？",
+            "续写情节逻辑和小说情节作用有什么关系？",
+            "英语应用文通知和语文信息筛选有什么关系？",
+            "词汇语境复习和语文衔接连贯有什么关系？",
+            "史料实证和语文材料概括有什么关系？",
+            "制度变迁和政治参与有什么关系？",
+            "文化交流和英语阅读主旨有什么关系？",
+            "经济史和经济增长模型有什么关系？",
+            "国际关系和博弈论囚徒困境有什么关系？",
+            "逻辑思维和议论文论证有什么关系？",
+            "地貌形成和函数图像读取有什么关系？",
+            "区域可持续发展和群落演替有什么关系？",
+            "产业区位和经济成本收益有什么关系？",
+        }
+    )
+
+    assert len(cases) == 151
+    assert len(cross_subject_queries) >= 83
     assert set(minimum_subject_query_counts) == expected_subjects
     for _query, expected_topic_ids in cases:
         covered_subjects = {topic_subjects[topic_id] for topic_id in expected_topic_ids}
@@ -3858,6 +3994,13 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
                 for node in subgraph.get("nodes", [])
                 if isinstance(node, dict) and node.get("id")
             }
+            node_subjects.update(
+                {
+                    topic_id: subject
+                    for topic_id, subject in topic_subjects.items()
+                    if topic_id not in node_subjects
+                }
+            )
             node_labels = {
                 str(node["id"]): str(node.get("label") or node.get("id") or "")
                 for node in subgraph.get("nodes", [])
@@ -3884,6 +4027,58 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
                 for edge in cross_subject_edges
                 for endpoint in ("from", "to")
             ), query
+
+
+def test_study_knowledge_retrieval_eval_reports_focus_and_cross_subject_quality() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+    cases = [
+        {
+            "query": "导数和速度加速度有什么关系？",
+            "expected_topic_ids": [
+                "physics_senior_experiment_acceleration",
+                "college_physics_kinematics_calculus",
+                "college_derivative_calculation",
+            ],
+            "expect_cross_subject": True,
+        },
+        {
+            "query": "PCR和电泳与指数增长有什么关系？",
+            "expected_topic_ids": ["bio_senior_pcr_electrophoresis", "senior_exponential_function"],
+            "expect_cross_subject": True,
+        },
+        {
+            "query": "概要写作和语文压缩语段有什么关系？",
+            "expected_topic_ids": ["english_senior_summary_writing", "chinese_senior_language_compression"],
+            "expect_cross_subject": True,
+        },
+        {
+            "query": "驻点和极值点怎么区分？",
+            "expected_topic_ids": ["college_stationary_points", "college_critical_points"],
+            "expect_cross_subject": False,
+        },
+    ]
+
+    report = evaluate_knowledge_retrieval_queries(topics=topics, cases=cases)
+
+    assert report["summary"]["case_count"] == len(cases)
+    assert report["summary"]["focus_hit_count"] == len(cases)
+    assert report["summary"]["cross_subject_case_count"] == 3
+    assert report["summary"]["cross_subject_edge_count"] >= 3
+    assert report["summary"]["model_context_cross_subject_cue_count"] >= 3
+    assert report["summary"]["thin_relation_group_count"] == 0
+    assert report["summary"]["raw_seed_included_count"] == 0
+    for result in report["results"]:
+        assert result["query"]
+        assert result["focus_topic_id"] in result["expected_topic_ids"]
+        assert len(result["top_matches"]) <= 5
+        assert result["subgraph_node_ids"]
+        assert result["model_context"]["summary"]["raw_seed_included"] is False
+        assert result["focus_hit"] is True
+        assert result["has_raw_seed"] is False
+        assert result["thin_relation_groups"] == []
+        if result["expect_cross_subject"]:
+            assert result["has_cross_subject_edge"] is True
+            assert result["model_context_has_cross_subject_cue"] is True
 
 
 def test_study_knowledge_guidance_groups_edges_into_user_facing_sections() -> None:

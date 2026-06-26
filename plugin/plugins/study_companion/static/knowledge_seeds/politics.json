@@ -1553,6 +1553,42 @@
             "target_subject": "geography",
             "bridge_direction": "politics_to_geography"
           }
+        },
+        {
+          "id": "pol_junior_national_security",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "International-relations prompts can be confused with domestic security prompts unless the actors, arena, and diplomacy are identified.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "politics",
+            "bridge_direction": "politics_internal"
+          }
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After identifying international actors and interests, students should test claims with premise, evidence, and conclusion checks.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "politics",
+            "bridge_direction": "politics_internal"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1618,7 +1654,62 @@
       "depth": 2,
       "difficulty": 0.62,
       "prerequisites": [],
-      "related": [],
+      "related": [
+        {
+          "id": "pol_senior_philosophy_dialectics",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Logical-thinking tasks are often confused with dialectics unless students distinguish formal inference from contradiction and development analysis.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "politics",
+            "bridge_direction": "politics_internal"
+          }
+        },
+        {
+          "id": "pol_senior_international_relations",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Logic methods should be applied to material questions by separating claims, reasons, assumptions, and policy conclusions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "politics",
+            "bridge_direction": "politics_internal"
+          }
+        },
+        {
+          "id": "chinese_senior_composition_argument",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Formal argument checks transfer to composition tasks that require clear claims, valid reasoning, and evidence-based rebuttal.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "politics",
+            "target_subject": "chinese",
+            "bridge_direction": "politics_to_chinese"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只背术语不扣材料",
         "主体和角度错位",

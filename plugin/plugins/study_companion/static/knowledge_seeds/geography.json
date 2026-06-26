@@ -1656,6 +1656,60 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "geo_junior_river_landform",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Geomorphology problems can be confused with named river-landform recall unless students explain process, material, and time scale.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "geography",
+            "bridge_direction": "geography_internal"
+          }
+        },
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After explaining landform processes, students can evaluate land use, hazard exposure, and restoration choices in a region.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "geography",
+            "bridge_direction": "geography_internal"
+          }
+        },
+        {
+          "id": "geo_junior_natural_disaster",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Slope, river, and coastal landform analysis supports disaster-risk questions about erosion, landslides, floods, and mitigation.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "geography",
+            "bridge_direction": "geography_internal"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1758,6 +1812,24 @@
             "source_subject": "geography",
             "target_subject": "economics",
             "bridge_direction": "geography_to_economics"
+          }
+        },
+        {
+          "id": "geo_senior_industrial_location",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Regional sustainability is often confused with industrial location analysis unless ecological capacity and long-run governance are included.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "geography",
+            "bridge_direction": "geography_internal"
           }
         }
       ],

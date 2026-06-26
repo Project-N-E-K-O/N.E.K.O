@@ -1183,6 +1183,60 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "history_junior_qin_unification",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Students often mix ancient world civilizations with ancient China timelines, state forms, and evidence types.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
+        },
+        {
+          "id": "history_junior_industrial_revolution",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "After comparing ancient civilizations, students can trace how later production changes reshaped world history.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
+        },
+        {
+          "id": "geo_junior_river_landform",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "River-valley civilization materials can be explained with floodplains, irrigation, transport, and settlement location.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "geography",
+            "bridge_direction": "history_to_geography"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1436,6 +1490,42 @@
             "target_subject": "politics",
             "bridge_direction": "history_to_politics"
           }
+        },
+        {
+          "id": "history_senior_modernization_comparison",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
+          "reason": "Institutional-change prompts are easily confused with broad modernization comparison unless the answer centers rules and governance.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
+        },
+        {
+          "id": "history_senior_economic_history",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "After identifying institutional change, students should explain how rules affected taxation, markets, labor, and growth.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1527,6 +1617,42 @@
             "source_subject": "history",
             "target_subject": "economics",
             "bridge_direction": "history_to_economics"
+          }
+        },
+        {
+          "id": "history_senior_globalization",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
+          "reason": "Economic-history answers can drift into globalization summaries unless they track production, exchange, finance, and living standards.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
+        },
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "After explaining economic links, students can analyze how trade routes and markets carried ideas, technology, and culture.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
           }
         }
       ],
@@ -1628,6 +1754,42 @@
             "source_subject": "history",
             "target_subject": "chinese",
             "bridge_direction": "history_to_chinese"
+          }
+        },
+        {
+          "id": "history_senior_globalization",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Cultural-exchange prompts overlap with globalization but should foreground mutual borrowing, translation, adaptation, and identity.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
+          }
+        },
+        {
+          "id": "history_senior_material_analysis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Cultural-exchange questions usually require source attribution, evidence extraction, and source-based explanation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "history",
+            "bridge_direction": "history_internal"
           }
         }
       ],
