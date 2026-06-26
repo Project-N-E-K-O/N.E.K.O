@@ -82,8 +82,10 @@ Key fields:
   proactive_in_engaged
                     Alert name when the latest actual proactive output happened while live_state is engaged.
   warmup_repeat     Alert name when warmup_hosting has more than one recent actual output.
-  warmup_missing / idle_missing / active_missing
-                    Alert names when the director says an automatic warmup, idle, or active line is ready but recent results contain no such output yet.
+  warmup_missing / idle_missing / active_missing / active_blocks_idle
+                    Alert names for automatic-hosting gaps during solo-stream validation.
+                    *_missing means the director says a line is ready but recent results contain no such output yet.
+                    active_blocks_idle means active engagement is still selected even though idle hosting is already eligible.
   test_isolation    Alert name for real-output solo-stream tests when readiness says the validation window is not isolated.
 "@
 }
@@ -126,6 +128,22 @@ function Format-Seconds {
         return "-"
     }
     return ("{0:N1}s" -f $seconds)
+}
+
+function Get-NumberOrNull {
+    param([object]$Value)
+    if ($null -eq $Value) {
+        return $null
+    }
+    try {
+        $number = [double]$Value
+    } catch {
+        return $null
+    }
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+        return $null
+    }
+    return $number
 }
 
 function Get-EntrancePacingWindow {
@@ -946,6 +964,17 @@ function Write-Snapshot {
     }
     if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "active_engagement" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentActualRouteCounts['active_engagement'] -eq 0) {
         $alerts += "active_missing"
+    }
+    $activeIdleWaitNumber = Get-NumberOrNull $activeIdleWait
+    if (
+        "$(Get-CompactField $liveDirector.next_auto_action)" -eq "active_engagement" -and
+        "$(Get-Field $liveDirector.eligible)" -eq "True" -and
+        "$(Get-Field $idleHosting.eligible)" -eq "True" -and
+        "$(Get-Field $liveState.idle_hosting_candidate)" -eq "True" -and
+        $null -ne $activeIdleWaitNumber -and
+        $activeIdleWaitNumber -le 0.0
+    ) {
+        $alerts += "active_blocks_idle"
     }
     $alertText = "-"
     if ($alerts.Count -gt 0) {

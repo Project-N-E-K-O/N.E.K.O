@@ -1237,6 +1237,38 @@ def test_monitor_live_script_alerts_when_active_only_has_skipped_attempt(tmp_pat
     assert "active_missing" in alerts_match.group(1).split(",")
 
 
+def test_monitor_live_script_alerts_when_active_blocks_idle_window(tmp_path: Path) -> None:
+    context = _solo_quiet_context()
+    context["state"]["live_state"]["state"] = "idle"
+    context["state"]["live_state"]["idle_hosting_candidate"] = True
+    context["state"]["idle_hosting_status"] = {
+        "eligible": True,
+        "reason": "ready",
+    }
+    context["state"]["active_engagement_status"] = {
+        "eligible": True,
+        "reason": "eligible",
+        "minimum_interval_remaining": 0.0,
+        "recent_danmaku_cooldown_remaining": 0.0,
+        "idle_hosting_wait_remaining": 0.0,
+    }
+    context["state"]["live_director_status"] = {
+        "next_auto_action": "active_engagement",
+        "eligible": True,
+        "reason": "solo_quiet",
+        "cooldown_remaining": 0.0,
+    }
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "active_idle_wait=0.0s" in completed.stdout
+    assert "director_action=active_engagement" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "active_blocks_idle" in alerts_match.group(1).split(",")
+
+
 def test_monitor_live_script_focuses_active_engagement_when_director_says_active_is_ready(tmp_path: Path) -> None:
     context = _solo_quiet_context()
     context["state"]["active_engagement_status"] = {

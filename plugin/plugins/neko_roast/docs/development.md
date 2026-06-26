@@ -386,7 +386,7 @@ Idle Hosting 不是简单定时器输出。每次 `idle_hosting` 事件会附带
 主动营业复盘还应看 `recent_topic_source_fallback` / `recent_topic_source_bili_trending` / `recent_topic_source_recent_danmaku`。如果话题无聊且长期偏向 `fallback`，优先扩充或调整内置小话题；如果长期偏向 `bili_trending`，优先检查公开素材过滤和标题压缩；如果长期偏向 `recent_danmaku`，优先确认是否被单个观众或上一轮话题带偏。当最近主动营业至少 3 次且同一素材来源占比过高时，`alerts` 会出现 `topic_source_bias`。
 
 Live Feel Pack v1.5 增加三个监控信号：`recent_topic_skip_viewer_to_viewer_mention` 用来确认主动营业是否过滤了观众互相 `@`；`recent_topic_skip_recent_danmaku_source_streak` 用来确认是否因为 recent danmaku 连续主导而回退到其他素材；`latest_topic_shape_guard_reason` 用来确认主动营业是否因为连续相同形态 / 意图而切换 topic shape。对应 `alerts` 分别是 `topic_viewer_mention`、`topic_source_streak` 和 `topic_shape_guard`。
-监控里的 `recent_*` 路由计数表示最近尝试数，包含 skipped / failed；`recent_actual_*` 表示最近实际 pushed / dry_run 的路由数。判断开场暖场、冷场陪播、主动营业是否真的输出，以及判断 `proactive_in_engaged`、`warmup_repeat`、`warmup_missing`、`idle_missing`、`active_missing`、`avatar_roast_share` 和 `avatar_bias` 时，应优先看 actual 口径，避免把被跳过或失败的尝试误认为猫猫已经说过。
+监控里的 `recent_*` 路由计数表示最近尝试数，包含 skipped / failed；`recent_actual_*` 表示最近实际 pushed / dry_run 的路由数。判断开场暖场、冷场陪播、主动营业是否真的输出，以及判断 `proactive_in_engaged`、`active_blocks_idle`、`warmup_repeat`、`warmup_missing`、`idle_missing`、`active_missing`、`avatar_roast_share` 和 `avatar_bias` 时，应优先看 actual 口径，避免把被跳过或失败的尝试误认为猫猫已经说过。`active_blocks_idle` 表示冷场陪播已经 eligible 且 `active_idle_wait` 已归零，但 director 仍选择主动营业，应优先检查主动营业和冷场陪播的让位关系。
 
 Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 `live_reply_contract=short_tts_line`、`max_reply_chars=40` 和 `response_module_hint=...`。这不是绕过核心生成逻辑的硬截断，而是直播插件向核心输出链路和现场调试面暴露的短回复意图；若后端实际 `send_lanlan_response` 仍变长，以 `monitor_live.ps1` 的长回复告警为准继续收敛。
 
@@ -631,7 +631,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-27：`uv run pytest plugin/plugins/neko_roast/tests -q` → **319 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-27：`uv run pytest plugin/plugins/neko_roast/tests -q` → **320 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 
