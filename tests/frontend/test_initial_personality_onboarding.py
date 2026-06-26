@@ -778,6 +778,113 @@ def test_onboarding_does_not_open_while_home_tutorial_start_is_locked(mock_page:
 
 
 @pytest.mark.frontend
+def test_onboarding_does_not_open_while_home_tutorial_is_pending(mock_page: Page):
+    """新手教程上锁前的 pending 窗口（冷启动加载模型/首句演出）也应挡住选人格，
+    避免选人格抢在新手教程之前与其并发弹出。即使 15s 超时先到也要继续等。"""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            const realSetTimeout = window.setTimeout.bind(window);
+            window.setTimeout = (callback, delay, ...args) => {
+                if (delay === 15000) {
+                    return realSetTimeout(callback, 20, ...args);
+                }
+                return realSetTimeout(callback, delay, ...args);
+            };
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.isNekoHomeTutorialPending = true;
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                home_tutorial_completed: true,
+                manual_home_tutorial_viewed: true,
+                user_cohort: 'existing',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.isNekoHomeTutorialPending = false;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_onboarding_opens_when_pending_home_tutorial_aborts_via_startup_release(mock_page: Page):
+    """死锁安全：新手教程在 pending 后夭折（未启动，无 tutorial-completed/skipped 事件、
+    后端仍是新用户 observing 永不 settle）时，凭教程派发的 startup-greeting-release(released:true)
+    放行选人格，避免选人格被永久挡住。"""
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            const realSetTimeout = window.setTimeout.bind(window);
+            window.setTimeout = (callback, delay, ...args) => {
+                if (delay === 15000) {
+                    return realSetTimeout(callback, 20, ...args);
+                }
+                return realSetTimeout(callback, delay, ...args);
+            };
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.isNekoHomeTutorialPending = true;
+            window.__tutorialPromptStatePayload = {
+                status: 'observing',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    mock_page.wait_for_timeout(120)
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_have_count(0)
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.isNekoHomeTutorialPending = false;
+            window.dispatchEvent(new CustomEvent('neko:startup-greeting-release', {
+                detail: { released: true, page: 'home', reason: 'floating-buttons-not-found' }
+            }));
+        }
+        """
+    )
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
 def test_onboarding_waits_when_default_character_makes_new_user_look_existing(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(

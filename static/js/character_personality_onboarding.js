@@ -23,6 +23,8 @@
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
+    // 与 universal-manager.js / app-websocket.js 同名：教程派发的「启动问候放行」事件。
+    const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
 
     function interpolateTemplate(template, options) {
         return String(template || '').replace(/{{\s*(\w+)\s*}}/g, (_, name) => {
@@ -290,6 +292,7 @@
 
             const manager = window.universalTutorialManager || null;
             if (window.isInTutorial === true
+                || window.isNekoHomeTutorialPending === true
                 || (manager && manager.currentPage === 'home' && manager.isTutorialRunning)) {
                 return true;
             }
@@ -640,6 +643,21 @@
                 void this.openIfPending();
             };
 
+            const handleHomeTutorialStartupRelease = (event) => {
+                const detail = event && event.detail;
+                // released:true = 教程已决定不启动（夭折）或已结束（dispatchStartupGreetingRelease），不会再占屏；
+                // released:false 是教程正在启动（clearStartupGreetingRelease），由 isTutorialRunning 接管，跳过。
+                if (!detail || detail.released !== true) {
+                    return;
+                }
+                if (!this.shouldRespectHomeTutorialGate()) {
+                    return;
+                }
+                // 停止等待新手教程、放行选人格。否则在「教程夭折」一类没有 tutorial-completed/skipped 事件的路径上，
+                // pending 被 choke point 清除后 settle 轮询会卡在新用户 observing 态永不 resolve（永远不弹选人格）。
+                this._tutorialFlowAborted = true;
+            };
+
             const resetHomeTutorialCompletedFromStorage = (event) => {
                 if (!event || event.key !== HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY || !event.newValue) {
                     return;
@@ -653,6 +671,7 @@
 
             window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
             window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
+            window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, handleHomeTutorialStartupRelease);
             window.addEventListener('neko:tutorial-started', queueResume);
             window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
             window.addEventListener('neko:tutorial-skipped', markHomeTutorialCompleted);
