@@ -4210,9 +4210,9 @@ class ConfigManager:
                 # 其他 model type（conversation/summary/correction/emotion/vision/agent）
                 # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
                 # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
-                # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
-                # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
-                # 那是另一个层面的问题，下个 PR 跟进。
+                # 注：follow_* 下 omni/tts 仍不能依赖 get_model_api_config fallback
+                # 读取用户填的 modelId（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
+                # 因此这些特殊前缀继续走既有 follow 解析。
                 is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
                 # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
                 # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
@@ -4245,9 +4245,16 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
-                    followed_model = _resolve_game_follow_model_id(prefix, provider)
-                    if followed_model:
-                        config[model_key] = followed_model
+                    if (
+                        prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
+                        and isinstance(cfg_model, str)
+                        and cfg_model.strip()
+                    ):
+                        config[model_key] = cfg_model.strip()
+                    else:
+                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        if followed_model:
+                            config[model_key] = followed_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 

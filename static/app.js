@@ -307,16 +307,41 @@ window.addEventListener('load', async () => {
             }
         } catch (_) { }
 
-        // i18next 可能还没 init 完成（init 内部要先 await Steam 语言，window.i18next.language
-        // 这时为空）。此处回退到 localStorage 的 i18nextLng——getInitialLanguage 在 init 之前
-        // 就把解析出的语言落了进去。否则空 lang 传给 /api/changelog 会被后端当中文原文下发：
-        // 更新日志早读（此处）易踩到，问卷在用户点完 changelog 弹窗后才读、时序上 i18next 已就绪
-        // 所以语言正常。与 app-websocket / app-proactive 等处的兜底取法保持一致。
+        // 更新日志/问卷要把 UI 语言传给后端做本地化下发。坑：本启动流程可能早于 i18next
+        // init 完成就跑到这（init 内部要先 await 一次 Steam 语言查询），此时 window.i18next
+        // .language 还是空 → 传 lang='' → 后端按中文原文下发（更新日志早读易踩；问卷在用户
+        // 点完 changelog 弹窗后才读所以躲过，造成"更新日志中文、问卷正常"）。所以先 await
+        // i18next ready 再取语言，拿到解析后的权威值（含 getInitialLanguage 不落盘的手动
+        // uiLanguage 覆盖）；只有 init 彻底失败/超时才回退 localStorage。
+        // ready 信号：i18next.isInitialized（已就绪直接过）或 i18n-i18next.js 在**所有终态**都会
+        // 派发的 localechange 事件（finalizeInit 成功 / 无 backend 手动加载 / 初始化失败
+        // exportFallbackFunctions 都派发），所以信号一定会来。超时给 12s 是为覆盖 i18n-i18next.js
+        // 自身 bootstrap 的完整窗口：依赖轮询最多 5s + getInitialLanguage 的 Steam 语言查询最多
+        // 2s，外加它 10s 硬安全网强制 init。5s 太短会在 i18next 尚未就绪时提前超时回退（Codex P2），
+        // 12s 覆盖整段窗口后超时只兜「i18n 模块自身彻底卡死」这种极端情况。
+        const _ensureI18nReady = (timeoutMs = 12000) => new Promise((resolve) => {
+            if (window.i18next && window.i18next.isInitialized) { resolve(); return; }
+            let done = false;
+            let timerId;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timerId);
+                window.removeEventListener('localechange', finish);
+                resolve();
+            };
+            window.addEventListener('localechange', finish);
+            timerId = setTimeout(finish, timeoutMs);
+        });
+        // i18next ready 后 language 即权威值；万一 init 失败/超时，localStorage 的 i18nextLng
+        // （getInitialLanguage 在 init 前对 query/steam 值落过盘）作末位兜底，仍比空 lang 强。
+        // 与 app-websocket / app-proactive 等处的取法保持一致。
         const _resolveUiLang = () => {
             const live = (window.i18next && typeof window.i18next.language === 'string')
                 ? window.i18next.language : '';
             return live || localStorage.getItem('i18nextLng') || '';
         };
+        await _ensureI18nReady();
 
         // 1) 版本更新日志（先讲背景）
         try {

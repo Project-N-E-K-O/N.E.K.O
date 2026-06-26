@@ -17,7 +17,7 @@ Browser                    Main Server                   LLM Provider
   │──── stream_data ──────────>│──── send_audio ─────────────>│
   │     {audio chunks}         │                              │
   │                            │<──── on_text_delta ──────────│
-  │<──── {type: "text"} ──────│                              │
+  │<─ {type: "gemini_response"} │                              │
   │                            │<──── on_audio_delta ─────────│
   │<──── {type: "audio"} ─────│     (resampled 24→48kHz)     │
   │                            │                              │
@@ -41,7 +41,7 @@ Browser                    Main Server                   LLM Provider
 **Server → Client (JSON text frames):**
 
 ```json
-{ "type": "text", "text": "Hi there!" }
+{ "type": "gemini_response", "text": "Hi there!" }
 { "type": "audio", "audio_data": "<base64 PCM 48kHz>" }
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
@@ -66,14 +66,16 @@ All REST endpoints follow standard FastAPI patterns. Routers access global state
 ```
 LLMSessionManager                  Agent Server
   │                                    │
-  │── ZMQ PUB (analyze request) ──────>│
+  │── HTTP REST control (:48915) ─────>│   task dispatch / lifecycle
+  │── ZMQ PUB session events (:48961) >│   main → agent (PUB/SUB)
+  │── ZMQ PUSH analyze queue (:48963) >│   main → agent (PUSH/PULL)
   │                                    │── Planner: create task plan
   │                                    │── Executor: run actions
   │                                    │   ├── MCP tool calls
   │                                    │   ├── Computer Use
   │                                    │   └── Browser Use
   │                                    │── Analyzer: evaluate results
-  │<── ZMQ PUSH (task_result) ────────│
+  │<── ZMQ PUSH task_result (:48962) ──│   agent → main (PUSH/PULL)
   │                                    │
   │── inject into next LLM turn ──>   │
 ```

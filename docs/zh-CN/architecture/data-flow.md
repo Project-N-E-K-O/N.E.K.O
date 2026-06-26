@@ -17,7 +17,7 @@
   │──── stream_data ──────────>│──── send_audio ─────────────>│
   │     {audio chunks}         │                              │
   │                            │<──── on_text_delta ──────────│
-  │<──── {type: "text"} ──────│                              │
+  │<─ {type: "gemini_response"} │                              │
   │                            │<──── on_audio_delta ─────────│
   │<──── {type: "audio"} ─────│     (resampled 24→48kHz)     │
   │                            │                              │
@@ -41,7 +41,7 @@
 **服务器 -> 客户端（JSON 文本帧）：**
 
 ```json
-{ "type": "text", "text": "Hi there!" }
+{ "type": "gemini_response", "text": "Hi there!" }
 { "type": "audio", "audio_data": "<base64 PCM 48kHz>" }
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
@@ -66,14 +66,16 @@
 ```
 LLMSessionManager                  智能体服务器
   │                                    │
-  │── ZMQ PUB (analyze request) ──────>│
+  │── HTTP REST control (:48915) ─────>│   任务分发 / 生命周期
+  │── ZMQ PUB session events (:48961) >│   主服务器 → 智能体（PUB/SUB）
+  │── ZMQ PUSH analyze queue (:48963) >│   主服务器 → 智能体（PUSH/PULL）
   │                                    │── Planner：创建任务计划
   │                                    │── Executor：执行动作
   │                                    │   ├── MCP tool calls
   │                                    │   ├── Computer Use
   │                                    │   └── Browser Use
   │                                    │── Analyzer：评估结果
-  │<── ZMQ PUSH (task_result) ────────│
+  │<── ZMQ PUSH task_result (:48962) ──│   智能体 → 主服务器（PUSH/PULL）
   │                                    │
   │── 注入到下一轮 LLM 对话 ──>        │
 ```
