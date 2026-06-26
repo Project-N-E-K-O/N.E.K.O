@@ -1451,6 +1451,26 @@ def test_monitor_live_script_alerts_when_real_output_log_is_missing(tmp_path: Pa
     assert "alerts=backend_log_missing" in completed.stdout
 
 
+def test_monitor_live_script_alerts_when_live_plugin_is_disabled_for_real_output(tmp_path: Path) -> None:
+    log_path = tmp_path / "backend.log"
+    log_path.write_text("", encoding="utf-8")
+    context = _context_with_latest_route_and_signal()
+    context["state"]["live_status"] = {"summary": "cannot_stream", "reason": "live_disabled"}
+
+    completed = _run_monitor(
+        tmp_path,
+        context,
+        "-ExpectRealOutput",
+        "-BackendLogPath",
+        str(log_path),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "live_disabled" in alerts_match.group(1).split(",")
+
+
 def test_monitor_live_script_aggregates_real_output_alerts(tmp_path: Path) -> None:
     log_path = tmp_path / "backend.log"
     log_path.write_text(

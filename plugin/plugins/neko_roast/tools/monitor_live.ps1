@@ -26,7 +26,7 @@ Usage:
 
 Important options:
   -Once              Print one snapshot and exit.
-  -ExpectRealOutput  Add real-output alerts for dry_run, disconnects, stale latest results, latency, test isolation, watchdogs, contamination, and long replies.
+  -ExpectRealOutput  Add real-output alerts for dry_run, disabled live plugin, disconnects, stale latest results, latency, test isolation, watchdogs, contamination, and long replies.
   -BackendLogPath    Read backend log tail for playback watchdog, unrelated proactive output, and send_lanlan_response length markers.
                       If omitted, the monitor tries .codex-backend-live-test.log in the current directory and repo root.
 
@@ -75,6 +75,7 @@ Key fields:
                     Alert name when recent Active Engagement topics overuse one reply intent, making proactive hosting feel one-note.
   topic_source_bias
                     Alert name when recent Active Engagement topics overuse one source, making proactive hosting material feel narrow.
+  live_disabled     Alert name for real-output tests when the NEKO Live plugin is disabled.
   generic_host_prompt
                     Alert name for template-like "please interact / send danmaku" output.
   host_beat_repeat  Alert name for repeated idle-hosting host beat material.
@@ -843,6 +844,9 @@ function Write-Snapshot {
         }
         if ("$(Get-Field $liveStatus.summary)" -ne "ready_to_stream") {
             $alerts += "live_not_ready"
+        }
+        if ("$(Get-Field $liveStatus.reason)" -eq "live_disabled") {
+            $alerts += "live_disabled"
         }
         if (-not $backendLogAvailable) {
             $alerts += "backend_log_missing"
