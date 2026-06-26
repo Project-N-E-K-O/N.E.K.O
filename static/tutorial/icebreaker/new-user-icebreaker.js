@@ -546,31 +546,61 @@
         });
     }
 
-    function finalizeIcebreakerAssistantSubtitle(text) {
-        var line = String(text || '').trim();
+    // Also defined in app-interpage.js for the standalone chat bridge path.
+    function getIcebreakerMessageText(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].type === 'text') {
+                var text = String(blocks[i].text || '').trim();
+                if (text) return text;
+            }
+        }
+        return '';
+    }
+
+    function syncIcebreakerAssistantCompactCaption(role, message) {
+        if (role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
         if (!line) return;
+        var turnId = String((message && (message.turnId || message.id)) || makeMessageId('icebreaker-turn'));
+        var detail = {
+            turnId: turnId,
+            segmentId: turnId + ':icebreaker',
+            text: line,
+            source: SOURCE
+        };
         try {
-            var bridge = window.subtitleBridge;
-            if (!bridge || typeof bridge.finalizeTurnWithTranslation !== 'function') {
-                return;
-            }
-            if (typeof bridge.beginTurn === 'function') {
-                bridge.beginTurn({ latch: false });
-            }
-            var result = bridge.finalizeTurnWithTranslation(line);
-            if (result && typeof result.catch === 'function') {
-                result.catch(function (error) {
-                    console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
-                });
-            }
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: {
+                    turnId: turnId,
+                    source: SOURCE
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+                detail: detail
+            }));
         } catch (error) {
-            console.warn('[NewUserIcebreaker] subtitle translation failed:', error);
+            console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
         }
     }
 
-    function syncIcebreakerAssistantSubtitle(role, contextOk, text) {
-        if (role !== 'assistant' || contextOk !== true) return;
-        finalizeIcebreakerAssistantSubtitle(text);
+    function waitForIcebreakerChatHostMounted(host) {
+        return new Promise(function (resolve) {
+            var attempts = 0;
+            function checkMounted() {
+                var isMounted = false;
+                try {
+                    isMounted = !!(host && typeof host.isMounted === 'function' && host.isMounted());
+                } catch (_) {}
+                if (isMounted || attempts >= 100) {
+                    window.setTimeout(resolve, 0);
+                    return;
+                }
+                attempts += 1;
+                window.setTimeout(checkMounted, 50);
+            }
+            checkMounted();
+        });
     }
 
     function appendChatMessage(role, text, meta) {
@@ -591,19 +621,25 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {
+        return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
+                // The standalone /chat page applies both append and compact caption sync
+                // from the broadcast receiver in app-interpage.js.
                 return message;
             }
+            var chatHost = null;
             return waitForChatHost(30000).then(function (host) {
+                chatHost = host;
                 if (typeof host.openWindow === 'function') {
                     host.openWindow();
                 }
                 return host.appendMessage(message);
             }).then(function (result) {
-                syncIcebreakerAssistantSubtitle(role, contextOk, messageText);
-                return result;
+                if (!result) return result;
+                return waitForIcebreakerChatHostMounted(chatHost).then(function () {
+                    syncIcebreakerAssistantCompactCaption(role, message);
+                    return result;
+                });
             });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] append message failed:', error);
