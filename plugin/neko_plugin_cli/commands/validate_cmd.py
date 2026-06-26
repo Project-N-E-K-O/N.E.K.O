@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import re
 from pathlib import Path
 
@@ -452,8 +453,11 @@ def _check_runtime_table(value: object, issues: list[tuple[str, str]]) -> None:
     _check_optional_number(value, "priority", "[plugin_runtime].priority", issues, integer=True)
     _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues)
     timeout = value.get("timeout")
-    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout <= 0:
-        issues.append(("error", "[plugin_runtime].timeout must be > 0"))
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+        if not math.isfinite(float(timeout)):
+            issues.append(("error", "[plugin_runtime].timeout must be finite"))
+        elif timeout <= 0:
+            issues.append(("error", "[plugin_runtime].timeout must be > 0"))
     startup_failure = value.get("startup_failure")
     if startup_failure is not None:
         _check_enum(startup_failure, "[plugin_runtime].startup_failure", {"warn", "fail", "ignore"}, issues)

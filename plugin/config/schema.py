@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -144,9 +145,10 @@ class PluginRuntimeSchema(BaseModel):
             return value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("plugin_runtime.timeout must be a positive number")
-        if float(value) <= 0:
+        timeout = float(value)
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("plugin_runtime.timeout must be a positive number")
-        return value
+        return timeout
 
     @field_validator("startup_failure", mode="before")
     @classmethod

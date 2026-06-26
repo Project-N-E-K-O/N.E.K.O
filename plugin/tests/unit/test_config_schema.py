@@ -32,7 +32,7 @@ def test_plugin_runtime_startup_failure_accepts_known_policy() -> None:
     assert validated.plugin_runtime.startup_failure == "warn"
 
 
-@pytest.mark.parametrize("timeout", [True, 0, -1, "bad"])
+@pytest.mark.parametrize("timeout", [True, 0, -1, "bad", float("nan"), float("inf"), float("-inf")])
 def test_plugin_runtime_timeout_rejects_invalid_values(timeout: object) -> None:
     config = _base_config()
     config["plugin_runtime"] = {"timeout": timeout}

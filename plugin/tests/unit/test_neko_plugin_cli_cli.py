@@ -301,6 +301,29 @@ def test_validate_plugin_dir_rejects_non_positive_runtime_timeout(tmp_path: Path
     )
 
 
+@pytest.mark.parametrize("timeout_literal", ["nan", "inf", "-inf"])
+def test_validate_plugin_dir_rejects_non_finite_runtime_timeout(
+    tmp_path: Path,
+    timeout_literal: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "auto_start = false",
+            f"auto_start = false\ntimeout = {timeout_literal}",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert any(
+        level == "error" and "[plugin_runtime].timeout must be finite" in message
+        for level, message in issues
+    )
+
+
 def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
