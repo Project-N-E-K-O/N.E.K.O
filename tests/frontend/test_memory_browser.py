@@ -465,6 +465,14 @@ def test_memory_browser_home_day_reset_uses_manager_after_avatar_day_reset(
     seed_memory_file,
 ):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    prompt_reset_requests = []
+
+    def handle_prompt_reset(route):
+        prompt_reset_requests.append(_request_json(route))
+        route.fulfill(status=200, content_type="application/json", json={"ok": True})
+
+    mock_page.route("**/api/tutorial-prompt/reset", handle_prompt_reset)
+
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
     mock_page.evaluate(
@@ -495,6 +503,7 @@ def test_memory_browser_home_day_reset_uses_manager_after_avatar_day_reset(
         {"type": "avatar-day", "day": 1, "options": {"source": "memory_browser_reset_select"}},
         {"type": "prompt", "reason": "memory_browser_home_day_reset"},
     ]
+    assert prompt_reset_requests == []
 
 
 @pytest.mark.frontend
