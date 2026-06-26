@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prompt-side slop reduction ("降低人机感").
+"""Prompt-side slop reduction — stripping the "AI tell" from dialog history.
 
 LLMs imitate the style of the conversation they are shown. When the cat's own
-past replies are full of stock phrases — "心脏疯狂跳动", "嘴角勾起一抹弧度",
-"a frantic rhythm drummed against his ribs" — the model reads them as the
-established voice and keeps producing more of the same. This module rewrites
-those clichés in the history that is *fed back to the model*, breaking the
-self-imitation feedback loop.
+past replies are full of stock phrases — "his heart pounded wildly", "a smirk
+tugged at the corner of her mouth", "a frantic rhythm drummed against his ribs"
+— the model reads them as the established voice and keeps producing more of the
+same. This module rewrites those clichés in the history that is *fed back to the
+model*, breaking the self-imitation feedback loop.
 
 promptOnly semantics
 --------------------
@@ -43,7 +43,7 @@ Each language maps to a list of rule dicts::
 
     {
         "id": "ZH_003",
-        "name": "心跳狂跳",
+        "name": "heart pounding",
         "find": r"...",            # a Python ``re`` pattern (NOT JS)
         "replace": ["...", ...],   # pool; one is picked at random per match
         "flags": 0,                # optional ``re`` flags (default 0)
@@ -306,7 +306,7 @@ def _resolve_short_lang(raw: Optional[str]) -> str:
 
 
 def is_slop_filter_enabled() -> bool:
-    """Read the user's master switch (对话设置 → ``slopFilterEnabled``).
+    """Read the user's master switch (conversation settings → ``slopFilterEnabled``).
 
     Defaults to ``True`` when unset. Never raises — a settings read failure
     leaves the feature on (its rewrites are reversible and low-risk)."""

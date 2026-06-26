@@ -1,4 +1,4 @@
-"""Slop reduction (降低人机感) engine + dialog wiring contract.
+"""Slop reduction engine + dialog wiring contract.
 
 The engine rewrites AI-writing clichés in the *outgoing* assistant history so the
 model stops imitating its own stock phrases. Two hard invariants this file pins:

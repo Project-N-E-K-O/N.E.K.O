@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Static slop-reduction rule tables ("降低人机感"), per language.
+"""Static slop-reduction rule tables (per language).
 
 Consumed by ``utils.slop_filter``. Each short language code (matching
 ``config.prompts.prompts_sys._loc``: zh / en / ja / ko / ru / es / pt) maps to a
