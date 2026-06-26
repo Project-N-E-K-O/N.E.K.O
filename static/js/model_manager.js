@@ -2088,6 +2088,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const uploadBtn = document.getElementById('upload-btn');
     const modelUpload = document.getElementById('model-upload');
     const pngtuberModelUpload = document.getElementById('pngtuber-model-upload');
+    const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');
     const pngtuberPreviewGroup = document.getElementById('pngtuber-preview-group');
     const pngtuberBasicPreviewSection = document.getElementById('pngtuber-basic-preview-section');
     const pngtuberTalkPreviewBtn = document.getElementById('pngtuber-talk-preview-btn');
@@ -9021,10 +9022,78 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 上传模型功能
+    let pngtuberUploadChoiceMenu = null;
+
+    function closePNGTuberUploadChoice() {
+        if (pngtuberUploadChoiceMenu) {
+            pngtuberUploadChoiceMenu.remove();
+            pngtuberUploadChoiceMenu = null;
+            document.removeEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+        }
+    }
+
+    function handlePNGTuberUploadChoiceOutsideClick(event) {
+        if (!pngtuberUploadChoiceMenu) return;
+        if (pngtuberUploadChoiceMenu.contains(event.target) || uploadBtn.contains(event.target)) return;
+        closePNGTuberUploadChoice();
+    }
+
+    function createPNGTuberUploadChoiceItem(label, onSelect) {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.setAttribute('role', 'button');
+        item.tabIndex = 0;
+        item.innerHTML = `<span class="dropdown-item-text" data-text="${label}">${label}</span>`;
+        const select = () => {
+            closePNGTuberUploadChoice();
+            onSelect();
+        };
+        item.addEventListener('click', select);
+        item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                select();
+            }
+        });
+        return item;
+    }
+
+    function showPNGTuberUploadChoice() {
+        if (!pngtuberPackageUpload) {
+            pngtuberModelUpload.click();
+            return;
+        }
+        if (pngtuberUploadChoiceMenu) {
+            closePNGTuberUploadChoice();
+            return;
+        }
+
+        const rect = uploadBtn.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'model-type-dropdown';
+        menu.style.display = 'block';
+        menu.style.position = 'absolute';
+        menu.style.left = `${rect.left + window.scrollX}px`;
+        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+        menu.style.minWidth = `${Math.max(rect.width, 270)}px`;
+        menu.style.zIndex = '3000';
+        menu.appendChild(createPNGTuberUploadChoiceItem('导入工程文件', () => {
+            pngtuberPackageUpload.click();
+        }));
+        menu.appendChild(createPNGTuberUploadChoiceItem('导入文件夹', () => {
+            pngtuberModelUpload.click();
+        }));
+        document.body.appendChild(menu);
+        pngtuberUploadChoiceMenu = menu;
+        setTimeout(() => {
+            document.addEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+        }, 0);
+    }
+
     uploadBtn.addEventListener('click', () => {
         // 根据当前模型类型选择不同的文件选择器
         if (currentModelType === 'pngtuber') {
-            pngtuberModelUpload.click();
+            showPNGTuberUploadChoice();
         } else if (currentModelType !== 'live2d') {
             vrmFileUpload.click();
         } else {
@@ -9447,56 +9516,74 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    if (pngtuberModelUpload) {
-        pngtuberModelUpload.addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
-            if (files.length === 0) return;
+    async function uploadPNGTuberFiles(files) {
+        if (!files || files.length === 0) return;
 
-            uploadStatus.textContent = '正在上传PNGTuber模型...';
-            uploadStatus.style.color = '#4f8cff';
-            uploadBtn.disabled = true;
+        uploadStatus.textContent = '正在上传PNGTuber模型...';
+        uploadStatus.style.color = '#4f8cff';
+        uploadBtn.disabled = true;
 
-            try {
-                const formData = new FormData();
-                for (const file of files) {
-                    formData.append('files', file, file.webkitRelativePath || file.name);
-                }
+        try {
+            const formData = new FormData();
+            for (const file of files) {
+                formData.append('files', file, file.webkitRelativePath || file.name);
+            }
 
-                const response = await fetch('/api/model/pngtuber/upload_model', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
+            const response = await fetch('/api/model/pngtuber/upload_model', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
 
-                if (result.success) {
-                    uploadStatus.textContent = `✓ ${result.message}`;
-                    uploadStatus.style.color = '#28a745';
-                    await loadPNGTuberModels();
-                    if (result.folder && modelSelect) {
-                        const option = Array.from(modelSelect.options).find(opt =>
-                            opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
-                        );
-                        if (option) {
-                            modelSelect.value = option.value;
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else if (result.pngtuber && window.loadPNGTuberAvatar) {
-                            await window.loadPNGTuberAvatar(result.pngtuber);
-                        }
+            if (result.success) {
+                uploadStatus.textContent = `✓ ${result.message}`;
+                uploadStatus.style.color = '#28a745';
+                await loadPNGTuberModels();
+                if (result.folder && modelSelect) {
+                    const option = Array.from(modelSelect.options).find(opt =>
+                        opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
+                    );
+                    if (option) {
+                        modelSelect.value = option.value;
+                        modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    } else if (result.pngtuber && window.loadPNGTuberAvatar) {
+                        await window.loadPNGTuberAvatar(result.pngtuber);
                     }
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
-                } else {
-                    uploadStatus.textContent = `✗ ${result.error}`;
-                    uploadStatus.style.color = '#dc3545';
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
                 }
-            } catch (error) {
-                console.error('上传PNGTuber模型失败:', error);
-                uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+                setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
+            } else {
+                uploadStatus.textContent = `✗ ${result.error}`;
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+            }
+        } catch (error) {
+            console.error('上传PNGTuber模型失败:', error);
+            uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+            uploadStatus.style.color = '#dc3545';
+            setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+        } finally {
+            uploadBtn.disabled = false;
+        }
+    }
+
+    if (pngtuberModelUpload) {
+        pngtuberModelUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
             } finally {
-                uploadBtn.disabled = false;
                 pngtuberModelUpload.value = '';
+            }
+        });
+    }
+
+    if (pngtuberPackageUpload) {
+        pngtuberPackageUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
+            } finally {
+                pngtuberPackageUpload.value = '';
             }
         });
     }
