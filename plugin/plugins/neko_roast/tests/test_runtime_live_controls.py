@@ -2377,12 +2377,17 @@ async def test_active_engagement_ignores_viewer_to_viewer_mentions_as_topic_mate
 def test_active_engagement_mention_parser_keeps_neko_directed_mentions() -> None:
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@路过的舰长 你看这个") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("＠路过的舰长 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff1a你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff0c你看这个") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫 今天像小电台") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫今天像小电台") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20猫猫\uff1a今天像小电台") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫虫 你看这个") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@小天使 晚上好") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@NEKO pick one") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("＠neko今天播什么") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20neko今天播什么") is False
     assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko123 你看这个") is True
     assert RoastRuntime._is_viewer_to_viewer_mention_text("没有提到谁") is False
 
