@@ -1260,6 +1260,7 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     _stopNekoIdleCat1AmbientSound();
     _fadeOutNekoIdleCat1DragSound();
     _clearNekoIdleHoverPlayback(button.querySelector('.neko-idle-return-art'));
+    _clearNekoIdleThoughtBubble(button);
 
     container.classList.add('is-cat1-playground-drop');
     _dispatchNekoIdleCat1PlaygroundState(button, true, 'acquire');

@@ -248,6 +248,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_cancelNekoIdleCat1EatAction(button, { restoreArt: false });" in acquire_block
     assert "_cancelNekoIdleCat1PlayAction(button, { restoreArt: false });" in acquire_block
     assert "_finishNekoIdleReturnDragAction(button, { restoreArt: false });" in acquire_block
+    assert "_clearNekoIdleThoughtBubble(button);" in acquire_block
     assert "_setNekoIdleCat1QuestionMarkKeyboardTarget(null);" in acquire_block
     assert "_clearNekoIdleCat1QuestionMark(button);" in acquire_block
     assert "state.entryQuestionBlockElement = _consumeNekoIdleCat1PlaygroundQuestionBlockClone(button);" in acquire_block
