@@ -33,24 +33,31 @@ Important options:
 Key fields:
   alerts             '-' when no known risk is detected, otherwise comma-separated risks.
   director_action    Next automatic live action expected from NEKO.
-  latest_route       Latest handled module, such as avatar_roast, danmaku_response, idle_hosting, or active_engagement.
+  latest_route       Latest handled module, such as avatar_roast, danmaku_response, warmup_hosting, idle_hosting, or active_engagement.
   latest_uid / avatar_repeat_uid
                     Latest viewer UID and repeated avatar-roast UID, useful for catching repeated first-appearance roasts.
   latest_output_len  Length of latest result output from hosted-ui context; useful when backend log is missing.
   recent_long_reply_count
                     Count of recent hosted-ui outputs over the reply length warning threshold.
+  recent_long_reply_*
+                    Per-route long-reply counts for avatar_roast, danmaku_response, idle_hosting, active_engagement, and warmup_hosting.
   recent_generic_host_prompt_count
                     Count of recent hosted-ui outputs that look like template host-bait lines.
   log_generic_host_prompt
                     True when send_lanlan_response text in backend log contains template host-bait reply text.
   avatar_repeat_count
                     How many recent avatar_roast results were seen for avatar_repeat_uid.
-  recent_*          Recent route counts for avatar_roast, danmaku_response, idle_hosting, and active_engagement.
+  recent_*          Recent route counts for avatar_roast, danmaku_response, warmup_hosting, idle_hosting, and active_engagement.
+  recent_actual_*   Recent pushed/dry_run route counts for avatar_roast, danmaku_response, warmup_hosting, idle_hosting, and active_engagement.
   recent_total      Total recent result count in the hosted-ui context snapshot.
   recent_pushed / recent_dry_run / recent_skipped / recent_failed
                     Recent result status counts, so route attempts are not mistaken for actual output.
   recent_topic_skip_*
                     Recent active-topic material skip reason counts: single-viewer flood, stale danmaku, avatar-roast context, or non-output danmaku.
+  recent_topic_source_*
+                    Recent Active Engagement topic source counts for fallback, Bili trending, and recent danmaku material.
+  recent_topic_intent_*
+                    Recent Active Engagement reply-intent counts, useful for spotting whether proactive topics are too one-note.
   avatar_roast_share / avatar_roast_bias
                     Recent danmaku-route mix; avatar_roast_bias warns when first-appearance roasts dominate.
   latest_age_status  ok / warn / stale freshness of the latest result.
@@ -64,11 +71,18 @@ Key fields:
                     Alert names for repeated active-topic material or repeated avatar roast for the same UID.
   topic_filter_direct_request / topic_filter_reaction / topic_filter_runtime_feedback
                     Alert names for active-topic material filtered as viewer requests, reaction-only messages, or runtime/test feedback.
+  topic_intent_bias
+                    Alert name when recent Active Engagement topics overuse one reply intent, making proactive hosting feel one-note.
+  topic_source_bias
+                    Alert name when recent Active Engagement topics overuse one source, making proactive hosting material feel narrow.
   generic_host_prompt
                     Alert name for template-like "please interact / send danmaku" output.
   host_beat_repeat  Alert name for repeated idle-hosting host beat material.
-  idle_missing / active_missing
-                    Alert names when the director says an automatic idle or active line is ready but recent results contain no such output yet.
+  proactive_in_engaged
+                    Alert name when the latest actual proactive output happened while live_state is engaged.
+  warmup_repeat     Alert name when warmup_hosting has more than one recent actual output.
+  warmup_missing / idle_missing / active_missing
+                    Alert names when the director says an automatic warmup, idle, or active line is ready but recent results contain no such output yet.
   test_isolation    Alert name for real-output solo-stream tests when readiness says the validation window is not isolated.
 "@
 }
@@ -225,6 +239,9 @@ function Get-SoloTestHint {
     if ("$LatencyStatus" -eq "slow" -or "$LatencyStatus" -eq "warn") {
         return "watch_latency"
     }
+    if ("$DirectorAction" -eq "warmup_hosting" -and "$DirectorEligible" -eq "True") {
+        return "expect_warmup_hosting"
+    }
     if ("$IdleCandidate" -eq "True" -and "$IdleReady" -eq "True") {
         return "expect_idle_hosting"
     }
@@ -270,6 +287,9 @@ function Get-SoloTestFocus {
     }
     if ("$LatencyStatus" -eq "slow" -or "$LatencyStatus" -eq "warn") {
         return "latency"
+    }
+    if ("$DirectorAction" -eq "warmup_hosting" -and "$DirectorEligible" -eq "True") {
+        return "warmup_hosting"
     }
     if ("$IdleCandidate" -eq "True" -and "$IdleReady" -eq "True") {
         return "idle_hosting"
@@ -496,8 +516,20 @@ function Write-Snapshot {
     $recentRouteCounts = @{
         avatar_roast = 0
         danmaku_response = 0
+        warmup_hosting = 0
         idle_hosting = 0
         active_engagement = 0
+    }
+    $recentActualRouteCounts = @{
+        avatar_roast = 0
+        danmaku_response = 0
+        warmup_hosting = 0
+        idle_hosting = 0
+        active_engagement = 0
+    }
+    $recentActualDanmakuRouteCounts = @{
+        avatar_roast = 0
+        danmaku_response = 0
     }
     $recentStatusCounts = @{
         pushed = 0
@@ -515,6 +547,24 @@ function Write-Snapshot {
         filtered_reaction = 0
         filtered_runtime_feedback = 0
     }
+    $recentTopicIntentCounts = @{
+        quick_vote = 0
+        tiny_answer = 0
+        tease_back = 0
+        agree_or_pushback = 0
+    }
+    $recentTopicSourceCounts = @{
+        fallback = 0
+        bili_trending = 0
+        recent_danmaku = 0
+    }
+    $recentLongReplyRouteCounts = @{
+        avatar_roast = 0
+        danmaku_response = 0
+        idle_hosting = 0
+        active_engagement = 0
+        warmup_hosting = 0
+    }
     $recentLongReplyCount = 0
     $recentGenericHostPromptCount = 0
     foreach ($result in $recent) {
@@ -526,30 +576,76 @@ function Write-Snapshot {
         if ($recentStatusCounts.ContainsKey($status)) {
             $recentStatusCounts[$status] += 1
         }
+        if ("$status" -in @("pushed", "dry_run") -and $recentActualRouteCounts.ContainsKey($route)) {
+            $recentActualRouteCounts[$route] += 1
+        }
+        if ("$status" -in @("pushed", "dry_run") -and $recentActualDanmakuRouteCounts.ContainsKey($route)) {
+            $recentActualDanmakuRouteCounts[$route] += 1
+        }
         if ($null -ne $result.event) {
             $topicSkipReason = "$(Get-Field $result.event.topic_recent_skip_reason)"
             if ($recentTopicSkipCounts.ContainsKey($topicSkipReason)) {
                 $recentTopicSkipCounts[$topicSkipReason] += 1
             }
+            if (
+                ("$status" -in @("pushed", "dry_run")) -and
+                ($route -eq "active_engagement" -or "$(Get-Field $result.event.source)" -eq "active_engagement")
+            ) {
+                $topicIntent = "$(Get-Field $result.event.topic_intent)"
+                if ($recentTopicIntentCounts.ContainsKey($topicIntent)) {
+                    $recentTopicIntentCounts[$topicIntent] += 1
+                }
+                $topicSource = "$(Get-Field $result.event.topic_source)"
+                if ($recentTopicSourceCounts.ContainsKey($topicSource)) {
+                    $recentTopicSourceCounts[$topicSource] += 1
+                }
+            }
         }
         if ($null -ne $result.output -and "$($result.output)" -ne "") {
             if ("$($result.output)".Length -ge $ReplyLengthWarn) {
                 $recentLongReplyCount += 1
+                if ($recentLongReplyRouteCounts.ContainsKey($route)) {
+                    $recentLongReplyRouteCounts[$route] += 1
+                }
             }
             if (Test-GenericHostPromptOutput $result.output) {
                 $recentGenericHostPromptCount += 1
             }
         }
     }
-    $danmakuRouteTotal = $recentRouteCounts['avatar_roast'] + $recentRouteCounts['danmaku_response']
+    $danmakuRouteTotal = $recentActualDanmakuRouteCounts['avatar_roast'] + $recentActualDanmakuRouteCounts['danmaku_response']
     $avatarRoastShare = "-"
     $avatarRoastBias = "False"
     if ($danmakuRouteTotal -gt 0) {
-        $avatarSharePercent = [int][math]::Round(($recentRouteCounts['avatar_roast'] * 100.0) / $danmakuRouteTotal)
+        $avatarSharePercent = [int][math]::Round(($recentActualDanmakuRouteCounts['avatar_roast'] * 100.0) / $danmakuRouteTotal)
         $avatarRoastShare = "$avatarSharePercent%"
         if ($danmakuRouteTotal -ge 4 -and $avatarSharePercent -ge 75) {
             $avatarRoastBias = "True"
         }
+    }
+    $topicIntentTotal = 0
+    $topicIntentMax = 0
+    foreach ($intentCount in $recentTopicIntentCounts.Values) {
+        $topicIntentTotal += [int]$intentCount
+        if ([int]$intentCount -gt $topicIntentMax) {
+            $topicIntentMax = [int]$intentCount
+        }
+    }
+    $topicIntentBias = "False"
+    if ($topicIntentTotal -ge 3 -and (($topicIntentMax * 100.0) / $topicIntentTotal) -ge 75.0) {
+        $topicIntentBias = "True"
+    }
+    $topicSourceTotal = 0
+    $topicSourceMax = 0
+    foreach ($sourceCount in $recentTopicSourceCounts.Values) {
+        $topicSourceTotal += [int]$sourceCount
+        if ([int]$sourceCount -gt $topicSourceMax) {
+            $topicSourceMax = [int]$sourceCount
+        }
+    }
+    $topicSourceBias = "False"
+    if ($topicSourceTotal -ge 3 -and (($topicSourceMax * 100.0) / $topicSourceTotal) -ge 75.0) {
+        $topicSourceBias = "True"
     }
     $latest = $null
     if ($recent.Count -gt 0) {
@@ -599,6 +695,8 @@ function Write-Snapshot {
     $latestTopicKey = "-"
     $latestTopicHook = "-"
     $latestTopicPattern = "-"
+    $latestTopicIntent = "-"
+    $latestTopicReplyAffordance = "-"
     $latestTopicRecentSkipReason = "-"
     $latestTopicRepeat = "False"
     $latestHostBeatShape = "-"
@@ -616,9 +714,14 @@ function Write-Snapshot {
         $latestTopicKey = Get-CompactField $latest.event.topic_key
         $latestTopicHook = Get-CompactField $latest.event.topic_hook
         $latestTopicPattern = Get-CompactField $latest.event.topic_pattern
+        $latestTopicIntent = Get-CompactField $latest.event.topic_intent
+        $latestTopicReplyAffordance = Get-CompactField $latest.event.topic_reply_affordance
         $latestTopicRecentSkipReason = Get-CompactField $latest.event.topic_recent_skip_reason
-        if ($latestTopicKey -ne "-" -and $recent.Count -gt 1) {
+        if ("$latestStatus" -in @("pushed", "dry_run") -and $latestTopicKey -ne "-" -and $recent.Count -gt 1) {
             foreach ($previous in @($recent | Select-Object -Skip 1)) {
+                if ("$(Get-Field $previous.status)" -notin @("pushed", "dry_run")) {
+                    continue
+                }
                 $previousEvent = $previous.event
                 if ($null -eq $previousEvent) {
                     continue
@@ -633,8 +736,11 @@ function Write-Snapshot {
         $latestHostBeatTitle = Get-CompactField $latest.event.host_beat_title
         $latestHostBeatKey = Get-CompactField $latest.event.host_beat_key
         $latestHostBeatHint = Get-CompactField $latest.event.host_beat_hint
-        if ($latestHostBeatKey -ne "-" -and $recent.Count -gt 1) {
+        if ("$latestStatus" -in @("pushed", "dry_run") -and $latestHostBeatKey -ne "-" -and $recent.Count -gt 1) {
             foreach ($previous in @($recent | Select-Object -Skip 1)) {
+                if ("$(Get-Field $previous.status)" -notin @("pushed", "dry_run")) {
+                    continue
+                }
                 $previousEvent = $previous.event
                 if ($null -eq $previousEvent) {
                     continue
@@ -650,6 +756,9 @@ function Write-Snapshot {
     $avatarRepeatCount = 0
     $avatarRoastCounts = @{}
     foreach ($result in $recent) {
+        if ("$(Get-Field $result.status)" -notin @("pushed", "dry_run")) {
+            continue
+        }
         if ("$(Get-Field $result.response_module)" -ne "avatar_roast") {
             continue
         }
@@ -793,13 +902,32 @@ function Write-Snapshot {
     if ($recentTopicSkipCounts['filtered_runtime_feedback'] -gt 0) {
         $alerts += "topic_filter_runtime_feedback"
     }
+    if ("$topicIntentBias" -eq "True") {
+        $alerts += "topic_intent_bias"
+    }
+    if ("$topicSourceBias" -eq "True") {
+        $alerts += "topic_source_bias"
+    }
     if ("$latestHostBeatRepeat" -eq "True") {
         $alerts += "host_beat_repeat"
     }
-    if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "idle_hosting" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentRouteCounts['idle_hosting'] -eq 0) {
+    if (
+        "$(Get-CompactField $liveState.state)" -eq "engaged" -and
+        "$latestStatus" -in @("pushed", "dry_run") -and
+        "$latestRoute" -in @("warmup_hosting", "idle_hosting", "active_engagement")
+    ) {
+        $alerts += "proactive_in_engaged"
+    }
+    if ($recentActualRouteCounts['warmup_hosting'] -gt 1) {
+        $alerts += "warmup_repeat"
+    }
+    if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "idle_hosting" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentActualRouteCounts['idle_hosting'] -eq 0) {
         $alerts += "idle_missing"
     }
-    if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "active_engagement" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentRouteCounts['active_engagement'] -eq 0) {
+    if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "warmup_hosting" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentActualRouteCounts['warmup_hosting'] -eq 0) {
+        $alerts += "warmup_missing"
+    }
+    if ("$(Get-CompactField $liveDirector.next_auto_action)" -eq "active_engagement" -and "$(Get-Field $liveDirector.eligible)" -eq "True" -and $recentActualRouteCounts['active_engagement'] -eq 0) {
         $alerts += "active_missing"
     }
     $alertText = "-"
@@ -854,12 +982,23 @@ function Write-Snapshot {
         "latest_output_len=$latestOutputLen",
         "latest_output_length_status=$latestOutputLengthStatus",
         "recent_long_reply_count=$recentLongReplyCount",
+        "recent_long_reply_avatar_roast=$($recentLongReplyRouteCounts['avatar_roast'])",
+        "recent_long_reply_danmaku_response=$($recentLongReplyRouteCounts['danmaku_response'])",
+        "recent_long_reply_idle_hosting=$($recentLongReplyRouteCounts['idle_hosting'])",
+        "recent_long_reply_active_engagement=$($recentLongReplyRouteCounts['active_engagement'])",
+        "recent_long_reply_warmup_hosting=$($recentLongReplyRouteCounts['warmup_hosting'])",
         "recent_generic_host_prompt_count=$recentGenericHostPromptCount",
         "recent_total=$($recent.Count)",
         "recent_avatar_roast=$($recentRouteCounts['avatar_roast'])",
         "recent_danmaku_response=$($recentRouteCounts['danmaku_response'])",
+        "recent_warmup_hosting=$($recentRouteCounts['warmup_hosting'])",
         "recent_idle_hosting=$($recentRouteCounts['idle_hosting'])",
         "recent_active_engagement=$($recentRouteCounts['active_engagement'])",
+        "recent_actual_avatar_roast=$($recentActualRouteCounts['avatar_roast'])",
+        "recent_actual_danmaku_response=$($recentActualRouteCounts['danmaku_response'])",
+        "recent_actual_warmup_hosting=$($recentActualRouteCounts['warmup_hosting'])",
+        "recent_actual_idle_hosting=$($recentActualRouteCounts['idle_hosting'])",
+        "recent_actual_active_engagement=$($recentActualRouteCounts['active_engagement'])",
         "recent_pushed=$($recentStatusCounts['pushed'])",
         "recent_dry_run=$($recentStatusCounts['dry_run'])",
         "recent_skipped=$($recentStatusCounts['skipped'])",
@@ -872,6 +1011,15 @@ function Write-Snapshot {
         "recent_topic_skip_filtered_direct_request=$($recentTopicSkipCounts['filtered_direct_request'])",
         "recent_topic_skip_filtered_reaction=$($recentTopicSkipCounts['filtered_reaction'])",
         "recent_topic_skip_filtered_runtime_feedback=$($recentTopicSkipCounts['filtered_runtime_feedback'])",
+        "recent_topic_source_fallback=$($recentTopicSourceCounts['fallback'])",
+        "recent_topic_source_bili_trending=$($recentTopicSourceCounts['bili_trending'])",
+        "recent_topic_source_recent_danmaku=$($recentTopicSourceCounts['recent_danmaku'])",
+        "recent_topic_source_bias=$topicSourceBias",
+        "recent_topic_intent_quick_vote=$($recentTopicIntentCounts['quick_vote'])",
+        "recent_topic_intent_tiny_answer=$($recentTopicIntentCounts['tiny_answer'])",
+        "recent_topic_intent_tease_back=$($recentTopicIntentCounts['tease_back'])",
+        "recent_topic_intent_agree_or_pushback=$($recentTopicIntentCounts['agree_or_pushback'])",
+        "recent_topic_intent_bias=$topicIntentBias",
         "avatar_roast_share=$avatarRoastShare",
         "avatar_roast_bias=$avatarRoastBias",
         "latest_topic_source=$latestTopicSource",
@@ -880,6 +1028,8 @@ function Write-Snapshot {
         "latest_topic_key=$latestTopicKey",
         "latest_topic_hook=$latestTopicHook",
         "latest_topic_pattern=$latestTopicPattern",
+        "latest_topic_intent=$latestTopicIntent",
+        "latest_topic_reply_affordance=$latestTopicReplyAffordance",
         "latest_topic_recent_skip_reason=$latestTopicRecentSkipReason",
         "latest_topic_repeat=$latestTopicRepeat",
         "avatar_repeat_uid=$avatarRepeatUid",

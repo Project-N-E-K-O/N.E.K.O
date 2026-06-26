@@ -349,6 +349,57 @@ function interactionRouteLabel(route: string, t: (key: string) => string): strin
   return route
 }
 
+function activeTopicIntentLabel(value: any, t: (key: string) => string): string {
+  const intent = String(value || "").trim()
+  if (!intent) return ""
+  if (intent === "quick_vote") return panelText(t, "panel.activeEngagementIntent.quickVote", "Quick vote")
+  if (intent === "agree_or_pushback") return panelText(t, "panel.activeEngagementIntent.agreeOrPushback", "Agree or push back")
+  if (intent === "tease_back") return panelText(t, "panel.activeEngagementIntent.teaseBack", "Tease back")
+  if (intent === "tiny_answer") return panelText(t, "panel.activeEngagementIntent.tinyAnswer", "Tiny answer")
+  if (intent === "quick_reply") return panelText(t, "panel.activeEngagementIntent.quickReply", "Quick reply")
+  return intent
+}
+
+function activeTopicSourceLabel(value: any, t: (key: string) => string): string {
+  const source = String(value || "").trim()
+  if (!source) return ""
+  if (source === "fallback") return panelText(t, "panel.activeEngagementSource.fallback", "Built-in topic")
+  if (source === "bili_trending") return panelText(t, "panel.activeEngagementSource.biliTrending", "Bili trending")
+  if (source === "recent_danmaku") return panelText(t, "panel.activeEngagementSource.recentDanmaku", "Recent danmaku")
+  return source.replace(/_/g, " ")
+}
+
+function activeTopicShapeLabel(value: any, t: (key: string) => string): string {
+  const shape = String(value || "").trim()
+  if (!shape) return ""
+  if (shape === "either_or") return panelText(t, "panel.activeEngagementShape.eitherOr", "A/B choice")
+  if (shape === "light_stance") return panelText(t, "panel.activeEngagementShape.lightStance", "Light stance")
+  if (shape === "tiny_tease") return panelText(t, "panel.activeEngagementShape.tinyTease", "Tiny tease")
+  if (shape === "small_challenge") return panelText(t, "panel.activeEngagementShape.smallChallenge", "Small challenge")
+  return shape
+}
+
+function activeTopicReplyAffordanceLabel(value: any, t: (key: string) => string): string {
+  const affordance = String(value || "").trim().toLowerCase()
+  if (!affordance) return ""
+  if (affordance === "viewer can answer with one side") return panelText(t, "panel.activeEngagementReplyAffordance.oneSide", "Viewer picks one side")
+  if (affordance === "viewer can agree or push back") return panelText(t, "panel.activeEngagementReplyAffordance.agreeOrPushback", "Viewer agrees or pushes back")
+  if (affordance === "viewer can tease neko back") return panelText(t, "panel.activeEngagementReplyAffordance.teaseBack", "Viewer teases NEKO back")
+  if (affordance === "viewer can answer in a few words") return panelText(t, "panel.activeEngagementReplyAffordance.fewWords", "Viewer answers in a few words")
+  if (affordance === "viewer can reply quickly") return panelText(t, "panel.activeEngagementReplyAffordance.quickReply", "Viewer replies quickly")
+  return String(value || "")
+}
+
+function idleHostBeatShapeLabel(value: any, t: (key: string) => string): string {
+  const shape = String(value || "").trim()
+  if (!shape) return ""
+  if (shape === "soft_observation") return panelText(t, "panel.idleHostingBeatShape.softObservation", "Soft observation")
+  if (shape === "tiny_choice") return panelText(t, "panel.idleHostingBeatShape.tinyChoice", "Tiny choice")
+  if (shape === "light_tease") return panelText(t, "panel.idleHostingBeatShape.lightTease", "Light tease")
+  if (shape === "small_mood") return panelText(t, "panel.idleHostingBeatShape.smallMood", "Small mood")
+  return shape.replace(/_/g, " ")
+}
+
 function eventSignalTone(signal: string): "success" | "warning" | "danger" | "default" {
   if (signal === "gift_signal") return "warning"
   if (signal === "super_chat_signal") return "success"
@@ -1128,17 +1179,17 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const latestLatency = latestResult ? formatLatencyMs(latestResult.response_latency_ms) : "-"
   const latestTopic = latestResult && latestResult.event
     ? [
-        latestResult.event.topic_source,
-        latestResult.event.topic_shape,
+        activeTopicSourceLabel(latestResult.event.topic_source, t),
+        activeTopicShapeLabel(latestResult.event.topic_shape, t),
         latestResult.event.topic_title,
-        latestResult.event.topic_hook,
+        activeTopicIntentLabel(latestResult.event.topic_intent, t),
+        activeTopicReplyAffordanceLabel(latestResult.event.topic_reply_affordance, t),
       ].filter(Boolean).join(" / ")
     : ""
   const latestHostBeat = latestResult && latestResult.event
     ? [
-        latestResult.event.host_beat_shape,
+        idleHostBeatShapeLabel(latestResult.event.host_beat_shape, t),
         latestResult.event.host_beat_title,
-        latestResult.event.host_beat_hint,
       ].filter(Boolean).join(" / ")
     : ""
 

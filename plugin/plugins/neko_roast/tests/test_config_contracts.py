@@ -371,6 +371,8 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
                 "source": "bili_trending",
                 "shape": "either_or",
                 "title": "猫猫今天怎么这么安静",
+                "intent": "quick_vote",
+                "reply_affordance": "viewer can answer with one side",
                 "hint": "Use this topic as raw material.",
             }
         },
@@ -384,6 +386,8 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
     assert "turn the title into one A/B choice" in request.prompt_text
     assert "example pattern:" in request.prompt_text
     assert "two concrete sides" in request.prompt_text
+    assert "intent: quick_vote" in request.prompt_text
+    assert "viewer reply path: viewer can answer with one side" in request.prompt_text
     assert "avoid yes/no questions" in request.prompt_text
 
 

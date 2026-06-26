@@ -95,6 +95,8 @@ class ActiveEngagementModule(BaseModule):
         title = str(topic_material.get("title") or "").strip()
         hook = str(topic_material.get("hook") or "").strip()
         pattern = str(topic_material.get("pattern") or "").strip()
+        intent = str(topic_material.get("intent") or "").strip()
+        reply_affordance = str(topic_material.get("reply_affordance") or "").strip()
         hint = str(topic_material.get("hint") or "").strip()
         lines = [
             "Topic material:",
@@ -108,6 +110,10 @@ class ActiveEngagementModule(BaseModule):
             lines.append(f"- title: {title}")
         if hook:
             lines.append(f"- hook: {hook}")
+        if intent:
+            lines.append(f"- intent: {intent}")
+        if reply_affordance:
+            lines.append(f"- viewer reply path: {reply_affordance}")
         if hint:
             lines.append(f"- hint: {hint}")
         return "\n".join(lines) + "\n\n"

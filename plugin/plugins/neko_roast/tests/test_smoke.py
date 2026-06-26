@@ -111,18 +111,49 @@ def test_panel_shows_independent_pacing_and_active_topic_observability():
     assert "panel.liveState.lastViewerActivityAge" in source
     assert "panel.liveState.lastOutputAge" in source
     assert "topic_source" in source
+    assert "activeTopicSourceLabel" in source
     assert "topic_shape" in source
-    assert "topic_hook" in source
+    assert "activeTopicShapeLabel" in source
+    assert "topic_intent" in source
+    assert "topic_reply_affordance" in source
+    assert "activeTopicIntentLabel" in source
+    assert "activeTopicReplyAffordanceLabel" in source
+    assert "panel.activeEngagementIntent.quickVote" in source
+    assert "panel.activeEngagementReplyAffordance.oneSide" in source
     assert "panel.interaction.currentDecision.topic" in source
     assert "host_beat_shape" in source
+    assert "idleHostBeatShapeLabel" in source
     assert "host_beat_title" in source
     assert "panel.interaction.currentDecision.hostBeat" in source
+    assert "latestResult.event.topic_hook" not in source
+    assert "latestResult.event.host_beat_hint" not in source
 
     required_keys = {
         "panel.liveState.lastViewerActivityAge",
         "panel.liveState.lastOutputAge",
         "panel.interaction.currentDecision.topic",
         "panel.interaction.currentDecision.hostBeat",
+        "panel.idleHostingBeatShape.softObservation",
+        "panel.idleHostingBeatShape.tinyChoice",
+        "panel.idleHostingBeatShape.lightTease",
+        "panel.idleHostingBeatShape.smallMood",
+        "panel.activeEngagementSource.fallback",
+        "panel.activeEngagementSource.biliTrending",
+        "panel.activeEngagementSource.recentDanmaku",
+        "panel.activeEngagementShape.eitherOr",
+        "panel.activeEngagementShape.lightStance",
+        "panel.activeEngagementShape.tinyTease",
+        "panel.activeEngagementShape.smallChallenge",
+        "panel.activeEngagementIntent.quickVote",
+        "panel.activeEngagementIntent.agreeOrPushback",
+        "panel.activeEngagementIntent.teaseBack",
+        "panel.activeEngagementIntent.tinyAnswer",
+        "panel.activeEngagementIntent.quickReply",
+        "panel.activeEngagementReplyAffordance.oneSide",
+        "panel.activeEngagementReplyAffordance.agreeOrPushback",
+        "panel.activeEngagementReplyAffordance.teaseBack",
+        "panel.activeEngagementReplyAffordance.fewWords",
+        "panel.activeEngagementReplyAffordance.quickReply",
     }
     for locale_path in sorted((root / "i18n").glob("*.json")):
         data = json.loads(locale_path.read_text(encoding="utf-8"))

@@ -45,19 +45,25 @@ NEKO Live 当前有两条使用路径：
 - 可选：在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once` 做现场快照；字段解释先看 `-Help`，完整记录口径以 [`independent-mode-product-plan.md`](independent-mode-product-plan.md) 的 `Next Live Test Checklist` 为准。
   - 不确定监控参数时先运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Help`。
   - 真实输出测试建议加 `-ExpectRealOutput -BackendLogPath <backend-log>`，优先看 `alerts`；`alerts=-` 表示这一帧没有检测到已知真实输出风险。未显式传 `-BackendLogPath` 时，脚本会尝试读取当前目录或仓库根目录下的 `.codex-backend-live-test.log`；如果出现 `test_isolation`，先清理受控测试窗口；如果出现 `backend_log_missing`，说明监控没有读到后端日志，需要补传日志路径后再判断 watchdog、串台或长回复。
-  - 如果出现 `avatar_bias`，优先看 `avatar_roast_share`、`recent_danmaku_response` 和 `entrance_pacing_window`，确认猫猫是不是又把普通弹幕当成连续首评，以及当前活跃度下连续首评会被压多久；如果出现 `long_reply`，同时看 `latest_output_len` 和 `recent_long_reply_count`，避免旧长回复被最新短回复盖住。
+  - `recent_*` 是最近尝试数，包含 skipped / failed；`recent_actual_*` 是最近实际 pushed / dry_run 的输出数。判断开场暖场、冷场陪播、主动营业有没有真正说出口时，优先看 `recent_actual_warmup_hosting`、`recent_actual_idle_hosting` 和 `recent_actual_active_engagement`；如果出现 `warmup_missing`，说明导演认为开场暖场已经可以说，但最近窗口里还没有实际 warmup 输出；如果出现 `warmup_repeat`，说明开场暖场实际输出超过一次，需要确认 warmup 状态为什么重新出现。
+  - 如果出现 `avatar_bias`，优先看 `avatar_roast_share`、`recent_danmaku_response` 和 `entrance_pacing_window`，确认猫猫是不是又把普通弹幕当成连续首评，以及当前活跃度下连续首评会被压多久；如果出现 `long_reply`，同时看 `latest_output_len`、`recent_long_reply_count` 和 `recent_long_reply_*`，确认长回复主要来自首评、后续接话、冷场陪播还是主动营业，避免旧长回复被最新短回复盖住。
   - 如果出现 `generic_host_prompt`，看 `recent_generic_host_prompt_count`、`log_generic_host_prompt` 和最新输出 / 后端日志，确认主动营业是不是退化成“大家快来互动 / 发弹幕 / get the chat moving”这类模板句。
+  - 如果主动营业感觉无聊或接不住，看 `recent_topic_intent_quick_vote` / `recent_topic_intent_tiny_answer` / `recent_topic_intent_tease_back` / `recent_topic_intent_agree_or_pushback`，确认最近话题是不是只在同一种接话形态里打转；如果出现 `topic_intent_bias`，说明最近主动营业已经明显偏向同一种接话方式，下一轮应优先调 topic pool 或形态轮换。
+  - 如果主动营业话题本身无聊，看 `recent_topic_source_fallback` / `recent_topic_source_bili_trending` / `recent_topic_source_recent_danmaku`，确认最近主要靠内置兜底、B 站公开素材，还是近期弹幕开题；如果出现 `topic_source_bias`，说明最近素材来源过于单一。
+  - 如果出现 `proactive_in_engaged`，说明最新一条实际输出是开场暖场 / 冷场陪播 / 主动营业，但当前房间状态是 `engaged`，优先判断猫猫是否在观众刚互动时抢话。
   - 如果主动营业一直围着同一位观众转、突然翻旧弹幕、首评后又围着同一句话开题，或把 skipped / failed 弹幕放大成全场话题，确认 recent result 的 `topic_source` 是否长期为 `recent_danmaku`；当前开发包会在同一 UID 短窗口连续提供 3 条有效素材时回退到中立话题，并通过 `latest_topic_recent_skip_reason=single_viewer_flood` 标记原因；过期 recent danmaku 被过滤时会标记 `stale_recent_danmaku`；首评上下文被过滤时会标记 `avatar_roast_context`；未输出弹幕被过滤时会标记 `non_output_danmaku`；近期弹幕本身不适合主动营业时会标记 `filtered_recent_danmaku`，其中点名/未点名请求、纯反应和运行反馈会进一步标记为 `filtered_direct_request` / `filtered_reaction` / `filtered_runtime_feedback`。监控还会输出 `recent_topic_skip_*` 计数，并在对应计数非零时给出 `topic_filter_direct_request` / `topic_filter_reaction` / `topic_filter_runtime_feedback` 提示，方便判断这类过滤是否反复发生。
   - `checkout=mismatch`：当前插件服务来自另一个 N.E.K.O 工作区，先重启正确工作区的后端再继续直播测试。
   - `solo_test_focus=chain_only`：dry_run 开启，本轮只验证链路，不判断真实开口。
   - `solo_test_focus=test_isolation`：受控测试隔离还没干净，先清空观众档案或确认本轮不需要首评基线。
+  - `solo_test_focus=warmup_hosting`：当前可以观察猫猫独播开场暖场是否自然、是否只说一次。
   - `solo_test_focus=danmaku_response`：可以发一条真实弹幕，观察弹幕到回复。
   - `solo_test_focus=active_engagement`：当前导演判断主动营业可触发，观察猫猫是否自然抛出一个可接话的小话题。
   - `solo_test_focus=idle_hosting`：可以进入冷场补位观察。
   - `solo_test_focus=latency`：当前优先记录延迟。
   - `solo_test_focus=setup_mode` / `preflight` / `unblock`：先处理模式、开播前检查或阻断状态。
   - `solo_test_hint=expect_active_engagement`：当前可以观察主动营业是否发生，以及话题是否具体、不过度求互动。
-  - 主动营业偏少时看 `active_min_interval` 和 `active_min_wait`；`standard` 约 120 秒，`active` 约 90 秒。
+  - `solo_test_hint=expect_warmup_hosting`：当前可以观察开场暖场是否发生，以及是否像开播第一句而不是冷场补位。
+  - 主动营业偏少时看 `active_min_interval` 和 `active_min_wait`；`standard` 约 90 秒，`active` 约 60 秒。
   - `solo_test_hint=expect_idle_hosting`：当前可以观察冷场补位是否发生。
   - `solo_test_hint=watch_latency`：优先记录弹幕到回复的延迟。
   - `solo_test_hint=wait_idle_cooldown`：冷场候选已满足，但还在最小间隔内。

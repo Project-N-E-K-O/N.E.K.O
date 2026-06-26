@@ -749,6 +749,8 @@ class RoastRuntime:
             "title": title,
             "hook": self._active_engagement_hook_text(shape, title),
             "pattern": self._active_engagement_pattern_text(shape),
+            "intent": self._active_engagement_intent_text(shape),
+            "reply_affordance": self._active_engagement_reply_affordance_text(shape),
             "hint": str(chosen.get("hint") or fallback["hint"]).strip(),
         }
         skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
@@ -1252,6 +1254,24 @@ class RoastRuntime:
             "small_challenge": "one tiny challenge viewers can answer in a few words",
         }.get(shape, "one concrete reply point viewers can answer quickly")
 
+    @staticmethod
+    def _active_engagement_intent_text(shape: str) -> str:
+        return {
+            "either_or": "quick_vote",
+            "light_stance": "agree_or_pushback",
+            "tiny_tease": "tease_back",
+            "small_challenge": "tiny_answer",
+        }.get(shape, "quick_reply")
+
+    @staticmethod
+    def _active_engagement_reply_affordance_text(shape: str) -> str:
+        return {
+            "either_or": "viewer can answer with one side",
+            "light_stance": "viewer can agree or push back",
+            "tiny_tease": "viewer can tease NEKO back",
+            "small_challenge": "viewer can answer in a few words",
+        }.get(shape, "viewer can reply quickly")
+
     def _record_active_engagement_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
         result = InteractionResult(
             accepted=False,
@@ -1697,9 +1717,9 @@ class RoastRuntime:
     def _active_engagement_min_interval_seconds(self) -> float:
         return {
             "quiet": 300.0,
-            "active": 90.0,
-            "standard": 120.0,
-        }.get(str(getattr(self.config, "activity_level", "standard")), 120.0)
+            "active": 60.0,
+            "standard": 90.0,
+        }.get(str(getattr(self.config, "activity_level", "standard")), 90.0)
 
     def _active_engagement_after_danmaku_interval_seconds(self) -> float:
         return {
@@ -1834,8 +1854,9 @@ class RoastRuntime:
             elif source == "active_engagement":
                 topic_source = str(event.get("topic_source") or "").strip()
                 topic_shape = str(event.get("topic_shape") or "").strip()
+                topic_intent = str(event.get("topic_intent") or "").strip()
                 topic_title = str(event.get("topic_title") or "").strip()
-                topic_bits = " ".join(bit for bit in (topic_source, topic_shape) if bit)
+                topic_bits = " ".join(bit for bit in (topic_source, topic_shape, topic_intent) if bit)
                 if topic_title:
                     topic_bits = f"{topic_bits} - {self._compact_context_text(topic_title, limit=50)}".strip()
                 line = f"{route} / active_engagement: {topic_bits or 'solo engagement beat'}"

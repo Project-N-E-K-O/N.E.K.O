@@ -503,6 +503,38 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
     assert context == ["active_engagement / active_engagement: bili_trending either_or - 鐚尗浠婂ぉ鎬庝箞杩欎箞瀹夐潤"]
 
 
+def test_recent_interaction_context_includes_active_engagement_reply_intent(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="__neko_active__",
+        nickname="NEKO",
+        source="active_engagement",
+        raw={
+            "topic_material": {
+                "source": "fallback",
+                "shape": "small_challenge",
+                "title": "Pick one tiny room goal",
+                "key": "fallback:test",
+                "intent": "tiny_answer",
+                "reply_affordance": "viewer can answer in a few words",
+            }
+        },
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("active_engagement", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert context == [
+        "active_engagement / active_engagement: fallback small_challenge tiny_answer - Pick one tiny room goal"
+    ]
+
+
 def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRuntime) -> None:
     event = ViewerEvent(
         uid="42",
@@ -2789,6 +2821,19 @@ async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtim
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["intent"] == "quick_vote"
+    assert "one side" in topic["reply_affordance"]
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_topic_shapes_keep_rotating_after_full_cycle(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -2864,7 +2909,7 @@ async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRu
     assert result is None
     state = await runtime.dashboard_state()
     assert state["active_engagement_status"]["reason"] == "minimum_interval"
-    assert state["active_engagement_status"]["minimum_interval_remaining"] == 70.0
+    assert state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
     assert state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] == 0.0
     assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
 
@@ -2892,10 +2937,10 @@ async def test_activity_level_controls_active_engagement_minimum_interval(runtim
 
     assert quiet_state["active_engagement_status"]["minimum_interval_seconds"] == 300.0
     assert quiet_state["active_engagement_status"]["minimum_interval_remaining"] == 250.0
-    assert standard_state["active_engagement_status"]["minimum_interval_seconds"] == 120.0
-    assert standard_state["active_engagement_status"]["minimum_interval_remaining"] == 70.0
-    assert active_state["active_engagement_status"]["minimum_interval_seconds"] == 90.0
-    assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
+    assert standard_state["active_engagement_status"]["minimum_interval_seconds"] == 90.0
+    assert standard_state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
+    assert active_state["active_engagement_status"]["minimum_interval_seconds"] == 60.0
+    assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 10.0
 
 
 @pytest.mark.asyncio
