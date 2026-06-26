@@ -2568,7 +2568,7 @@ function CompactChatApp({
     scheduleCompactMemeGeometryRefresh();
   }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
   const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
-    if (!node?.complete || node.naturalWidth <= 0) return;
+    if (!node?.complete) return;
     markCompactMemeOverlayImageSettled();
   }, [markCompactMemeOverlayImageSettled]);
 
