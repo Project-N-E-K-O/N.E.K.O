@@ -52,6 +52,8 @@ Key fields:
   recent_total      Total recent result count in the hosted-ui context snapshot.
   recent_pushed / recent_dry_run / recent_skipped / recent_failed
                     Recent result status counts, so route attempts are not mistaken for actual output.
+  recent_signal_*
+                    Recent actual event-signal counts for danmaku_signal, gift_signal, and super_chat_signal.
   recent_topic_skip_*
                     Recent active-topic material skip reason counts: single-viewer flood, stale danmaku, avatar-roast context, or non-output danmaku.
   recent_topic_source_*
@@ -556,6 +558,11 @@ function Write-Snapshot {
         skipped = 0
         failed = 0
     }
+    $recentSignalCounts = @{
+        danmaku_signal = 0
+        gift_signal = 0
+        super_chat_signal = 0
+    }
     $recentTopicSkipCounts = @{
         single_viewer_flood = 0
         stale_recent_danmaku = 0
@@ -602,6 +609,12 @@ function Write-Snapshot {
         }
         if ("$status" -in @("pushed", "dry_run") -and $recentActualDanmakuRouteCounts.ContainsKey($route)) {
             $recentActualDanmakuRouteCounts[$route] += 1
+        }
+        if ("$status" -in @("pushed", "dry_run")) {
+            $signal = "$(Get-Field $result.event_signal)"
+            if ($recentSignalCounts.ContainsKey($signal)) {
+                $recentSignalCounts[$signal] += 1
+            }
         }
         if ($null -ne $result.event) {
             $topicSkipReason = "$(Get-Field $result.event.topic_recent_skip_reason)"
@@ -1045,6 +1058,9 @@ function Write-Snapshot {
         "recent_actual_warmup_hosting=$($recentActualRouteCounts['warmup_hosting'])",
         "recent_actual_idle_hosting=$($recentActualRouteCounts['idle_hosting'])",
         "recent_actual_active_engagement=$($recentActualRouteCounts['active_engagement'])",
+        "recent_signal_danmaku_signal=$($recentSignalCounts['danmaku_signal'])",
+        "recent_signal_gift_signal=$($recentSignalCounts['gift_signal'])",
+        "recent_signal_super_chat_signal=$($recentSignalCounts['super_chat_signal'])",
         "recent_pushed=$($recentStatusCounts['pushed'])",
         "recent_dry_run=$($recentStatusCounts['dry_run'])",
         "recent_skipped=$($recentStatusCounts['skipped'])",

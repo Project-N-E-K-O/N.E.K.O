@@ -306,6 +306,23 @@ def test_monitor_live_script_reports_latest_route_and_signal(tmp_path: Path) -> 
     assert "alerts=-" in completed.stdout
 
 
+def test_monitor_live_script_reports_recent_event_signal_counts(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "danmaku_response", "event_signal": "gift_signal"},
+        {"status": "dry_run", "response_module": "danmaku_response", "event_signal": "super_chat_signal"},
+        {"status": "pushed", "response_module": "danmaku_response", "event_signal": "danmaku_signal"},
+        {"status": "skipped", "response_module": "danmaku_response", "event_signal": "gift_signal"},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_signal_gift_signal=1" in completed.stdout
+    assert "recent_signal_super_chat_signal=1" in completed.stdout
+    assert "recent_signal_danmaku_signal=1" in completed.stdout
+
+
 def test_monitor_live_script_reports_stale_latest_result_age(tmp_path: Path) -> None:
     completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(latest_age_seconds=90))
 
