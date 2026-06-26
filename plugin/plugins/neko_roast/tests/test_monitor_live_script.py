@@ -942,7 +942,11 @@ def test_monitor_live_script_reports_recent_topic_skip_reason_counts(tmp_path: P
         {
             "status": "pushed",
             "response_module": "active_engagement",
-            "event": {"source": "active_engagement", "topic_recent_skip_reason": "single_viewer_flood"},
+            "event": {
+                "source": "active_engagement",
+                "topic_recent_skip_reason": "single_viewer_flood",
+                "shape_guard_reason": "recent_shape_streak",
+            },
         },
         {
             "status": "pushed",
@@ -984,6 +988,19 @@ def test_monitor_live_script_reports_recent_topic_skip_reason_counts(tmp_path: P
             "response_module": "active_engagement",
             "event": {"source": "active_engagement", "topic_recent_skip_reason": "filtered_runtime_feedback"},
         },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "viewer_to_viewer_mention"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {
+                "source": "active_engagement",
+                "topic_recent_skip_reason": "recent_danmaku_source_streak",
+            },
+        },
     ]
 
     completed = _run_monitor(tmp_path, context)
@@ -997,12 +1014,18 @@ def test_monitor_live_script_reports_recent_topic_skip_reason_counts(tmp_path: P
     assert "recent_topic_skip_filtered_direct_request=1" in completed.stdout
     assert "recent_topic_skip_filtered_reaction=1" in completed.stdout
     assert "recent_topic_skip_filtered_runtime_feedback=1" in completed.stdout
+    assert "recent_topic_skip_viewer_to_viewer_mention=1" in completed.stdout
+    assert "recent_topic_skip_recent_danmaku_source_streak=1" in completed.stdout
+    assert "latest_topic_shape_guard_reason=recent_shape_streak" in completed.stdout
     alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
     assert alerts_match is not None
     alert_parts = alerts_match.group(1).split(",")
     assert "topic_filter_direct_request" in alert_parts
     assert "topic_filter_reaction" in alert_parts
     assert "topic_filter_runtime_feedback" in alert_parts
+    assert "topic_viewer_mention" in alert_parts
+    assert "topic_source_streak" in alert_parts
+    assert "topic_shape_guard" in alert_parts
 
 
 def test_monitor_live_script_alerts_when_recent_result_failed(tmp_path: Path) -> None:

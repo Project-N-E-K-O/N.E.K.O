@@ -53,6 +53,7 @@ NEKO Live 当前有两条使用路径：
   - 如果主动营业话题本身无聊，看 `recent_topic_source_fallback` / `recent_topic_source_bili_trending` / `recent_topic_source_recent_danmaku`，确认最近主要靠内置兜底、B 站公开素材，还是近期弹幕开题；如果出现 `topic_source_bias`，说明最近素材来源过于单一。
   - 如果出现 `proactive_in_engaged`，说明最新一条实际输出是开场暖场 / 冷场陪播 / 主动营业，但当前房间状态是 `engaged`，优先判断猫猫是否在观众刚互动时抢话。
   - 如果主动营业一直围着同一位观众转、突然翻旧弹幕、首评后又围着同一句话开题，或把 skipped / failed 弹幕放大成全场话题，确认 recent result 的 `topic_source` 是否长期为 `recent_danmaku`；当前开发包会在同一 UID 短窗口连续提供 3 条有效素材时回退到中立话题，并通过 `latest_topic_recent_skip_reason=single_viewer_flood` 标记原因；过期 recent danmaku 被过滤时会标记 `stale_recent_danmaku`；首评上下文被过滤时会标记 `avatar_roast_context`；未输出弹幕被过滤时会标记 `non_output_danmaku`；近期弹幕本身不适合主动营业时会标记 `filtered_recent_danmaku`，其中点名/未点名请求、纯反应和运行反馈会进一步标记为 `filtered_direct_request` / `filtered_reaction` / `filtered_runtime_feedback`。监控还会输出 `recent_topic_skip_*` 计数，并在对应计数非零时给出 `topic_filter_direct_request` / `topic_filter_reaction` / `topic_filter_runtime_feedback` 提示，方便判断这类过滤是否反复发生。
+  - 如果出现 `topic_viewer_mention`，说明主动营业过滤了观众互相 `@` 的弹幕，避免猫猫误以为别人是在喊自己；如果出现 `topic_source_streak`，说明 recent danmaku 连续主导，主动营业会回退到 B 站公开素材或内置小话题；如果出现 `topic_shape_guard`，说明主动营业刚避开了连续相同的 topic shape / intent，复盘时看 `latest_topic_shape_guard_reason`。
   - `checkout=mismatch`：当前插件服务来自另一个 N.E.K.O 工作区，先重启正确工作区的后端再继续直播测试。
   - `solo_test_focus=chain_only`：dry_run 开启，本轮只验证链路，不判断真实开口。
   - `solo_test_focus=test_isolation`：受控测试隔离还没干净，先清空观众档案或确认本轮不需要首评基线。

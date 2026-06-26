@@ -546,6 +546,8 @@ function Write-Snapshot {
         filtered_direct_request = 0
         filtered_reaction = 0
         filtered_runtime_feedback = 0
+        viewer_to_viewer_mention = 0
+        recent_danmaku_source_streak = 0
     }
     $recentTopicIntentCounts = @{
         quick_vote = 0
@@ -698,6 +700,7 @@ function Write-Snapshot {
     $latestTopicIntent = "-"
     $latestTopicReplyAffordance = "-"
     $latestTopicRecentSkipReason = "-"
+    $latestTopicShapeGuardReason = "-"
     $latestTopicRepeat = "False"
     $latestHostBeatShape = "-"
     $latestHostBeatTitle = "-"
@@ -717,6 +720,7 @@ function Write-Snapshot {
         $latestTopicIntent = Get-CompactField $latest.event.topic_intent
         $latestTopicReplyAffordance = Get-CompactField $latest.event.topic_reply_affordance
         $latestTopicRecentSkipReason = Get-CompactField $latest.event.topic_recent_skip_reason
+        $latestTopicShapeGuardReason = Get-CompactField $latest.event.shape_guard_reason
         if ("$latestStatus" -in @("pushed", "dry_run") -and $latestTopicKey -ne "-" -and $recent.Count -gt 1) {
             foreach ($previous in @($recent | Select-Object -Skip 1)) {
                 if ("$(Get-Field $previous.status)" -notin @("pushed", "dry_run")) {
@@ -902,6 +906,15 @@ function Write-Snapshot {
     if ($recentTopicSkipCounts['filtered_runtime_feedback'] -gt 0) {
         $alerts += "topic_filter_runtime_feedback"
     }
+    if ($recentTopicSkipCounts['viewer_to_viewer_mention'] -gt 0) {
+        $alerts += "topic_viewer_mention"
+    }
+    if ($recentTopicSkipCounts['recent_danmaku_source_streak'] -gt 0) {
+        $alerts += "topic_source_streak"
+    }
+    if ($latestTopicShapeGuardReason -ne "-") {
+        $alerts += "topic_shape_guard"
+    }
     if ("$topicIntentBias" -eq "True") {
         $alerts += "topic_intent_bias"
     }
@@ -1011,6 +1024,8 @@ function Write-Snapshot {
         "recent_topic_skip_filtered_direct_request=$($recentTopicSkipCounts['filtered_direct_request'])",
         "recent_topic_skip_filtered_reaction=$($recentTopicSkipCounts['filtered_reaction'])",
         "recent_topic_skip_filtered_runtime_feedback=$($recentTopicSkipCounts['filtered_runtime_feedback'])",
+        "recent_topic_skip_viewer_to_viewer_mention=$($recentTopicSkipCounts['viewer_to_viewer_mention'])",
+        "recent_topic_skip_recent_danmaku_source_streak=$($recentTopicSkipCounts['recent_danmaku_source_streak'])",
         "recent_topic_source_fallback=$($recentTopicSourceCounts['fallback'])",
         "recent_topic_source_bili_trending=$($recentTopicSourceCounts['bili_trending'])",
         "recent_topic_source_recent_danmaku=$($recentTopicSourceCounts['recent_danmaku'])",
@@ -1031,6 +1046,7 @@ function Write-Snapshot {
         "latest_topic_intent=$latestTopicIntent",
         "latest_topic_reply_affordance=$latestTopicReplyAffordance",
         "latest_topic_recent_skip_reason=$latestTopicRecentSkipReason",
+        "latest_topic_shape_guard_reason=$latestTopicShapeGuardReason",
         "latest_topic_repeat=$latestTopicRepeat",
         "avatar_repeat_uid=$avatarRepeatUid",
         "avatar_repeat_count=$avatarRepeatCount",

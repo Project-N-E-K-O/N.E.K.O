@@ -214,6 +214,8 @@ class RoastPipeline:
                     self._session_roasted_uids.add(identity.uid)
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
+                        profile.roast_count = int(profile.roast_count or 0) + 1
+                        profile.last_result = output
                         steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))
                     except Exception as exc:
                         mark_message = f"mark_roasted_failed: {type(exc).__name__}"

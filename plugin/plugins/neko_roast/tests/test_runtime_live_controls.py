@@ -2341,6 +2341,104 @@ async def test_active_engagement_ignores_latency_and_length_feedback_as_topic_ma
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_ignores_viewer_to_viewer_mentions_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u732b\u7a9d\u5c0f\u6295\u7968", "bvid": "BV_VIEWER_MENTION_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="@\u8def\u8fc7\u7684\u8230\u957f \u4f60\u770b\u5230\u521a\u521a\u90a3\u53e5\u4e86\u5417",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_VIEWER_MENTION_FILTER"
+    assert topic["recent_topic_skip_reason"] == "viewer_to_viewer_mention"
+
+
+def test_active_engagement_mention_parser_keeps_neko_directed_mentions() -> None:
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@路过的舰长 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("＠路过的舰长 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫 今天像小电台") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫今天像小电台") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫虫 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@小天使 晚上好") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@NEKO pick one") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("＠neko今天播什么") is False
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko123 你看这个") is True
+    assert RoastRuntime._is_viewer_to_viewer_mention_text("没有提到谁") is False
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_limits_recent_danmaku_source_streak(runtime: RoastRuntime) -> None:
+    runtime._active_engagement_recent_topic_sources.extend(["recent_danmaku", "recent_danmaku"])
+
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u684c\u9762\u5c0f\u6295\u7968", "bvid": "BV_SOURCE_STREAK"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u4eca\u5929\u7684\u732b\u7a9d\u50cf\u5c0f\u7535\u53f0",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_SOURCE_STREAK"
+    assert topic["recent_topic_skip_reason"] == "recent_danmaku_source_streak"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_avoids_repeating_recent_intent_shape(runtime: RoastRuntime) -> None:
+    runtime._active_engagement_recent_shapes.extend(["either_or", "either_or"])
+    runtime._active_engagement_recent_intents.extend(["quick_vote", "quick_vote"])
+
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["shape"] != "either_or"
+    assert topic["intent"] != "quick_vote"
+    assert topic["shape_guard_reason"] == "recent_shape_streak"
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_ignores_room_silence_as_topic_material(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {

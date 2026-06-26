@@ -95,8 +95,11 @@ class RoastRuntime:
         self._active_engagement_topic_cache: list[dict[str, Any]] = []
         self._active_engagement_topic_cache_at: float = 0.0
         self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=12)
+        self._active_engagement_recent_topic_sources: deque[str] = deque(maxlen=6)
         self._active_engagement_recent_shapes: deque[str] = deque(maxlen=4)
+        self._active_engagement_recent_intents: deque[str] = deque(maxlen=4)
         self._active_engagement_recent_topic_skip_reason: str = ""
+        self._active_engagement_shape_guard_reason: str = ""
         self._active_engagement_shape_index: int = 0
         self._config_lock: asyncio.Lock | None = None
 
@@ -746,10 +749,11 @@ class RoastRuntime:
                 chosen = candidate
                 break
         shape = str(chosen.get("preferred_shape") or shape).strip() or shape
+        shape = self._active_engagement_guarded_shape(shape)
         key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
         self._active_engagement_recent_topic_keys.append(key)
-        self._active_engagement_recent_shapes.append(shape)
         title = str(chosen.get("title") or fallback["title"]).strip()
+        intent = self._active_engagement_intent_text(shape)
         topic = {
             "source": str(chosen.get("source") or "fallback"),
             "shape": shape,
@@ -757,13 +761,19 @@ class RoastRuntime:
             "title": title,
             "hook": self._active_engagement_hook_text(shape, title),
             "pattern": self._active_engagement_pattern_text(shape),
-            "intent": self._active_engagement_intent_text(shape),
+            "intent": intent,
             "reply_affordance": self._active_engagement_reply_affordance_text(shape),
             "hint": str(chosen.get("hint") or fallback["hint"]).strip(),
         }
+        self._active_engagement_recent_topic_sources.append(str(topic["source"]))
+        self._active_engagement_recent_shapes.append(shape)
+        self._active_engagement_recent_intents.append(intent)
         skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
         if skip_reason:
             topic["recent_topic_skip_reason"] = skip_reason
+        shape_guard_reason = str(self._active_engagement_shape_guard_reason or "").strip()
+        if shape_guard_reason:
+            topic["shape_guard_reason"] = shape_guard_reason
         return topic
 
     @staticmethod
@@ -941,6 +951,9 @@ class RoastRuntime:
 
     def _recent_danmaku_topic_candidates(self) -> list[dict[str, Any]]:
         self._active_engagement_recent_topic_skip_reason = ""
+        if self._has_active_engagement_streak(self._active_engagement_recent_topic_sources, "recent_danmaku", 2):
+            self._active_engagement_recent_topic_skip_reason = "recent_danmaku_source_streak"
+            return []
         recent_items: list[tuple[str, str]] = []
         for result in reversed(self.recent_results):
             if not isinstance(result, dict):
@@ -964,6 +977,10 @@ class RoastRuntime:
                 continue
             text = str(event.get("danmaku_text") or "").strip()
             if not text:
+                continue
+            if self._is_viewer_to_viewer_mention_text(text):
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = "viewer_to_viewer_mention"
                 continue
             if not self._is_meaningful_active_topic_text(text):
                 if not self._active_engagement_recent_topic_skip_reason:
@@ -1131,6 +1148,8 @@ class RoastRuntime:
             return "filtered_recent_danmaku"
         lowered = compact.lower()
         dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+        if RoastRuntime._is_viewer_to_viewer_mention_text(compact):
+            return "viewer_to_viewer_mention"
         if RoastRuntime._is_direct_neko_request_or_ack(dense_lowered) or RoastRuntime._is_untargeted_request(
             dense_lowered
         ):
@@ -1270,6 +1289,110 @@ class RoastRuntime:
         shape = shapes[self._active_engagement_shape_index % len(shapes)]
         self._active_engagement_shape_index += 1
         return shape
+
+    def _active_engagement_guarded_shape(self, shape: str) -> str:
+        self._active_engagement_shape_guard_reason = ""
+        shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
+        normalized = shape if shape in shapes else shapes[0]
+        if not self._has_active_engagement_streak(self._active_engagement_recent_shapes, normalized, 2):
+            return normalized
+        self._active_engagement_shape_guard_reason = "recent_shape_streak"
+        for candidate in shapes:
+            if candidate != normalized and not self._has_active_engagement_streak(
+                self._active_engagement_recent_shapes, candidate, 1
+            ):
+                return candidate
+        for candidate in shapes:
+            if candidate != normalized:
+                return candidate
+        return normalized
+
+    @staticmethod
+    def _has_active_engagement_streak(values: deque[str], value: str, count: int) -> bool:
+        if count <= 0 or len(values) < count:
+            return False
+        tail = list(values)[-count:]
+        return all(str(item or "") == value for item in tail)
+
+    @staticmethod
+    def _is_viewer_to_viewer_mention_text(text: str) -> bool:
+        compact = " ".join(str(text or "").strip().replace("＠", "@").split())
+        if "@" not in compact:
+            return False
+        aliases = {"neko", "\u732b\u732b", "\u5c0f\u5929", "\u732b\u5a18"}
+        lowered_aliases = {alias.lower() for alias in aliases}
+        for part in compact.split("@")[1:]:
+            target = []
+            for ch in part.strip():
+                if ch.isspace() or ch in ":：,，.。!！?？/\\|[]()（）<>《》":
+                    break
+                target.append(ch)
+            name = "".join(target).strip()
+            if not name:
+                continue
+            if RoastRuntime._is_neko_mention_target(name, lowered_aliases):
+                return False
+            return True
+        return False
+
+    @staticmethod
+    def _is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
+        lowered_name = str(name or "").strip().lower()
+        if not lowered_name:
+            return False
+        if lowered_name in lowered_aliases:
+            return True
+        live_address_prefixes = (
+            "\u4eca",
+            "\u4f60",
+            "\u5728",
+            "\u80fd",
+            "\u53ef",
+            "\u5e2e",
+            "\u6765",
+            "\u8bb2",
+            "\u8bf4",
+            "\u600e",
+            "\u4e3a",
+            "\u8981",
+            "\u6709",
+            "\u662f",
+            "\u4f1a",
+            "\u60f3",
+            "\u64ad",
+            "\u8bc4",
+            "\u9510",
+            "\u65e9",
+            "\u665a",
+            "\u5462",
+            "\u5440",
+            "\u554a",
+            "\u5417",
+            "\u561b",
+            "\u5427",
+            "\u54c8",
+            "what",
+            "why",
+            "how",
+            "can",
+            "could",
+            "please",
+            "pls",
+            "pick",
+            "rate",
+            "tell",
+            "help",
+            "say",
+        )
+        for alias in lowered_aliases:
+            if not lowered_name.startswith(alias):
+                continue
+            rest = lowered_name[len(alias) :].lstrip("_-")
+            if not rest:
+                return True
+            if rest.startswith(live_address_prefixes):
+                return True
+        return False
 
     @staticmethod
     def _active_engagement_hook_text(shape: str, title: str) -> str:

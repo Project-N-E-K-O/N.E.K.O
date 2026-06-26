@@ -856,6 +856,76 @@ async def test_pipeline_records_dry_run_as_dispatcher_outcome_not_pushed():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_public_result_profile_reflects_successful_first_roast():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            return None
+
+    class Dispatcher:
+        async def push_roast(self, _request):
+            return "queued_to_neko(first roast)"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text="first roast",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+
+    result = await RoastPipeline(ctx).handle_event(
+        ViewerEvent(uid="42", nickname="first", danmaku_text="hi", source="live_danmaku")
+    )
+
+    assert result.status == "pushed"
+    assert result.profile is not None
+    assert result.profile.roast_count == 1
+    assert result.profile.last_result == "queued_to_neko(first roast)"
+    public_result = result.to_public_dict()
+    assert public_result["profile"]["roast_count"] == 1
+    assert public_result["profile"]["last_result"] == "queued_to_neko(first roast)"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_records_dispatcher_skip_as_skipped_not_pushed():
     class Audit:
         def record(self, *_args, **_kwargs):
