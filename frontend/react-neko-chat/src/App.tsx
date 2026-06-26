@@ -4126,6 +4126,7 @@ function CompactChatApp({
     const maxX = viewportLeft + viewportWidth - viewportMargin;
     const maxY = viewportTop + viewportHeight - viewportMargin;
 
+    let prefersViewportFitFromBottomGap = false;
     if (hasDesktopWorkArea) {
       const workAreaBottom = workAreaY + workAreaHeight;
       const wheelCenterScreenY = windowY + centerY;
@@ -4134,20 +4135,31 @@ function CompactChatApp({
         COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS,
         orbitRadius + (buttonSize / 2),
       );
-      if (bottomGap < bottomFlipThreshold) return 'viewport-fit';
+      prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
     }
 
-    const wheelLayoutFitsViewport = (slots: ReadonlyArray<{ angleDeg: number; scale: number }>) => slots.every(({ angleDeg, scale }) => {
+    const wheelLayoutFitsViewport = (
+      slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
+      options?: { axis?: 'both' | 'horizontal' },
+    ) => slots.every(({ angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      return itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX
+      const fitsHorizontally = itemCenterX - halfSize >= minX
+        && itemCenterX + halfSize <= maxX;
+      if (options?.axis === 'horizontal') return fitsHorizontally;
+      return fitsHorizontally
         && itemCenterY - halfSize >= minY
         && itemCenterY + halfSize <= maxY;
     });
 
+    if (
+      prefersViewportFitFromBottomGap
+      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+    ) {
+      return 'viewport-fit';
+    }
     if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
     if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
     return 'default';

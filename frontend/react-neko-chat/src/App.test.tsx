@@ -4766,6 +4766,38 @@ describe('App', () => {
     }
   });
 
+  it('keeps the default compact tool wheel layout when the desktop bottom reverse arc would clip at a side edge', () => {
+    const desktopLayout = installDesktopCompactLayout({
+      windowBounds: { x: 0, y: 720, width: 430, height: 56 },
+      workArea: { x: 0, y: 0, width: 140, height: 800 },
+    }, { width: 430, height: 56 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 0,
+        right: 242,
+        bottom: 232,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 0,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      desktopLayout.restore();
+    }
+  });
+
   it('uses the visual viewport when checking compact tool wheel clipping on mobile', () => {
     const originalMatchMedia = window.matchMedia;
     const originalInnerWidth = window.innerWidth;
