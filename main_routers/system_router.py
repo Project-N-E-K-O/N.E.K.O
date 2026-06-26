@@ -7493,6 +7493,10 @@ async def proactive_chat(request: Request):
                 _cleaned, _leak_tag = _strip_proactive_screen_tag_leak(_cleaned)
                 if _leak_tag:
                     regen_source_tag = _leak_tag
+            # 同初稿：把泄漏的内部引导标签从 regen 产出里剥掉，且必须在下面两道
+            # regen 复读复判（score_draft / 字面相似度）**之前**剥——否则带标签前缀
+            # 的复读会稀释分数绕过 drop。_cleaned 在此一次性规范化，复判与投递共用。
+            _cleaned = _strip_proactive_intent_label_leak(_cleaned)
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
             # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
@@ -7571,12 +7575,10 @@ async def proactive_chat(request: Request):
                     )
                 selected_music_link = None
                 music_content = None
-            # 采用 regen 文本接着走下游 source_tag / TTS 投递
+            # 采用 regen 文本接着走下游 source_tag / TTS 投递（_cleaned 已在上方
+            # 落定时剥过泄漏标签，复读复判与投递共用同一份干净文本）。
             response_text = _cleaned
             full_text = _cleaned
-            # regen 产出同样可能带泄漏标签，且它直接走投递 / 录入 corpus（不再过
-            # 上方 dedup），故在此再剥一次。
-            response_text = _strip_proactive_intent_label_leak(response_text)
 
         has_music_topic = 'music' in active_channels
 
