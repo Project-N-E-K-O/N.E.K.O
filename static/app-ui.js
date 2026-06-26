@@ -2113,7 +2113,7 @@
                     pngtuberContainer.style.visibility = 'visible';
                 }
 
-                const modelReturnEnterRect = consumeModelReturnEnterRect();
+                const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
                     prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
                     if (modelReturnEnterRect) {

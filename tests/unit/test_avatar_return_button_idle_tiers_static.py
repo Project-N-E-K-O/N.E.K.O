@@ -415,9 +415,9 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
         source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
     ]
 
-    assert "const modelReturnEnterRect = consumeModelReturnEnterRect();" in branch
+    assert "const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;" in branch
     assert branch.count("consumeModelReturnEnterRect()") == 1
-    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = consumeModelReturnEnterRect();")
+    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
     assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
     assert "if (modelReturnEnterRect) {" in branch
     assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
