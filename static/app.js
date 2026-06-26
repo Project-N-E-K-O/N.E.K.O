@@ -307,10 +307,21 @@ window.addEventListener('load', async () => {
             }
         } catch (_) { }
 
+        // i18next 可能还没 init 完成（init 内部要先 await Steam 语言，window.i18next.language
+        // 这时为空）。此处回退到 localStorage 的 i18nextLng——getInitialLanguage 在 init 之前
+        // 就把解析出的语言落了进去。否则空 lang 传给 /api/changelog 会被后端当中文原文下发：
+        // 更新日志早读（此处）易踩到，问卷在用户点完 changelog 弹窗后才读、时序上 i18next 已就绪
+        // 所以语言正常。与 app-websocket / app-proactive 等处的兜底取法保持一致。
+        const _resolveUiLang = () => {
+            const live = (window.i18next && typeof window.i18next.language === 'string')
+                ? window.i18next.language : '';
+            return live || localStorage.getItem('i18nextLng') || '';
+        };
+
         // 1) 版本更新日志（先讲背景）
         try {
             const lastVer = localStorage.getItem('neko_last_notified_version') || '';
-            const lang = (window.i18next && window.i18next.language) || '';
+            const lang = _resolveUiLang();
             const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}&lang=${encodeURIComponent(lang)}`);
             const cdata = await cr.json();
             let entries = cdata.entries || [];
@@ -361,7 +372,7 @@ window.addEventListener('load', async () => {
         try {
             const _surveyEligibleFor = localStorage.getItem('neko_survey_eligible_for') || '';
             if (_surveyEligibleFor && typeof window.showSurveyModal === 'function') {
-                const surveyLang = (window.i18next && window.i18next.language) || '';
+                const surveyLang = _resolveUiLang();
                 const sr = await fetch(`/api/survey?lang=${encodeURIComponent(surveyLang)}`);
                 const sdata = await sr.json();
                 if (sdata && sdata.has_survey && sdata.survey) {
