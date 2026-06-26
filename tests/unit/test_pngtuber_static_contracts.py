@@ -258,9 +258,11 @@ def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
     assert "this.startLayeredBreathingLoop();" in animation_loop_block
     assert "features.layered_breathing === false" in breathing_enabled_block
     assert "return this.isLayeredActive();" in breathing_enabled_block
+    assert "if (!this.layeredBreathingStart) return { y: 0, scaleX: 1, scaleY: 1 };" in breathing_transform_block
+    assert "this.layeredBreathingStart = timestamp;" not in breathing_transform_block
     assert "scaleY" in breathing_transform_block
     assert "scaleX" in breathing_transform_block
-    assert "this.applyTransform(timestamp);" in breathing_loop_block
+    assert "this.applyAnimationTransform(timestamp);" in breathing_loop_block
     assert "const breathing = this.currentLayeredBreathingTransform(timestamp);" in apply_transform_block
     assert "bounce.y + breathing.y" in apply_transform_block
     assert "bounce.scaleX * breathing.scaleX" in apply_transform_block
@@ -322,6 +324,8 @@ def test_pngtuber_analyser_lip_sync_uses_hysteresis_and_timer_mutex():
     assert "this.lipSyncPulseCloseAt = 0;" in constructor_block
     assert "clearTimeout(this.speakingMouthTimer);" in lip_sync_block
     assert "this.startSpeakingMouthAnimation();" in lip_sync_block
+    assert "const sampleSize = Math.max(32, Number(analyser.fftSize) || 2048);" in lip_sync_block
+    assert "frequencyBinCount" not in lip_sync_block
     assert "analyser.getByteTimeDomainData(dataArray);" in lip_sync_block
     assert "Math.sqrt(sum / dataArray.length)" in lip_sync_block
     assert "const activeThreshold = 0.16;" in lip_sync_block
@@ -415,10 +419,10 @@ def test_pngtuber_talking_hop_moves_whole_avatar_while_speaking():
     assert "const wave = Math.sin(progress * Math.PI);" in hop_transform_block
     assert "y: -this.talkingHopAmplitude * wave" in hop_transform_block
     assert "scaleY: 1 + 0.004 * wave" in hop_transform_block
-    assert "if (this.talkingHopFrame || !this.isSpeaking) return;" in hop_loop_block
+    assert "if (this.talkingHopFrame || !this.isSpeaking || !this.isLayeredActive()) return;" in hop_loop_block
     assert "this.talkingHopAmplitude = 4.5;" in hop_loop_block
     assert "this.talkingHopPeriodMs = 260;" in hop_loop_block
-    assert "this.applyTransform(timestamp);" in hop_loop_block
+    assert "this.applyAnimationTransform(timestamp);" in hop_loop_block
     assert "this.talkingHopFrame = requestAnimationFrame(tick);" in hop_loop_block
     assert "cancelAnimationFrame(this.talkingHopFrame);" in stop_block
     assert "this.talkingHopFrame = null;" in stop_block
@@ -457,10 +461,18 @@ def test_pngtuber_animation_loops_throttle_overlay_position_updates():
     ]
 
     assert "this.lastOverlayPositionUpdateAt = 0;" in constructor_block
+    assert "this.lastAnimationTransformAt = 0;" in constructor_block
     assert "const minIntervalMs = 120;" in helper_block
     assert "timestamp - this.lastOverlayPositionUpdateAt < minIntervalMs" in helper_block
     assert "this.updateLockIconPosition();" in helper_block
     assert "this.updateFloatingButtonsPosition();" in helper_block
+    assert "applyAnimationTransform(timestamp = performance.now())" in helper_block
+    assert "if (this.lastAnimationTransformAt === timestamp) return;" in helper_block
+    assert "this.lastAnimationTransformAt = timestamp;" in helper_block
+    assert "this.applyTransform(timestamp);" in helper_block
+    assert "this.applyAnimationTransform(timestamp);" in breathing_loop_block
+    assert "this.applyAnimationTransform(timestamp);" in bounce_loop_block
+    assert "this.applyAnimationTransform(timestamp);" in hop_loop_block
     assert "this.updateOverlayPositionsForAnimation(timestamp);" in breathing_loop_block
     assert "this.updateOverlayPositionsForAnimation(timestamp);" in bounce_loop_block
     assert "this.updateOverlayPositionsForAnimation(timestamp);" in hop_loop_block

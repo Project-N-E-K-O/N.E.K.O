@@ -138,6 +138,7 @@
             this.talkingHopAmplitude = 0;
             this.talkingHopPeriodMs = 0;
             this.lastOverlayPositionUpdateAt = 0;
+            this.lastAnimationTransformAt = 0;
             this.clickTimer = null;
             this._suppressNextClick = false;
             this._boundSpeechStart = () => this.setSpeaking(true);
@@ -692,11 +693,15 @@
             }
         }
 
+        applyAnimationTransform(timestamp = performance.now()) {
+            if (this.lastAnimationTransformAt === timestamp) return;
+            this.lastAnimationTransformAt = timestamp;
+            this.applyTransform(timestamp);
+        }
+
         currentLayeredBreathingTransform(timestamp = performance.now()) {
             if (!this.layeredBreathingEnabled()) return { y: 0, scaleX: 1, scaleY: 1 };
-            if (!this.layeredBreathingStart) {
-                this.layeredBreathingStart = timestamp;
-            }
+            if (!this.layeredBreathingStart) return { y: 0, scaleX: 1, scaleY: 1 };
             const elapsedSeconds = Math.max(0, (timestamp - this.layeredBreathingStart) / 1000);
             const wave = (Math.sin(elapsedSeconds * Math.PI * 2 * 0.32) + 1) / 2;
             return {
@@ -714,7 +719,7 @@
                     this.stopLayeredBreathingLoop();
                     return;
                 }
-                this.applyTransform(timestamp);
+                this.applyAnimationTransform(timestamp);
                 this.updateOverlayPositionsForAnimation(timestamp);
                 this.layeredBreathingFrame = requestAnimationFrame(tick);
             };
@@ -1422,7 +1427,7 @@
                     this.applyTransform();
                     return;
                 }
-                this.applyTransform(timestamp);
+                this.applyAnimationTransform(timestamp);
                 this.updateOverlayPositionsForAnimation(timestamp);
                 this.speakingBounceFrame = requestAnimationFrame(tick);
             };
@@ -1444,7 +1449,7 @@
         }
 
         startTalkingHopAnimation() {
-            if (this.talkingHopFrame || !this.isSpeaking) return;
+            if (this.talkingHopFrame || !this.isSpeaking || !this.isLayeredActive()) return;
             this.talkingHopStart = performance.now();
             this.talkingHopAmplitude = 4.5;
             this.talkingHopPeriodMs = 260;
@@ -1453,7 +1458,7 @@
                     this.stopTalkingHopAnimation();
                     return;
                 }
-                this.applyTransform(timestamp);
+                this.applyAnimationTransform(timestamp);
                 this.updateOverlayPositionsForAnimation(timestamp);
                 this.talkingHopFrame = requestAnimationFrame(tick);
             };
@@ -1501,7 +1506,7 @@
             this.lipSyncLastStateChangeAt = performance.now();
             this.lipSyncNextPulseAt = this.lipSyncLastStateChangeAt;
             this.lipSyncPulseCloseAt = 0;
-            const sampleSize = Math.max(32, Number(analyser.fftSize || analyser.frequencyBinCount) || 2048);
+            const sampleSize = Math.max(32, Number(analyser.fftSize) || 2048);
             const dataArray = new Uint8Array(sampleSize);
             const tick = (timestamp = performance.now()) => {
                 if (!this.isSpeaking || !analyser || typeof analyser.getByteTimeDomainData !== 'function') {
