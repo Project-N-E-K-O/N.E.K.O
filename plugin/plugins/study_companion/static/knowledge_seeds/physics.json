@@ -59,6 +59,46 @@
             "bridge_direction": "physics_to_math",
             "bridge_focus": "motion_graph_linear_function"
           }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After reading a basic s-t or v-t graph, the next procedure is to mark intervals, slopes, and areas before comparing multi-stage motion graphs.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "function_graph_reading_to_motion_graph_steps",
+            "physics_use": "turns graph-reading into a repeatable slope-area workflow for motion problems"
+          }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Students often confuse graph height with graph slope; comparing basic speed graphs with synthesis problems exposes that error early.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "graph_height_vs_slope_confusion",
+            "physics_use": "separates position, velocity, slope, and area meanings on motion graphs"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1558,7 +1598,29 @@
       "chapter": "高中力学",
       "depth": 3,
       "difficulty": 0.68,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_senior_force_decomposition",
+          "required_mastery": 0.6,
+          "relation": "prerequisite",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Circular-motion equations require resolving forces into radial and tangential directions before applying the centripetal-acceleration condition.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "mechanics_vector_trig_prerequisite",
+            "physics_use": "uses vector decomposition and trigonometric components to isolate the inward net force"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_senior_electric_magnetic_field",
@@ -1605,6 +1667,26 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "radial_tangential_vector_coordinates"
+          }
+        },
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Uniform circular motion and critical-condition circular motion use similar centripetal formulas but differ in boundary constraints such as just-contact or just-taut cases.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "uniform_circular_vs_critical_boundary",
+            "physics_use": "distinguishes steady centripetal-force setup from limiting-condition checks"
           }
         }
       ],
@@ -3871,6 +3953,66 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Orbit problems should first convert gravity into the radial net force, then reuse circular-motion relations for speed, period, and radius.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "gravity_to_centripetal_procedure",
+            "physics_use": "maps inverse-square gravitation onto circular-motion equations step by step"
+          }
+        },
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Satellite and planet orbit tasks apply circular critical reasoning when checking escape, minimum speed, or stable-radius conditions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "orbital_boundary_application",
+            "physics_use": "uses centripetal boundary conditions to judge orbital feasibility"
+          }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "Near-Earth projectile motion and orbital motion both involve gravity, but the former treats g as nearly constant while the latter needs radius-dependent inverse-square force.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "constant_g_vs_inverse_square_gravity",
+            "physics_use": "prevents mixing local projectile approximations with orbital-scale models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4035,6 +4177,46 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "simple_harmonic_trig_form"
+          }
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After extracting amplitude, period, and phase from simple harmonic motion, the next step is to transfer phase reasoning to wave propagation and interference.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "trig_graph_phase_to_wave_steps",
+            "physics_use": "connects sine-function graph features to phase difference and interference judgments"
+          }
+        },
+        {
+          "id": "college_physics_simple_harmonic_oscillation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "High-school graph reading and college differential-equation modeling describe the same oscillation but use different evidence: image features versus restoring-force dynamics.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "graph_reading_vs_differential_equation_model",
+            "physics_use": "keeps visual period-amplitude extraction separate from equation-based derivation"
           }
         }
       ],
@@ -4511,6 +4693,46 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "potential_graph_information_reading"
+          }
+        },
+        {
+          "id": "physics_senior_electric_field_force",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "When reading a potential graph, first infer field magnitude and direction from the negative slope, then use the field to decide force and potential-energy change.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "potential_slope_to_field_force_steps",
+            "physics_use": "turns graph slope and direction into electric-field and force conclusions"
+          }
+        },
+        {
+          "id": "college_physics_electric_potential",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Electric potential, electric potential energy, and electric field are easily interchanged; comparing graph tasks with college potential definitions separates scalar value, energy, and vector field.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "potential_energy_field_confusion",
+            "physics_use": "distinguishes scalar potential graphs from vector electric-field interpretation"
           }
         }
       ],
@@ -5048,6 +5270,46 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "circuit_power_derivative_extreme"
+          }
+        },
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Power-extreme questions should first simplify the circuit and choose the variable resistance or current, then write power as a function before optimizing.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "circuit_simplification_to_optimization_steps",
+            "physics_use": "links circuit dynamic analysis to quadratic or derivative-based extreme-value solving"
+          }
+        },
+        {
+          "id": "physics_junior_electric_power",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Formula substitution for electric power is not the same as optimizing output or load power; the latter requires tracking which quantity changes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "power_formula_vs_power_extreme",
+            "physics_use": "prevents using P=UI or P=I^2R without checking the variable and constraint"
           }
         }
       ],
@@ -6263,6 +6525,26 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "The acceleration experiment applies data-processing skills by fitting a-F or a-1/m graphs and using scatter to judge systematic and random error.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "experiment_linear_fit_variance_error_application",
+            "physics_use": "uses variance, error analysis, and linear fitting to test Newton second-law relationships"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6801,6 +7083,66 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "physics_senior_multistage_synthesis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Boundary-condition problems should list contact, separation, velocity-zero, and direction-change constraints before splitting the problem into stages.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "boundary_conditions_to_multistage_steps",
+            "physics_use": "turns hidden limiting conditions into an ordered multi-process model"
+          }
+        },
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Connected-body problems apply boundary-condition checks when tension, friction, or contact force reaches zero and the system model must change.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "boundary_conditions_in_connected_body_application",
+            "physics_use": "detects when an assumed constraint fails and a new mechanical stage begins"
+          }
+        },
+        {
+          "id": "physics_senior_multistage_synthesis",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "A boundary condition is the trigger for changing a model, while a multi-stage solution is the organized result after those triggers are identified.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "boundary_trigger_vs_multistage_solution",
+            "physics_use": "separates finding limiting events from executing the later process chain"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7059,6 +7401,66 @@
             "bridge_direction": "math_to_physics",
             "bridge_focus": "向量运算->物理矢量",
             "physics_use": "合成和分解位移、速度、加速度、力"
+          }
+        },
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After defining displacement, velocity, acceleration, and force as vectors, the next procedure is to express motion with derivatives and integrals of vector quantities.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "vector_quantities_to_calculus_kinematics_steps",
+            "physics_use": "moves from vector definitions to calculus-based motion equations"
+          }
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Vector physical quantities apply force-decomposition habits from mechanics, but extend them to displacement, velocity, acceleration, field, and flux directions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "mechanics_vectors_to_general_physical_vectors",
+            "physics_use": "uses vector components and directions across mechanics and electromagnetism"
+          }
+        },
+        {
+          "id": "physics_junior_work_power",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Work and power can look scalar even when force and displacement are vectors; this comparison prevents treating every physical quantity as directionless.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "scalar_vs_vector_physical_quantity_confusion",
+            "physics_use": "distinguishes scalar outputs such as work from vector inputs such as force and displacement"
           }
         }
       ],
@@ -7336,6 +7738,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After drawing the system force diagram and choosing an inertial or non-inertial frame, the next step is to decide whether force equations or energy equations are shorter.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "newton_frame_to_energy_method_steps",
+            "physics_use": "connects reference-frame force balances to later work-energy method selection"
+          }
+        },
+        {
+          "id": "physics_senior_connected_body",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Newton-law system modeling applies directly to connected bodies by choosing system boundaries, internal forces, and external net forces.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "system_boundary_newton_application",
+            "physics_use": "uses whole-system and isolated-body equations for multi-object mechanics"
+          }
+        },
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "reason": "Newton external-force equations and center-of-mass momentum equations can both describe systems, but they answer different questions about acceleration and total momentum.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "force_system_vs_center_of_mass_momentum",
+            "physics_use": "separates net-force dynamics from momentum and center-of-mass descriptions"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7574,6 +8036,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Before invoking mechanical-energy conservation, first split work into conservative and non-conservative parts using the work-energy theorem.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "work_energy_to_conservation_check_steps",
+            "physics_use": "checks whether potential energy can replace path-dependent work"
+          }
+        },
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Potential-energy conservation applies to high-school mechanical-energy problems by identifying when friction or collision loss must be placed outside the conserved total.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "conservation_with_energy_loss_application",
+            "physics_use": "decides when E_k+E_p is conserved and when loss terms must be added"
+          }
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "The work-energy theorem always tracks net work, while mechanical-energy conservation only works after non-conservative work is absent or explicitly separated.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "net_work_vs_conserved_mechanical_energy",
+            "physics_use": "prevents applying conservation in systems with hidden dissipative work"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7671,6 +8193,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_rigid_body_rotation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After finding total momentum and center-of-mass motion, the next procedure is to separate translation of the center of mass from rotation about it.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "center_of_mass_translation_to_rotation_steps",
+            "physics_use": "builds the bridge from particle systems to rigid-body motion"
+          }
+        },
+        {
+          "id": "physics_senior_momentum_collision",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Center-of-mass momentum methods apply to collision problems by tracking external impulse separately from internal interaction forces.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "collision_center_of_mass_application",
+            "physics_use": "uses conservation and center-of-mass velocity to simplify multi-body collisions"
+          }
+        },
+        {
+          "id": "college_physics_potential_energy_conservation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "Momentum conservation depends on external impulse, while mechanical-energy conservation depends on non-conservative work; the two conditions are independent.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "momentum_vs_energy_conservation_conditions",
+            "physics_use": "separates impulse conditions from energy-loss conditions in system analysis"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7768,6 +8350,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_angular_momentum",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After writing torque, moment of inertia, and angular acceleration for fixed-axis rotation, the next step is to formulate angular momentum and its conservation condition.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "rigid_rotation_to_angular_momentum_steps",
+            "physics_use": "extends rotational dynamics into angular-momentum conservation checks"
+          }
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Rigid-body rotation applies circular-motion ideas to every mass element while adding moment of inertia as the distribution-weighted factor.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "circular_motion_to_rigid_body_application",
+            "physics_use": "connects angular velocity and centripetal acceleration to extended bodies"
+          }
+        },
+        {
+          "id": "college_physics_vector_calculus",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "reason": "Angular quantities are axial vectors in many contexts, but fixed-axis rotation often uses signed scalars; confusing these representations causes sign and direction errors.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "angular_vector_vs_signed_scalar_confusion",
+            "physics_use": "keeps torque and angular velocity directions consistent with the chosen axis convention"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7865,6 +8507,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_simple_harmonic_oscillation",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "After applying angular momentum conservation in rotation, students can proceed to oscillation models where conserved quantities and phase-space reasoning are compared.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "angular_momentum_to_oscillation_model_sequence",
+            "physics_use": "places rotational conservation before later periodic-motion modeling in the course chain"
+          }
+        },
+        {
+          "id": "college_physics_rigid_body_rotation",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Angular momentum conservation applies to rigid-body rotation when external torque about the chosen axis is zero, such as spin-up or redistribution cases.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "zero_external_torque_application",
+            "physics_use": "uses torque checks to decide whether I omega remains constant"
+          }
+        },
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Linear momentum conservation and angular momentum conservation require different external quantities: impulse versus torque about a specified point or axis.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "linear_vs_angular_momentum_conservation",
+            "physics_use": "prevents using center-of-mass momentum rules for rotational conservation problems"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8505,6 +9207,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After using pV=nRT to identify gas states, the next procedure is to compute heat, work, and internal-energy change for the process path.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "state_equation_to_first_law_steps",
+            "physics_use": "moves from proportional gas-state relations to thermodynamic process accounting"
+          }
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "The ideal-gas state equation applies inside first-law problems to connect pressure, volume, and temperature before calculating work or heat.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "ideal_gas_state_in_first_law_application",
+            "physics_use": "uses direct and inverse proportional relationships among p, V, and T during process analysis"
+          }
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "A state equation relates equilibrium variables, while the first law relates energy transfer along a process; mixing them hides path dependence.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "state_relation_vs_process_energy_confusion",
+            "physics_use": "separates proportional state constraints from heat-work-energy bookkeeping"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8602,6 +9364,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "After balancing heat, work, and internal energy with the first law, the next step is to test process direction and efficiency with entropy or second-law limits.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "first_law_accounting_to_entropy_steps",
+            "physics_use": "adds irreversibility and entropy checks after energy conservation"
+          }
+        },
+        {
+          "id": "college_physics_ideal_gas_state",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "First-law calculations apply the ideal-gas state equation to determine missing p, V, or T values before integrating work over a path.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "first_law_ideal_gas_application",
+            "physics_use": "combines state-variable proportionality with heat and work accounting"
+          }
+        },
+        {
+          "id": "college_physics_thermo_second_law_entropy",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "The first law permits any energy-balanced process, while the second law restricts which energy-balanced processes can actually occur.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "energy_conservation_vs_process_direction_confusion",
+            "physics_use": "distinguishes energy bookkeeping from entropy and feasibility constraints"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -8699,6 +9521,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Entropy analysis should start from the first-law energy balance, then add reversibility, reservoir, and efficiency constraints.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "first_law_balance_before_entropy_steps",
+            "physics_use": "orders heat-work accounting before second-law direction tests"
+          }
+        },
+        {
+          "id": "college_physics_ideal_gas_state",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "reason": "Second-law and entropy examples apply ideal-gas state changes when comparing isothermal, adiabatic, and cyclic processes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "entropy_ideal_gas_process_application",
+            "physics_use": "uses gas-state relations to evaluate reversible and irreversible process paths"
+          }
+        },
+        {
+          "id": "college_physics_thermo_first_law",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Entropy increase is not the same statement as energy conservation; a process can conserve energy and still be impossible by the second law.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "entropy_vs_energy_conservation_confusion",
+            "physics_use": "keeps feasibility reasoning separate from heat-work energy balance"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9503,6 +10385,46 @@
             "bridge_direction": "physics_to_math",
             "bridge_focus": "biot_savart_definite_integral"
           }
+        },
+        {
+          "id": "college_physics_ampere_law",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "After integrating current elements with Biot-Savart, the next procedure is to check symmetry and decide whether Ampere law gives a shorter field calculation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "field_integral_to_symmetry_law_steps",
+            "physics_use": "moves from direct magnetic-field integration to symmetry-based circulation methods"
+          }
+        },
+        {
+          "id": "college_physics_ampere_law",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Biot-Savart sums local current-element contributions, while Ampere law uses field circulation and symmetry; choosing the wrong tool leads to invalid shortcuts.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "biot_savart_vs_ampere_law_confusion",
+            "physics_use": "distinguishes direct integration from symmetry-dependent magnetic-field reasoning"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -9751,6 +10673,46 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "lorentz_force_angle_sine"
+          }
+        },
+        {
+          "id": "college_physics_faraday_induction",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "After determining magnetic force direction on a moving charge, the next step is to connect moving conductors and changing flux to induced emf.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "lorentz_force_to_induction_steps",
+            "physics_use": "links right-hand-rule force direction with motional-emf and flux-change reasoning"
+          }
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Magnetic force on a charge, force on a current-carrying wire, and electric force use different direction rules and angle factors despite similar field notation.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "magnetic_force_direction_rule_confusion",
+            "physics_use": "prevents mixing Lorentz-force vector products with electric-field force rules"
           }
         }
       ],
@@ -10020,6 +10982,46 @@
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
             "bridge_focus": "field_variation_gradient"
+          }
+        },
+        {
+          "id": "college_physics_faraday_induction",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Before reading Maxwell equations as a coupled field system, trace Faraday induction from changing flux to circulating electric field.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "faraday_flux_to_maxwell_field_steps",
+            "physics_use": "connects integral laws, field circulation, and time-varying electromagnetic fields"
+          }
+        },
+        {
+          "id": "college_physics_gauss_law",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "reason": "Gauss law describes field flux from sources, while Faraday and Ampere-Maxwell laws describe circulation from changing fields; mixing flux and circulation is a common Maxwell-equation error.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "flux_law_vs_circulation_law_confusion",
+            "physics_use": "separates divergence-style source laws from curl-style changing-field laws"
           }
         }
       ],
@@ -10426,6 +11428,66 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_physics_photoelectric_effect",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "After setting the light-speed postulate and inertial-frame rules, the course can proceed to modern-physics evidence where light also behaves as quantized energy.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "relativity_postulates_to_modern_physics_steps",
+            "physics_use": "places high-speed frame assumptions before photon-energy model building"
+          }
+        },
+        {
+          "id": "college_physics_de_broglie_atom",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Relativity postulates apply as boundary checks in de Broglie and atomic models by clarifying when classical momentum, wave speed, or high-speed approximations are valid.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "relativity_boundary_in_quantum_models_application",
+            "physics_use": "uses modern-physics assumptions alongside inverse wavelength-momentum reasoning"
+          }
+        },
+        {
+          "id": "college_physics_de_broglie_atom",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "reason": "Relativistic momentum limits and de Broglie inverse wavelength-momentum relations are related modern-physics ideas, but they answer different modeling questions.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "bridge_direction": "physics_to_physics",
+            "bridge_focus": "relativity_vs_de_broglie_inverse_relation_confusion",
+            "physics_use": "keeps high-speed frame effects separate from matter-wave wavelength reasoning"
+          }
         }
       ],
       "typical_misconceptions": [

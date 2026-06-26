@@ -4081,6 +4081,46 @@ def test_study_knowledge_retrieval_eval_reports_focus_and_cross_subject_quality(
             assert result["model_context_has_cross_subject_cue"] is True
 
 
+def test_study_knowledge_retrieval_eval_static_cases_meet_quality_gate() -> None:
+    topics = _read_static_knowledge_seed_payload()["topics"]
+    cases_path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_eval_cases.json"
+    )
+    payload = json.loads(cases_path.read_text(encoding="utf-8"))
+    cases = payload.get("cases")
+    assert isinstance(cases, list)
+    assert 80 <= len(cases) <= 100
+
+    report = evaluate_knowledge_retrieval_queries(topics=topics, cases=cases)
+    summary = report["summary"]
+    cross_subject_case_count = int(summary["cross_subject_case_count"])
+
+    assert summary["case_count"] == len(cases)
+    assert summary["focus_hit_count"] / len(cases) >= 0.95
+    assert summary["raw_seed_included_count"] == 0
+    assert summary["thin_relation_group_count"] == 0
+    assert cross_subject_case_count >= 40
+    assert summary["cross_subject_edge_count"] / cross_subject_case_count >= 0.95
+    assert (
+        summary["model_context_cross_subject_cue_count"] / cross_subject_case_count
+        >= 0.95
+    )
+    assert summary["bad_hub_absorption_count"] <= 4
+
+    bad_hub_cases = [
+        result
+        for result in report["results"]
+        if result["bad_hub_absorbed"]
+    ]
+    for result in bad_hub_cases:
+        assert result["top_matches"], result["query"]
+        assert result["expected_topic_ids"], result["query"]
+
+
 def test_study_knowledge_guidance_groups_edges_into_user_facing_sections() -> None:
     topics = _read_static_knowledge_seed_payload()["topics"]
 

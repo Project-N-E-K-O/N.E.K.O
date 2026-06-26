@@ -4760,6 +4760,42 @@
             "target_subject": "english",
             "bridge_direction": "chinese_to_english"
           }
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "procedure_step",
+          "reason": "Sentence-ordering questions first identify topic sentence, connector words, pronoun references, and logical sequence before compressing the ordered meaning into a concise answer.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "english_senior_seven_choice_coherence",
+          "relation": "confusable",
+          "reason": "Chinese sentence-ordering and English seven-choice coherence both use discourse links, but Chinese items usually reorder given sentences while English items select missing sentences from options.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5109,6 +5145,42 @@
             "target_subject": "english",
             "bridge_direction": "chinese_to_english"
           }
+        },
+        {
+          "id": "chinese_senior_language_error_correction",
+          "relation": "procedure_step",
+          "reason": "Sentence rewriting requires preserving the original meaning, selecting the target sentence pattern, adjusting word order, and then checking for grammar or logic errors.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "confusable",
+          "reason": "Sentence rewriting changes form while keeping meaning complete, whereas language compression deletes secondary information to produce a shorter summary.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5246,6 +5318,60 @@
             "migrated_for": "chinese_edge_migration_2026_06_26",
             "chapter_focus": "高中语文语言运用"
           }
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "procedure_step",
+          "reason": "For 病句辨析修改, locate the fault type, explain the grammar or logic problem, then rewrite the sentence so the correction is explicit and testable.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "english_senior_error_correction",
+          "relation": "confusable",
+          "reason": "Chinese 病句修改 focuses on Chinese syntax, collocation, logic, and punctuation, while English error correction checks tense, agreement, articles, and clause grammar.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
+        },
+        {
+          "id": "english_senior_error_correction",
+          "relation": "application",
+          "reason": "The habit of identifying an error category, locating evidence in context, and rewriting the sentence transfers directly to English short-passage error-correction items.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.83,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "english",
+            "bridge_direction": "chinese_to_english"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5382,6 +5508,60 @@
             "migrated_from": "legacy_nearby_relation",
             "migrated_for": "chinese_edge_migration_2026_06_26",
             "chapter_focus": "高中语文语言运用 -> 高中语文写作"
+          }
+        },
+        {
+          "id": "chinese_senior_language_compression",
+          "relation": "procedure_step",
+          "reason": "Graph-to-text answers read the title, legend, axes, figures, and trend first, then compress the visual information into a clear sentence or recommendation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "chinese_senior_composition_material_review",
+          "relation": "confusable",
+          "reason": "图文转换 asks students to describe data or visual meaning accurately, while composition material review turns a material into an essay claim and argument direction.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "application",
+          "reason": "Chart description and trend extraction support politics economy material questions that ask students to read market data, policy effects, and macro-control signals.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "politics",
+            "bridge_direction": "chinese_to_politics"
           }
         }
       ],
@@ -6768,6 +6948,42 @@
             "target_subject": "history",
             "bridge_direction": "chinese_to_history"
           }
+        },
+        {
+          "id": "chinese_senior_classical_translation",
+          "relation": "procedure_step",
+          "reason": "Classical-culture questions first identify dynasties, official titles, rites, calendars, geography, or institutions, then use that context to translate and explain the sentence accurately.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "history_senior_cultural_exchange",
+          "relation": "confusable",
+          "reason": "古代文化常识 tests fixed cultural terms and institutional background in classical texts, while history cultural-exchange questions analyze causes, routes, influence, and period context.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "history",
+            "bridge_direction": "chinese_to_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7131,6 +7347,42 @@
             "source_subject": "chinese",
             "target_subject": "history",
             "bridge_direction": "chinese_to_history"
+          }
+        },
+        {
+          "id": "chinese_senior_text_answer_template",
+          "relation": "procedure_step",
+          "reason": "New-gaokao mixed-text reading classifies source type, extracts each text's claim and evidence, compares relationships, then writes the answer with a point-evidence-analysis template.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "bridge_direction": "chinese_internal"
+          }
+        },
+        {
+          "id": "pol_senior_logical_thinking",
+          "relation": "confusable",
+          "reason": "Mixed-text reading synthesizes viewpoints from several sources, while politics logical-thinking tasks judge premise, conclusion, contradiction, and reasoning validity.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "politics",
+            "bridge_direction": "chinese_to_politics"
           }
         }
       ],

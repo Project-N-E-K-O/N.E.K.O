@@ -2654,20 +2654,23 @@
         {
           "id": "senior_derivative_extrema",
           "relation": "application",
-          "priority": "optional",
-          "context": "explanation",
-          "confidence": 0.78,
-          "reason": "Optimal temperature or pH points connect enzyme-rate maxima with extrema reasoning.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Optimal temperature or pH points connect enzyme-rate maxima with derivative extrema reasoning, so curve peaks should be read as biological optimum points and mathematical maxima.",
           "use_cases": [
             "hint_generation",
             "learning_path",
+            "practice_planning",
             "review"
           ],
           "metadata": {
             "source_subject": "biology",
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
-            "bridge_focus": "enzyme_optimum_extrema"
+            "bridge_focus": "enzyme_optimum_extrema",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
           }
         }
       ],

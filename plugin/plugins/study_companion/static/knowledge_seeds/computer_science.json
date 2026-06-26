@@ -5658,6 +5658,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_discrete_logic",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Bitwise AND, OR, XOR, and NOT are solved by mapping each bit position to a Boolean proposition before combining the binary values.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "bit_operations_to_boolean_logic",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "senior_set_operations",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Binary masks can represent set membership, so bitwise operations apply set union, intersection, and difference ideas to compact flags.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "bitmask_to_set_operations",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5754,6 +5796,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_function_domain_range",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Module design first fixes each module's input domain, output range, and side effects before choosing the implementation details.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "module_contract_to_function_domain_range",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "college_set_relation",
+          "relation": "application",
+          "priority": "useful",
+          "context": "explanation",
+          "confidence": 0.82,
+          "reason": "A module interface defines allowed relations between caller inputs and returned values, which helps check coupling between modules.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "module_interface_to_set_relation",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5850,6 +5934,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_set_relation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Test-case design starts by partitioning the input set into equivalence classes and boundary subsets before selecting concrete cases.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "test_partition_to_set_relation",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "function_domain_junior",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "reason": "Boundary and invalid tests apply domain analysis by checking values inside, outside, and at the edge of the accepted input domain.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "test_boundaries_to_function_domain",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6151,6 +6277,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "senior_sequence_recursion",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Capacity expansion is traced as a recurrence such as cap(k+1)=2*cap(k) before summing copied elements over append operations.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "dynamic_array_growth_to_recurrence",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.85,
+          "reason": "Amortized append analysis uses geometric growth to compare total copy work with the number of insertions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "amortized_array_resize_to_growth_rate",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6247,6 +6415,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_set_relation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Union-find operations maintain a partition of elements by repeatedly finding representatives and merging equivalence classes.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "union_find_to_equivalence_relation",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "college_graph_connectivity",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Union-find answers graph connectivity queries by merging endpoints of edges and comparing component representatives.",
+          "use_cases": [
+            "diagnosis",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "union_find_to_graph_connectivity",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6343,6 +6553,48 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_graph_theory_intro",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Topological sorting first models prerequisites as a directed acyclic graph, then repeatedly removes vertices with zero in-degree.",
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "topological_sort_to_dag_model",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
+        },
+        {
+          "id": "college_set_relation",
+          "relation": "application",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "reason": "A valid topological order applies a partial-order relation by arranging every prerequisite before the dependent task.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "topological_order_to_partial_order_relation",
+            "cross_subject": true,
+            "added_for": "computer_science_ready_gap_cleanup"
+          }
         }
       ],
       "typical_misconceptions": [
