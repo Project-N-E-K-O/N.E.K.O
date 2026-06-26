@@ -549,6 +549,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [lookupResult, setLookupResult] = useState<any>(null)
   const [liveRoomResult, setLiveRoomResult] = useState<any>(null)
   const [loginState, setLoginState] = useState<any>(null)
+  const [clearViewerProfilesArmed, setClearViewerProfilesArmed] = useState(false)
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
@@ -711,6 +712,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     })()
   }, [])
 
+  useEffect(() => {
+    if (profiles.length === 0) {
+      setClearViewerProfilesArmed(false)
+    }
+  }, [profiles.length])
+
   async function callSimple(action: string) {
     try {
       await props.api.call(action, {})
@@ -793,9 +800,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function clearViewerProfiles() {
-    if (!window.confirm(t("panel.messages.clearViewerProfilesConfirm"))) {
+    if (!clearViewerProfilesArmed) {
+      setClearViewerProfilesArmed(true)
       return
     }
+    setClearViewerProfilesArmed(false)
     await callSimple("clear_viewer_profiles")
   }
 
@@ -1023,7 +1032,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             })}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <Button tone="danger" onClick={clearViewerProfiles}>{t("panel.actions.clearViewerProfiles")}</Button>
+            <Button tone="danger" onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
           </div>
         </Stack>
       </Card>
@@ -1531,7 +1540,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       </Card>
       <Card title={t("panel.profiles.title")}>
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
-          <Button tone="danger" onClick={clearViewerProfiles}>{t("panel.actions.clearViewerProfiles")}</Button>
+          <Button tone="danger" onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
         </div>
         {profiles.length ? (
           <DataTable

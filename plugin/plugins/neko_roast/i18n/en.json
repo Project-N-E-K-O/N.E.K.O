@@ -271,6 +271,7 @@
   "panel.empty.sandboxResults": "No sandbox records yet.",
   "panel.actions.clearSandbox": "Clear sandbox records",
   "panel.actions.clearViewerProfiles": "Clear viewer profiles",
+  "panel.actions.confirmClearViewerProfiles": "Click again to clear profiles",
   "panel.messages.sandboxCleared": "Sandbox records cleared.",
   "actions.clear_sandbox_data.label": "Clear sandbox records",
   "entries.clear_sandbox_data.name": "Clear sandbox records",

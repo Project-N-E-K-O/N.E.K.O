@@ -267,6 +267,7 @@
   "panel.empty.sandboxResults": "No sandbox records yet.",
   "panel.actions.clearSandbox": "샌드박스 기록 지우기",
   "panel.actions.clearViewerProfiles": "시청자 프로필 지우기",
+  "panel.actions.confirmClearViewerProfiles": "한 번 더 눌러 프로필 지우기",
   "panel.messages.sandboxCleared": "샌드박스 임시 기록을 지웠습니다.",
   "actions.clear_sandbox_data.label": "샌드박스 기록 지우기",
   "entries.clear_sandbox_data.name": "샌드박스 기록 지우기",

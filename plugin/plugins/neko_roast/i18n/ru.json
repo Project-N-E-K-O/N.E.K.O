@@ -267,6 +267,7 @@
   "panel.empty.sandboxResults": "No sandbox records yet.",
   "panel.actions.clearSandbox": "Очистить записи песочницы",
   "panel.actions.clearViewerProfiles": "Очистить профили зрителей",
+  "panel.actions.confirmClearViewerProfiles": "Нажмите еще раз, чтобы очистить",
   "panel.messages.sandboxCleared": "Временные записи песочницы очищены.",
   "actions.clear_sandbox_data.label": "Очистить записи песочницы",
   "entries.clear_sandbox_data.name": "Очистить записи песочницы",

@@ -267,6 +267,7 @@
   "panel.empty.sandboxResults": "No sandbox records yet.",
   "panel.actions.clearSandbox": "サンドボックス記録を消去",
   "panel.actions.clearViewerProfiles": "視聴者プロファイルを消去",
+  "panel.actions.confirmClearViewerProfiles": "もう一度クリックして消去",
   "panel.messages.sandboxCleared": "サンドボックスの一時記録を消去しました。",
   "actions.clear_sandbox_data.label": "サンドボックス記録を消去",
   "entries.clear_sandbox_data.name": "サンドボックス記録を消去",

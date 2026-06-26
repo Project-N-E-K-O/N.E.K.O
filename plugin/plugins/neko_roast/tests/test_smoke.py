@@ -171,7 +171,7 @@ def test_panel_renders_solo_stream_test_readiness():
     assert "panel.soloTestReadiness.item" in source
     assert "panel.soloTestReadiness.profileCount" in source
     assert "clearViewerProfiles" in source
-    assert "panel.messages.clearViewerProfilesConfirm" in source
+    assert "panel.actions.confirmClearViewerProfiles" in source
 
 
 def test_panel_confirms_before_clearing_viewer_profiles():
@@ -179,7 +179,9 @@ def test_panel_confirms_before_clearing_viewer_profiles():
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
 
     assert "async function clearViewerProfiles()" in source
-    assert "window.confirm" in source
+    assert "window.confirm" not in source
+    assert "clearViewerProfilesArmed" in source
+    assert "panel.actions.confirmClearViewerProfiles" in source
     assert 'callSimple("clear_viewer_profiles")' in source
     assert 'onClick={clearViewerProfiles}' in source
 

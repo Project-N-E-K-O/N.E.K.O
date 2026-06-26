@@ -267,6 +267,7 @@
   "panel.empty.sandboxResults": "暂无沙盒记录。",
   "panel.actions.clearSandbox": "清空沙盒记录",
   "panel.actions.clearViewerProfiles": "清空观众档案",
+  "panel.actions.confirmClearViewerProfiles": "再次点击确认清空",
   "panel.messages.sandboxCleared": "已清空沙盒临时记录。",
   "actions.clear_sandbox_data.label": "清空沙盒记录",
   "entries.clear_sandbox_data.name": "清空沙盒记录",

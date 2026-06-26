@@ -267,6 +267,7 @@
   "panel.empty.sandboxResults": "No sandbox records yet.",
   "panel.actions.clearSandbox": "Limpar registros da sandbox",
   "panel.actions.clearViewerProfiles": "Limpar perfis de espectadores",
+  "panel.actions.confirmClearViewerProfiles": "Clique de novo para limpar perfis",
   "panel.messages.sandboxCleared": "Registros temporarios da sandbox limpos.",
   "actions.clear_sandbox_data.label": "Limpar registros da sandbox",
   "entries.clear_sandbox_data.name": "Limpar registros da sandbox",
