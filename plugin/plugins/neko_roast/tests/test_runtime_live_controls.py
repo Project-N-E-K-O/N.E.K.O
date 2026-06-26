@@ -1165,6 +1165,24 @@ async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: R
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_yields_early_enough_to_observe_idle_hosting(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=95)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "quiet"
+    assert state["active_engagement_status"]["reason"] == "approaching_idle_hosting"
+    assert 20.0 <= state["active_engagement_status"]["idle_hosting_wait_remaining"] <= 30.0
+    assert state["live_director_status"]["next_auto_action"] == "idle_hosting"
+
+
+@pytest.mark.asyncio
 async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True

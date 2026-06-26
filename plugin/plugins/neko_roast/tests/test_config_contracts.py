@@ -202,6 +202,8 @@ def test_live_interaction_prompts_share_short_reply_contract():
         assert "Do not turn a reply into a host script, segment intro, plan, or audience survey." in request.prompt_text
         assert "Do not chain multiple clauses with commas" in request.prompt_text
         assert "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one." in request.prompt_text
+        assert "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works." in request.prompt_text
+        assert "If recent context was longer than the current danmaku, shrink the reply instead of matching it." in request.prompt_text
 
 
 def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
@@ -350,6 +352,7 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "one concrete, low-pressure question" in request.prompt_text
     assert "Do not pretend a viewer sent a message" in request.prompt_text
     assert "Do not use generic host slogans" in request.prompt_text
+    assert "Never address the whole room with broad audience-bait openings like everyone, anyone, chat, 大家, or 你们." in request.prompt_text
     assert "Prefer one tiny observation over a plan, segment, or open-ended topic survey." in request.prompt_text
     assert "Every active engagement line must give viewers one concrete reply handle" in request.prompt_text
     assert "A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side" in request.prompt_text

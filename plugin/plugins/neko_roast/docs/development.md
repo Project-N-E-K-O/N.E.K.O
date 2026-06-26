@@ -374,7 +374,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 面板的控制台、冷场陪播卡和主动营业卡必须保留这两个节奏字段；主动营业卡还要拆分展示 `minimum_interval_remaining`、`recent_danmaku_cooldown_remaining` 与 `idle_hosting_wait_remaining`，避免只看到一个合并 cooldown 时无法判断到底是自身最小间隔、刚接过弹幕导致等待，还是已经接近冷场窗口而主动让位给 Idle Hosting。当前决策卡也会展示最近主动营业的 `topic_source` / `topic_shape` / `topic_title` / `topic_key` / `topic_hook` / `topic_pattern` / `topic_intent` / `topic_reply_affordance`，用于下一次直播复盘话题是否足够具体、是否吸引观众接话。
 
-当 `solo_stream` 的观众沉默时间已经接近 `idle_threshold_seconds` 时，自动 Active Engagement 必须让位给 Idle Hosting；当前让位窗口是进入 `idle` 前 15 秒。这样下一次真实无弹幕窗口不会被主动营业刚好抢掉，直播复盘也能明确区分“主动话题不足”和“冷场陪播没有触发”。
+当 `solo_stream` 的观众沉默时间已经接近 `idle_threshold_seconds` 时，自动 Active Engagement 必须让位给 Idle Hosting；当前让位窗口随活跃度变化：`quiet=45s`、`standard=25s`、`active=15s`。这样下一次真实无弹幕窗口不会被主动营业刚好抢掉，直播复盘也能明确区分“主动话题不足”和“冷场陪播没有触发”。
 
 Idle Hosting 不是简单定时器输出。每次 `idle_hosting` 事件会附带一个轻量 `host_beat`，在软观察、小二选一、轻吐槽、小状态等低压力主持节拍之间轮换；prompt 只能把它当方向，最终仍必须生成一句自然的 NEKO 直播补位。`host_beat_key` / `host_beat_shape` / `host_beat_title` 会进入 recent result、recent interaction context、面板当前决策卡与 `monitor_live.ps1` 输出，方便下一次冷场补位避免复用同一个开场、包袱形状或主持节拍。
 

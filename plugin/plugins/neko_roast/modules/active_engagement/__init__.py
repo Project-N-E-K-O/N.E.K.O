@@ -63,6 +63,7 @@ class ActiveEngagementModule(BaseModule):
             "The reply handle must be an A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side.",
             "Prefer one tiny observation over a plan, segment, or open-ended topic survey.",
             "Do not use generic host slogans like 'everyone interact' or 'say something in chat'.",
+            "Never address the whole room with broad audience-bait openings like everyone, anyone, chat, 大家, or 你们.",
             "Do not use generic Chinese host lines equivalent to 'everyone interact', 'start sending danmaku', or 'come chat'.",
             "Do not say special plan, everyone look, next let's, what should we talk about, or tell me what you want.",
             "Do not say get the chat moving, keep the chat alive, or keep the chat going.",

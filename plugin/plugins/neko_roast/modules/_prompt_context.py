@@ -13,6 +13,8 @@ def short_reply_rules() -> list[str]:
         SHORT_REPLY_CONTRACT,
         "If the viewer's danmaku is short, answer even shorter.",
         "For one-word or very short danmaku, answer with a tiny reaction.",
+        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
+        "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
         "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",

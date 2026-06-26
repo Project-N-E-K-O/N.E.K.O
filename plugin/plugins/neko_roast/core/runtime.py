@@ -51,7 +51,7 @@ class RoastRuntime:
     _IDLE_HOSTING_FAILURE_LIMIT = 3
     _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 75.0
     _ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS = 360.0
-    _ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS = 15.0
+    _ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS = 25.0
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -1583,7 +1583,7 @@ class RoastRuntime:
             reason = "recent_danmaku_output"
             cooldown_remaining = recent_danmaku_cooldown
             eligible = False
-        elif idle_hosting_wait_remaining is not None and idle_hosting_wait_remaining <= self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS:
+        elif idle_hosting_wait_remaining is not None and idle_hosting_wait_remaining <= self._active_engagement_idle_grace_seconds():
             reason = "approaching_idle_hosting"
             cooldown_remaining = idle_hosting_wait_remaining
             eligible = False
@@ -1766,6 +1766,13 @@ class RoastRuntime:
             str(getattr(self.config, "activity_level", "standard")),
             float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS),
         )
+
+    def _active_engagement_idle_grace_seconds(self) -> float:
+        return {
+            "quiet": 45.0,
+            "active": 15.0,
+            "standard": float(self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS),
+        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS))
 
     def _idle_hosting_wait_remaining_for_quiet_state(self, live_state: dict[str, Any]) -> float | None:
         if str(live_state.get("state") or "") != "quiet":
