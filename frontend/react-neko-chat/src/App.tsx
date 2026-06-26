@@ -2572,6 +2572,15 @@ function CompactChatApp({
     markCompactMemeOverlayImageSettled();
   }, [markCompactMemeOverlayImageSettled]);
 
+  useLayoutEffect(() => {
+    setLoadedMemeOverlayKey(current => {
+      if (!compactMemeOverlayVisible || compactMemeOverlayLoadKey === null) {
+        return current === null ? current : null;
+      }
+      return current === compactMemeOverlayLoadKey ? current : null;
+    });
+  }, [compactMemeOverlayLoadKey, compactMemeOverlayVisible]);
+
   useEffect(() => () => {
     if (typeof window === 'undefined') return;
     if (compactMemeGeometryFrameRef.current === null) return;

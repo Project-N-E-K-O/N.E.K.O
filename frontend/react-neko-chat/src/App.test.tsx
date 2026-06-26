@@ -879,6 +879,69 @@ describe('App', () => {
     }
   });
 
+  it('renders the meme overlay close button after the image fails to load', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-error-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=error', alt: 'lol' }], status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+      );
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      geometryRefreshes.length = 0;
+
+      const img = container.querySelector('.compact-meme-overlay img');
+      expect(img).not.toBeNull();
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+      fireEvent.error(img as Element);
+      expect(geometryRefreshes.length).toBe(0);
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+    } finally {
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    }
+  });
+
+  it('does not reuse a loaded meme overlay close button after history remounts the same image', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-history-remount', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-remount', alt: 'lol' }], status: 'sent',
+    });
+    vi.useFakeTimers();
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+      );
+
+      const firstImage = container.querySelector('.compact-meme-overlay img');
+      fireEvent.load(firstImage as Element);
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      const remountedImage = container.querySelector('.compact-meme-overlay img');
+      expect(remountedImage).toHaveAttribute('src', '/api/meme/proxy-image?url=history-remount');
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+
+      fireEvent.load(remountedImage as Element);
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows a newer meme even after the previous one was manually closed', () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const memeA = parseChatMessage({
