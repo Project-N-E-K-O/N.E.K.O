@@ -2541,9 +2541,28 @@ function CompactChatApp({
     ? `${compactMemeOverlay.id}:${compactMemeOverlayVisible ? 'visible' : 'hidden'}`
     : 'none';
   const lastCompactMemeGeometryKeyRef = useRef<string | null>(null);
+  const compactMemeGeometryFrameRef = useRef<number | null>(null);
   const requestCompactMemeGeometryRefresh = useCallback(() => {
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, []);
+  const scheduleCompactMemeGeometryRefresh = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current !== null) return;
+    const raf = window.requestAnimationFrame
+      || ((callback: FrameRequestCallback) => window.setTimeout(() => callback(window.performance.now()), 16));
+    compactMemeGeometryFrameRef.current = raf(() => {
+      compactMemeGeometryFrameRef.current = null;
+      requestCompactMemeGeometryRefresh();
+    });
+  }, [requestCompactMemeGeometryRefresh]);
+
+  useEffect(() => () => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current === null) return;
+    const cancel = window.cancelAnimationFrame || window.clearTimeout;
+    cancel(compactMemeGeometryFrameRef.current);
+    compactMemeGeometryFrameRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -2555,12 +2574,12 @@ function CompactChatApp({
     lastCompactMemeGeometryKeyRef.current = compactMemeGeometryKey;
     if (previousKey === compactMemeGeometryKey) return undefined;
     if (previousKey === null && compactMemeGeometryKey === 'none') return undefined;
-    const frameId = window.requestAnimationFrame(requestCompactMemeGeometryRefresh);
-    return () => window.cancelAnimationFrame(frameId);
+    scheduleCompactMemeGeometryRefresh();
+    return undefined;
   }, [
     compactMemeGeometryKey,
     isCompactSurface,
-    requestCompactMemeGeometryRefresh,
+    scheduleCompactMemeGeometryRefresh,
   ]);
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
@@ -7107,8 +7126,8 @@ function CompactChatApp({
           alt={compactMemeOverlay.alt}
           loading="eager"
           decoding="async"
-          onLoad={requestCompactMemeGeometryRefresh}
-          onError={requestCompactMemeGeometryRefresh}
+          onLoad={scheduleCompactMemeGeometryRefresh}
+          onError={scheduleCompactMemeGeometryRefresh}
         />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。

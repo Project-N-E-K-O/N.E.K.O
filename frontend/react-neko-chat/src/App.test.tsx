@@ -861,7 +861,8 @@ describe('App', () => {
       const img = container.querySelector('.compact-meme-overlay img');
       expect(img).not.toBeNull();
       fireEvent.load(img as Element);
-      expect(geometryRefreshes.length).toBeGreaterThan(0);
+      expect(geometryRefreshes.length).toBe(0);
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
       geometryRefreshes.length = 0;
 
       fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
