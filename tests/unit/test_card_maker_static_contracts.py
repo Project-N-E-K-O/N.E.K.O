@@ -95,10 +95,17 @@ def test_model_manager_pngtuber_upload_supports_project_file_without_removing_fo
     template = MODEL_MANAGER_TEMPLATE.read_text(encoding="utf-8")
 
     assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
-    assert 'id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save,.veadomini,.veado"' in template
+    assert 'id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save"' in template
+    assert ".veadomini" not in template
+    assert ".veado" not in template
     assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in script
     assert "showPNGTuberUploadChoice()" in script
     assert "uploadPNGTuberFiles(Array.from(e.target.files));" in script
+    assert "menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);" in script
+    assert "menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);" in script
+    assert "event.key === 'Escape'" in script
+    assert "window.t('live2d.pngtuberImportProjectFile')" in script
+    assert "window.t('live2d.pngtuberImportFolder')" in script
     assert "pngtuberPackageUpload.click();" in script
     assert "pngtuberModelUpload.click();" in script
 

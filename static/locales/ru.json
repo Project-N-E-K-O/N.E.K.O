@@ -1543,7 +1543,9 @@
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
         "modelInUse": "Используется",
         "pngtuberTalkPreview": "Проверить речь",
-        "pngtuberStatePreview": "Предпросмотр состояния"
+        "pngtuberStatePreview": "Предпросмотр состояния",
+        "pngtuberImportProjectFile": "Импорт файла проекта",
+        "pngtuberImportFolder": "Импорт папки"
     },
     "voice": {
         "title": "Регистрация голоса",

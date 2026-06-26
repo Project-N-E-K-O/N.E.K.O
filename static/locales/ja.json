@@ -1543,7 +1543,9 @@
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "発話をテスト",
-        "pngtuberStatePreview": "状態プレビュー"
+        "pngtuberStatePreview": "状態プレビュー",
+        "pngtuberImportProjectFile": "プロジェクトファイルをインポート",
+        "pngtuberImportFolder": "フォルダーをインポート"
     },
     "voice": {
         "title": "ボイス登録",

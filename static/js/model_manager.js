@@ -9038,6 +9038,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         closePNGTuberUploadChoice();
     }
 
+    function handlePNGTuberUploadChoiceKeydown(event) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closePNGTuberUploadChoice();
+            if (uploadBtn) uploadBtn.focus();
+        }
+    }
+
+    function handlePNGTuberUploadChoiceFocusout(event) {
+        const nextTarget = event.relatedTarget;
+        if (!pngtuberUploadChoiceMenu) return;
+        if (nextTarget && (pngtuberUploadChoiceMenu.contains(nextTarget) || uploadBtn.contains(nextTarget))) return;
+        closePNGTuberUploadChoice();
+    }
+
     function createPNGTuberUploadChoiceItem(label, onSelect) {
         const item = document.createElement('div');
         item.className = 'dropdown-item';
@@ -9077,14 +9092,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
         menu.style.minWidth = `${Math.max(rect.width, 270)}px`;
         menu.style.zIndex = '3000';
-        menu.appendChild(createPNGTuberUploadChoiceItem('导入工程文件', () => {
-            pngtuberPackageUpload.click();
-        }));
-        menu.appendChild(createPNGTuberUploadChoiceItem('导入文件夹', () => {
-            pngtuberModelUpload.click();
-        }));
+        menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);
+        menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportProjectFile')) || '导入工程文件',
+            () => {
+                pngtuberPackageUpload.click();
+            }
+        ));
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportFolder')) || '导入文件夹',
+            () => {
+                pngtuberModelUpload.click();
+            }
+        ));
         document.body.appendChild(menu);
         pngtuberUploadChoiceMenu = menu;
+        const firstItem = menu.querySelector('.dropdown-item');
+        if (firstItem) firstItem.focus({ preventScroll: true });
         setTimeout(() => {
             document.addEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
         }, 0);
