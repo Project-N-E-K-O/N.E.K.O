@@ -318,14 +318,16 @@ window.addEventListener('load', async () => {
         const _ensureI18nReady = (timeoutMs = 5000) => new Promise((resolve) => {
             if (window.i18next && window.i18next.isInitialized) { resolve(); return; }
             let done = false;
+            let timerId;
             const finish = () => {
                 if (done) return;
                 done = true;
+                clearTimeout(timerId);
                 window.removeEventListener('localechange', finish);
                 resolve();
             };
             window.addEventListener('localechange', finish);
-            setTimeout(finish, timeoutMs);
+            timerId = setTimeout(finish, timeoutMs);
         });
         // i18next ready 后 language 即权威值；万一 init 失败/超时，localStorage 的 i18nextLng
         // （getInitialLanguage 在 init 前对 query/steam 值落过盘）作末位兜底，仍比空 lang 强。
