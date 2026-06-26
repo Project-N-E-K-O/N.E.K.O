@@ -2531,6 +2531,56 @@ function CompactChatApp({
     }
     return null;
   }, [messages, isCompactSurface]);
+  const compactMemeOverlayVisible = !!(
+    isCompactSurface
+    && !compactExportHistoryMounted
+    && compactMemeOverlay
+    && compactMemeOverlay.id !== dismissedMemeId
+  );
+  const compactMemeGeometryKey = compactMemeOverlay
+    ? `${compactMemeOverlay.id}:${compactMemeOverlayVisible ? 'visible' : 'hidden'}`
+    : 'none';
+  const lastCompactMemeGeometryKeyRef = useRef<string | null>(null);
+  const compactMemeGeometryFrameRef = useRef<number | null>(null);
+  const requestCompactMemeGeometryRefresh = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, []);
+  const scheduleCompactMemeGeometryRefresh = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current !== null) return;
+    const raf = window.requestAnimationFrame
+      || ((callback: FrameRequestCallback) => window.setTimeout(() => callback(window.performance.now()), 16));
+    compactMemeGeometryFrameRef.current = raf(() => {
+      compactMemeGeometryFrameRef.current = null;
+      requestCompactMemeGeometryRefresh();
+    });
+  }, [requestCompactMemeGeometryRefresh]);
+
+  useEffect(() => () => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current === null) return;
+    const cancel = window.cancelAnimationFrame || window.clearTimeout;
+    cancel(compactMemeGeometryFrameRef.current);
+    compactMemeGeometryFrameRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      lastCompactMemeGeometryKeyRef.current = null;
+      return undefined;
+    }
+    const previousKey = lastCompactMemeGeometryKeyRef.current;
+    lastCompactMemeGeometryKeyRef.current = compactMemeGeometryKey;
+    if (previousKey === compactMemeGeometryKey) return undefined;
+    if (previousKey === null && compactMemeGeometryKey === 'none') return undefined;
+    scheduleCompactMemeGeometryRefresh();
+    return undefined;
+  }, [
+    compactMemeGeometryKey,
+    isCompactSurface,
+    scheduleCompactMemeGeometryRefresh,
+  ]);
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
@@ -7055,10 +7105,7 @@ function CompactChatApp({
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
-  const compactMemeOverlayNode = isCompactSurface
-    && !compactExportHistoryMounted
-    && compactMemeOverlay
-    && compactMemeOverlay.id !== dismissedMemeId ? (
+  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -7074,7 +7121,14 @@ function CompactChatApp({
             收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
-        <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
+        <img
+          src={compactMemeOverlay.url}
+          alt={compactMemeOverlay.alt}
+          loading="eager"
+          decoding="async"
+          onLoad={scheduleCompactMemeGeometryRefresh}
+          onError={scheduleCompactMemeGeometryRefresh}
+        />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
             ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
