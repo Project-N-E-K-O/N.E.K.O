@@ -479,10 +479,13 @@ def robust_json_loads(raw: str) -> Any:
         _normalize_quotes,
         # 清掉 `,결{` 类结构 token 间幻觉污染；自身已双引号感知
         _strip_stray_chars_between_tokens,
-        # 容器元素间缺逗号 `}{`→`},{`；自身串感知，仅补结构 close→open（零歧义）
-        _insert_missing_structural_commas,
-        # 最后才动、最激进：转义字符串值内未转义的英文双引号（qwen 等模型常犯）
+        # 转义字符串值内未转义的英文双引号（qwen 等模型常犯）
         _escape_inner_quotes,
+        # 容器元素间缺逗号 `}{`→`},{`；自身串感知，仅补结构 close→open（零歧义）。
+        # 必须排在 _escape_inner_quotes **之后**：未转义内引号会翻转串解析奇偶，
+        # 让内容里的字面 `}{` 被误判为结构边界而插入逗号（静默篡改）。先把内引号
+        # 转义干净，串边界才稳，本步的 close→open 判定才可信（Codex P2）。
+        _insert_missing_structural_commas,
     )
     s = raw
     for transform in transforms:

@@ -454,3 +454,14 @@ def test_missing_structural_comma_various(raw, expected):
 def test_missing_structural_comma_noop_on_valid(raw):
     """补逗号 transform 在合法 JSON（含字符串内的 `}{`）上必须是 no-op。"""  # noqa: DOCSTRING_CJK
     assert robust_json_loads(raw) == json.loads(raw)
+
+
+@pytest.mark.unit
+def test_missing_comma_repair_runs_after_inner_quote_escape():
+    """关键回归（Codex P2）：补逗号必须排在内引号转义之后。
+
+    内容里有未转义英文引号（奇数个）会翻转串解析奇偶，使字面 `}{` 落在
+    “串外”。若补逗号先跑，会把内容里的 `{a}{b}` 误判为结构边界插逗号，
+    静默篡改成 `{a},{b}`。先转义内引号、串边界稳了，才不会误插。"""  # noqa: DOCSTRING_CJK
+    raw = '{"c": "他说"后写 {a}{b}"}'
+    assert robust_json_loads(raw) == {"c": '他说"后写 {a}{b}'}
