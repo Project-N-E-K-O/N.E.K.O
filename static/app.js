@@ -313,9 +313,13 @@ window.addEventListener('load', async () => {
         // 点完 changelog 弹窗后才读所以躲过，造成"更新日志中文、问卷正常"）。所以先 await
         // i18next ready 再取语言，拿到解析后的权威值（含 getInitialLanguage 不落盘的手动
         // uiLanguage 覆盖）；只有 init 彻底失败/超时才回退 localStorage。
-        // ready 信号：i18next.isInitialized（已就绪直接过）或 i18n-i18next.js 在 finalizeInit
-        // 里派发的 localechange 事件；setTimeout 兜底防 init 卡死时无限挂起。
-        const _ensureI18nReady = (timeoutMs = 5000) => new Promise((resolve) => {
+        // ready 信号：i18next.isInitialized（已就绪直接过）或 i18n-i18next.js 在**所有终态**都会
+        // 派发的 localechange 事件（finalizeInit 成功 / 无 backend 手动加载 / 初始化失败
+        // exportFallbackFunctions 都派发），所以信号一定会来。超时给 12s 是为覆盖 i18n-i18next.js
+        // 自身 bootstrap 的完整窗口：依赖轮询最多 5s + getInitialLanguage 的 Steam 语言查询最多
+        // 2s，外加它 10s 硬安全网强制 init。5s 太短会在 i18next 尚未就绪时提前超时回退（Codex P2），
+        // 12s 覆盖整段窗口后超时只兜「i18n 模块自身彻底卡死」这种极端情况。
+        const _ensureI18nReady = (timeoutMs = 12000) => new Promise((resolve) => {
             if (window.i18next && window.i18next.isInitialized) { resolve(); return; }
             let done = false;
             let timerId;
