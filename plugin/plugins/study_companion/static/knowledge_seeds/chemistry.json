@@ -1883,44 +1883,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_material_structure_inference",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 结构性质信息推断 before 过量与不足量计算; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_material_structure_inference before chem_senior_stoichiometry_limiting because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_material_structure_inference",
           "relation": "co_occurs",
-          "reason": "Review 过量与不足量计算 together with 结构性质信息推断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_material_structure_inference with chem_senior_stoichiometry_limiting because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
         },
         {
           "id": "chem_senior_solution_concentration",
           "relation": "co_occurs",
-          "reason": "Review 过量与不足量计算 together with 溶液浓度与稀释 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_solution_concentration with chem_senior_stoichiometry_limiting because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
         },
         {
           "id": "direct_proportion",
           "relation": "application",
+          "reason": "Apply chem_senior_stoichiometry_limiting when solving direct_proportion tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.9,
-          "reason": "Limiting-reagent calculations apply direct proportion when balanced-equation mole ratios scale quantities.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -1929,6 +1953,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "stoichiometry and solution",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "stoichiometric_ratio_scaling"
           }
@@ -1936,10 +1961,10 @@
         {
           "id": "linear_equation_application",
           "relation": "application",
+          "reason": "Apply chem_senior_stoichiometry_limiting when solving linear_equation_application tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.87,
-          "reason": "Yield and excess calculations often reduce to one-step linear equations with a chemical constraint.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -1948,8 +1973,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "stoichiometry and solution",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "stoichiometry_linear_equation_application"
+          }
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "procedure_step",
+          "reason": "Find the limiting reagent before converting remaining amount into solution concentration.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "confusable",
+          "reason": "Mole calculation converts quantities, while limiting-reagent questions compare competing reactants.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
           }
         }
       ],
@@ -2028,44 +2090,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_stoichiometry_limiting",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 过量与不足量计算 before 溶液浓度与稀释; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_stoichiometry_limiting before chem_senior_solution_concentration because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_stoichiometry_limiting",
           "relation": "co_occurs",
-          "reason": "Review 溶液浓度与稀释 together with 过量与不足量计算 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_stoichiometry_limiting with chem_senior_solution_concentration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
         },
         {
           "id": "chem_senior_ion_coexistence",
           "relation": "co_occurs",
-          "reason": "Review 溶液浓度与稀释 together with 离子共存判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ion_coexistence with chem_senior_solution_concentration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
         },
         {
           "id": "primary_unit_conversion",
           "relation": "application",
+          "reason": "Apply chem_senior_solution_concentration when solving primary_unit_conversion tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.89,
-          "reason": "Concentration and dilution tasks apply unit conversion between volume, mass, amount, and molarity units.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -2074,6 +2160,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "stoichiometry and solution",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "solution_units_conversion"
           }
@@ -2081,10 +2168,10 @@
         {
           "id": "primary_proportion_application",
           "relation": "application",
+          "reason": "Apply chem_senior_solution_concentration when solving primary_proportion_application tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "Dilution problems apply proportional reasoning because solute amount stays fixed while volume changes.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -2093,8 +2180,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "stoichiometry and solution",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "dilution_proportion"
+          }
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "procedure_step",
+          "reason": "Convert concentration and amount data before judging whether ions can coexist.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
+          }
+        },
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "confusable",
+          "reason": "Concentration calculation is a tool, while titration adds endpoint and stoichiometric reaction judgment.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "stoichiometry and solution"
           }
         }
       ],
@@ -2173,36 +2297,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_solution_concentration",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 溶液浓度与稀释 before 离子共存判断; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_solution_concentration before chem_senior_ion_coexistence because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_solution_concentration",
           "relation": "co_occurs",
-          "reason": "Review 离子共存判断 together with 溶液浓度与稀释 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_solution_concentration with chem_senior_ion_coexistence because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
         },
         {
           "id": "chem_senior_ionic_equation_writing",
           "relation": "co_occurs",
-          "reason": "Review 离子共存判断 together with 离子方程式书写正误 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ionic_equation_writing with chem_senior_ion_coexistence because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "procedure_step",
+          "reason": "Screen incompatible ions before writing a net ionic equation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "confusable",
+          "reason": "Coexistence elimination uses strong reaction rules, while precipitation equilibrium compares ion product with Ksp.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "application",
+          "reason": "Ion coexistence checks narrow possible ions in unknown-substance inference.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2280,36 +2482,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_ion_coexistence",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 离子共存判断 before 离子方程式书写正误; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_ion_coexistence before chem_senior_ionic_equation_writing because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_ion_coexistence",
           "relation": "co_occurs",
-          "reason": "Review 离子方程式书写正误 together with 离子共存判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ion_coexistence with chem_senior_ionic_equation_writing because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
         },
         {
           "id": "chem_senior_redox_balance",
           "relation": "co_occurs",
-          "reason": "Review 离子方程式书写正误 together with 氧化还原配平 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_redox_balance with chem_senior_ionic_equation_writing because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "procedure_step",
+          "reason": "Write valid ionic species first, then balance charge and atoms in redox equations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "confusable",
+          "reason": "Coexistence asks whether ions can remain together, while ionic-equation writing records the actual reaction.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
+        },
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "application",
+          "reason": "Net ionic equations are used when balancing many aqueous redox reactions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "ion reaction"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2387,36 +2667,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_ionic_equation_writing",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 离子方程式书写正误 before 氧化还原配平; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_ionic_equation_writing before chem_senior_redox_balance because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_ionic_equation_writing",
           "relation": "co_occurs",
-          "reason": "Review 氧化还原配平 together with 离子方程式书写正误 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ionic_equation_writing with chem_senior_redox_balance because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          }
         },
         {
           "id": "chem_senior_redox_titration",
           "relation": "co_occurs",
-          "reason": "Review 氧化还原配平 together with 氧化还原滴定 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_redox_titration with chem_senior_redox_balance because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          }
+        },
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "procedure_step",
+          "reason": "Balance electron transfer before using the equation in redox titration calculation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          }
+        },
+        {
+          "id": "chem_senior_ionic_equation_writing",
+          "relation": "confusable",
+          "reason": "Ionic equations require species writing, while redox balance focuses on electron conservation.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          }
+        },
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "application",
+          "reason": "Balanced redox equations provide stoichiometric ratios for titration endpoints.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "redox reaction"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2494,36 +2852,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_redox_balance",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 氧化还原配平 before 氧化还原滴定; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_redox_balance before chem_senior_redox_titration because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_redox_balance",
           "relation": "co_occurs",
-          "reason": "Review 氧化还原滴定 together with 氧化还原配平 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_redox_balance with chem_senior_redox_titration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          }
         },
         {
           "id": "chem_senior_reaction_heat_diagram",
           "relation": "co_occurs",
-          "reason": "Review 氧化还原滴定 together with 反应热图像与盖斯定律 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_reaction_heat_diagram with chem_senior_redox_titration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          }
+        },
+        {
+          "id": "chem_senior_redox_balance",
+          "relation": "procedure_step",
+          "reason": "Balance the redox equation before calculating titrant volume or sample purity.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          }
+        },
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "confusable",
+          "reason": "Both use equivalence points, but redox titration tracks electron transfer instead of proton transfer.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          }
+        },
+        {
+          "id": "chem_senior_experiment_variable_control",
+          "relation": "application",
+          "reason": "Redox titration data are used to evaluate experimental control, standardization, and endpoint error.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "quantitative experiment"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2601,36 +3037,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_redox_titration",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 氧化还原滴定 before 反应热图像与盖斯定律; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_redox_titration before chem_senior_reaction_heat_diagram because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_redox_titration",
           "relation": "co_occurs",
-          "reason": "Review 反应热图像与盖斯定律 together with 氧化还原滴定 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_redox_titration with chem_senior_reaction_heat_diagram because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          }
         },
         {
           "id": "chem_senior_rate_factors",
           "relation": "co_occurs",
-          "reason": "Review 反应热图像与盖斯定律 together with 化学反应速率影响因素 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_rate_factors with chem_senior_reaction_heat_diagram because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "procedure_step",
+          "reason": "Read activation energy and enthalpy change before judging catalyst and rate effects.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_redox_titration",
+          "relation": "confusable",
+          "reason": "Thermochemical diagrams track energy changes, while redox titration tracks electron-equivalent amounts.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "application",
+          "reason": "Reaction heat diagrams help explain activation energy changes in rate-factor questions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "thermochemistry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2708,44 +3222,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_reaction_heat_diagram",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 反应热图像与盖斯定律 before 化学反应速率影响因素; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_reaction_heat_diagram before chem_senior_rate_factors because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_reaction_heat_diagram",
           "relation": "co_occurs",
-          "reason": "Review 化学反应速率影响因素 together with 反应热图像与盖斯定律 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_reaction_heat_diagram with chem_senior_rate_factors because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "chem_senior_equilibrium_constant",
           "relation": "co_occurs",
-          "reason": "Review 化学反应速率影响因素 together with 平衡常数与转化率 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_equilibrium_constant with chem_senior_rate_factors because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "function_graph_reading",
           "relation": "application",
+          "reason": "Apply chem_senior_rate_factors when solving function_graph_reading tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "Reaction-rate tasks apply graph reading to compare slopes, intervals, and changing concentration over time.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -2754,6 +3292,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "reaction_rate_graph_slope"
           }
@@ -2761,10 +3300,10 @@
         {
           "id": "senior_function_monotonicity",
           "relation": "application",
+          "reason": "Apply chem_senior_rate_factors when solving senior_function_monotonicity tasks that require this chemistry reasoning pattern.",
           "priority": "useful",
           "context": "practice",
           "confidence": 0.84,
-          "reason": "Rate-factor comparisons apply monotonicity when concentration, temperature, or catalyst changes alter trend direction.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -2773,8 +3312,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "rate_factor_function_change"
+          }
+        },
+        {
+          "id": "chem_senior_equilibrium_constant",
+          "relation": "procedure_step",
+          "reason": "Analyze rate factors before judging whether equilibrium position or only reaching speed changes.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_reaction_heat_diagram",
+          "relation": "confusable",
+          "reason": "Catalysts change rate and pathway activation energy, not the reaction enthalpy difference.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
           }
         }
       ],
@@ -2853,44 +3429,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_rate_factors",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 化学反应速率影响因素 before 平衡常数与转化率; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_rate_factors before chem_senior_equilibrium_constant because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_rate_factors",
           "relation": "co_occurs",
-          "reason": "Review 平衡常数与转化率 together with 化学反应速率影响因素 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_rate_factors with chem_senior_equilibrium_constant because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "chem_senior_equilibrium_graph",
           "relation": "co_occurs",
-          "reason": "Review 平衡常数与转化率 together with 平衡图像综合 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_equilibrium_graph with chem_senior_equilibrium_constant because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "senior_function_modeling",
           "relation": "application",
+          "reason": "Apply chem_senior_equilibrium_constant when solving senior_function_modeling tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.86,
-          "reason": "Equilibrium-constant calculations apply function modeling because concentration changes determine K and conversion.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -2899,6 +3499,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "equilibrium_constant_function_model"
           }
@@ -2906,10 +3507,10 @@
         {
           "id": "inverse_function_graph",
           "relation": "application",
+          "reason": "Apply chem_senior_equilibrium_constant when solving inverse_function_graph tasks that require this chemistry reasoning pattern.",
           "priority": "useful",
           "context": "practice",
           "confidence": 0.82,
-          "reason": "Some equilibrium expressions apply inverse-variation intuition when products and reactants trade off in a ratio.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -2918,8 +3519,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "equilibrium_ratio_inverse_variation"
+          }
+        },
+        {
+          "id": "chem_senior_equilibrium_graph",
+          "relation": "procedure_step",
+          "reason": "Calculate K or Q first, then use graph changes to judge shift direction and final state.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "confusable",
+          "reason": "Rate factors explain how fast equilibrium is reached, while K describes composition at equilibrium.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
           }
         }
       ],
@@ -2998,44 +3636,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_equilibrium_constant",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 平衡常数与转化率 before 平衡图像综合; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_equilibrium_constant before chem_senior_equilibrium_graph because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_equilibrium_constant",
           "relation": "co_occurs",
-          "reason": "Review 平衡图像综合 together with 平衡常数与转化率 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_equilibrium_constant with chem_senior_equilibrium_graph because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "chem_senior_acid_base_titration",
           "relation": "co_occurs",
-          "reason": "Review 平衡图像综合 together with 酸碱中和滴定 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_acid_base_titration with chem_senior_equilibrium_graph because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
         },
         {
           "id": "function_graph_reading",
           "relation": "application",
+          "reason": "Apply chem_senior_equilibrium_graph when solving function_graph_reading tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.89,
-          "reason": "Equilibrium graph tasks apply graph reading to locate plateaus, jumps, and before-after trend changes.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -3044,6 +3706,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "equilibrium_graph_interpretation"
           }
@@ -3051,10 +3714,10 @@
         {
           "id": "senior_function_zero",
           "relation": "application",
+          "reason": "Apply chem_senior_equilibrium_graph when solving senior_function_zero tasks that require this chemistry reasoning pattern.",
           "priority": "useful",
           "context": "practice",
           "confidence": 0.83,
-          "reason": "Equilibrium-state questions apply zero and sign-change intuition when net change becomes zero at balance.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -3063,8 +3726,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "rate and equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "equilibrium_net_change_zero"
+          }
+        },
+        {
+          "id": "chem_senior_equilibrium_constant",
+          "relation": "procedure_step",
+          "reason": "Read concentration changes from the graph, then connect them to Q and K.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "confusable",
+          "reason": "Graph slope and time-to-equilibrium reflect rate, while plateau ratios reflect equilibrium composition.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "rate and equilibrium"
           }
         }
       ],
@@ -3143,44 +3843,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_equilibrium_graph",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 平衡图像综合 before 酸碱中和滴定; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_equilibrium_graph before chem_senior_acid_base_titration because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_equilibrium_graph",
           "relation": "co_occurs",
-          "reason": "Review 酸碱中和滴定 together with 平衡图像综合 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_equilibrium_graph with chem_senior_acid_base_titration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
         },
         {
           "id": "chem_senior_ph_ionization",
           "relation": "co_occurs",
-          "reason": "Review 酸碱中和滴定 together with 弱电解质电离与 pH when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ph_ionization with chem_senior_acid_base_titration because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
         },
         {
           "id": "function_graph_reading",
           "relation": "application",
+          "reason": "Apply chem_senior_acid_base_titration when solving function_graph_reading tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.9,
-          "reason": "Titration-curve tasks apply graph reading to locate steep regions, equivalence points, and buffer intervals.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -3189,6 +3913,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "aqueous equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "titration_curve_graph_reading"
           }
@@ -3196,10 +3921,10 @@
         {
           "id": "linear_function_intersection",
           "relation": "application",
+          "reason": "Apply chem_senior_acid_base_titration when solving linear_function_intersection tasks that require this chemistry reasoning pattern.",
           "priority": "useful",
           "context": "practice",
           "confidence": 0.82,
-          "reason": "Titration endpoint estimates apply intersection intuition when two trend lines mark the equivalence region.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -3208,8 +3933,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "aqueous equilibrium",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "titration_endpoint_intersection"
+          }
+        },
+        {
+          "id": "chem_senior_ph_ionization",
+          "relation": "procedure_step",
+          "reason": "Use ionization and pH judgment before interpreting the titration curve and endpoint.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_precipitation_equilibrium",
+          "relation": "confusable",
+          "reason": "Both use solution equilibria, but titration tracks neutralization stoichiometry and endpoint selection.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
           }
         }
       ],
@@ -3479,36 +4241,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_ph_ionization",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 弱电解质电离与 pH before 沉淀溶解平衡; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_ph_ionization before chem_senior_precipitation_equilibrium because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_ph_ionization",
           "relation": "co_occurs",
-          "reason": "Review 沉淀溶解平衡 together with 弱电解质电离与 pH when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_ph_ionization with chem_senior_precipitation_equilibrium because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
         },
         {
           "id": "chem_senior_primary_battery",
           "relation": "co_occurs",
-          "reason": "Review 沉淀溶解平衡 together with 原电池原理与电极判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_primary_battery with chem_senior_precipitation_equilibrium because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "procedure_step",
+          "reason": "Check common precipitating ion pairs before deciding whether an equilibrium calculation is needed.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_ion_coexistence",
+          "relation": "confusable",
+          "reason": "Ion coexistence often treats precipitation as complete, while Ksp questions require equilibrium judgment.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
+        },
+        {
+          "id": "chem_senior_acid_base_titration",
+          "relation": "application",
+          "reason": "Precipitation equilibrium supports endpoint interference and ion-removal analysis in titration contexts.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "aqueous equilibrium"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3586,36 +4426,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_precipitation_equilibrium",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 沉淀溶解平衡 before 原电池原理与电极判断; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_precipitation_equilibrium before chem_senior_primary_battery because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_precipitation_equilibrium",
           "relation": "co_occurs",
-          "reason": "Review 原电池原理与电极判断 together with 沉淀溶解平衡 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_precipitation_equilibrium with chem_senior_primary_battery because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         },
         {
           "id": "chem_senior_electrolysis_product",
           "relation": "co_occurs",
-          "reason": "Review 原电池原理与电极判断 together with 电解产物判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_electrolysis_product with chem_senior_primary_battery because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "procedure_step",
+          "reason": "Distinguish anode and cathode rules in primary cells before comparing them with electrolysis products.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "confusable",
+          "reason": "Primary batteries are spontaneous galvanic cells, while electrolysis is driven by external current.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "relation": "application",
+          "reason": "Primary battery electrode reactions provide electron counts for electrochemical calculation.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3693,36 +4611,114 @@
       "prerequisites": [
         {
           "id": "chem_senior_primary_battery",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 原电池原理与电极判断 before 电解产物判断; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_primary_battery before chem_senior_electrolysis_product because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_primary_battery",
           "relation": "co_occurs",
-          "reason": "Review 电解产物判断 together with 原电池原理与电极判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_primary_battery with chem_senior_electrolysis_product because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         },
         {
           "id": "chem_senior_electrochem_calculation",
           "relation": "co_occurs",
-          "reason": "Review 电解产物判断 together with 电化学定量计算 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_electrochem_calculation with chem_senior_electrolysis_product because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "relation": "procedure_step",
+          "reason": "Determine products before using electron transfer amounts in electrochemical calculation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_primary_battery",
+          "relation": "confusable",
+          "reason": "Students often mix galvanic-cell spontaneous electrodes with electrolytic forced electrodes.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_electrochem_calculation",
+          "relation": "application",
+          "reason": "Electrolysis product rules support charge, gas volume, and deposited mass calculations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3800,44 +4796,68 @@
       "prerequisites": [
         {
           "id": "chem_senior_electrolysis_product",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 电解产物判断 before 电化学定量计算; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_electrolysis_product before chem_senior_electrochem_calculation because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_electrolysis_product",
           "relation": "co_occurs",
-          "reason": "Review 电化学定量计算 together with 电解产物判断 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_electrolysis_product with chem_senior_electrochem_calculation because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         },
         {
           "id": "chem_senior_organic_isomer",
           "relation": "co_occurs",
-          "reason": "Review 电化学定量计算 together with 有机同分异构体 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_organic_isomer with chem_senior_electrochem_calculation because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
         },
         {
           "id": "linear_function_concept",
           "relation": "application",
+          "reason": "Apply chem_senior_electrochem_calculation when solving linear_function_concept tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "Electrochemical quantity calculations apply linear relationships such as charge equals current times time.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -3846,6 +4866,7 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "electrochemistry",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "electrochemistry_linear_charge_relation"
           }
@@ -3853,10 +4874,10 @@
         {
           "id": "primary_unit_conversion",
           "relation": "application",
+          "reason": "Apply chem_senior_electrochem_calculation when solving primary_unit_conversion tasks that require this chemistry reasoning pattern.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.86,
-          "reason": "Electrochemical calculation applies unit conversion among amperes, seconds, coulombs, moles, gas volume, and mass.",
           "use_cases": [
             "learning_path",
             "hint_generation",
@@ -3865,8 +4886,45 @@
           "metadata": {
             "source_subject": "chemistry",
             "target_subject": "math",
+            "chapter_focus": "electrochemistry",
             "bridge_direction": "chemistry_to_math",
             "bridge_focus": "electrochemistry_unit_conversion"
+          }
+        },
+        {
+          "id": "chem_senior_electrolysis_product",
+          "relation": "procedure_step",
+          "reason": "Identify electrode products before converting electrons to gas volume or deposited mass.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
+          }
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "confusable",
+          "reason": "Both use mole ratios, but electrochemical calculation routes through electron amount and charge.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "electrochemistry"
           }
         }
       ],
@@ -5015,26 +6073,96 @@
       "prerequisites": [
         {
           "id": "chem_senior_green_chemistry_context",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 绿色化学与情境应用 before 化学压轴综合策略; it supplies the foundation for this chemistry learning path.",
+          "reason": "Master chem_senior_green_chemistry_context before chem_senior_exam_synthesis_strategy because it supplies the core concepts and checks used in this topic.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "exam synthesis"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "chem_senior_green_chemistry_context",
           "relation": "co_occurs",
-          "reason": "Review 化学压轴综合策略 together with 绿色化学与情境应用 when diagnosing adjacent chemistry skills.",
+          "reason": "Practice chem_senior_green_chemistry_context with chem_senior_exam_synthesis_strategy because exam items often combine these ideas in one reasoning chain.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "exam synthesis"
+          }
+        },
+        {
+          "id": "chem_senior_industrial_process_flow",
+          "relation": "procedure_step",
+          "reason": "Use a synthesis plan: read the context, mark key reactions, track quantities, then validate feasibility.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "exam synthesis"
+          }
+        },
+        {
+          "id": "chem_senior_data_table_reasoning",
+          "relation": "confusable",
+          "reason": "Both use dense information, but synthesis strategy plans the whole path while table reasoning extracts local constraints.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "exam synthesis"
+          }
+        },
+        {
+          "id": "chem_senior_unknown_substance_inference",
+          "relation": "application",
+          "reason": "Exam synthesis strategy is applied to multi-step unknown-substance inference questions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chemistry",
+            "target_subject": "chemistry",
+            "chapter_focus": "exam synthesis"
+          }
         }
       ],
       "typical_misconceptions": [

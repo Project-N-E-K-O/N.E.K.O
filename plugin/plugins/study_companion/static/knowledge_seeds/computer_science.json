@@ -16,33 +16,110 @@
           "id": "college_discrete_logic",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 命题逻辑与谓词逻辑 before C 程序结构; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_discrete_logic",
           "relation": "co_occurs",
-          "reason": "C 程序结构 and 命题逻辑与谓词逻辑 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_variables_types",
           "relation": "extends",
-          "reason": "Practice 变量与基本数据类型 after C 程序结构; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_variables_types",
+          "relation": "procedure_step",
+          "reason": "Identify translation units and main, then trace declarations before statement execution.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_modular_design",
+          "relation": "application",
+          "reason": "Program structure is used to organize small C programs into readable modules.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_variables_types",
+          "relation": "confusable",
+          "reason": "Learners often mix the program skeleton with declarations that live inside it.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -112,33 +189,110 @@
           "id": "college_c_basic_program_structure",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master C 程序结构 before 变量与基本数据类型; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_basic_program_structure",
           "relation": "co_occurs",
-          "reason": "变量与基本数据类型 and C 程序结构 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_expression_precedence",
           "relation": "extends",
-          "reason": "Practice 表达式与运算符优先级 after 变量与基本数据类型; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_expression_precedence",
+          "relation": "procedure_step",
+          "reason": "After choosing types, evaluate expressions using conversion and operator rules.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_memory_model_intro",
+          "relation": "application",
+          "reason": "Type choices affect storage size, value range, and memory interpretation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_expression_precedence",
+          "relation": "confusable",
+          "reason": "A declared type is often confused with the result type of an expression.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -208,33 +362,110 @@
           "id": "college_c_variables_types",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 变量与基本数据类型 before 表达式与运算符优先级; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_variables_types",
           "relation": "co_occurs",
-          "reason": "表达式与运算符优先级 and 变量与基本数据类型 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_branch_control",
           "relation": "extends",
-          "reason": "Practice 条件分支结构 after 表达式与运算符优先级; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_branch_control",
+          "relation": "procedure_step",
+          "reason": "Expression results become conditions for if, switch, and guarded execution.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "application",
+          "reason": "Precedence checks explain many wrong branch and arithmetic results.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_branch_control",
+          "relation": "confusable",
+          "reason": "Operator grouping is often confused with the control-flow order of statements.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -304,33 +535,110 @@
           "id": "college_c_expression_precedence",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 表达式与运算符优先级 before 条件分支结构; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_expression_precedence",
           "relation": "co_occurs",
-          "reason": "条件分支结构 and 表达式与运算符优先级 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_loop_invariant",
           "relation": "extends",
-          "reason": "Practice 循环与循环不变量 after 条件分支结构; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_loop_invariant",
+          "relation": "procedure_step",
+          "reason": "Branch predicates lead into loop guards and invariant checks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "application",
+          "reason": "Branch control is used to test boundary cases and unreachable paths.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_loop_invariant",
+          "relation": "confusable",
+          "reason": "A one-time branch condition is often confused with a loop invariant.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -400,33 +708,110 @@
           "id": "college_c_branch_control",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 条件分支结构 before 循环与循环不变量; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_branch_control",
           "relation": "co_occurs",
-          "reason": "循环与循环不变量 and 条件分支结构 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_array_traversal",
           "relation": "extends",
-          "reason": "Practice 一维数组遍历 after 循环与循环不变量; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_array_traversal",
+          "relation": "procedure_step",
+          "reason": "Loop invariants guide index updates during array traversal.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "application",
+          "reason": "Loop reasoning supports time complexity counts for iterative algorithms.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_branch_control",
+          "relation": "confusable",
+          "reason": "A loop invariant must hold across iterations, unlike a single branch test.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -496,41 +881,65 @@
           "id": "college_c_loop_invariant",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 循环与循环不变量 before 一维数组遍历; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_loop_invariant",
           "relation": "co_occurs",
-          "reason": "一维数组遍历 and 循环与循环不变量 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_2d_array_matrix",
           "relation": "extends",
-          "reason": "Practice 二维数组与矩阵操作 after 一维数组遍历; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "senior_sequence_concept",
           "relation": "application",
-          "priority": "useful",
-          "context": "explanation",
+          "priority": "core",
+          "context": "practice",
           "confidence": 0.83,
-          "reason": "Array traversal treats indexed elements as a finite ordered sequence, so sequence notation helps explain position, term, and boundary cases.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
@@ -542,16 +951,17 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "array_traversal_to_sequences",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         },
         {
           "id": "college_matrix_dimension",
           "relation": "confusable",
-          "priority": "useful",
-          "context": "review",
+          "priority": "core",
+          "context": "diagnosis",
           "confidence": 0.8,
-          "reason": "Array length is a one-dimensional size, while matrix dimension tracks row and column counts; mixing them causes loop-bound errors.",
+          "reason": "This edge separates concepts that learners commonly mix up during diagnosis.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
@@ -563,7 +973,26 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "array_length_vs_matrix_dimension",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_2d_array_matrix",
+          "relation": "procedure_step",
+          "reason": "One-dimensional traversal generalizes to nested loops for matrix data.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
           }
         }
       ],
@@ -634,21 +1063,29 @@
           "id": "college_c_array_traversal",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 一维数组遍历 before 二维数组与矩阵操作; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_matrix_operations",
           "required_mastery": 0.54,
           "relation": "prerequisite",
           "priority": "core",
-          "context": "diagnosis",
+          "context": "explanation",
           "confidence": 0.88,
-          "reason": "Matrix traversal and transposition in C rely on row-column indexing that mirrors matrix operations.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
@@ -659,7 +1096,8 @@
             "target_subject": "math",
             "bridge_concept": "matrix_math_to_2d_arrays",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         }
       ],
@@ -667,29 +1105,67 @@
         {
           "id": "college_c_array_traversal",
           "relation": "co_occurs",
-          "reason": "二维数组与矩阵操作 and 一维数组遍历 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_string_char_array",
           "relation": "extends",
-          "reason": "Practice 字符串与字符数组 after 二维数组与矩阵操作; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_matrix_operations",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.96,
+          "reason": "Two-dimensional arrays model row-column data, so matrix operations are the direct math bridge for array indexing, traversal, and table computation.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "math",
+            "bridge_direction": "computer_science_to_math",
+            "bridge_concept": "two_dimensional_arrays_to_matrix_operations",
+            "cross_subject": true,
+            "added_for": "acceptance_query_cross_subject_stability",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_matrix_dimension",
           "relation": "confusable",
           "priority": "core",
-          "context": "review",
+          "context": "diagnosis",
           "confidence": 0.87,
-          "reason": "Array bounds and matrix dimensions are easy to mix up: code indexes rows and columns from memory layout, while math states matrix shape abstractly.",
+          "reason": "This edge separates concepts that learners commonly mix up during diagnosis.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
@@ -700,16 +1176,17 @@
             "target_subject": "math",
             "bridge_concept": "array_shape_vs_matrix_dimension",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         },
         {
           "id": "college_linear_transformation",
           "relation": "application",
-          "priority": "useful",
+          "priority": "core",
           "context": "practice",
           "confidence": 0.82,
-          "reason": "Matrix-based coordinate transforms connect 2D array storage to linear-algebra algorithms and graphics-style computations.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -720,16 +1197,17 @@
             "target_subject": "math",
             "bridge_concept": "matrix_to_linear_algebra_algorithms",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         },
         {
           "id": "college_matrix_elementary_transform",
           "relation": "application",
-          "priority": "useful",
+          "priority": "core",
           "context": "practice",
           "confidence": 0.84,
-          "reason": "Row swaps, row scaling, and row addition are implemented as loops over 2D arrays when coding elementary matrix transformations.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -741,16 +1219,17 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "2d_arrays_to_elementary_matrix_transforms",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         },
         {
           "id": "college_linear_systems",
           "relation": "application",
-          "priority": "useful",
+          "priority": "core",
           "context": "practice",
           "confidence": 0.83,
-          "reason": "A coefficient table for linear systems is naturally stored as a 2D array before elimination steps update rows and columns.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "diagnosis",
             "practice_planning",
@@ -762,16 +1241,17 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "2d_arrays_to_linear_system_tables",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
           }
         },
         {
           "id": "college_rank",
           "relation": "application",
-          "priority": "useful",
-          "context": "explanation",
+          "priority": "core",
+          "context": "practice",
           "confidence": 0.8,
-          "reason": "Code that reduces a matrix represented by a 2D array can expose pivots and rank through row-operation logic.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "hint_generation",
             "practice_planning",
@@ -783,7 +1263,26 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "2d_array_row_reduction_to_rank",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_string_char_array",
+          "relation": "procedure_step",
+          "reason": "Matrix indexing prepares learners for row-major character array access.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
           }
         }
       ],
@@ -854,33 +1353,110 @@
           "id": "college_c_2d_array_matrix",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 二维数组与矩阵操作 before 字符串与字符数组; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_2d_array_matrix",
           "relation": "co_occurs",
-          "reason": "字符串与字符数组 and 二维数组与矩阵操作 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_function_parameter",
           "relation": "extends",
-          "reason": "Practice 函数与参数传递 after 字符串与字符数组; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_function_parameter",
+          "relation": "procedure_step",
+          "reason": "String arrays are commonly passed to functions as array parameters.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_file_io",
+          "relation": "application",
+          "reason": "Character arrays buffer text read from files and standard input.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_array",
+          "relation": "confusable",
+          "reason": "A character array is often confused with a pointer to character storage.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -950,33 +1526,110 @@
           "id": "college_c_string_char_array",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 字符串与字符数组 before 函数与参数传递; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_string_char_array",
           "relation": "co_occurs",
-          "reason": "函数与参数传递 and 字符串与字符数组 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_recursion_basic",
           "relation": "extends",
-          "reason": "Practice 递归函数基础 after 函数与参数传递; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "procedure_step",
+          "reason": "Parameter passing motivates when a function needs an address argument.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_modular_design",
+          "relation": "application",
+          "reason": "Function parameters define module boundaries and reusable interfaces.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "confusable",
+          "reason": "Pass-by-value is often confused with changing an object through a pointer.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1246,33 +1899,110 @@
           "id": "college_c_recursion_basic",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 递归函数基础 before 指针与地址; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_recursion_basic",
           "relation": "co_occurs",
-          "reason": "指针与地址 and 递归函数基础 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_pointer_array",
           "relation": "extends",
-          "reason": "Practice 指针与数组关系 after 指针与地址; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_array",
+          "relation": "procedure_step",
+          "reason": "Address and dereference rules prepare pointer arithmetic over arrays.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_memory_model_intro",
+          "relation": "application",
+          "reason": "Pointer addresses connect source code variables to concrete memory locations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_array",
+          "relation": "confusable",
+          "reason": "A single object address is often confused with an array base address.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1342,33 +2072,110 @@
           "id": "college_c_pointer_address",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 指针与地址 before 指针与数组关系; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_pointer_address",
           "relation": "co_occurs",
-          "reason": "指针与数组关系 and 指针与地址 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_struct_record",
           "relation": "extends",
-          "reason": "Practice 结构体与记录建模 after 指针与数组关系; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_struct_record",
+          "relation": "procedure_step",
+          "reason": "Pointer and array access patterns prepare traversal of record collections.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_ds_dynamic_array",
+          "relation": "application",
+          "reason": "Pointer-array reasoning is used in resizable storage and contiguous buffers.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_array_traversal",
+          "relation": "confusable",
+          "reason": "Pointer arithmetic is often confused with index-based traversal.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1438,33 +2245,110 @@
           "id": "college_c_pointer_array",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 指针与数组关系 before 结构体与记录建模; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_pointer_array",
           "relation": "co_occurs",
-          "reason": "结构体与记录建模 and 指针与数组关系 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_file_io",
           "relation": "extends",
-          "reason": "Practice 文件读写基础 after 结构体与记录建模; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_file_io",
+          "relation": "procedure_step",
+          "reason": "Record fields are often serialized to and restored from files.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_ds_linked_list",
+          "relation": "application",
+          "reason": "Struct records are used as nodes in linked lists and other data structures.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "confusable",
+          "reason": "A struct value is often confused with a pointer to that struct.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1534,33 +2418,110 @@
           "id": "college_c_struct_record",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 结构体与记录建模 before 文件读写基础; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_struct_record",
           "relation": "co_occurs",
-          "reason": "文件读写基础 and 结构体与记录建模 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_c_debug_boundary",
           "relation": "extends",
-          "reason": "Practice C 程序边界调试 after 文件读写基础; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "procedure_step",
+          "reason": "File I/O code should be followed by checks for EOF, errors, and short reads.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_struct_record",
+          "relation": "application",
+          "reason": "File I/O stores and reloads arrays of records in practical C programs.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_c_string_char_array",
+          "relation": "confusable",
+          "reason": "Text buffers are often confused with the file stream that fills them.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1630,33 +2591,110 @@
           "id": "college_c_file_io",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 文件读写基础 before C 程序边界调试; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "related": [
         {
           "id": "college_c_file_io",
           "relation": "co_occurs",
-          "reason": "C 程序边界调试 and 文件读写基础 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         },
         {
           "id": "college_ds_algorithm_complexity",
           "relation": "extends",
-          "reason": "Practice 算法复杂度分析 after C 程序边界调试; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "procedure_step",
+          "reason": "After correctness debugging, analyze how the code scales with input size.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_test_cases",
+          "relation": "application",
+          "reason": "Boundary debugging uses focused tests for empty, singleton, and maximum inputs.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
+        },
+        {
+          "id": "college_cs_test_cases",
+          "relation": "confusable",
+          "reason": "Finding a bug at a boundary is often confused with designing full test coverage.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "C 语言程序设计"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3532,33 +4570,57 @@
           "id": "college_ds_shortest_path",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 最短路径算法 before 最小生成树; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         }
       ],
       "related": [
         {
           "id": "college_ds_shortest_path",
           "relation": "co_occurs",
-          "reason": "最小生成树 and 最短路径算法 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_ds_sorting_basic",
           "relation": "extends",
-          "reason": "Practice 基础排序算法 after 最小生成树; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_spanning_tree",
@@ -3566,7 +4628,7 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "Minimum-spanning-tree algorithms search for a lowest-weight spanning tree in the mathematical graph model.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "diagnosis",
             "practice_planning",
@@ -3578,16 +4640,17 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "mst_algorithm_to_spanning_tree",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "数据结构"
           }
         },
         {
           "id": "college_graph_connectivity",
           "relation": "prerequisite",
           "priority": "core",
-          "context": "diagnosis",
+          "context": "explanation",
           "confidence": 0.86,
-          "reason": "A spanning tree exists only for a connected graph, so connectivity is a prerequisite for interpreting MST output.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
@@ -3599,7 +4662,44 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "connectivity_before_minimum_spanning_tree",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "数据结构"
+          }
+        },
+        {
+          "id": "college_ds_shortest_path",
+          "relation": "procedure_step",
+          "reason": "After identifying weighted graph structure, compare MST goals with path goals.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
+        },
+        {
+          "id": "college_ds_shortest_path",
+          "relation": "confusable",
+          "reason": "MST minimizes total connection cost, while shortest path minimizes one route.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
           }
         }
       ],
@@ -3980,27 +5080,40 @@
           "id": "college_ds_quick_merge_sort",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 快速排序与归并排序 before 散列表与冲突处理; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         }
       ],
       "related": [
         {
           "id": "college_ds_search_binary",
           "relation": "confusable",
-          "priority": "useful",
+          "priority": "core",
           "context": "diagnosis",
           "confidence": 0.8,
-          "reason": "This edge marks a common confusion that guidance should contrast explicitly.",
+          "reason": "This edge separates concepts that learners commonly mix up during diagnosis.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_ds_linked_list",
@@ -4008,44 +5121,87 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "This edge captures the next analysis or problem-solving step for the topic.",
+          "reason": "This edge marks the next step in a practical solving or implementation workflow.",
           "use_cases": [
             "learning_path",
             "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_ds_algorithm_complexity",
           "relation": "prerequisite",
           "priority": "core",
-          "context": "diagnosis",
+          "context": "explanation",
           "confidence": 0.86,
-          "reason": "This topic should be understood first and is used for diagnosis and learning-path guidance.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_ds_quick_merge_sort",
           "relation": "co_occurs",
-          "reason": "散列表与冲突处理 and 快速排序与归并排序 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_ds_search_binary",
           "relation": "extends",
-          "reason": "Practice 折半查找 after 散列表与冲突处理; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
+        },
+        {
+          "id": "college_ds_search_binary",
+          "relation": "application",
+          "reason": "Hash tables support fast lookup when ordered binary search is not required.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4123,33 +5279,57 @@
           "id": "college_ds_hash_table",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 散列表与冲突处理 before 折半查找; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         }
       ],
       "related": [
         {
           "id": "college_ds_hash_table",
           "relation": "co_occurs",
-          "reason": "折半查找 and 散列表与冲突处理 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "college_cs_memory_model_intro",
           "relation": "extends",
-          "reason": "Practice 程序内存模型初步 after 折半查找; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
         },
         {
           "id": "senior_logarithmic_function",
@@ -4157,7 +5337,7 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "Binary search repeatedly halves the search interval, so the number of comparisons follows logarithmic growth.",
+          "reason": "This edge points to a common use case where the topic is applied in code or analysis.",
           "use_cases": [
             "diagnosis",
             "practice_planning",
@@ -4169,7 +5349,44 @@
             "bridge_direction": "computer_science_to_math",
             "bridge_concept": "binary_search_to_logarithmic_growth",
             "cross_subject": true,
-            "added_for": "cs_math_cross_seed_links"
+            "added_for": "cs_math_cross_seed_links",
+            "chapter_focus": "数据结构"
+          }
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "procedure_step",
+          "reason": "Binary search analysis counts halving steps before proving logarithmic time.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
+          }
+        },
+        {
+          "id": "college_ds_hash_table",
+          "relation": "confusable",
+          "reason": "Binary search needs sorted order, while hash lookup depends on hashing and collisions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "数据结构"
           }
         }
       ],
@@ -4240,33 +5457,110 @@
           "id": "college_ds_search_binary",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 折半查找 before 程序内存模型初步; it provides the foundation used by later steps.",
+          "reason": "This prerequisite supplies the model needed before this topic can be practiced reliably.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
         }
       ],
       "related": [
         {
           "id": "college_ds_search_binary",
           "relation": "co_occurs",
-          "reason": "程序内存模型初步 and 折半查找 are often studied together, so guidance can compare their conditions and usage.",
+          "reason": "This review companion helps compare nearby concepts in the same learning path.",
           "use_cases": [
             "diagnosis",
             "hint_generation",
             "review"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
         },
         {
           "id": "college_cs_bit_binary",
           "relation": "extends",
-          "reason": "Practice 二进制与位运算 after 程序内存模型初步; it is the next topic in this course sequence.",
+          "reason": "This follow-up topic extends the current idea into a later course step.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
+        },
+        {
+          "id": "college_c_pointer_address",
+          "relation": "procedure_step",
+          "reason": "Memory model study proceeds to address, dereference, and object lifetime rules.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
+        },
+        {
+          "id": "college_c_debug_boundary",
+          "relation": "application",
+          "reason": "Memory model reasoning explains out-of-bounds access and lifetime bugs.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
+        },
+        {
+          "id": "college_c_variables_types",
+          "relation": "confusable",
+          "reason": "A variable name is often confused with the storage object and bytes behind it.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "computer_science",
+            "target_subject": "computer_science",
+            "chapter_focus": "计算机基础"
+          }
         }
       ],
       "typical_misconceptions": [

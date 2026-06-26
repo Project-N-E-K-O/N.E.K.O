@@ -10,16 +10,98 @@
       "chapter": "英语启蒙与基础",
       "depth": 1,
       "difficulty": 0.26,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "chinese_primary_pinyin_character",
+          "relation": "prerequisite",
+          "reason": "Pinyin letter-sound awareness gives young learners a familiar bridge for hearing English phoneme changes.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.78,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "chapter_focus": "primary_phonics"
+          },
+          "required_mastery": 0.5
+        }
+      ],
       "related": [
         {
           "id": "english_primary_sight_words",
           "relation": "extends",
-          "reason": "Practice 小学高频词 after 自然拼读; it is the next topic in the primary english learning sequence.",
+          "reason": "Phonics practice prepares students to read common sight words with more stable sound and spelling links.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_phonics"
+          }
+        },
+        {
+          "id": "english_primary_sight_words",
+          "relation": "procedure_step",
+          "reason": "After decoding letter groups, students consolidate high-frequency words through quick recognition and oral reading.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_phonics"
+          }
+        },
+        {
+          "id": "english_primary_sight_words",
+          "relation": "confusable",
+          "reason": "Phonics asks students to decode sound patterns, while sight-word practice asks them to recognize frequent words instantly.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_phonics"
+          }
+        },
+        {
+          "id": "english_primary_daily_dialogue",
+          "relation": "application",
+          "reason": "Accurate decoding supports short greetings and classroom replies because students can pronounce familiar words aloud.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_phonics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -78,16 +160,98 @@
       "chapter": "英语启蒙与基础",
       "depth": 1,
       "difficulty": 0.24,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "english_primary_phonics",
+          "relation": "prerequisite",
+          "reason": "Basic phonics helps students attach sound patterns to frequent words instead of memorizing word shapes only.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_sight_words"
+          },
+          "required_mastery": 0.52
+        }
+      ],
       "related": [
         {
           "id": "english_primary_daily_dialogue",
           "relation": "extends",
-          "reason": "Practice 日常交际用语 after 小学高频词; it is the next topic in the primary english learning sequence.",
+          "reason": "Sight words become useful when students place them into simple classroom and daily dialogue patterns.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_sight_words"
+          }
+        },
+        {
+          "id": "english_primary_daily_dialogue",
+          "relation": "procedure_step",
+          "reason": "After recognizing frequent words, students combine them with greetings, requests, and simple responses.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_sight_words"
+          }
+        },
+        {
+          "id": "english_primary_phonics",
+          "relation": "confusable",
+          "reason": "Sight-word fluency is instant recognition, while phonics is decoding unfamiliar spelling patterns.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_sight_words"
+          }
+        },
+        {
+          "id": "english_primary_picture_writing",
+          "relation": "application",
+          "reason": "High-frequency words supply the sentence starters and verbs needed for simple picture-based sentences.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_sight_words"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -146,16 +310,98 @@
       "chapter": "英语启蒙与基础",
       "depth": 1,
       "difficulty": 0.3,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "english_primary_sight_words",
+          "relation": "prerequisite",
+          "reason": "Common words give students the vocabulary base for greetings, thanks, requests, and short replies.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_dialogue"
+          },
+          "required_mastery": 0.52
+        }
+      ],
       "related": [
         {
           "id": "english_primary_picture_writing",
           "relation": "extends",
-          "reason": "Practice 看图写句 after 日常交际用语; it is the next topic in the primary english learning sequence.",
+          "reason": "Dialogue patterns can be reused as short written sentences when students describe people, actions, and feelings in pictures.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_dialogue"
+          }
+        },
+        {
+          "id": "english_primary_picture_writing",
+          "relation": "procedure_step",
+          "reason": "After oral exchanges, students write one clear sentence that names the speaker, action, or response.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_dialogue"
+          }
+        },
+        {
+          "id": "english_primary_picture_writing",
+          "relation": "confusable",
+          "reason": "Dialogue practice values appropriate response choice, while picture writing values sentence completeness and visual detail.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_dialogue"
+          }
+        },
+        {
+          "id": "english_primary_picture_writing",
+          "relation": "application",
+          "reason": "Daily dialogue frames give students ready sentence patterns for captions and simple picture descriptions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_dialogue"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -214,8 +460,83 @@
       "chapter": "英语启蒙与基础",
       "depth": 1,
       "difficulty": 0.36,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "english_primary_daily_dialogue",
+          "relation": "prerequisite",
+          "reason": "Short dialogue patterns help students form basic subject-verb-object sentences before writing from a picture.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_picture_writing"
+          },
+          "required_mastery": 0.52
+        }
+      ],
+      "related": [
+        {
+          "id": "chinese_primary_sentence_expansion",
+          "relation": "procedure_step",
+          "reason": "Picture writing improves when students first expand who, what, where, and feeling details into a complete sentence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.8,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "chapter_focus": "primary_picture_writing"
+          }
+        },
+        {
+          "id": "english_primary_daily_dialogue",
+          "relation": "confusable",
+          "reason": "Picture writing requires a complete written sentence, while daily dialogue may be a short situational response.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "primary_picture_writing"
+          }
+        },
+        {
+          "id": "chinese_primary_observation_writing",
+          "relation": "application",
+          "reason": "The same visual observation routine supports English captions and Chinese picture observation writing.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.79,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "chapter_focus": "primary_picture_writing"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只凭中文直觉选词，忽略搭配和语境",
         "阅读题只看单句，不回到段落逻辑",
@@ -1663,36 +1984,96 @@
       "prerequisites": [
         {
           "id": "english_senior_nonfinite_verbs",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 非谓语动词 before 从句连接词选择; it supplies the foundation for this english learning path.",
+          "reason": "Students need to distinguish predicate and non-finite verb roles before choosing a finite clause connector.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_clause_connection"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_nonfinite_verbs",
           "relation": "co_occurs",
-          "reason": "Review 从句连接词选择 together with 非谓语动词 when diagnosing adjacent english skills.",
+          "reason": "Connector choice is often checked beside non-finite verb reduction because both depend on clause structure.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_clause_connection"
+          }
         },
         {
           "id": "english_senior_relative_clause",
-          "relation": "co_occurs",
-          "reason": "Review 从句连接词选择 together with 定语从句限定与非限定 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After identifying clause function and connector meaning, students handle relative clauses by matching antecedent, role, and comma pattern.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_clause_connection"
+          }
+        },
+        {
+          "id": "english_senior_relative_clause",
+          "relation": "confusable",
+          "reason": "General clause connector questions test clause type and logic, while relative clauses test antecedent role and modification.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.85,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_clause_connection"
+          }
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "application",
+          "reason": "Clause connector analysis is applied in grammar cloze when blanks require that, which, whether, because, or other linking words.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_clause_connection"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1770,36 +2151,96 @@
       "prerequisites": [
         {
           "id": "english_senior_clause_connection",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 从句连接词选择 before 定语从句限定与非限定; it supplies the foundation for this english learning path.",
+          "reason": "Relative clause decisions build on recognizing clause boundaries, connector function, and the missing sentence role.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.9,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_relative_clause"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_clause_connection",
           "relation": "co_occurs",
-          "reason": "Review 定语从句限定与非限定 together with 从句连接词选择 when diagnosing adjacent english skills.",
+          "reason": "Relative clause review should stay connected to broader clause connector diagnosis.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_relative_clause"
+          }
         },
         {
           "id": "english_senior_subject_verb_agreement",
-          "relation": "co_occurs",
-          "reason": "Review 定语从句限定与非限定 together with 主谓一致 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After choosing the relative marker, students check whether the clause verb agrees with the antecedent or internal subject.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_relative_clause"
+          }
+        },
+        {
+          "id": "english_senior_clause_connection",
+          "relation": "confusable",
+          "reason": "Relative clauses modify nouns, while noun and adverbial clauses fill subject, object, predicative, or logical relation slots.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.86,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_relative_clause"
+          }
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "application",
+          "reason": "Accurate relative clauses let students combine short ideas and upgrade sentence cohesion in writing.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_relative_clause"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2198,36 +2639,96 @@
       "prerequisites": [
         {
           "id": "english_senior_word_formation",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 词性转换与派生 before 完形填空逻辑线索; it supplies the foundation for this english learning path.",
+          "reason": "Word formation knowledge helps students separate lexical form clues from discourse logic in cloze options.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.84,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_logic"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_word_formation",
           "relation": "co_occurs",
-          "reason": "Review 完形填空逻辑线索 together with 词性转换与派生 when diagnosing adjacent english skills.",
+          "reason": "Cloze diagnosis often checks whether an error comes from word form, collocation, or discourse logic.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_logic"
+          }
         },
         {
           "id": "english_senior_cloze_collocation",
-          "relation": "co_occurs",
-          "reason": "Review 完形填空逻辑线索 together with 完形搭配与语义场 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After identifying contrast, cause, repetition, or progression, students test whether the option fits local collocation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_logic"
+          }
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "confusable",
+          "reason": "Cloze logic selects meaning across options, while grammar cloze selects a constrained form for one blank.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_logic"
+          }
+        },
+        {
+          "id": "english_senior_cloze_collocation",
+          "relation": "application",
+          "reason": "Logical relation mapping narrows collocation choices by showing whether the sentence continues, contrasts, or explains the previous idea.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_logic"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2305,36 +2806,96 @@
       "prerequisites": [
         {
           "id": "english_senior_cloze_logic",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 完形填空逻辑线索 before 完形搭配与语义场; it supplies the foundation for this english learning path.",
+          "reason": "Students should establish passage logic before deciding which collocation best fits the semantic field.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.88,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_collocation"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_cloze_logic",
           "relation": "co_occurs",
-          "reason": "Review 完形搭配与语义场 together with 完形填空逻辑线索 when diagnosing adjacent english skills.",
+          "reason": "Collocation review belongs with cloze logic because both decide whether an option fits the same passage context.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.81,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_collocation"
+          }
         },
         {
           "id": "english_senior_reading_main_idea",
-          "relation": "co_occurs",
-          "reason": "Review 完形搭配与语义场 together with 阅读主旨大意题 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After local collocation checks, students reread the paragraph main idea to confirm tone and semantic field.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_collocation"
+          }
+        },
+        {
+          "id": "english_senior_vocabulary_context_review",
+          "relation": "confusable",
+          "reason": "Collocation questions test fixed word partners, while vocabulary context review tests meaning inferred from surrounding clues.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_collocation"
+          }
+        },
+        {
+          "id": "english_senior_grammar_cloze_context",
+          "relation": "application",
+          "reason": "Collocation awareness supports grammar cloze when prepositions, verb patterns, or fixed phrases constrain the blank.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_cloze_collocation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3690,36 +4251,96 @@
       "prerequisites": [
         {
           "id": "english_senior_application_email",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 应用文邮件写作 before 通知与倡议书写作; it supplies the foundation for this english learning path.",
+          "reason": "Email writing establishes audience, purpose, and required-point coverage before students write notices or proposals.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.86,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_notice"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_application_email",
           "relation": "co_occurs",
-          "reason": "Review 通知与倡议书写作 together with 应用文邮件写作 when diagnosing adjacent english skills.",
+          "reason": "Email and notice writing should be compared through audience, tone, opening, closing, and task-point coverage.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_notice"
+          }
         },
         {
           "id": "english_senior_application_speech",
-          "relation": "co_occurs",
-          "reason": "Review 通知与倡议书写作 together with 演讲稿写作 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After notice writing, students extend the same public-purpose structure into a short speech with audience engagement.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_notice"
+          }
+        },
+        {
+          "id": "english_senior_application_email",
+          "relation": "confusable",
+          "reason": "Notices use concise public information and calls to action, while emails use personal address, greeting, and closing conventions.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_notice"
+          }
+        },
+        {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "application",
+          "reason": "Notice drafts can be checked against rubric items for task response, point completeness, tone, and language accuracy.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_application_notice"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3904,36 +4525,96 @@
       "prerequisites": [
         {
           "id": "english_senior_application_speech",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 演讲稿写作 before 读后续写情节推进; it supplies the foundation for this english learning path.",
+          "reason": "Speech writing helps students control audience, purpose, and sequence before planning a coherent continuation plot.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.78,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_plot"
+          },
+          "required_mastery": 0.56
         }
       ],
       "related": [
         {
           "id": "english_senior_application_speech",
           "relation": "co_occurs",
-          "reason": "Review 读后续写情节推进 together with 演讲稿写作 when diagnosing adjacent english skills.",
+          "reason": "Both speech and continuation writing need clear purpose, sequence, and reader-facing coherence.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.76,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_plot"
+          }
         },
         {
           "id": "english_senior_continuation_emotion_arc",
-          "relation": "co_occurs",
-          "reason": "Review 读后续写情节推进 together with 读后续写情绪弧线 when diagnosing adjacent english skills.",
+          "relation": "procedure_step",
+          "reason": "After plot events are ordered, students map the emotion arc so each action changes the character state naturally.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_plot"
+          }
+        },
+        {
+          "id": "english_senior_summary_writing",
+          "relation": "confusable",
+          "reason": "Continuation writing creates plausible new events, while summary writing compresses source information without adding plot.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.86,
           "use_cases": [
             "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_continuation_plot"
+          }
+        },
+        {
+          "id": "chinese_senior_literary_plot_effect",
+          "relation": "application",
+          "reason": "English continuation planning transfers to literary analysis by tracking conflict, turning point, motive, and theme effect.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.8,
+          "use_cases": [
             "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "chinese",
+            "chapter_focus": "senior_continuation_plot"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4363,41 +5044,100 @@
       "prerequisites": [
         {
           "id": "english_senior_summary_paraphrase",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 概要写作转述压缩 before 写作衔接与句式升级; it supplies the foundation for this english learning path.",
+          "reason": "Paraphrase and compression practice gives students the sentence control needed before revising cohesion and style.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.86,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_cohesion"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_summary_paraphrase",
           "relation": "co_occurs",
-          "reason": "Review 写作衔接与句式升级 together with 概要写作转述压缩 when diagnosing adjacent english skills.",
+          "reason": "Cohesion revision should be checked with paraphrase quality because both affect clarity and flow.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_cohesion"
+          }
         },
         {
           "id": "english_senior_exam_time_strategy",
           "relation": "co_occurs",
-          "reason": "Review 写作衔接与句式升级 together with 英语考试时间分配 when diagnosing adjacent english skills.",
+          "reason": "Time strategy matters for leaving a final pass to check connectors, reference, and sentence variety.",
+          "priority": "optional",
+          "context": "review",
+          "confidence": 0.76,
+          "use_cases": [
+            "learning_path",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_cohesion"
+          }
+        },
+        {
+          "id": "english_senior_writing_rubric_revision",
+          "relation": "procedure_step",
+          "reason": "After improving cohesion and sentence variety, students use the writing rubric to verify task coverage and language accuracy.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_cohesion"
+          }
+        },
+        {
+          "id": "english_senior_summary_paraphrase",
+          "relation": "confusable",
+          "reason": "Cohesion revision links ideas across sentences, while paraphrase revision preserves meaning with different wording.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
           "use_cases": [
             "diagnosis",
-            "learning_path",
-            "hint_generation"
-          ]
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_cohesion"
+          }
         },
         {
           "id": "chinese_senior_language_cohesion",
           "relation": "application",
-          "reason": "English cohesion revision transfers directly to Chinese cohesion tasks through reference, logical connectors, sentence order, and paragraph flow.",
+          "reason": "English cohesion revision transfers to Chinese cohesion tasks through reference, connectors, sentence order, and paragraph flow.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.91,
@@ -4409,13 +5149,13 @@
           "metadata": {
             "source_subject": "english",
             "target_subject": "chinese",
-            "bridge_direction": "english_to_chinese"
+            "chapter_focus": "senior_writing_cohesion"
           }
         },
         {
           "id": "chinese_senior_modern_argument_structure",
           "relation": "application",
-          "reason": "English paragraph cohesion supports Chinese argumentative structure by linking claim, reason, evidence, and conclusion in a visible chain.",
+          "reason": "English paragraph cohesion supports argumentative writing by linking claim, reason, evidence, and conclusion in order.",
           "priority": "useful",
           "context": "review",
           "confidence": 0.83,
@@ -4427,7 +5167,7 @@
           "metadata": {
             "source_subject": "english",
             "target_subject": "chinese",
-            "bridge_direction": "english_to_chinese"
+            "chapter_focus": "senior_writing_cohesion"
           }
         }
       ],
@@ -5001,31 +5741,83 @@
       "prerequisites": [
         {
           "id": "english_senior_reading_new_gaokao_information",
-          "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 新高考信息类阅读 before 写作评分标准自查; it supplies the foundation for this english learning path.",
+          "reason": "Information reading trains task extraction and evidence selection before students revise writing against rubric points.",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.82,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_rubric"
+          },
+          "required_mastery": 0.58
         }
       ],
       "related": [
         {
           "id": "english_senior_reading_new_gaokao_information",
           "relation": "co_occurs",
-          "reason": "Review 写作评分标准自查 together with 新高考信息类阅读 when diagnosing adjacent english skills.",
+          "reason": "Rubric revision and information reading both require checking task purpose, relevant evidence, and omitted details.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.8,
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_rubric"
+          }
+        },
+        {
+          "id": "english_senior_exam_time_strategy",
+          "relation": "procedure_step",
+          "reason": "After learning rubric checks, students reserve final exam time for task coverage, grammar, cohesion, and handwriting review.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_rubric"
+          }
+        },
+        {
+          "id": "english_senior_writing_cohesion",
+          "relation": "confusable",
+          "reason": "Rubric revision checks scoring dimensions overall, while cohesion revision focuses on links between sentences and paragraphs.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "chapter_focus": "senior_writing_rubric"
+          }
         },
         {
           "id": "pol_senior_logical_thinking",
           "relation": "application",
-          "reason": "English writing rubric revision supports politics material argumentation by checking task response, claim clarity, evidence relevance, and logical order.",
+          "reason": "Writing rubric self-check supports argument tasks by testing claim clarity, evidence relevance, and logical order.",
           "priority": "core",
           "context": "review",
           "confidence": 0.84,
@@ -5037,7 +5829,7 @@
           "metadata": {
             "source_subject": "english",
             "target_subject": "politics",
-            "bridge_direction": "english_to_politics"
+            "chapter_focus": "senior_writing_rubric"
           }
         }
       ],

@@ -120,16 +120,43 @@
       "chapter": "力学",
       "depth": 2,
       "difficulty": 0.48,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_speed",
+          "relation": "prerequisite",
+          "reason": "Force-balance problems require motion-state vocabulary before deciding whether acceleration is zero.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_junior_pressure_buoyancy",
           "relation": "extends",
-          "reason": "Practice 压强与浮力 after 二力平衡; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_force_balance uses physics_junior_pressure_buoyancy as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         },
         {
           "id": "senior_vector_linear_operation",
@@ -147,7 +174,8 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "force_balance_vector_addition"
+            "bridge_focus": "force_balance_vector_addition",
+            "chapter_focus": "力学"
           }
         },
         {
@@ -166,7 +194,26 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "equilibrium_component_setup"
+            "bridge_focus": "equilibrium_component_setup",
+            "chapter_focus": "力学"
+          }
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "confusable",
+          "reason": "Balanced resultant force is often confused with decomposing a single force into components.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
           }
         }
       ],
@@ -229,16 +276,97 @@
       "chapter": "力学",
       "depth": 2,
       "difficulty": 0.58,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "prerequisite",
+          "reason": "Pressure and buoyancy analysis starts from identifying forces such as weight, support, and buoyant force.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_junior_work_power",
           "relation": "extends",
-          "reason": "Practice 功和功率 after 压强与浮力; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_pressure_buoyancy uses physics_junior_work_power as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        },
+        {
+          "id": "physics_junior_work_power",
+          "relation": "procedure_step",
+          "reason": "After pressure or buoyancy forces are known, later tasks may connect the force to displacement, work, or power.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        },
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "confusable",
+          "reason": "Students often confuse pressure as a force instead of force per unit area.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "application",
+          "reason": "Buoyancy and pressure directions prepare students for component reasoning in more complex force models.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -307,7 +435,26 @@
       "chapter": "力学",
       "depth": 2,
       "difficulty": 0.54,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "prerequisite",
+          "reason": "Work and power tasks require identifying the acting force before multiplying by displacement or time rate.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_senior_work_energy_path",
@@ -315,12 +462,17 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.9,
-          "reason": "功和能量关系题通常要先判断力是否做功，再选择功-能路径。",
+          "reason": "physics_junior_work_power uses physics_senior_work_energy_path as a procedure step link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         },
         {
           "id": "physics_senior_energy_momentum",
@@ -328,12 +480,17 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.88,
-          "reason": "高中动量能量综合会继续使用功、功率和能量转化判断。",
+          "reason": "physics_junior_work_power uses physics_senior_energy_momentum as a application link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "hint_generation",
             "practice_planning"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         },
         {
           "id": "college_physics_work_energy_theorem",
@@ -341,20 +498,33 @@
           "priority": "useful",
           "context": "review",
           "confidence": 0.84,
-          "reason": "大学物理会把功和动能定理扩展到更一般的力学模型。",
+          "reason": "physics_junior_work_power uses college_physics_work_energy_theorem as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "review"
-          ]
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         },
         {
           "id": "physics_junior_circuit_recognition",
           "relation": "extends",
-          "reason": "Practice 串并联电路识别 after 功和功率; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_work_power uses physics_junior_circuit_recognition as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
+          }
         },
         {
           "id": "senior_vector_dot_product",
@@ -372,7 +542,8 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "work_effective_component"
+            "bridge_focus": "work_effective_component",
+            "chapter_focus": "力学"
           }
         },
         {
@@ -391,7 +562,26 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "work_integral_application"
+            "bridge_focus": "work_integral_application",
+            "chapter_focus": "力学"
+          }
+        },
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "confusable",
+          "reason": "Basic work-power formulas are often confused with path-based work-energy reasoning.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "力学"
           }
         }
       ],
@@ -454,16 +644,97 @@
       "chapter": "电学",
       "depth": 2,
       "difficulty": 0.46,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "linear_equation",
+          "relation": "prerequisite",
+          "reason": "Circuit recognition practice often labels unknown current or voltage with simple linear equations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "math",
+            "chapter_focus": "电学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_junior_ohm_law",
           "relation": "extends",
-          "reason": "Practice 欧姆定律 after 串并联电路识别; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_circuit_recognition uses physics_junior_ohm_law as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_ohm_law",
+          "relation": "procedure_step",
+          "reason": "Once the topology is recognized, Ohm law can be applied to the relevant branch or component.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_experiment_resistance",
+          "relation": "confusable",
+          "reason": "Ammeter and voltmeter placement in circuit recognition is often confused with resistance-measurement setup.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_electric_power",
+          "relation": "application",
+          "reason": "Correct series and parallel recognition is needed before choosing an electric-power formula.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -525,16 +796,43 @@
       "chapter": "电学",
       "depth": 2,
       "difficulty": 0.56,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_circuit_recognition",
+          "relation": "prerequisite",
+          "reason": "Ohm law calculation depends on recognizing which voltage and current belong to the same resistor.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_junior_electric_power",
           "relation": "extends",
-          "reason": "Practice 电功率 after 欧姆定律; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_ohm_law uses physics_junior_electric_power as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
         },
         {
           "id": "linear_function_graph",
@@ -552,7 +850,8 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "ohm_law_linear_graph"
+            "bridge_focus": "ohm_law_linear_graph",
+            "chapter_focus": "电学"
           }
         },
         {
@@ -571,7 +870,26 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "slope_interpretation_for_circuits"
+            "bridge_focus": "slope_interpretation_for_circuits",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_electric_power",
+          "relation": "confusable",
+          "reason": "Students often mix resistance formulas with electric-power formulas when variables overlap.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
           }
         }
       ],
@@ -634,16 +952,43 @@
       "chapter": "电学",
       "depth": 2,
       "difficulty": 0.62,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_ohm_law",
+          "relation": "prerequisite",
+          "reason": "Electric-power formulas require Ohm law relationships among voltage, current, and resistance.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_junior_experiment_resistance",
           "relation": "extends",
-          "reason": "Practice 测电阻实验 after 电功率; it is the next topic in the junior_high physics learning sequence.",
+          "reason": "physics_junior_electric_power uses physics_junior_experiment_resistance as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
         },
         {
           "id": "quadratic_function_concept",
@@ -661,7 +1006,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "electric_power_quadratic_model"
+            "bridge_focus": "electric_power_quadratic_model",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_experiment_resistance",
+          "relation": "procedure_step",
+          "reason": "Measured resistance can be used in later power checks and appliance-rating problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_ohm_law",
+          "relation": "confusable",
+          "reason": "Power P, voltage U, current I, and resistance R are often interchanged without checking formula conditions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
           }
         }
       ],
@@ -724,8 +1106,82 @@
       "chapter": "电学",
       "depth": 2,
       "difficulty": 0.64,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_circuit_recognition",
+          "relation": "prerequisite",
+          "reason": "Resistance experiments require recognizing series placement of the ammeter and parallel placement of the voltmeter.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_junior_ohm_law",
+          "relation": "procedure_step",
+          "reason": "The experiment procedure ends by calculating resistance from matched voltage-current readings.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_senior_experiment_resistance",
+          "relation": "confusable",
+          "reason": "Junior resistance measurement is often confused with senior method selection and internal-resistance corrections.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        },
+        {
+          "id": "physics_junior_electric_power",
+          "relation": "application",
+          "reason": "Measured resistance supports appliance power estimates and safety checks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电学"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确定研究对象和过程",
         "公式套用时忽略方向、单位或能量损失",
@@ -935,16 +1391,97 @@
       "chapter": "高中力学",
       "depth": 3,
       "difficulty": 0.76,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_work_power",
+          "relation": "prerequisite",
+          "reason": "Energy-momentum synthesis builds on work, power, and kinetic-energy vocabulary.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_senior_circular_motion",
           "relation": "extends",
-          "reason": "Practice 圆周运动 after 动量能量综合; it is the next topic in the senior_high physics learning sequence.",
+          "reason": "physics_senior_energy_momentum uses physics_senior_circular_motion as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_work_energy_path",
+          "relation": "procedure_step",
+          "reason": "A common next step is choosing whether the process is easier by work-energy or momentum conservation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_momentum_collision",
+          "relation": "confusable",
+          "reason": "Energy conservation and momentum conservation are often mixed in collision and interaction tasks.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_mechanical_energy_loss",
+          "relation": "application",
+          "reason": "Energy-momentum reasoning is used to estimate losses in nonideal mechanical processes.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1145,16 +1682,97 @@
       "chapter": "高中力学",
       "depth": 3,
       "difficulty": 0.78,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_circuit_recognition",
+          "relation": "prerequisite",
+          "reason": "Field topics still require basic charge, current, source, and circuit vocabulary.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        }
+      ],
       "related": [
         {
           "id": "physics_senior_experiment_data",
           "relation": "extends",
-          "reason": "Practice 高中物理实验数据处理 after 电场磁场综合; it is the next topic in the senior_high physics learning sequence.",
+          "reason": "physics_senior_electric_magnetic_field uses physics_senior_experiment_data as a extends link for physics practice planning.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_electric_field_force",
+          "relation": "procedure_step",
+          "reason": "Start field problems by translating the field into the force on a charge or current element.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "confusable",
+          "reason": "Electric-field force direction is often confused with magnetic-force direction rules.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
+        },
+        {
+          "id": "physics_senior_composite_field",
+          "relation": "application",
+          "reason": "Electric and magnetic field basics are combined in composite-field trajectory problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中力学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1318,8 +1936,82 @@
       "chapter": "电磁学",
       "depth": 3,
       "difficulty": 0.7,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "relation": "prerequisite",
+          "reason": "AC source models rely on induction ideas and changing magnetic flux.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电磁学"
+          }
+        }
+      ],
+      "related": [
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "procedure_step",
+          "reason": "After reading AC period, frequency, and RMS values, transformer-ratio problems are the next practice step.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "confusable",
+          "reason": "AC effective values are often confused with transient DC circuit values.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "application",
+          "reason": "AC basics are directly used in transformer voltage, current, and power calculations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "电磁学"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "研究对象不清",
         "公式条件误用",
@@ -3473,34 +4165,58 @@
           "id": "physics_senior_wave_interference",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 机械波传播与干涉 before 电场力与电势能; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_electric_field_force uses physics_senior_wave_interference as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_wave_interference",
           "relation": "co_occurs",
-          "reason": "Review 电场力与电势能 together with 机械波传播与干涉 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_electric_field_force uses physics_senior_wave_interference as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_electric_potential_graph",
           "relation": "co_occurs",
-          "reason": "Review 电场力与电势能 together with 电势与场强图像 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_electric_field_force uses physics_senior_electric_potential_graph as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "senior_vector_linear_operation",
@@ -3518,7 +4234,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "electric_force_vector_superposition"
+            "bridge_focus": "electric_force_vector_superposition",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "relation": "procedure_step",
+          "reason": "After force direction is known, potential and field graphs help connect force, work, and energy changes.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "confusable",
+          "reason": "Electric force can act on a stationary charge, unlike magnetic force that depends on velocity.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
           }
         }
       ],
@@ -3744,34 +4497,112 @@
           "id": "physics_senior_electric_potential_graph",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 电势与场强图像 before 电容器动态分析; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_capacitor_dynamic uses physics_senior_electric_potential_graph as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_electric_potential_graph",
           "relation": "co_occurs",
-          "reason": "Review 电容器动态分析 together with 电势与场强图像 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_capacitor_dynamic uses physics_senior_electric_potential_graph as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_dc_circuit_dynamic",
           "relation": "co_occurs",
-          "reason": "Review 电容器动态分析 together with 闭合电路动态分析 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_capacitor_dynamic uses physics_senior_dc_circuit_dynamic as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "procedure_step",
+          "reason": "Capacitor charging and discharging feed into dynamic DC circuit analysis.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_power_extreme",
+          "relation": "application",
+          "reason": "Capacitor-state changes can constrain voltage, current, and power extrema in circuits.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "relation": "confusable",
+          "reason": "Stored charge, voltage, and potential graph slope are often mixed without checking definitions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3851,34 +4682,58 @@
           "id": "physics_senior_capacitor_dynamic",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 电容器动态分析 before 闭合电路动态分析; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_dc_circuit_dynamic uses physics_senior_capacitor_dynamic as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_capacitor_dynamic",
           "relation": "co_occurs",
-          "reason": "Review 闭合电路动态分析 together with 电容器动态分析 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_dc_circuit_dynamic uses physics_senior_capacitor_dynamic as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_power_extreme",
           "relation": "co_occurs",
-          "reason": "Review 闭合电路动态分析 together with 电路功率极值 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_dc_circuit_dynamic uses physics_senior_power_extreme as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "senior_exponential_function",
@@ -3896,7 +4751,8 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "circuit_transition_exponential"
+            "bridge_focus": "circuit_transition_exponential",
+            "chapter_focus": "高中物理电磁学"
           }
         },
         {
@@ -3915,7 +4771,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "circuit_transition_first_order_ode"
+            "bridge_focus": "circuit_transition_first_order_ode",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_power_extreme",
+          "relation": "procedure_step",
+          "reason": "After dynamic current or voltage is determined, power-extreme checks are a common next calculation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_circuit_intro",
+          "relation": "confusable",
+          "reason": "Transient DC changes are often confused with sinusoidal AC variation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
           }
         }
       ],
@@ -4141,34 +5034,58 @@
           "id": "physics_senior_power_extreme",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 电路功率极值 before 带电粒子在磁场中运动; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_magnetic_force uses physics_senior_power_extreme as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_power_extreme",
           "relation": "co_occurs",
-          "reason": "Review 带电粒子在磁场中运动 together with 电路功率极值 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_magnetic_force uses physics_senior_power_extreme as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_composite_field",
           "relation": "co_occurs",
-          "reason": "Review 带电粒子在磁场中运动 together with 复合场粒子运动 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_magnetic_force uses physics_senior_composite_field as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "senior_vector_dot_product",
@@ -4186,7 +5103,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "magnetic_force_vector_perpendicularity"
+            "bridge_focus": "magnetic_force_vector_perpendicularity",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_composite_field",
+          "relation": "application",
+          "reason": "Magnetic force is used with electric force to analyze selected velocity and curved trajectories.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_electric_field_force",
+          "relation": "confusable",
+          "reason": "Magnetic force direction from the hand rule is often confused with electric-field force direction.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
           }
         }
       ],
@@ -4267,34 +5221,58 @@
           "id": "physics_senior_magnetic_force",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 带电粒子在磁场中运动 before 复合场粒子运动; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_composite_field uses physics_senior_magnetic_force as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_magnetic_force",
           "relation": "co_occurs",
-          "reason": "Review 复合场粒子运动 together with 带电粒子在磁场中运动 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_composite_field uses physics_senior_magnetic_force as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_electromagnetic_induction_law",
           "relation": "co_occurs",
-          "reason": "Review 复合场粒子运动 together with 法拉第电磁感应定律 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_composite_field uses physics_senior_electromagnetic_induction_law as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "senior_vector_coordinate",
@@ -4312,7 +5290,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "composite_field_coordinate_decomposition"
+            "bridge_focus": "composite_field_coordinate_decomposition",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "relation": "application",
+          "reason": "Composite-field reasoning prepares students to track magnetic effects in induction setups.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "confusable",
+          "reason": "Students often use a single magnetic-force rule when a composite field also includes electric force.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
           }
         }
       ],
@@ -4393,34 +5408,58 @@
           "id": "physics_senior_composite_field",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 复合场粒子运动 before 法拉第电磁感应定律; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_electromagnetic_induction_law uses physics_senior_composite_field as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_composite_field",
           "relation": "co_occurs",
-          "reason": "Review 法拉第电磁感应定律 together with 复合场粒子运动 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_electromagnetic_induction_law uses physics_senior_composite_field as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_induction_rod",
           "relation": "co_occurs",
-          "reason": "Review 法拉第电磁感应定律 together with 导体棒切割磁感线 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_electromagnetic_induction_law uses physics_senior_induction_rod as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "college_derivative_calculation",
@@ -4438,7 +5477,44 @@
             "source_subject": "physics",
             "target_subject": "math",
             "bridge_direction": "physics_to_math",
-            "bridge_focus": "flux_rate_of_change_derivative"
+            "bridge_focus": "flux_rate_of_change_derivative",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_induction_rod",
+          "relation": "procedure_step",
+          "reason": "After applying Faraday law and Lenz direction, moving-rod induction is the standard calculation model.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_magnetic_force",
+          "relation": "confusable",
+          "reason": "Induced emf from changing flux is often confused with magnetic force on a moving charge.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
           }
         }
       ],
@@ -4519,34 +5595,112 @@
           "id": "physics_senior_electromagnetic_induction_law",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 法拉第电磁感应定律 before 导体棒切割磁感线; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_induction_rod uses physics_senior_electromagnetic_induction_law as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_electromagnetic_induction_law",
           "relation": "co_occurs",
-          "reason": "Review 导体棒切割磁感线 together with 法拉第电磁感应定律 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_induction_rod uses physics_senior_electromagnetic_induction_law as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_ac_transformer",
           "relation": "co_occurs",
-          "reason": "Review 导体棒切割磁感线 together with 变压器与远距离输电 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_induction_rod uses physics_senior_ac_transformer as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "procedure_step",
+          "reason": "Moving-rod induction strengthens flux-change reasoning before transformer models.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_transformer",
+          "relation": "application",
+          "reason": "Induction-rod energy conversion prepares students for ideal transformer energy-transfer checks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_dc_circuit_dynamic",
+          "relation": "confusable",
+          "reason": "Induction-rod equivalent circuits are often confused with ordinary DC source circuits.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4626,34 +5780,112 @@
           "id": "physics_senior_induction_rod",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 导体棒切割磁感线 before 变压器与远距离输电; it supplies the foundation for this physics learning path.",
+          "reason": "physics_senior_ac_transformer uses physics_senior_induction_rod as a prerequisite link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "related": [
         {
           "id": "physics_senior_induction_rod",
           "relation": "co_occurs",
-          "reason": "Review 变压器与远距离输电 together with 导体棒切割磁感线 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_ac_transformer uses physics_senior_induction_rod as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         },
         {
           "id": "physics_senior_experiment_vernier",
           "relation": "co_occurs",
-          "reason": "Review 变压器与远距离输电 together with 游标卡尺与螺旋测微器读数 when diagnosing adjacent physics skills.",
+          "reason": "physics_senior_ac_transformer uses physics_senior_experiment_vernier as a co occurs link for physics practice planning.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_circuit_intro",
+          "relation": "procedure_step",
+          "reason": "Transformer problems should first read AC RMS, peak, frequency, and power assumptions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_electromagnetic_induction_law",
+          "relation": "application",
+          "reason": "Transformer voltage ratios apply electromagnetic induction in coupled coils.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
+        },
+        {
+          "id": "physics_senior_ac_circuit_intro",
+          "relation": "confusable",
+          "reason": "Ideal transformer ratios are often confused with basic AC waveform quantities.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "physics",
+            "target_subject": "physics",
+            "chapter_focus": "高中物理电磁学"
+          }
         }
       ],
       "typical_misconceptions": [

@@ -1606,7 +1606,8 @@ def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
     assert len(result.report["recommended_next_batch"]["math"]) <= 12
     assert result.report["cross_subject_edge_counts"]
     assert result.report["cross_subject_relation_counts"]
-    assert result.report["legacy_edge_samples"]
+    assert result.report["legacy_edges"] == 0
+    assert result.report["legacy_edge_samples"] == []
     assert result.report["missing_stage"] == 0
     assert result.report["missing_college_course_family"] == 0
     assert result.report["typed_edges"] > 0
@@ -1628,8 +1629,8 @@ def test_study_knowledge_seed_math_relationship_density_targets() -> None:
     assert result.report is not None
     relation_counts = result.report["relation_counts"]
     assert result.report["typed_edges"] >= 1100
-    assert result.report["legacy_edges"] < 250
-    assert relation_counts["nearby"] < 150
+    assert result.report["legacy_edges"] == 0
+    assert relation_counts.get("nearby", 0) == 0
     assert relation_counts["next"] < 30
     assert relation_counts["confusable"] >= 60
     assert relation_counts["procedure_step"] >= 90
@@ -3602,6 +3603,106 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
                 "chinese_senior_composition_material_review",
             },
         ),
+        (
+            "地图三要素和比例尺有什么关系？",
+            {"geo_junior_map_skills", "primary_ratio_scale"},
+        ),
+        (
+            "世界气候类型和函数图像信息读取有什么关系？",
+            {"geo_junior_climate_types", "function_graph_reading"},
+        ),
+        (
+            "农业工业区位和需求供给模型有什么关系？",
+            {"geo_junior_agriculture_industry", "college_micro_demand_supply"},
+        ),
+        (
+            "区域可持续发展和政策权衡分析有什么关系？",
+            {"geo_senior_regional_sustainability", "college_econ_policy_tradeoff"},
+        ),
+        (
+            "秦统一与中央集权和全面依法治国有什么关系？",
+            {"history_junior_qin_unification", "pol_senior_rule_of_law"},
+        ),
+        (
+            "秦统一与中央集权和人民民主与政治参与有什么关系？",
+            {"history_junior_qin_unification", "pol_senior_political_participation"},
+        ),
+        (
+            "鸦片战争与近代开端和国际关系与中国外交有什么关系？",
+            {"history_junior_opium_war", "pol_senior_international_relations"},
+        ),
+        (
+            "工业革命和产业区位与区域发展有什么关系？",
+            {"history_junior_industrial_revolution", "geo_senior_industrial_location"},
+        ),
+        (
+            "史料实证方法和实用类文本信息筛选有什么关系？",
+            {"history_senior_material_analysis", "chinese_senior_practical_filter"},
+        ),
+        (
+            "权利与义务和阅读题规范分点有什么关系？",
+            {"pol_junior_rights_obligations", "chinese_senior_text_answer_template"},
+        ),
+        (
+            "市场机制与宏观调控和财政政策有什么关系？",
+            {"pol_senior_economy_market", "college_macro_fiscal_policy"},
+        ),
+        (
+            "唯物辩证法和议论文论证层次有什么关系？",
+            {"pol_senior_philosophy_dialectics", "chinese_senior_composition_argument_layer"},
+        ),
+        (
+            "国际关系与中国外交和世界市场与全球化有什么关系？",
+            {"pol_senior_international_relations", "history_senior_globalization"},
+        ),
+        (
+            "阅读细节定位题和实用类文本信息筛选有什么关系？",
+            {"english_senior_reading_detail_location", "chinese_senior_practical_filter"},
+        ),
+        (
+            "作者态度与观点题和逻辑与思维方法有什么关系？",
+            {"english_senior_reading_author_attitude", "pol_senior_logical_thinking"},
+        ),
+        (
+            "概要写作和压缩语段与概括有什么关系？",
+            {"english_senior_summary_writing", "chinese_senior_language_compression"},
+        ),
+        (
+            "化学方程式配平和一元一次方程有什么关系？",
+            {"chem_junior_chemical_equation", "linear_equation"},
+        ),
+        (
+            "弱电解质电离与 pH 和对数函数有什么关系？",
+            {"chem_senior_ph_ionization", "senior_logarithmic_function"},
+        ),
+        (
+            "化学反应速率影响因素和函数单调性有什么关系？",
+            {"chem_senior_rate_factors", "senior_function_monotonicity"},
+        ),
+        (
+            "酸碱中和滴定和一次函数交点有什么关系？",
+            {"chem_senior_acid_base_titration", "linear_function_intersection"},
+        ),
+        (
+            "孟德尔遗传定律和二项分布有什么关系？",
+            {"bio_senior_genetics_law", "senior_binomial_distribution"},
+        ),
+        (
+            "性状遗传初步和列表法与树状图有什么关系？",
+            {"bio_junior_inheritance_intro", "tree_diagram"},
+        ),
+        (
+            "酶活性曲线分析和导数与极值最值有什么关系？",
+            {"bio_senior_enzyme_curve", "senior_derivative_extrema"},
+        ),
+        (
+            "光合作用曲线分析和函数图像信息读取有什么关系？",
+            {"bio_senior_photosynthesis_curve", "function_graph_reading"},
+        ),
+        (
+            "实验误差与结论评价和方差有什么关系？",
+            {"bio_senior_experiment_error_analysis", "variance"},
+        ),
     ]
 
     expected_subjects = {
@@ -3618,17 +3719,17 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
         "politics",
     }
     minimum_subject_query_counts = {
-        "biology": 3,
-        "chemistry": 4,
-        "chinese": 4,
+        "biology": 8,
+        "chemistry": 8,
+        "chinese": 8,
         "computer_science": 10,
         "economics": 8,
-        "english": 5,
-        "geography": 4,
-        "history": 4,
+        "english": 8,
+        "geography": 8,
+        "history": 8,
         "math": 30,
         "physics": 7,
-        "politics": 4,
+        "politics": 8,
     }
     topic_subjects = {
         str(topic["id"]): str(topic["subject"])
@@ -3669,13 +3770,38 @@ def test_study_knowledge_guidance_acceptance_queries_hit_relation_groups() -> No
         "利润最大化为什么既看二次函数最值又看导数？",
         "图的存储结构和邻接矩阵怎么联系？",
         "算法复杂度为什么要用函数思维和对数函数？",
-        "递归程序和数列递推有什么关系？",
-        "二维数组表示矩阵时行列维度容易混在哪里？",
-        "图论里的遍历和算法里的BFS DFS有什么关系？",
-    }
+            "递归程序和数列递推有什么关系？",
+            "二维数组表示矩阵时行列维度容易混在哪里？",
+            "图论里的遍历和算法里的BFS DFS有什么关系？",
+            "地图三要素和比例尺有什么关系？",
+            "世界气候类型和函数图像信息读取有什么关系？",
+            "农业工业区位和需求供给模型有什么关系？",
+            "区域可持续发展和政策权衡分析有什么关系？",
+            "秦统一与中央集权和全面依法治国有什么关系？",
+            "秦统一与中央集权和人民民主与政治参与有什么关系？",
+            "鸦片战争与近代开端和国际关系与中国外交有什么关系？",
+            "工业革命和产业区位与区域发展有什么关系？",
+            "史料实证方法和实用类文本信息筛选有什么关系？",
+            "权利与义务和阅读题规范分点有什么关系？",
+            "市场机制与宏观调控和财政政策有什么关系？",
+            "唯物辩证法和议论文论证层次有什么关系？",
+            "国际关系与中国外交和世界市场与全球化有什么关系？",
+            "阅读细节定位题和实用类文本信息筛选有什么关系？",
+            "作者态度与观点题和逻辑与思维方法有什么关系？",
+            "概要写作和压缩语段与概括有什么关系？",
+            "化学方程式配平和一元一次方程有什么关系？",
+            "弱电解质电离与 pH 和对数函数有什么关系？",
+            "化学反应速率影响因素和函数单调性有什么关系？",
+            "酸碱中和滴定和一次函数交点有什么关系？",
+            "孟德尔遗传定律和二项分布有什么关系？",
+            "性状遗传初步和列表法与树状图有什么关系？",
+            "酶活性曲线分析和导数与极值最值有什么关系？",
+            "光合作用曲线分析和函数图像信息读取有什么关系？",
+            "实验误差与结论评价和方差有什么关系？",
+        }
 
-    assert len(cases) == 100
-    assert len(cross_subject_queries) >= 34
+    assert len(cases) == 125
+    assert len(cross_subject_queries) >= 59
     assert set(minimum_subject_query_counts) == expected_subjects
     for _query, expected_topic_ids in cases:
         covered_subjects = {topic_subjects[topic_id] for topic_id in expected_topic_ids}

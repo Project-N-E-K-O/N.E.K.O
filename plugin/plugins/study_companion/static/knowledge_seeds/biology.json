@@ -10,16 +10,98 @@
       "chapter": "生命系统",
       "depth": 1,
       "difficulty": 0.36,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_microscope",
+          "relation": "prerequisite",
+          "reason": "Microscope use supports reliable observation before cell structure identification.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_cell_structure"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_junior_photosynthesis_respiration",
           "relation": "extends",
-          "reason": "Practice 光合作用与呼吸作用 after 细胞结构; it is the next topic in the junior_high biology learning sequence.",
+          "reason": "Continue from bio_junior_cell_structure to bio_junior_photosynthesis_respiration in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_cell_structure"
+          }
+        },
+        {
+          "id": "bio_junior_microscope",
+          "relation": "procedure_step",
+          "reason": "Observation questions first adjust the microscope and then identify visible cell parts.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_cell_structure"
+          }
+        },
+        {
+          "id": "bio_senior_cell_structure_function",
+          "relation": "confusable",
+          "reason": "Junior structure naming is often confused with senior structure function explanation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_cell_structure"
+          }
+        },
+        {
+          "id": "bio_junior_photosynthesis_respiration",
+          "relation": "application",
+          "reason": "Cell structures such as chloroplasts and mitochondria are applied in metabolism questions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_cell_structure"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -81,16 +163,98 @@
       "chapter": "生命系统",
       "depth": 2,
       "difficulty": 0.52,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_cell_structure",
+          "relation": "prerequisite",
+          "reason": "Chloroplast and mitochondrion recognition supports photosynthesis and respiration comparison.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_photosynthesis_respiration"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_junior_human_body_systems",
           "relation": "extends",
-          "reason": "Practice 人体系统协调 after 光合作用与呼吸作用; it is the next topic in the junior_high biology learning sequence.",
+          "reason": "Continue from bio_junior_photosynthesis_respiration to bio_junior_human_body_systems in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_photosynthesis_respiration"
+          }
+        },
+        {
+          "id": "bio_senior_photosynthesis_curve",
+          "relation": "procedure_step",
+          "reason": "Comparison tasks list site material product and energy change before reading rate curves.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_photosynthesis_respiration"
+          }
+        },
+        {
+          "id": "bio_senior_cell_respiration",
+          "relation": "confusable",
+          "reason": "Photosynthesis and respiration are often reversed in raw material product and energy direction.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_photosynthesis_respiration"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "application",
+          "reason": "Photosynthesis and respiration explain energy input and loss in ecosystem questions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_photosynthesis_respiration"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -152,16 +316,98 @@
       "chapter": "生命系统",
       "depth": 2,
       "difficulty": 0.5,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_cell_structure",
+          "relation": "prerequisite",
+          "reason": "Cells and tissues are the foundation for understanding organs and body systems.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_human_body_systems"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_junior_ecology_food_chain",
           "relation": "extends",
-          "reason": "Practice 食物链与生态系统 after 人体系统协调; it is the next topic in the junior_high biology learning sequence.",
+          "reason": "Continue from bio_junior_human_body_systems to bio_junior_ecology_food_chain in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_human_body_systems"
+          }
+        },
+        {
+          "id": "bio_senior_neural_regulation",
+          "relation": "procedure_step",
+          "reason": "System coordination questions trace stimulus receptor center effector and response.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_human_body_systems"
+          }
+        },
+        {
+          "id": "bio_senior_homeostasis",
+          "relation": "confusable",
+          "reason": "Body system coordination is often confused with senior homeostasis feedback models.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_human_body_systems"
+          }
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "application",
+          "reason": "Human body system knowledge is applied in regulation and feedback scenarios.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_human_body_systems"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -223,16 +469,98 @@
       "chapter": "生命系统",
       "depth": 2,
       "difficulty": 0.48,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_photosynthesis_respiration",
+          "relation": "prerequisite",
+          "reason": "Producer energy input must be understood before tracing food chain transfer.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_ecology_food_chain"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_junior_microscope",
           "relation": "extends",
-          "reason": "Practice 显微镜使用 after 食物链与生态系统; it is the next topic in the junior_high biology learning sequence.",
+          "reason": "Continue from bio_junior_ecology_food_chain to bio_junior_microscope in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_ecology_food_chain"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_energy_flow",
+          "relation": "procedure_step",
+          "reason": "Trace producer consumer and decomposer links before explaining energy flow direction.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_ecology_food_chain"
+          }
+        },
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "confusable",
+          "reason": "Food chain energy direction is often confused with cyclic material movement.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_ecology_food_chain"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "application",
+          "reason": "Food chain reasoning is applied when estimating transfer efficiency and biomass change.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_ecology_food_chain"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -490,16 +818,98 @@
       "chapter": "高中生物",
       "depth": 2,
       "difficulty": 0.62,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "prerequisite",
+          "reason": "Inheritance law vocabulary supports later DNA expression and phenotype reasoning.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_dna_expression"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_homeostasis",
           "relation": "extends",
-          "reason": "Practice 稳态与调节 after DNA复制与基因表达; it is the next topic in the senior_high biology learning sequence.",
+          "reason": "Continue from bio_senior_dna_expression to bio_senior_homeostasis in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_dna_expression"
+          }
+        },
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "procedure_step",
+          "reason": "Expression tasks trace DNA transcription translation and regulation before judging phenotype.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_dna_expression"
+          }
+        },
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "relation": "confusable",
+          "reason": "Replication template copying is often confused with expression from gene to protein.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_dna_expression"
+          }
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "application",
+          "reason": "DNA expression knowledge is applied when explaining target gene expression in engineering.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_dna_expression"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -576,16 +986,98 @@
       "chapter": "高中生物",
       "depth": 3,
       "difficulty": 0.68,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_neural_regulation",
+          "relation": "prerequisite",
+          "reason": "Neural regulation provides core pathways before integrated homeostasis analysis.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_homeostasis"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_ecology_energy_flow",
           "relation": "extends",
-          "reason": "Practice 生态系统能量流动 after 稳态与调节; it is the next topic in the senior_high biology learning sequence.",
+          "reason": "Continue from bio_senior_homeostasis to bio_senior_ecology_energy_flow in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_homeostasis"
+          }
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "procedure_step",
+          "reason": "Homeostasis questions trace signal pathway feedback target organ and response.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_homeostasis"
+          }
+        },
+        {
+          "id": "bio_senior_immunity_process",
+          "relation": "confusable",
+          "reason": "Immune regulation is often mixed with nervous and endocrine homeostasis feedback.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.83,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_homeostasis"
+          }
+        },
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "application",
+          "reason": "Homeostasis reasoning is applied in integrated disease exercise and environment scenarios.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_homeostasis"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -662,16 +1154,98 @@
       "chapter": "高中生物",
       "depth": 2,
       "difficulty": 0.64,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_ecology_food_chain",
+          "relation": "prerequisite",
+          "reason": "Food chain direction is the foundation for energy flow and trophic level analysis.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_energy_flow"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_experiment_design",
           "relation": "extends",
-          "reason": "Practice 生物实验设计 after 生态系统能量流动; it is the next topic in the senior_high biology learning sequence.",
+          "reason": "Continue from bio_senior_ecology_energy_flow to bio_senior_experiment_design in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_energy_flow"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "procedure_step",
+          "reason": "Energy flow questions identify trophic levels before calculating transfer efficiency.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_energy_flow"
+          }
+        },
+        {
+          "id": "bio_senior_ecosystem_material_cycle",
+          "relation": "confusable",
+          "reason": "One way energy flow is often confused with recyclable material cycling.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_energy_flow"
+          }
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "application",
+          "reason": "Energy flow limits help explain population size and ecosystem carrying patterns.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_ecology_energy_flow"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -748,16 +1322,98 @@
       "chapter": "高中生物",
       "depth": 3,
       "difficulty": 0.72,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "prerequisite",
+          "reason": "Control design must be mastered before full biological experiment design tasks.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_design"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_meiosis",
           "relation": "extends",
-          "reason": "Practice 减数分裂 after 生物实验设计; it is the next topic in the senior_high biology learning sequence.",
+          "reason": "Continue from bio_senior_experiment_design to bio_senior_meiosis in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_design"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "procedure_step",
+          "reason": "Experiment design tasks define variables and then extract evidence from tables or curves.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_design"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "confusable",
+          "reason": "Designing an experiment is often confused with evaluating errors after data are collected.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_design"
+          }
+        },
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "application",
+          "reason": "Experiment design is applied in integrated biology scenarios with unfamiliar materials.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_experiment_design"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -834,16 +1490,98 @@
       "chapter": "生命系统",
       "depth": 1,
       "difficulty": 0.36,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "data_collection",
+          "relation": "prerequisite",
+          "reason": "Basic data collection habits are needed before recording microscope observations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "chapter_focus": "junior_microscope"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_junior_inheritance_intro",
           "relation": "extends",
-          "reason": "Practice 性状遗传初步 after 显微镜使用; it is the next topic in the junior_high biology learning sequence.",
+          "reason": "Continue from bio_junior_microscope to bio_junior_inheritance_intro in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_microscope"
+          }
+        },
+        {
+          "id": "bio_junior_cell_structure",
+          "relation": "procedure_step",
+          "reason": "Microscope tasks adjust magnification focus the image and then identify cell structures.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_microscope"
+          }
+        },
+        {
+          "id": "bio_senior_mitosis_image",
+          "relation": "confusable",
+          "reason": "Students often confuse microscope operation steps with image based cell phase judgment.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_microscope"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "application",
+          "reason": "Microscope observation is applied when designing controls and recording visible evidence.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.81,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_microscope"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -914,7 +1652,27 @@
       "chapter": "遗传与进化",
       "depth": 2,
       "difficulty": 0.54,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_junior_cell_structure",
+          "relation": "prerequisite",
+          "reason": "Trait inheritance questions assume students can connect cells, chromosomes, and inherited material.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_inheritance_intro"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_genetics_law",
@@ -959,6 +1717,24 @@
             "target_subject": "math",
             "bridge_direction": "biology_to_math",
             "bridge_focus": "inheritance_cross_tree_diagram"
+          }
+        },
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "relation": "application",
+          "reason": "Basic genotype and phenotype inference is reused when pedigree tasks infer inheritance mode.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "junior_inheritance_intro"
           }
         }
       ],
@@ -1029,7 +1805,27 @@
       "chapter": "遗传与进化",
       "depth": 2,
       "difficulty": 0.66,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_mitosis_image",
+          "relation": "prerequisite",
+          "reason": "Mitosis image reading gives the chromosome-count baseline needed before meiosis comparison.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_meiosis"
+          },
+          "required_mastery": 0.6
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_mitosis_image",
@@ -1065,6 +1861,24 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "relation": "procedure_step",
+          "reason": "Students first trace normal homolog separation and then diagnose nondisjunction patterns.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_meiosis"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1142,16 +1956,98 @@
       "chapter": "遗传与进化",
       "depth": 3,
       "difficulty": 0.72,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_evolution_selection",
+          "relation": "prerequisite",
+          "reason": "Natural selection and population concepts prepare students for allele frequency change.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_frequency"
+          },
+          "required_mastery": 0.58
+        }
+      ],
       "related": [
         {
           "id": "bio_senior_biotech_engineering",
           "relation": "extends",
-          "reason": "Practice 现代生物技术工程 after 种群基因频率; it is the next topic in the senior_high biology learning sequence.",
+          "reason": "Continue from bio_senior_gene_frequency to bio_senior_biotech_engineering in the biology learning sequence.",
           "use_cases": [
             "learning_path",
             "practice_planning"
-          ]
+          ],
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_frequency"
+          }
+        },
+        {
+          "id": "senior_classical_probability",
+          "relation": "procedure_step",
+          "reason": "Gene frequency problems compute genotype or allele proportions before interpreting evolution.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "math",
+            "chapter_focus": "senior_gene_frequency"
+          }
+        },
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "relation": "confusable",
+          "reason": "Population allele frequency is often confused with family cross genotype ratios.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_frequency"
+          }
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "application",
+          "reason": "Gene frequency reasoning is applied when population size selection and migration change traits.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_frequency"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1229,8 +2125,83 @@
       "chapter": "生物技术",
       "depth": 3,
       "difficulty": 0.68,
-      "prerequisites": [],
-      "related": [],
+      "prerequisites": [
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "prerequisite",
+          "reason": "Gene engineering flow is required before biotech engineering application tasks.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "biotech_engineering"
+          },
+          "required_mastery": 0.58
+        }
+      ],
+      "related": [
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "procedure_step",
+          "reason": "PCR and electrophoresis provide a verification step for engineered DNA products.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "biotech_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_cell_engineering",
+          "relation": "confusable",
+          "reason": "Students often mix gene engineering and cell engineering when selecting tools for a task.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "biotech_engineering"
+          }
+        },
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "application",
+          "reason": "Biotech engineering is applied in integrated scenarios about medicine agriculture and environment.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "biotech_engineering"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "概念背诵和过程理解脱节",
         "实验变量与对照组不清",
@@ -2561,6 +3532,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_meiosis",
+          "relation": "procedure_step",
+          "reason": "Linkage-map tasks first locate crossing-over in meiosis before using recombination data.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_linkage_exchange"
+          }
+        },
+        {
+          "id": "bio_senior_mendel_ratio_variant",
+          "relation": "confusable",
+          "reason": "Independent assortment ratios and linked-gene ratios look similar until recombination evidence is checked.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_linkage_exchange"
+          }
+        },
+        {
+          "id": "bio_senior_pedigree_analysis",
+          "relation": "application",
+          "reason": "Linkage and recombination reasoning can support inheritance-risk inference in pedigree contexts.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_linkage_exchange"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2959,6 +3984,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_dna_expression",
+          "relation": "procedure_step",
+          "reason": "Expression-regulation explanations first trace transcription and translation before adding control points.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_expression_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_dna_replication_experiment",
+          "relation": "confusable",
+          "reason": "Replication copies DNA, while expression regulation changes RNA or protein output without copying the genome.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_expression_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "application",
+          "reason": "Gene engineering uses promoters, vectors, and expression control to obtain target protein products.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_gene_expression_regulation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3066,6 +4145,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_meiosis_abnormal",
+          "relation": "procedure_step",
+          "reason": "Variation classification checks gene mutation, recombination, and chromosome abnormality as separate paths.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_mutation_variation"
+          }
+        },
+        {
+          "id": "bio_senior_gene_expression_regulation",
+          "relation": "confusable",
+          "reason": "Heritable sequence or chromosome variation is different from temporary expression-level regulation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_mutation_variation"
+          }
+        },
+        {
+          "id": "bio_senior_gene_engineering",
+          "relation": "application",
+          "reason": "Breeding and gene-engineering tasks apply variation sources to select or construct useful traits.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_mutation_variation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3173,6 +4306,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_gene_frequency",
+          "relation": "procedure_step",
+          "reason": "Evolution-selection items often quantify allele-frequency change before explaining adaptation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_evolution_selection"
+          }
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "confusable",
+          "reason": "Population size change is not the same claim as allele-frequency change under selection.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_evolution_selection"
+          }
+        },
+        {
+          "id": "bio_senior_ecology_calculation",
+          "relation": "application",
+          "reason": "Selection explanations are applied when ecological data are used to infer fitness and adaptation.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_evolution_selection"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3280,6 +4467,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_homeostasis",
+          "relation": "procedure_step",
+          "reason": "Neural-regulation answers trace receptor, afferent pathway, center, efferent pathway, and effector.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_neural_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "confusable",
+          "reason": "Neural signals are fast and pathway-specific, while hormone signals are blood-borne and slower.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_neural_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "application",
+          "reason": "Reaction-time and synaptic-transmission data require reading biological curves and tables.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.82,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_neural_regulation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3387,6 +4628,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_homeostasis",
+          "relation": "procedure_step",
+          "reason": "Hormone-regulation questions usually trace stimulus, endocrine response, target organ, and feedback.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_hormone_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_neural_regulation",
+          "relation": "confusable",
+          "reason": "Hormone feedback is easily mixed with reflex-arc signaling but uses different routes and timing.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_hormone_regulation"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "application",
+          "reason": "Blood-glucose and thyroid-hormone feedback items often require curve and table interpretation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_hormone_regulation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3494,6 +4789,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_homeostasis",
+          "relation": "procedure_step",
+          "reason": "Immunity-process answers order antigen recognition, lymphocyte activation, effector action, and memory.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_immunity_process"
+          }
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "confusable",
+          "reason": "Immune regulation uses antigen-specific responses, not endocrine feedback loops.",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_immunity_process"
+          }
+        },
+        {
+          "id": "bio_senior_biotech_engineering",
+          "relation": "application",
+          "reason": "Vaccination, antibody use, and immune detection connect immunity concepts to biotechnology tasks.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_immunity_process"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3601,6 +4950,60 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_experiment_control",
+          "relation": "procedure_step",
+          "reason": "Plant-hormone experiments first control hormone concentration, light, material, and time variables.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_plant_hormone"
+          }
+        },
+        {
+          "id": "bio_senior_hormone_regulation",
+          "relation": "confusable",
+          "reason": "Plant hormones coordinate growth responses, while animal hormones act through endocrine target organs.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_plant_hormone"
+          }
+        },
+        {
+          "id": "bio_senior_cell_engineering",
+          "relation": "application",
+          "reason": "Plant tissue culture applies auxin and cytokinin ratios to control callus and organ differentiation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_plant_hormone"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4971,24 +6374,94 @@
           "id": "bio_senior_exam_integrated_context",
           "required_mastery": 0.58,
           "relation": "prerequisite",
-          "reason": "Master 生物综合情境题 before 生物规范表述; it supplies the foundation for this biology learning path.",
+          "reason": "bio_senior_exam_integrated_context supports prerequisite checks before bio_senior_answer_standardization.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_answer_standardization"
+          }
         }
       ],
       "related": [
         {
           "id": "bio_senior_exam_integrated_context",
           "relation": "co_occurs",
-          "reason": "Review 生物规范表述 together with 生物综合情境题 when diagnosing adjacent biology skills.",
+          "reason": "Review bio_senior_answer_standardization with bio_senior_exam_integrated_context for adjacent biology diagnosis.",
           "use_cases": [
             "diagnosis",
             "learning_path",
             "hint_generation"
-          ]
+          ],
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_answer_standardization"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "procedure_step",
+          "reason": "Standard answers first extract variables data trend and conclusion from the prompt.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_answer_standardization"
+          }
+        },
+        {
+          "id": "bio_senior_exam_integrated_context",
+          "relation": "confusable",
+          "reason": "Students often confuse finding the scenario clue with writing a complete biological statement.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_answer_standardization"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "application",
+          "reason": "Standardized expression is applied when evaluating conclusions limitations and evidence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "learning_path"
+          ],
+          "metadata": {
+            "source_subject": "biology",
+            "target_subject": "biology",
+            "chapter_focus": "senior_answer_standardization"
+          }
         }
       ],
       "typical_misconceptions": [

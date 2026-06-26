@@ -2373,6 +2373,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "procedure_step",
+          "reason": "After identifying public-good features, learners compare provision, financing, and equity trade-offs.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "public_goods_to_policy_tradeoff"
+          }
+        },
+        {
+          "id": "college_micro_externality",
+          "relation": "confusable",
+          "reason": "Public goods create market failure, but the key test is non-excludability and non-rivalry rather than any external cost or benefit.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "public_goods_vs_externality"
+          }
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "application",
+          "reason": "Public-good cases apply market-government boundary reasoning when judging whether collective provision is needed.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "public_goods_to_market_government_boundary"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2824,6 +2881,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "relation": "procedure_step",
+          "reason": "After measuring unemployment, learners use AD-AS to explain demand shocks, output gaps, and labor-market pressure.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "unemployment_to_ad_as"
+          }
+        },
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "confusable",
+          "reason": "Unemployment measures unused labor, while inflation measures price-level change; Phillips-curve links do not make them the same variable.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "unemployment_vs_inflation"
+          }
+        },
+        {
+          "id": "primary_line_chart_trend",
+          "relation": "application",
+          "reason": "Unemployment-rate series apply line-chart trend reading when learners compare peaks, troughs, and recoveries.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "unemployment_series_to_line_chart"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2997,6 +3111,44 @@
             "bridge_direction": "economics_to_math",
             "bridge_focus": "ad_as_to_function_modeling"
           }
+        },
+        {
+          "id": "college_macro_multiplier",
+          "relation": "procedure_step",
+          "reason": "After finding AD-AS equilibrium, learners can trace how spending changes are amplified through aggregate demand.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "ad_as_to_multiplier"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "confusable",
+          "reason": "Micro demand-supply explains one market, while AD-AS explains economy-wide output and the price level.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "micro_supply_demand_vs_ad_as"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3094,6 +3246,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "procedure_step",
+          "reason": "After computing multiplier effects, learners judge how tax or spending changes shift aggregate demand.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "multiplier_to_fiscal_policy"
+          }
+        },
+        {
+          "id": "college_macro_aggregate_demand_supply",
+          "relation": "confusable",
+          "reason": "The multiplier is a change-amplification mechanism, while AD-AS is the diagram used to place the resulting output and price effects.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "multiplier_vs_ad_as"
+          }
+        },
+        {
+          "id": "linear_function_application",
+          "relation": "application",
+          "reason": "Multiplier exercises apply linear-function reasoning when estimating total income change from an initial spending change.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "multiplier_to_linear_function_application"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3333,6 +3542,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "procedure_step",
+          "reason": "After learning deposits, reserves, and money creation, learners analyze how central-bank tools affect money and credit.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "money_banking_to_monetary_policy"
+          }
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "confusable",
+          "reason": "Banking and money creation operate through financial institutions, while fiscal policy changes government spending or taxes.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "money_banking_vs_fiscal_policy"
+          }
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "application",
+          "reason": "Banking regulation applies market-order reasoning because credit creation links private finance with public stability goals.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "banking_to_market_order_policy"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3430,6 +3696,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_macro_exchange_rate",
+          "relation": "procedure_step",
+          "reason": "After analyzing interest-rate and money-supply tools, learners trace effects on capital flows and exchange rates.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "monetary_policy_to_exchange_rate"
+          }
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "confusable",
+          "reason": "Monetary policy uses central-bank money and interest-rate tools, while fiscal policy uses government budgets.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "monetary_vs_fiscal_policy"
+          }
+        },
+        {
+          "id": "primary_line_chart_trend",
+          "relation": "application",
+          "reason": "Monetary-policy analysis applies line-chart trend reading to interest-rate, inflation, and money-supply series.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "monetary_policy_to_line_chart"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3527,6 +3850,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_growth_productivity",
+          "relation": "procedure_step",
+          "reason": "After exchange-rate analysis, learners can connect currency changes to trade competitiveness and long-run productivity.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "exchange_rate_to_growth_productivity"
+          }
+        },
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "confusable",
+          "reason": "Nominal exchange-rate changes are not the same as real purchasing-power changes after inflation adjustment.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "nominal_fx_vs_real_values"
+          }
+        },
+        {
+          "id": "geo_junior_transport_trade",
+          "relation": "application",
+          "reason": "Exchange-rate cases apply to trade geography when learners explain exports, imports, and transport-linked market access.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "exchange_rate_to_trade_geography"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3624,6 +4004,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "procedure_step",
+          "reason": "After defining growth and productivity, learners read data series to compare trends and sources of change.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "growth_productivity_to_data_graph"
+          }
+        },
+        {
+          "id": "college_macro_exchange_rate",
+          "relation": "confusable",
+          "reason": "Exchange-rate appreciation can change trade prices, but productivity growth means more output per input.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "exchange_rate_vs_productivity_growth"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "application",
+          "reason": "Growth and productivity questions apply percentage-growth calculations when comparing output per worker over time.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "growth_productivity_to_growth_rate_problem"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3721,6 +4158,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_information_asymmetry",
+          "relation": "procedure_step",
+          "reason": "After modeling strategic incentives, learners can study how hidden information changes cooperation and bargaining.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "game_theory_to_information_asymmetry"
+          }
+        },
+        {
+          "id": "college_micro_perfect_competition",
+          "relation": "confusable",
+          "reason": "Perfect competition assumes many price takers, while prisoner-dilemma models emphasize strategic interdependence.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "perfect_competition_vs_prisoner_dilemma"
+          }
+        },
+        {
+          "id": "pol_senior_international_relations",
+          "relation": "application",
+          "reason": "Prisoner-dilemma reasoning applies to international cooperation problems where each side weighs unilateral incentives.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "prisoner_dilemma_to_international_relations"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3818,6 +4312,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_cost_benefit",
+          "relation": "procedure_step",
+          "reason": "After diagnosing hidden information, learners compare screening, signaling, and regulation by expected costs and benefits.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "information_asymmetry_to_cost_benefit"
+          }
+        },
+        {
+          "id": "college_micro_monopoly",
+          "relation": "confusable",
+          "reason": "Monopoly is market power from a single seller, while information asymmetry is unequal knowledge between parties.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.85,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "monopoly_vs_information_asymmetry"
+          }
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "application",
+          "reason": "Information-asymmetry cases apply rule-of-law reasoning when disclosure duties and consumer protection reduce hidden risk.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "information_asymmetry_to_rule_of_law"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3952,6 +4503,44 @@
             "target_subject": "math",
             "bridge_direction": "economics_to_math",
             "bridge_focus": "cost_benefit_to_optimization_strategy"
+          }
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "procedure_step",
+          "reason": "After defining costs and benefits, learners gather or read evidence before making a justified comparison.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "cost_benefit_to_data_graph"
+          }
+        },
+        {
+          "id": "college_micro_cost_short_run",
+          "relation": "confusable",
+          "reason": "Short-run cost curves describe firm production costs, while cost-benefit analysis compares total gains and losses from a decision.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "short_run_cost_vs_cost_benefit"
           }
         }
       ],
@@ -4107,6 +4696,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_index_real_nominal",
+          "relation": "procedure_step",
+          "reason": "After reading an economic graph, learners often adjust nominal data into real or indexed values.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "data_graph_to_real_nominal_index"
+          }
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "confusable",
+          "reason": "Statistical chart reading is the tool, while economic data interpretation also requires economic units, timing, and model context.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.82,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "statistical_chart_vs_economic_interpretation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4204,6 +4831,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "procedure_step",
+          "reason": "After converting nominal values into real terms, learners can judge policy trade-offs using comparable evidence.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "real_nominal_to_policy_tradeoff"
+          }
+        },
+        {
+          "id": "college_macro_cpi_inflation",
+          "relation": "confusable",
+          "reason": "CPI inflation measures price-level change, while real-nominal conversion uses that change to adjust economic values.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "cpi_inflation_vs_real_nominal"
+          }
+        },
+        {
+          "id": "history_senior_economic_history",
+          "relation": "application",
+          "reason": "Real-nominal adjustment applies to economic-history comparisons when prices differ across periods.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "real_nominal_to_economic_history"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4301,6 +4985,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "relation": "procedure_step",
+          "reason": "After weighing policy trade-offs, learners synthesize market failures and choose a targeted intervention.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "policy_tradeoff_to_market_failure_synthesis"
+          }
+        },
+        {
+          "id": "college_macro_monetary_policy",
+          "relation": "confusable",
+          "reason": "A policy trade-off is the evaluation problem, while monetary policy is one instrument that may be evaluated.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "policy_tradeoff_vs_monetary_tool"
+          }
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "application",
+          "reason": "Policy trade-off questions apply market-and-government reasoning when balancing efficiency, equity, stability, and growth.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "policy_tradeoff_to_economy_market"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4398,6 +5139,63 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_econ_exam_model_answer",
+          "relation": "procedure_step",
+          "reason": "After synthesizing a market-failure case, learners organize assumptions, evidence, policy choice, and evaluation in an exam answer.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "market_failure_synthesis_to_model_answer"
+          }
+        },
+        {
+          "id": "college_econ_policy_tradeoff",
+          "relation": "confusable",
+          "reason": "Market-failure synthesis diagnoses the cause and intervention, while policy trade-off analysis compares consequences across goals.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "market_failure_synthesis_vs_policy_tradeoff"
+          }
+        },
+        {
+          "id": "geo_senior_regional_sustainability",
+          "relation": "application",
+          "reason": "Market-failure synthesis applies to regional sustainability when environmental costs, public goods, and incentives interact.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "market_failure_to_regional_sustainability"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -4486,6 +5284,63 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "procedure_step",
+          "reason": "A strong economics answer first extracts evidence from data or diagrams before explaining mechanism and evaluation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "model_answer_evidence_step"
+          }
+        },
+        {
+          "id": "college_econ_market_failure_synthesis",
+          "relation": "confusable",
+          "reason": "Market-failure synthesis is a content task, while a model answer is the structured communication of that reasoning.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "content_synthesis_vs_answer_structure"
+          }
+        },
+        {
+          "id": "college_macro_fiscal_policy",
+          "relation": "application",
+          "reason": "Model-answer structure applies to fiscal-policy questions that require mechanism, diagram evidence, and balanced evaluation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source": "economics_ready_batch_20260626",
+            "focus": "model_answer_to_fiscal_policy"
+          }
         }
       ],
       "typical_misconceptions": [

@@ -18710,7 +18710,28 @@
       "related": [
         {
           "id": "real_number_concept",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_number_sense -> real_number_concept extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "实数与代数式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数与运算",
+            "target_chapter": "实数与代数式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19055,7 +19076,28 @@
       "related": [
         {
           "id": "rational_number_operations",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_mixed_operations -> rational_number_operations extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "实数与代数式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数与运算",
+            "target_chapter": "实数与代数式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19196,7 +19238,28 @@
       "related": [
         {
           "id": "approximation_significant_digits",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_estimation -> approximation_significant_digits extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "实数与代数式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数与运算",
+            "target_chapter": "实数与代数式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19767,7 +19830,28 @@
       "related": [
         {
           "id": "profit_discount_problem",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_percent_application -> profit_discount_problem extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "方程与不等式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数与运算",
+            "target_chapter": "方程与不等式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19908,7 +19992,28 @@
       "related": [
         {
           "id": "direct_proportion",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_proportion_application -> direct_proportion extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "一次函数",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数量关系",
+            "target_chapter": "一次函数"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19981,7 +20086,28 @@
       "related": [
         {
           "id": "linear_equation",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_equation_intro -> linear_equation extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "方程与不等式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数量关系",
+            "target_chapter": "方程与不等式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20054,7 +20180,28 @@
       "related": [
         {
           "id": "mathematical_modeling",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_word_problem_modeling -> mathematical_modeling extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "数学思想与综合",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数量关系",
+            "target_chapter": "数学思想与综合"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20127,7 +20274,28 @@
       "related": [
         {
           "id": "travel_problem",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_travel_problem -> travel_problem extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "方程与不等式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数量关系",
+            "target_chapter": "方程与不等式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20200,7 +20368,28 @@
       "related": [
         {
           "id": "engineering_problem",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_engineering_problem -> engineering_problem extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "方程与不等式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数量关系",
+            "target_chapter": "方程与不等式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20409,7 +20598,28 @@
       "related": [
         {
           "id": "coordinate_area",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_perimeter_area -> coordinate_area extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "平面直角坐标系",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与测量",
+            "target_chapter": "平面直角坐标系"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20482,7 +20692,28 @@
       "related": [
         {
           "id": "area_method_geometry",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_triangle_area -> area_method_geometry extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "三角形",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与测量",
+            "target_chapter": "三角形"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20555,7 +20786,28 @@
       "related": [
         {
           "id": "trapezoid",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_trapezoid_area -> trapezoid extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "四边形",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与测量",
+            "target_chapter": "四边形"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20628,7 +20880,28 @@
       "related": [
         {
           "id": "circle_concept",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_circle_intro -> circle_concept extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "圆",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与测量",
+            "target_chapter": "圆"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20837,15 +21110,78 @@
       "related": [
         {
           "id": "translation",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_symmetry_translation_rotation -> translation extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "图形变换",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与变换",
+            "target_chapter": "图形变换"
+          }
         },
         {
           "id": "axis_symmetry",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_symmetry_translation_rotation -> axis_symmetry extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "图形变换",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与变换",
+            "target_chapter": "图形变换"
+          }
         },
         {
           "id": "rotation",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_symmetry_translation_rotation -> rotation extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "图形变换",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与变换",
+            "target_chapter": "图形变换"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20918,7 +21254,28 @@
       "related": [
         {
           "id": "coordinate_system",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_position_direction -> coordinate_system extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "平面直角坐标系",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "图形与变换",
+            "target_chapter": "平面直角坐标系"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20991,7 +21348,28 @@
       "related": [
         {
           "id": "statistical_charts",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_simple_statistics -> statistical_charts extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "统计与概率",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "统计与概率",
+            "target_chapter": "统计与概率"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21064,7 +21442,28 @@
       "related": [
         {
           "id": "mean_median_mode",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_average -> mean_median_mode extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "统计与概率",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "统计与概率",
+            "target_chapter": "统计与概率"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21137,7 +21536,28 @@
       "related": [
         {
           "id": "probability_concept",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_possibility -> probability_concept extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "统计与概率",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "统计与概率",
+            "target_chapter": "统计与概率"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21210,7 +21630,28 @@
       "related": [
         {
           "id": "number_pattern",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_pattern -> number_pattern extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "实数与代数式",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数学思维",
+            "target_chapter": "实数与代数式"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21283,7 +21724,28 @@
       "related": [
         {
           "id": "proof_writing",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_logic_reasoning -> proof_writing extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "数学思想与综合",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数学思维",
+            "target_chapter": "数学思想与综合"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21356,7 +21818,28 @@
       "related": [
         {
           "id": "shortest_path_geometry",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_optimization_strategy -> shortest_path_geometry extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "图形变换",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数学思维",
+            "target_chapter": "图形变换"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21440,7 +21923,28 @@
       "related": [
         {
           "id": "data_project_analysis",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_math_practice_project -> data_project_analysis extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "综合实践与探究",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数学思维",
+            "target_chapter": "综合实践与探究"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21659,7 +22163,28 @@
       "related": [
         {
           "id": "proof_writing",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_logic_proposition -> proof_writing extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "数学思想与综合",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "集合与逻辑",
+            "target_chapter": "数学思想与综合"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21932,7 +22457,28 @@
       "related": [
         {
           "id": "quadratic_monotonicity",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_function_monotonicity -> quadratic_monotonicity extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "二次函数",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "函数",
+            "target_chapter": "二次函数"
+          }
         },
         {
           "id": "senior_function_domain_range",
@@ -22303,7 +22849,28 @@
       "related": [
         {
           "id": "quadratic_roots_relation",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_function_zero -> quadratic_roots_relation extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "二次函数",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "函数",
+            "target_chapter": "二次函数"
+          }
         },
         {
           "id": "senior_function_monotonicity",
@@ -22426,7 +22993,28 @@
       "related": [
         {
           "id": "function_composite_application",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_composite_function -> function_composite_application extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "二次函数",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "函数",
+            "target_chapter": "二次函数"
+          }
         },
         {
           "id": "senior_function_domain_range",
@@ -23016,7 +23604,28 @@
       "related": [
         {
           "id": "mathematical_modeling",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_function_modeling -> mathematical_modeling extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "数学思想与综合",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "函数",
+            "target_chapter": "数学思想与综合"
+          }
         },
         {
           "id": "mathematical_modeling",
@@ -23258,7 +23867,28 @@
       "related": [
         {
           "id": "sine_cosine_tangent",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_trig_definitions -> sine_cosine_tangent extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "锐角三角函数",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "三角函数",
+            "target_chapter": "锐角三角函数"
+          }
         },
         {
           "id": "senior_trig_identities",
@@ -23633,7 +24263,28 @@
       "related": [
         {
           "id": "transformation_coordinates",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_trig_transform -> transformation_coordinates extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "图形变换",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "三角函数",
+            "target_chapter": "图形变换"
+          }
         },
         {
           "id": "senior_trig_graph",
@@ -24527,7 +25178,28 @@
       "related": [
         {
           "id": "coordinate_geometry_proof",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_vector_coordinate -> coordinate_geometry_proof extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "平面直角坐标系",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "平面向量",
+            "target_chapter": "平面直角坐标系"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24700,7 +25372,28 @@
       "related": [
         {
           "id": "geometric_proof_strategy",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_vector_geometry -> geometric_proof_strategy extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "三角形",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "平面向量",
+            "target_chapter": "三角形"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24957,7 +25650,28 @@
       "related": [
         {
           "id": "circle_concept",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_circle_equation -> circle_concept extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "圆",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "解析几何",
+            "target_chapter": "圆"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25046,7 +25760,28 @@
       "related": [
         {
           "id": "circle_position_relation",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_line_circle_position -> circle_position_relation extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "圆",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "解析几何",
+            "target_chapter": "圆"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26056,7 +26791,28 @@
       "related": [
         {
           "id": "quadratic_max_min",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_derivative_extrema -> quadratic_max_min extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "二次函数",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "导数及应用",
+            "target_chapter": "二次函数"
+          }
         },
         {
           "id": "senior_derivative_monotonicity",
@@ -29404,25 +30160,6 @@
           }
         },
         {
-          "id": "college_mean_value_theorem",
-          "relation": "procedure_step",
-          "reason": "Procedure step: use college_mean_value_theorem while solving college_derivative_calculation tasks so the calculus workflow is teachable.",
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.91,
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "math",
-            "chapter_focus": "calculus"
-          }
-        },
-        {
           "id": "college_derivative_existence",
           "relation": "confusable",
           "reason": "Contrast: compare college_derivative_calculation with college_derivative_existence because learners often mix conditions, notation, or conclusions.",
@@ -29559,25 +30296,6 @@
           "id": "college_tangent_line_equation",
           "relation": "confusable",
           "reason": "Contrast: compare college_derivative_calculation with college_tangent_line_equation because learners often mix conditions, notation, or conclusions.",
-          "priority": "core",
-          "context": "diagnosis",
-          "confidence": 0.89,
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "math",
-            "chapter_focus": "calculus"
-          }
-        },
-        {
-          "id": "college_mean_value_theorem",
-          "relation": "confusable",
-          "reason": "Contrast: compare college_derivative_calculation with college_mean_value_theorem because learners often mix conditions, notation, or conclusions.",
           "priority": "core",
           "context": "diagnosis",
           "confidence": 0.89,
@@ -30678,25 +31396,6 @@
           "id": "college_indefinite_integral",
           "relation": "procedure_step",
           "reason": "Procedure step: use college_indefinite_integral while solving college_monotonic_extrema tasks so the calculus workflow is teachable.",
-          "priority": "core",
-          "context": "practice",
-          "confidence": 0.91,
-          "use_cases": [
-            "diagnosis",
-            "learning_path",
-            "hint_generation",
-            "practice_planning"
-          ],
-          "metadata": {
-            "source_subject": "math",
-            "target_subject": "math",
-            "chapter_focus": "calculus"
-          }
-        },
-        {
-          "id": "college_antiderivative",
-          "relation": "procedure_step",
-          "reason": "Procedure step: use college_antiderivative while solving college_monotonic_extrema tasks so the calculus workflow is teachable.",
           "priority": "core",
           "context": "practice",
           "confidence": 0.91,
@@ -44230,7 +44929,28 @@
       "related": [
         {
           "id": "tree_diagram",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: primary_tree_counting -> tree_diagram extends the primary math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "统计与概率",
+            "source_stage": "primary",
+            "target_stage": "cross_stage",
+            "source_chapter": "数学思维",
+            "target_chapter": "统计与概率"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -44315,7 +45035,28 @@
       "related": [
         {
           "id": "classification_discussion",
-          "relation": "extends"
+          "relation": "extends",
+          "reason": "Learning path: senior_derivative_constant_problem -> classification_discussion extends the senior_high math foundation into the cross_stage concept for staged review.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "migrated_from": "legacy_extends_id_relation",
+            "migrated_for": "typed_edge_schema",
+            "chapter_focus": "数学思想与综合",
+            "source_stage": "senior_high",
+            "target_stage": "cross_stage",
+            "source_chapter": "导数及应用",
+            "target_chapter": "数学思想与综合"
+          }
         }
       ],
       "typical_misconceptions": [
