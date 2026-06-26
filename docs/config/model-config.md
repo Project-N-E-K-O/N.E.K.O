@@ -15,6 +15,8 @@ The model for each role is resolved from the **selected assist provider** (`conf
 | Vision | `vision_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
 | Agent | `agent_model` | `glm-5v-turbo` | `claude-opus-4-6` | `qwen3.7-plus` |
 
+> **Note:** `agent_model` is the model used for agent (Computer Use) task grounding. Several providers intentionally ship a strong vision/grounding model here regardless of their own family — e.g. the OpenAI provider's `agent_model` is `glm-5v-turbo` (a GLM vision model). These values are copied verbatim from `config/api_providers.json` and are by design, not typos.
+
 ## Custom model endpoints
 
 Each model role can use a custom API endpoint. This is configured in `core_config.json` or via the Web UI:
