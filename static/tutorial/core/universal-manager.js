@@ -3049,7 +3049,9 @@ class UniversalTutorialManager {
                 this.startTutorialWhenI18nReady(1500);
             });
         } else if (this.currentPage === 'home') {
-            this.setHomeTutorialPending(true);
+            // 老用户每日教程不置 pending：这里多数天根本没 round（要到 maybeStartAvatarFloatingGuideAutoRound
+            // 之后才知道），且老用户 onboarding 早已完成、选人格不会再 pending，无收益却会在无 round 日白挡门控。
+            // 首启并发的 bug 只发生在上面的新用户 Day1 分支。
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
                     this.dispatchStartupGreetingRelease('floating-buttons-not-found');
