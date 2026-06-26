@@ -145,6 +145,27 @@ def _is_assistant_message(m: Any) -> bool:
     return False
 
 
+def _is_tool_turn(m: Any) -> bool:
+    """True for an in-flight assistant turn that carries a tool call — the
+    just-streamed prefix the tool loop appends before re-invoking. Rewriting it
+    would make the model continue from wording that differs from what the user
+    already saw/heard. Covers both wire shapes: OpenAI ``tool_calls`` key and
+    Anthropic ``tool_use`` content block."""
+    if isinstance(m, dict):
+        if m.get("tool_calls"):
+            return True
+        content = m.get("content")
+    else:
+        if getattr(m, "tool_calls", None):
+            return True
+        content = getattr(m, "content", None)
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "tool_use":
+                return True
+    return False
+
+
 def _rewrite_text(
     text: str,
     rules: Iterable[dict],
@@ -230,7 +251,11 @@ def apply_slop_reduction(
     out: list = []
     changed = False
     for m in messages:
-        if not _is_assistant_message(m):
+        # Rewrite only completed plain assistant turns. System instructions and
+        # the user's own words pass through; an in-flight assistant+tool_calls
+        # turn (the just-shown prefix the tool loop re-feeds) is left alone so
+        # the model's continuation matches what the user already saw.
+        if not _is_assistant_message(m) or _is_tool_turn(m):
             out.append(m)
             continue
         if isinstance(m, dict):
@@ -243,13 +268,22 @@ def apply_slop_reduction(
                 out.append(m)
         else:
             content = getattr(m, "content", None)
-            new_content = _rewrite_content(content, rules, rng, counters)
+            # Count into a scratch dict and only credit it if the clone
+            # succeeds, so the log never reports replacements that were dropped
+            # because the message object could not be safely cloned.
+            scratch: dict[str, int] = {}
+            new_content = _rewrite_content(content, rules, rng, scratch)
             if new_content is not content:
                 # Defensive copy of the message object — never mutate the one
                 # that lives in the persisted history.
                 clone = _clone_message(m, new_content)
-                out.append(clone if clone is not None else m)
-                changed = changed or clone is not None
+                if clone is not None:
+                    out.append(clone)
+                    changed = True
+                    for k, v in scratch.items():
+                        counters[k] = counters.get(k, 0) + v
+                else:
+                    out.append(m)
             else:
                 out.append(m)
 
@@ -288,6 +322,9 @@ def _clone_message(m: Any, new_content: Any) -> Any:
             clone.content = new_content
             return clone
     except Exception:
+        # Best-effort: any construction/copy failure means "cannot safely
+        # clone" — fall through to ``return None`` so the caller keeps the
+        # original message untouched rather than risk a corrupted object.
         pass
     return None
 
@@ -303,6 +340,20 @@ def _resolve_short_lang(raw: Optional[str]) -> str:
         return normalize_language_code(raw, format="short") or ""
     except Exception:
         return ""
+
+
+def _is_traditional_chinese(raw: Optional[str]) -> bool:
+    """True for Traditional variants (zh-TW / zh-Hant / zh-HK …), which
+    ``normalize_language_code`` collapses to a full code of ``zh-TW``. The shared
+    ``zh`` rule set is Simplified, so these are skipped (see
+    ``resolve_dialog_slop_lang``)."""
+    if not raw:
+        return False
+    try:
+        from utils.language_utils import normalize_language_code
+        return (normalize_language_code(raw, format="full") or "") == "zh-TW"
+    except Exception:
+        return False
 
 
 def is_slop_filter_enabled() -> bool:
@@ -333,6 +384,11 @@ def resolve_dialog_slop_lang(
         if not is_slop_filter_enabled():
             return None
         raw_lang = user_language_provider() if user_language_provider else None
+        # The shared 'zh' rule set is written in Simplified Chinese. Feeding
+        # Simplified rewrites into a Traditional (zh-TW / Hant) conversation
+        # would nudge the model's script, so skip until a Traditional set exists.
+        if _is_traditional_chinese(raw_lang):
+            return None
         lang = _resolve_short_lang(raw_lang)
         if not lang or not get_rules_for_language(lang):
             return None

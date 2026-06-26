@@ -19,8 +19,14 @@ import random
 
 import pytest
 
-from utils.slop_filter import apply_slop_reduction
-from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+from utils import slop_filter as sf
+from utils.llm_client import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    reset_dialog_slop_lang,
+    set_dialog_slop_lang,
+)
 
 
 # A deterministic synthetic rule set: single-entry pools → exact assertions.
@@ -49,7 +55,7 @@ def _assistant_dict(text):
 
 def test_rewrites_assistant_dict_and_preserves_backref():
     msgs = [_assistant_dict("他的心脏疯狂跳动，久久不能平静。")]
-    out = apply_slop_reduction(msgs, "zz", rules=_RULES)
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES)
     assert out[0]["content"] == "他的胸口闷闷地一沉，久久不能平静。"
 
 
@@ -59,7 +65,7 @@ def test_user_and_system_messages_untouched():
         {"role": "user", "content": "他的心脏疯狂跳动"},     # user's words — must NOT change
         _assistant_dict("他的心脏疯狂跳动"),                 # assistant — should change
     ]
-    out = apply_slop_reduction(msgs, "zz", rules=_RULES)
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES)
     assert out[0]["content"] == "他的心脏疯狂跳动"
     assert out[1]["content"] == "他的心脏疯狂跳动"
     assert out[2]["content"] == "他的胸口闷闷地一沉"
@@ -72,7 +78,7 @@ def test_user_and_system_messages_untouched():
 def test_input_list_and_dicts_not_mutated():
     original = _assistant_dict("嘴角勾起一抹弧度")
     msgs = [original]
-    out = apply_slop_reduction(msgs, "zz", rules=_RULES)
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES)
     # The original dict object is untouched; a new one is returned.
     assert original["content"] == "嘴角勾起一抹弧度"
     assert out is not msgs
@@ -82,7 +88,7 @@ def test_input_list_and_dicts_not_mutated():
 
 def test_basemessage_object_cloned_not_mutated():
     original = AIMessage(content="嘴角勾起一抹弧度")
-    out = apply_slop_reduction([original], "zz", rules=_RULES)
+    out = sf.apply_slop_reduction([original], "zz", rules=_RULES)
     assert original.content == "嘴角勾起一抹弧度"      # original object intact
     assert out[0] is not original
     assert out[0].content == "神色柔和下来"
@@ -91,7 +97,7 @@ def test_basemessage_object_cloned_not_mutated():
 
 def test_humanmessage_object_passes_through_same_identity():
     original = HumanMessage(content="他的心脏疯狂跳动")
-    out = apply_slop_reduction([original], "zz", rules=_RULES)
+    out = sf.apply_slop_reduction([original], "zz", rules=_RULES)
     assert out[0] is original  # unchanged role → same object, allocation-free
 
 
@@ -107,7 +113,7 @@ def test_multimodal_text_part_rewritten_image_part_kept():
             {"type": "image_url", "image_url": {"url": "data:..."}},
         ],
     }
-    out = apply_slop_reduction([msg], "zz", rules=_RULES)
+    out = sf.apply_slop_reduction([msg], "zz", rules=_RULES)
     assert out[0]["content"][0]["text"] == "神色柔和下来"
     assert out[0]["content"][1] == msg["content"][1]  # image part untouched
 
@@ -120,7 +126,7 @@ def test_uncompilable_rule_is_skipped():
     bad = {"id": "ZZ_BAD", "name": "broken", "find": r"(unbalanced", "replace": ["x"]}
     msgs = [_assistant_dict("他的心脏疯狂跳动")]
     # The good rule still applies; the broken one is silently skipped.
-    out = apply_slop_reduction(msgs, "zz", rules=[bad, _HEART])
+    out = sf.apply_slop_reduction(msgs, "zz", rules=[bad, _HEART])
     assert out[0]["content"] == "他的胸口闷闷地一沉"
 
 
@@ -128,7 +134,7 @@ def test_replacement_with_bad_backref_falls_back_to_literal():
     # \2 has no group 2 in the pattern → expand fails → literal template used,
     # never a crash.
     rule = {"id": "ZZ_X", "name": "x", "find": r"心脏", "replace": [r"胸口\2"]}
-    out = apply_slop_reduction([_assistant_dict("心脏")], "zz", rules=[rule])
+    out = sf.apply_slop_reduction([_assistant_dict("心脏")], "zz", rules=[rule])
     assert out[0]["content"] == r"胸口\2"
 
 
@@ -138,26 +144,26 @@ def test_replacement_with_bad_backref_falls_back_to_literal():
 
 def test_dry_run_returns_original_unchanged():
     msgs = [_assistant_dict("他的心脏疯狂跳动")]
-    out = apply_slop_reduction(msgs, "zz", rules=_RULES, dry_run=True)
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES, dry_run=True)
     assert out is msgs
     assert out[0]["content"] == "他的心脏疯狂跳动"
 
 
 def test_empty_rules_is_identity():
     msgs = [_assistant_dict("他的心脏疯狂跳动")]
-    assert apply_slop_reduction(msgs, "zz", rules=[]) is msgs
+    assert sf.apply_slop_reduction(msgs, "zz", rules=[]) is msgs
 
 
 def test_no_assistant_turn_returns_same_list():
     msgs = [{"role": "user", "content": "他的心脏疯狂跳动"}]
-    assert apply_slop_reduction(msgs, "zz", rules=_RULES) is msgs
+    assert sf.apply_slop_reduction(msgs, "zz", rules=_RULES) is msgs
 
 
 def test_each_occurrence_picks_independently_from_pool():
     rule = {"id": "ZZ_P", "name": "pool", "find": r"X", "replace": ["a", "b"]}
     msgs = [_assistant_dict("X" * 200)]
     rng = random.Random(1234)
-    out = apply_slop_reduction(msgs, "zz", rules=[rule], rng=rng)
+    out = sf.apply_slop_reduction(msgs, "zz", rules=[rule], rng=rng)
     body = out[0]["content"]
     assert set(body) == {"a", "b"}  # both pool entries appear across occurrences
 
@@ -167,13 +173,11 @@ def test_each_occurrence_picks_independently_from_pool():
 # ---------------------------------------------------------------------------
 
 def test_resolve_dialog_slop_lang_off_when_switch_disabled(monkeypatch):
-    import utils.slop_filter as sf
     monkeypatch.setattr(sf, "is_slop_filter_enabled", lambda: False)
     assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") is None
 
 
 def test_resolve_dialog_slop_lang_short_code_when_enabled(monkeypatch):
-    import utils.slop_filter as sf
     monkeypatch.setattr(sf, "is_slop_filter_enabled", lambda: True)
     monkeypatch.setattr(sf, "get_rules_for_language", lambda lang: [_HEART] if lang == "zh" else [])
     assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"
@@ -201,9 +205,6 @@ def _bare_chat_openai(model="m", base_url="https://example.test"):
 
 
 def test_params_applies_slop_only_when_contextvar_armed(monkeypatch):
-    import utils.slop_filter as sf
-    from utils import llm_client
-
     monkeypatch.setattr(sf, "get_rules_for_language", lambda lang: _RULES if lang == "zz" else [])
 
     client = _bare_chat_openai()
@@ -217,11 +218,11 @@ def test_params_applies_slop_only_when_contextvar_armed(monkeypatch):
     assert p_off["messages"][1]["content"] == "他的心脏疯狂跳动"
 
     # Armed → assistant content rewritten, system prompt still intact.
-    token = llm_client.set_dialog_slop_lang("zz")
+    token = set_dialog_slop_lang("zz")
     try:
         p_on = client._params(msgs)
     finally:
-        llm_client.reset_dialog_slop_lang(token)
+        reset_dialog_slop_lang(token)
     assert p_on["messages"][0]["content"] == "你是只猫娘"
     assert p_on["messages"][1]["content"] == "他的胸口闷闷地一沉"
 
@@ -263,3 +264,48 @@ def test_all_static_rules_are_valid():
             for entry in pool:
                 for ref in re.findall(r"\\(\d+)", entry):
                     assert int(ref) <= ngroups, f"{rid}: \\{ref} but only {ngroups} groups"
+                # zh replacements must stay gender-neutral: the subject is
+                # carried by a backref (\1), never a hardcoded 他/她, so a
+                # male/1st/2nd-person turn is never misgendered in the rewrite.
+                if lang == "zh":
+                    assert "她" not in entry and "他" not in entry, (
+                        f"{rid}: hardcoded gendered pronoun in replacement {entry!r}"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# in-flight tool-call turns are left alone (prefix the user already saw)
+# ---------------------------------------------------------------------------
+
+def test_openai_tool_call_prefix_not_rewritten():
+    msgs = [
+        {"role": "assistant", "content": "他的心脏疯狂跳动", "tool_calls": [{"id": "c1"}]},
+    ]
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES)
+    assert out is msgs  # untouched → same list identity (no rewrite happened)
+
+
+def test_anthropic_tool_use_block_turn_not_rewritten():
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "他的心脏疯狂跳动"},
+                {"type": "tool_use", "id": "t1", "name": "x", "input": {}},
+            ],
+        },
+    ]
+    out = sf.apply_slop_reduction(msgs, "zz", rules=_RULES)
+    assert out[0]["content"][0]["text"] == "他的心脏疯狂跳动"  # text block left alone
+
+
+# ---------------------------------------------------------------------------
+# Traditional Chinese is skipped (shared zh rules are Simplified)
+# ---------------------------------------------------------------------------
+
+def test_resolve_dialog_slop_lang_skips_traditional_chinese(monkeypatch):
+    monkeypatch.setattr(sf, "is_slop_filter_enabled", lambda: True)
+    monkeypatch.setattr(sf, "get_rules_for_language", lambda lang: [_HEART] if lang == "zh" else [])
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"     # Simplified → apply
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-TW") is None     # Traditional → skip
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-Hant") is None

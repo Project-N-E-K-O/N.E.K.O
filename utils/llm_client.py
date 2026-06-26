@@ -295,16 +295,25 @@ def reset_active_character(token: "contextvars.Token") -> None:
     _active_character.reset(token)
 
 
-def set_dialog_slop_lang(lang: str) -> "contextvars.Token":
+def set_dialog_slop_lang(lang: "str | None") -> "contextvars.Token":
     """Arm slop reduction for the current dialog turn with a short language code
     (``zh`` / ``en`` / …). Subsequent ``ChatOpenAI._params`` calls on this async
-    context rewrite the assistant turns of the outgoing messages. Returns a
-    token; pass it to ``reset_dialog_slop_lang`` in a ``finally``."""
+    context rewrite the assistant turns of the outgoing messages. Pass ``None``
+    to explicitly disarm for this turn (overriding any inherited value). Returns
+    a token; pass it to ``reset_dialog_slop_lang`` in a ``finally``."""
     return _dialog_slop_lang.set(lang)
 
 
 def reset_dialog_slop_lang(token: "contextvars.Token") -> None:
     _dialog_slop_lang.reset(token)
+
+
+def peek_dialog_slop_lang() -> "str | None":
+    """Read the currently-armed dialog slop language (or ``None``). For backends
+    that build their payload outside ``ChatOpenAI._params`` / ``ChatAnthropic.
+    _build_payload`` — e.g. the native-Gemini ``genai`` SDK path — and so must
+    apply slop reduction to their own message copy explicitly."""
+    return _dialog_slop_lang.get()
 
 
 def _substitute_character_placeholders(messages: list, master: str, lanlan: str) -> list:
@@ -707,6 +716,9 @@ class ChatOpenAI:
                 from utils.slop_filter import apply_slop_reduction
                 p["messages"] = apply_slop_reduction(p["messages"], slop_lang)
             except Exception:
+                # Slop reduction is a best-effort enhancement — never let a bug
+                # in it break the LLM call. Swallow and send the original
+                # messages unchanged.
                 pass
 
         # Catch prompt-template leaks: literal {placeholder} that should have
@@ -1480,6 +1492,20 @@ class ChatAnthropic:
                 payload["system"] = _substitute_character_placeholders(
                     [{"role": "system", "content": payload["system"]}], active[0], active[1]
                 )[0]["content"]
+
+        # Slop reduction — mirror of ChatOpenAI._params so Anthropic-compat
+        # dialog backends get the same promptOnly rewriting. ``payload["messages"]``
+        # is the Anthropic-format copy from ``_normalize_messages_to_anthropic``,
+        # so this never touches the caller's history. Only active when the dialog
+        # entry point armed ``_dialog_slop_lang``; must never break the call.
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                payload["messages"] = apply_slop_reduction(payload["messages"], slop_lang)
+            except Exception:
+                # Best-effort enhancement — swallow and send originals on any error.
+                pass
         return payload
 
     def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

@@ -553,19 +553,40 @@ def _with_dialog_slop(method):
     async context, so the context var can never leak past the turn."""
     @functools.wraps(method)
     async def _wrapper(self, *args, **kwargs):
-        token = None
         try:
             lang = resolve_dialog_slop_lang(getattr(self, "_user_language_provider", None))
-            if lang:
-                token = set_dialog_slop_lang(lang)
         except Exception:
-            token = None
+            lang = None
+        # Always set a token (even to None) and reset in finally: this turn must
+        # see exactly ``lang``. If slop is disabled / unavailable, the wrapped
+        # call has to see None — not a stale ``_dialog_slop_lang`` that was
+        # copied into this task's context at creation time (e.g. a proactive
+        # prompt_ephemeral spawned mid-turn). Setting None overrides inheritance.
+        token = set_dialog_slop_lang(lang)
         try:
             return await method(self, *args, **kwargs)
         finally:
-            if token is not None:
-                reset_dialog_slop_lang(token)
+            reset_dialog_slop_lang(token)
     return _wrapper
+
+
+def _slop_reduced_for_genai(messages):
+    """Apply dialog slop reduction to a COPY of ``messages`` for the native
+    Gemini (``genai`` SDK) path, which builds its ``contents`` outside
+    ``ChatOpenAI._params`` / ``ChatAnthropic._build_payload`` and so would
+    otherwise bypass the rewrite. Reads the per-turn ``_dialog_slop_lang`` armed
+    by ``_with_dialog_slop``; no-op when unset. Returns a defensive copy, never
+    mutating the tool-loop's working list (= ``_conversation_history``). Never
+    raises — falls back to the originals on any error."""
+    try:
+        from utils.llm_client import peek_dialog_slop_lang
+        lang = peek_dialog_slop_lang()
+        if not lang:
+            return messages
+        from utils.slop_filter import apply_slop_reduction
+        return apply_slop_reduction(messages, lang)
+    except Exception:
+        return messages
 
 
 class OmniOfflineClient:
@@ -1320,7 +1341,7 @@ class OmniOfflineClient:
             gen_config_kw["tools"] = tools_payload
 
         for tool_iter in range(self.max_tool_iterations):
-            system_instruction, contents = _genai_messages_to_contents(messages)
+            system_instruction, contents = _genai_messages_to_contents(_slop_reduced_for_genai(messages))
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
                 cfg_kw["system_instruction"] = system_instruction
@@ -1567,7 +1588,7 @@ class OmniOfflineClient:
         # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
         # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
-        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        final_system_instruction, final_contents = _genai_messages_to_contents(_slop_reduced_for_genai(messages))
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
