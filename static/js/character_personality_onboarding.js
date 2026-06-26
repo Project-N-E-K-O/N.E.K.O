@@ -203,6 +203,10 @@
         }
 
         async openFromSettings(characterName) {
+            // _tutorialFlowAborted 是 manager 上的持久标志，而 handleHomeTutorialStartupRelease 监听的
+            // startup-greeting-release(released:true) 在教程正常完成/无 round 时也会派发并置位它。设置里的人格
+            // 重选属于独立的一次等待，进等待前清掉上一程教程遗留的 abort，避免越过当前仍在运行的教程锁直接弹出。
+            this._tutorialFlowAborted = false;
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
