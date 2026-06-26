@@ -178,6 +178,20 @@ _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvar
     "_neko_active_character_master_lanlan", default=None
 )
 
+# ────────────────────────────────────────────────────────────────
+# Dialog slop-reduction context — armed by the offline dialog entry points
+# (``OmniOfflineClient.stream_text`` / ``prompt_ephemeral``) for the duration
+# of a single text dialog turn. When set to a short language code,
+# ``ChatOpenAI._params`` rewrites AI-writing clichés in the assistant turns of
+# the *outgoing* messages (promptOnly — the persisted history is untouched). It
+# stays ``None`` for every other LLM call (memory / agent / activity / realtime),
+# so those paths are never touched. Async-safe like ``_active_character``;
+# resolved + reset by a coroutine wrapper so the value never leaks past a turn.
+# ────────────────────────────────────────────────────────────────
+_dialog_slop_lang: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "_neko_dialog_slop_lang", default=None
+)
+
 _DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
 _DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
 _PENDING_CLIENT_CLOSE_TASKS: set[asyncio.Task[None]] = set()
@@ -279,6 +293,18 @@ def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Tok
 
 def reset_active_character(token: "contextvars.Token") -> None:
     _active_character.reset(token)
+
+
+def set_dialog_slop_lang(lang: str) -> "contextvars.Token":
+    """Arm slop reduction for the current dialog turn with a short language code
+    (``zh`` / ``en`` / …). Subsequent ``ChatOpenAI._params`` calls on this async
+    context rewrite the assistant turns of the outgoing messages. Returns a
+    token; pass it to ``reset_dialog_slop_lang`` in a ``finally``."""
+    return _dialog_slop_lang.set(lang)
+
+
+def reset_dialog_slop_lang(token: "contextvars.Token") -> None:
+    _dialog_slop_lang.reset(token)
 
 
 def _substitute_character_placeholders(messages: list, master: str, lanlan: str) -> list:
@@ -667,6 +693,21 @@ class ChatOpenAI:
                 p["messages"] = _substitute_character_placeholders(
                     p["messages"], master, lanlan
                 )
+
+        # Slop reduction (降低人机感): when the dialog entry point armed
+        # ``_dialog_slop_lang`` for this turn, rewrite AI-writing clichés in the
+        # assistant turns of the outgoing messages so the model stops imitating
+        # its own stock phrases. promptOnly — ``p["messages"]`` is already a
+        # normalized copy (``_normalize_messages``), so the persisted history and
+        # the tool-loop's working list are untouched. ``None`` for every
+        # non-dialog call → no-op. Must never break the LLM call.
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                p["messages"] = apply_slop_reduction(p["messages"], slop_lang)
+            except Exception:
+                pass
 
         # Catch prompt-template leaks: literal {placeholder} that should have
         # been .format()-ed before reaching the wire. See
