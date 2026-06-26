@@ -12,8 +12,9 @@ Generic media proxy that works around CORS and Referer restrictions when fetchin
 
 **Query:** `url` — Remote media URL to proxy (must be http/https).
 
-- Files under 10MB are buffered and cached (TTL ~6 hours); the response carries `X-Cache: HIT` / `MISS`.
-- Files of 10MB and above are streamed (`X-Cache: STREAM`), so playback can begin while downloading.
+- The cache/stream decision is made from the upstream `Content-Length` header (probed without downloading the body).
+- Sources reporting a `Content-Length` under 10MB are buffered and cached (TTL ~6 hours); the response carries `X-Cache: HIT` / `MISS`.
+- Sources of 10MB and above — **or that omit/hide `Content-Length`** — are streamed (`X-Cache: STREAM`), so playback can begin while downloading.
 - A 50MB hard size limit is enforced.
 
 ::: info

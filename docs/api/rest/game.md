@@ -321,6 +321,6 @@ Submit a score to the leaderboard.
 { "lanlan_name": "character_name", "session_id": "round-id", "mode": "..." }
 ```
 
-The score is taken from the **server-recorded session totals** for that `lanlan_name` / `session_id` / `mode` (reserved during play), not from the request body — so only a real, in-progress badminton session can submit. An unknown/expired session returns `{ "ok": false, "reason": "invalid_session" }`; a malformed body returns `invalid_body`.
+The body must echo the round's score totals (e.g. `finalScore`); the server **validates them against its own recorded session totals** for that `lanlan_name` / `session_id` / `mode` (reserved during play). A mismatch — or an unknown/expired session — returns `{ "ok": false, "reason": "invalid_session" }`; a malformed body returns `invalid_body`. So a client cannot submit an arbitrary score: only the totals the server actually recorded for an in-progress round are accepted.
 
 **Response:** `{ "ok": true, "rank": <number>, "total_players": <number>, "is_personal_best": <bool> }`, or `{ "ok": false, "reason": "..." }` (e.g. `invalid_session`, `invalid_body`, or an unsupported game type).

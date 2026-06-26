@@ -12,8 +12,9 @@
 
 **查询参数：** `url` — 要代理的远程媒体 URL（必须为 http/https）。
 
-- 小于 10MB 的文件会被缓冲并缓存（TTL 约 6 小时），响应携带 `X-Cache: HIT` / `MISS`。
-- 大于等于 10MB 的文件以流式传输（`X-Cache: STREAM`），可边下载边播放。
+- 缓存/流式的判定依据上游的 `Content-Length` 头（只探测 header、不下载 body）。
+- `Content-Length` 小于 10MB 的来源会被缓冲并缓存（TTL 约 6 小时），响应携带 `X-Cache: HIT` / `MISS`。
+- 大于等于 10MB——**或未提供/隐藏 `Content-Length`** 的来源以流式传输（`X-Cache: STREAM`），可边下载边播放。
 - 强制 50MB 的大小上限。
 
 ::: info
