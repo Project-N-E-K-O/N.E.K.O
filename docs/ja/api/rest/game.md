@@ -28,6 +28,12 @@
 
 **Response:** HTML ページ（JSON ではありません）。
 
+### `POST /api/game/logs`
+
+セッションに診断ログエントリを追記します（フロントエンドからのログ取り込み。CSRF 検証あり）。
+
+**Body:** `session_id`（必須。別名 `sessionId`）、`game_type`（別名 `gameType`、デフォルト `game`）、`lanlan_name`（別名 `lanlanName`）、およびログエントリの内容。`session_id` がない場合は `{ "ok": false, "reason": "missing_session_id" }` を返します。
+
 ### `POST /api/game/logs/enable`
 
 あるセッションの診断ログを手動で有効化します。

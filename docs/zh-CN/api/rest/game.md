@@ -28,6 +28,12 @@
 
 **Response:** 一个 HTML 页面（不是 JSON）。
 
+### `POST /api/game/logs`
+
+为某个会话追加一条诊断日志条目（前端日志写入；经 CSRF 校验）。
+
+**Body:** `session_id`（必填；别名 `sessionId`）、`game_type`（别名 `gameType`，默认 `game`）、`lanlan_name`（别名 `lanlanName`），以及日志条目内容。缺少 `session_id` 返回 `{ "ok": false, "reason": "missing_session_id" }`。
+
 ### `POST /api/game/logs/enable`
 
 手动为某个场次开启诊断日志。

@@ -28,6 +28,12 @@ Human-readable HTML view of the same diagnostic log. Pass `session_id` to view a
 
 **Response:** An HTML page (not JSON).
 
+### `POST /api/game/logs`
+
+Append a diagnostic log entry for a session (frontend log ingestion; CSRF-validated).
+
+**Body:** `session_id` (required; alias `sessionId`), `game_type` (alias `gameType`, default `game`), `lanlan_name` (alias `lanlanName`), plus the log-entry payload. A missing `session_id` returns `{ "ok": false, "reason": "missing_session_id" }`.
+
 ### `POST /api/game/logs/enable`
 
 Manually enable diagnostic logging for a session.
