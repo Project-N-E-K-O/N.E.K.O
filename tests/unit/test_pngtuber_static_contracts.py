@@ -131,8 +131,8 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
         source.index("setState(state"):
         source.index("        currentRemixStateSettings()")
     ]
-    restart_block = source[
-        source.index("restartLayeredAnimationLoop()"):
+    animation_loop_block = source[
+        source.index("startLayeredAnimationLoop(options = {})"):
         source.index("        motionValue(")
     ]
     schedule_block = source[
@@ -146,7 +146,8 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
 
     assert "restartLayeredAnimation !== false" in set_state_block
     assert source.count("this.layeredAnimationStart = performance.now();") == 1
-    assert "this.layeredAnimationStart = performance.now();" in restart_block
+    assert "this.layeredAnimationStart = performance.now();" in animation_loop_block
+    assert "if (!options.preserveTimeline || !this.layeredAnimationStart)" in animation_loop_block
     assert "layeredAnimationStart = performance.now()" not in set_state_block
     assert "layeredAnimationStart = performance.now()" not in schedule_block
     assert "layeredAnimationStart = performance.now()" not in start_block
@@ -154,6 +155,8 @@ def test_pngtuber_mouth_flap_does_not_restart_layered_motion_timeline():
     assert (
         "if (options.restartLayeredAnimation !== false) {\n"
         "                    this.restartLayeredAnimationLoop();\n"
+        "                } else if (!this.layeredAnimationFrame && this.hasMotionLayersForCurrentState()) {\n"
+        "                    this.startLayeredAnimationLoop({ preserveTimeline: true });\n"
         "                }"
     ) in set_state_block
     assert "this.restartLayeredAnimationLoop();" not in schedule_block
@@ -188,6 +191,10 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
         source.index("stateHasMotion(layerState)"):
         source.index("        stateFrameInfo(")
     ]
+    current_motion_block = source[
+        source.index("hasMotionLayersForCurrentState("):
+        source.index("        startLayeredAnimationLoop(")
+    ]
     frame_block = source[
         source.index("stateFrameInfo(layer, layerState, img"):
         source.index("        stateHasFrameAnimation(")
@@ -198,6 +205,8 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
     ]
 
     assert "return features[featureName] === true;" in feature_block
+    assert "hasMotionLayersForCurrentState(stateName = this.state || 'idle')" in current_motion_block
+    assert "this.shouldRenderLayer(layer, stateName)" in current_motion_block
     assert "this.layeredRuntimeFeatureEnabled('layer_motion')" in state_motion_block
     assert "this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')" in state_motion_block
     assert "this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')" in frame_block
@@ -221,6 +230,10 @@ def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
         source.index("restartLayeredAnimationLoop()"):
         source.index("        motionValue(")
     ]
+    animation_loop_block = source[
+        source.index("startLayeredAnimationLoop(options = {})"):
+        source.index("        layeredBreathingEnabled()")
+    ]
     breathing_enabled_block = source[
         source.index("layeredBreathingEnabled()"):
         source.index("        currentLayeredBreathingTransform(")
@@ -241,7 +254,8 @@ def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
     assert "this.layeredBreathingFrame = null;" in constructor_block
     assert "this.layeredBreathingStart = 0;" in constructor_block
     assert "this.stopLayeredBreathingLoop();" in timers_block
-    assert "this.startLayeredBreathingLoop();" in restart_block
+    assert "this.startLayeredAnimationLoop();" in restart_block
+    assert "this.startLayeredBreathingLoop();" in animation_loop_block
     assert "features.layered_breathing === false" in breathing_enabled_block
     assert "return this.isLayeredActive();" in breathing_enabled_block
     assert "scaleY" in breathing_transform_block

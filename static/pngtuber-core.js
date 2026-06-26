@@ -643,17 +643,22 @@
                 && layerState.non_animated_sheet !== true;
         }
 
-        hasMotionLayersForCurrentState() {
+        hasMotionLayersForCurrentState(stateName = this.state || 'idle') {
             if (!this.isLayeredActive()) return false;
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
-            return layers.some((layer) => this.stateHasMotion(this.layerStateForCurrentIndex(layer)));
+            return layers.some((layer) => (
+                this.shouldRenderLayer(layer, stateName)
+                && this.stateHasMotion(this.layerStateForCurrentIndex(layer))
+            ));
         }
 
-        restartLayeredAnimationLoop() {
-            this.stopLayeredAnimationLoop();
+        startLayeredAnimationLoop(options = {}) {
             this.startLayeredBreathingLoop();
+            if (this.layeredAnimationFrame) return;
             if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
-            this.layeredAnimationStart = performance.now();
+            if (!options.preserveTimeline || !this.layeredAnimationStart) {
+                this.layeredAnimationStart = performance.now();
+            }
             const tick = (timestamp) => {
                 if (!this.isLayeredActive()) {
                     this.stopLayeredAnimationLoop();
@@ -663,6 +668,11 @@
                 this.layeredAnimationFrame = requestAnimationFrame(tick);
             };
             this.layeredAnimationFrame = requestAnimationFrame(tick);
+        }
+
+        restartLayeredAnimationLoop() {
+            this.stopLayeredAnimationLoop();
+            this.startLayeredAnimationLoop();
         }
 
         layeredBreathingEnabled() {
@@ -1320,6 +1330,8 @@
                 this.drawLayeredState(this.state);
                 if (options.restartLayeredAnimation !== false) {
                     this.restartLayeredAnimationLoop();
+                } else if (!this.layeredAnimationFrame && this.hasMotionLayersForCurrentState()) {
+                    this.startLayeredAnimationLoop({ preserveTimeline: true });
                 }
                 this.applyTransform();
                 this.updateLockIconPosition();
