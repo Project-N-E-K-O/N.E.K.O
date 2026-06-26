@@ -144,7 +144,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
 
 def test_cat1_question_mark_keyboard_trigger_replaces_drag_sequence():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    pages_router_paths = {str(path.relative_to(PROJECT_ROOT)) for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS}
+    pages_router_paths = {path.relative_to(PROJECT_ROOT).as_posix() for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS}
 
     assert CAT1_QUESTION_MARK_ASSET_PATH.exists()
     assert "static/assets/neko-idle/cat1-question-mark.png" in pages_router_paths
