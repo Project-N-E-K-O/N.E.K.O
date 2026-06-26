@@ -1226,20 +1226,22 @@ _INTENT_LEAK_LABEL_MAXLEN = 40
 def _label_before_colon(line: str) -> str | None:
     """Return the heading label before the first colon in a bullet/line.
 
-    Tries the full-width colon first, then the half-width one, so a
-    half-width colon inside a (zh/ja) description is not mistaken for the
-    separator. Returns None when there is no colon, when nothing precedes
-    it, or when the candidate is implausibly long for a label — a colon
-    that actually lives inside the description.
+    Splits on the *earliest* colon, whether full-width (zh/ja) or half-width
+    (en/ko/ru/es/pt), so the label boundary is found regardless of which
+    colon style a line uses. Returns None when there is no colon, when
+    nothing precedes it, or when the candidate is implausibly long for a
+    label — a colon that actually lives inside the description.
     """
+    sep_idx = -1
     for sep in ('：', ':'):
         idx = line.find(sep)
-        if idx <= 0:
-            continue
-        label = line[:idx].strip()
-        if label and '\n' not in label and len(label) <= _INTENT_LEAK_LABEL_MAXLEN:
-            return label
+        if idx > 0 and (sep_idx == -1 or idx < sep_idx):
+            sep_idx = idx
+    if sep_idx <= 0:
         return None
+    label = line[:sep_idx].strip()
+    if label and '\n' not in label and len(label) <= _INTENT_LEAK_LABEL_MAXLEN:
+        return label
     return None
 
 

@@ -93,6 +93,14 @@ def test_strip_latin_label_case_insensitive() -> None:
     ) == "that trip you mentioned?"
 
 
+def test_strip_same_line_mixed_colon_takes_earliest() -> None:
+    # Half-width separator, full-width colon later in the body: must split on
+    # the EARLIEST colon, else the leading label is mis-parsed and survives.
+    assert _strip_proactive_intent_label_leak(
+        "Memory cues: that trip：mentioned?"
+    ) == "that trip：mentioned?"
+
+
 # ── False-positive guard ────────────────────────────────────────────
 
 

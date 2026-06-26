@@ -2053,13 +2053,16 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
             text = rest
             continue
 
-        # Case 2: "<label>：<content>" sharing one line.
+        # Case 2: "<label>：<content>" sharing one line. Take the EARLIEST
+        # colon (full- or half-width), not full-width-first — otherwise a
+        # half-width separator followed by a full-width colon in the body
+        # (e.g. "Memory cues: ...：...") would split on the wrong colon and
+        # leave the leading label unstripped.
         sep_idx = -1
         for sep in ('：', ':'):
             idx = first.find(sep)
-            if idx > 0:
+            if idx > 0 and (sep_idx == -1 or idx < sep_idx):
                 sep_idx = idx
-                break
         if sep_idx > 0:
             cand = _norm(first[:sep_idx]).casefold()
             after = first[sep_idx + 1:].strip()
@@ -7291,6 +7294,11 @@ async def proactive_chat(request: Request):
         if _leak_tag and not source_tag:
             source_tag = _leak_tag
         response_text = full_text.strip()
+        # 剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成首行小标题
+        # 念出来的泄漏（前端 realistic 模式会按换行切成单独一个气泡）。必须在下方
+        # 重复度 / BM25 防复读判定**之前**剥：否则被泄漏标签做前缀的复读句会因前缀
+        # 稀释相似度而绕过 dedup。这些标签纯脚手架，绝不该进 TTS / 历史。
+        response_text = _strip_proactive_intent_label_leak(response_text)
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
@@ -7566,6 +7574,9 @@ async def proactive_chat(request: Request):
             # 采用 regen 文本接着走下游 source_tag / TTS 投递
             response_text = _cleaned
             full_text = _cleaned
+            # regen 产出同样可能带泄漏标签，且它直接走投递 / 录入 corpus（不再过
+            # 上方 dedup），故在此再剥一次。
+            response_text = _strip_proactive_intent_label_leak(response_text)
 
         has_music_topic = 'music' in active_channels
 
@@ -7686,11 +7697,6 @@ async def proactive_chat(request: Request):
         # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
         # 分钟 TTL 兜底过期。
         _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
-        # 输出侧兜底：剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成
-        # 首行小标题念出来的泄漏（前端 realistic 模式会把它按换行切成单独一个气泡）。
-        # 这些标签纯属脚手架，绝不该进 TTS / 历史。response_text 同时喂 TTS 与 finish
-        # 历史写入，故在投递前一次性清掉即可覆盖 tagless / tagged / BM25-regen 全部路径。
-        response_text = _strip_proactive_intent_label_leak(response_text)
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
