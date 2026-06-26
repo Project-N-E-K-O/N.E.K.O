@@ -13,24 +13,14 @@ from fastapi import APIRouter, Body, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from .pngtuber_importers import PNGTuberImportError, import_pngtuber_package
-from .pngtuber_protocol import (
-    LAYERED_CANVAS_ADAPTER,
-    NEKO_PNGTUBER_ADAPTER,
-    NEKO_PNGTUBER_METADATA_FORMAT,
-    PNGTUBER_EXTENSIONS,
-    PNGTUBER_IMAGE_KEYS,
-    PNGTUBER_METADATA_FILENAMES,
-    PNGTUBER_USER_PATH,
-    adapter_for_metadata,
-    is_neko_pngtuber_v2_model,
-    validate_neko_pngtuber_v2_package,
-)
 from .shared_state import get_config_manager
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/pngtuber", tags=["pngtuber"])
 logger = get_module_logger(__name__, "Main")
 
+PNGTUBER_USER_PATH = "/user_pngtuber"
+PNGTUBER_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_PACKAGE_SIZE = 250 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
@@ -43,15 +33,8 @@ def _slugify_name(name: str) -> str:
 
 
 def _safe_relative_path(raw_path: str) -> PurePosixPath | None:
-    normalized = (raw_path or "").replace("\\", "/").strip()
+    normalized = (raw_path or "").replace("\\", "/").strip("/")
     if not normalized:
-        return None
-    if normalized.startswith("/"):
-        return None
-    if urlsplit(normalized).scheme:
-        return None
-    raw_parts = normalized.split("/")
-    if any(part in ("", ".", "..") for part in raw_parts):
         return None
     rel = PurePosixPath(normalized)
     if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
@@ -69,8 +52,6 @@ def _resolve_delete_folder_from_key(key: str) -> str | None:
         normalized = parsed.path
     else:
         normalized = normalized.split("?", 1)[0].split("#", 1)[0]
-    if normalized.startswith("/"):
-        normalized = normalized[1:]
 
     rel = _safe_relative_path(normalized)
     if rel is None:
@@ -109,7 +90,18 @@ def _read_model_json(package_dir: Path) -> dict:
 def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
     raw = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     result: dict = {}
-    for field in PNGTUBER_IMAGE_KEYS:
+    image_fields = [
+        "idle_image",
+        "talking_image",
+        "drag_image",
+        "click_image",
+        "happy_image",
+        "sad_image",
+        "angry_image",
+        "surprised_image",
+    ]
+
+    for field in image_fields:
         value = raw.get(field, "")
         if not isinstance(value, str) or not value.strip():
             result[field] = ""
@@ -134,13 +126,11 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
 
     adapter = raw.get("adapter")
     if isinstance(adapter, str):
-        result["adapter"] = adapter_for_metadata(result["layered_metadata"], adapter)
+        result["adapter"] = adapter
     elif result["layered_metadata"]:
-        result["adapter"] = adapter_for_metadata(result["layered_metadata"])
+        result["adapter"] = "layered_canvas_v1"
     else:
         result["adapter"] = ""
-    result["metadata"] = result["layered_metadata"]
-    result["protocol"] = NEKO_PNGTUBER_METADATA_FORMAT if result["adapter"] == NEKO_PNGTUBER_ADAPTER else ""
 
     result["scale"] = raw.get("scale", 1)
     result["offset_x"] = raw.get("offset_x", 0)
@@ -164,28 +154,6 @@ def _validate_model_package(package_dir: Path, model_json: dict) -> tuple[bool, 
         return False, "model.json 的 model_type 必须是 pngtuber"
 
     config = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
-    if not isinstance(config, dict):
-        return False, "model.json 必须包含 pngtuber 配置"
-
-    if is_neko_pngtuber_v2_model(model_json):
-        ok, error = validate_neko_pngtuber_v2_package(package_dir, model_json)
-        if not ok:
-            return False, error
-    else:
-        metadata_ref = config.get("layered_metadata") or config.get("metadata")
-        if metadata_ref:
-            if not isinstance(metadata_ref, str):
-                return False, "PNGTuber metadata 路径无效"
-            metadata_rel = _safe_relative_path(metadata_ref)
-            if metadata_rel is None:
-                return False, f"PNGTuber metadata 路径无效: {metadata_ref}"
-            if metadata_rel.name not in PNGTUBER_METADATA_FILENAMES:
-                return False, f"PNGTuber metadata 文件名不受支持: {metadata_ref}"
-            if not (package_dir / metadata_rel.as_posix()).is_file():
-                return False, f"PNGTuber metadata 引用的文件不存在: {metadata_ref}"
-            if adapter_for_metadata(metadata_ref, str(config.get("adapter") or "")) != LAYERED_CANVAS_ADAPTER:
-                return False, "PNGTuber legacy metadata 必须使用 layered_canvas_v1 adapter"
-
     idle_image = config.get("idle_image")
     if not isinstance(idle_image, str) or not idle_image.strip():
         return False, "PNGTuber 模型必须配置 idle_image"
@@ -273,13 +241,10 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
         if target_dir.exists():
             return JSONResponse(status_code=400, content={"success": False, "error": f"PNGTuber模型 {model_dir_name} 已存在，请先删除或重命名"})
 
-        model_json["model_type"] = "pngtuber"
-        source_format = str(model_json.get("source_format") or import_result.source_format)
-        model_json["source_format"] = source_format
-        pngtuber_config = model_json.get("pngtuber")
-        if isinstance(pngtuber_config, dict):
-            pngtuber_config["source_format"] = source_format
         normalized_config = _normalize_pngtuber_config(model_dir_name, model_json)
+        model_json["model_type"] = "pngtuber"
+        model_json["pngtuber"] = normalized_config
+        model_json["source_format"] = import_result.source_format
         with open(temp_dir / "model.json", "w", encoding="utf-8") as f:
             json.dump(model_json, f, ensure_ascii=False, indent=2)
 
@@ -294,7 +259,7 @@ async def upload_pngtuber_model(files: list[UploadFile] = File(...)):
             "folder": model_dir_name,
             "url": f"{PNGTUBER_USER_PATH}/{model_dir_name}/model.json",
             "pngtuber": normalized_config,
-            "source_format": source_format,
+            "source_format": import_result.source_format,
             "warnings": import_result.warnings,
             "file_size": total_size,
         })

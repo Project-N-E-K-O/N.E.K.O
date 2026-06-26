@@ -3,6 +3,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_JS = PROJECT_ROOT / "frontend" / "plugin-manager" / "src" / "components" / "plugin" / "hosted" / "ui-kit" / "runtime.js"
+TSX_RUNTIME_TS = PROJECT_ROOT / "frontend" / "plugin-manager" / "src" / "components" / "plugin" / "hosted" / "tsxRuntime.ts"
 
 
 def test_radio_group_generates_stable_name_across_renders():
@@ -83,3 +84,28 @@ def test_hosted_api_requests_use_precise_target_origin():
 
     assert "hostedTargetOrigin()" in request_block
     assert "parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, '*');" not in request_block
+
+
+def test_hosted_error_reports_use_precise_target_origin():
+    source = RUNTIME_JS.read_text(encoding="utf-8")
+    error_block = source[
+        source.index("function reportHostedRuntimeError(scope, error, details)"):
+        source.index("function createInlineError(title, error, details)")
+    ]
+
+    assert "hostedTargetOrigin()" in error_block
+    assert "payload: { message, scope, details: details || {}, fatal: false } }, '*')" not in error_block
+
+
+def test_hosted_tsx_fatal_error_reports_use_precise_target_origin():
+    source = TSX_RUNTIME_TS.read_text(encoding="utf-8")
+    error_block = source[
+        source.index("function __hostedTargetOrigin()"):
+        source.index("window.__NekoRefreshHostedPayload = function(context)")
+    ]
+
+    assert "function __hostedTargetOrigin()" in error_block
+    assert "neko-hosted-surface-open-logs', payload: meta }, __hostedTargetOrigin())" in error_block
+    assert "neko-hosted-surface-error', payload: { message, fatal: true, scope: 'surface.render', details: meta } }, __hostedTargetOrigin())" in error_block
+    assert "payload: meta }, '*')" not in error_block
+    assert "details: meta } }, '*')" not in error_block

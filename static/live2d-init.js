@@ -224,14 +224,7 @@ window.LanLan1.setEmotion = function(emotion) {
         }
         return;
     }
-    if (activeType === 'pngtuber') {
-        if (window.pngtuberManager && typeof window.pngtuberManager.setEmotion === 'function') {
-            window.pngtuberManager.setEmotion(emotion, { source: 'LanLan1.setEmotion' });
-        } else if (typeof window.performPNGTuberEmotion === 'function') {
-            window.performPNGTuberEmotion(emotion, { source: 'LanLan1.setEmotion' });
-        }
-        return;
-    }
+    if (activeType === 'pngtuber') return;
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);
@@ -264,28 +257,13 @@ window.LanLan1.clearEmotionEffects = function() {
         if (window.vrmManager && window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
         return;
     }
-    if (activeType === 'pngtuber') {
-        if (window.pngtuberManager && typeof window.pngtuberManager.clearEmotion === 'function') {
-            window.pngtuberManager.clearEmotion({ source: 'LanLan1.clearEmotionEffects' });
-        } else if (typeof window.performPNGTuberEmotion === 'function') {
-            window.performPNGTuberEmotion('neutral', { source: 'LanLan1.clearEmotionEffects' });
-        }
-        return;
-    }
+    if (activeType === 'pngtuber') return;
     if (window.live2dManager) window.live2dManager.clearEmotionEffects();
 };
 
 window.LanLan1.clearExpression = function() {
     const activeType = _getActiveModelType();
-    if (activeType === 'pngtuber') {
-        if (window.pngtuberManager && typeof window.pngtuberManager.clearEmotion === 'function') {
-            window.pngtuberManager.clearEmotion({ source: 'LanLan1.clearExpression' });
-        } else if (typeof window.performPNGTuberEmotion === 'function') {
-            window.performPNGTuberEmotion('neutral', { source: 'LanLan1.clearExpression' });
-        }
-        return;
-    }
-    if (activeType === 'mmd' || activeType === 'vrm') return;
+    if (activeType === 'mmd' || activeType === 'vrm' || activeType === 'pngtuber') return;
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
 

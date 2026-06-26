@@ -3,11 +3,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
-PNGTUBER_PROTOCOL_PATH = PROJECT_ROOT / "static" / "neko-pngtuber-protocol.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-MODEL_MANAGER_PATH = PROJECT_ROOT / "static" / "js" / "model_manager.js"
 
 
 def test_pngtuber_mobile_web_detection_uses_canonical_width_predicate():
@@ -38,43 +36,6 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     assert "normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;" in normalize_block
     assert "normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;" in normalize_block
     assert "centerPreview ? 0" not in normalize_block
-
-
-def test_pngtuber_protocol_normalize_preserves_saved_layout_fields():
-    source = PNGTUBER_PROTOCOL_PATH.read_text(encoding="utf-8")
-    normalize_block = source[
-        source.index("function normalizeConfig(config, options = {})"):
-        source.index("function createLoadPlan(config, options = {})")
-    ]
-
-    assert "normalized.offset_x = Number.isFinite(Number(source.offset_x)) ? Number(source.offset_x) : 0;" in normalize_block
-    assert "normalized.offset_y = Number.isFinite(Number(source.offset_y)) ? Number(source.offset_y) : 0;" in normalize_block
-    assert "normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));" in normalize_block
-    assert "normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;" in normalize_block
-    assert "normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;" in normalize_block
-    assert "centerPreview ? 0" not in normalize_block
-
-
-def test_pngtuber_protocol_metadata_base_uses_source_idle_not_placeholder():
-    source = PNGTUBER_PROTOCOL_PATH.read_text(encoding="utf-8")
-    normalize_block = source[
-        source.index("function normalizeConfig(config, options = {})"):
-        source.index("function createLoadPlan(config, options = {})")
-    ]
-
-    assert "const idleImageForMetadataBase = normalizeAssetPath(source.idle_image);" in normalize_block
-    assert "resolveSiblingAsset(\n            idleImageForMetadataBase," in normalize_block
-    assert "resolveSiblingAsset(\n            normalized.idle_image," not in normalize_block
-
-
-def test_pngtuber_protocol_keeps_legacy_layered_canvas_compatibility():
-    source = PNGTUBER_PROTOCOL_PATH.read_text(encoding="utf-8")
-
-    assert "const LEGACY_LAYERED_ADAPTER = 'layered_canvas_v1';" in source
-    assert "pngtube-remix" in source
-    assert "pngtuber-plus" in source
-    assert "live2d-auto-layer" in source
-    assert "runtime === 'layered_canvas'" in source
 
 
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
@@ -161,31 +122,3 @@ def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
     assert "pngtuberContainer.style.pointerEvents = 'none';" in interpage_source
     assert "pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');" in app_ui_source
     assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" not in app_ui_source
-
-
-def test_pngtuber_model_manager_diagnostics_restricts_urls_and_times_out_fetch():
-    source = MODEL_MANAGER_PATH.read_text(encoding="utf-8")
-    diagnostics_block = source[
-        source.index("function getPNGTuberDiagnosticMetadataUrl(pngtuberConfig)"):
-        source.index("async function inspectPNGTuberLayerAssets(metadata, metadataUrl)")
-    ]
-
-    assert "function isSafePNGTuberDiagnosticUrl(value)" in diagnostics_block
-    assert "resolved.origin === window.location.origin" in diagnostics_block
-    assert "new AbortController()" in diagnostics_block
-    assert "signal: controller.signal" in diagnostics_block
-    assert "finally {\n                clearTimeout(timer);" in diagnostics_block
-    assert "return isSafePNGTuberDiagnosticUrl(resolved) ? resolved : '';" in diagnostics_block
-    assert "resolve({ ok: false, reason: 'unsafe url' });" in diagnostics_block
-
-
-def test_pngtuber_debug_state_uses_single_final_method_with_protocol_fields():
-    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
-    assert source.count("        getDebugState()") == 1
-    debug_block = source[
-        source.index("        getDebugState()"):
-        source.index("        setSpeaking(isSpeaking)", source.index("        getDebugState()"))
-    ]
-
-    for field in ("protocol:", "plannedMode:", "metadataUrl:", "lastError:", "fallback:", "loadedLayerImages:"):
-        assert field in debug_block

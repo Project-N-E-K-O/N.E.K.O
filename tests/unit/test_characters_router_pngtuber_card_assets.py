@@ -82,6 +82,8 @@ def test_restore_imported_pngtuber_avatar_config_without_copied_assets():
                 "pngtuber": {
                     "idle_image": "/static/pngtuber/default/idle.png",
                     "talking_image": "https://example.invalid/pngtuber/talk.webp",
+                    "metadata": "/static/pngtuber/default/metadata.pngtube-remix.json",
+                    "protocol": "neko.pngtuber.v2",
                     "offset_x": 32,
                     "offset_y": -16,
                     "mirror": True,
@@ -106,6 +108,8 @@ def test_restore_imported_pngtuber_avatar_config_without_copied_assets():
     assert pngtuber["offset_x"] == 32
     assert pngtuber["offset_y"] == -16
     assert pngtuber["mirror"] is True
+    assert "metadata" not in pngtuber
+    assert "protocol" not in pngtuber
 
 
 def test_restore_imported_pngtuber_avatar_config_after_mutable_field_filter():

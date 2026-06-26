@@ -1,7 +1,6 @@
 import copy
 import importlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -120,6 +119,8 @@ def test_pngtuber_reserved_schema_includes_mobile_layout_fields():
     assert pngtuber_schema['mobile_scale'] == (int, float)
     assert pngtuber_schema['mobile_offset_x'] == (int, float)
     assert pngtuber_schema['mobile_offset_y'] == (int, float)
+    assert 'metadata' not in pngtuber_schema
+    assert 'protocol' not in pngtuber_schema
 
 
 @pytest.mark.asyncio
@@ -131,7 +132,7 @@ async def test_pngtuber_save_preserves_and_bounds_mobile_layout_fields(monkeypat
             'pngtuber': {
                 'idle_image': '/static/pngtuber/default/idle.png',
                 'talking_image': '/static/pngtuber/default/talking.png',
-                'metadata': '/static/pngtuber/default/metadata.neko-pngtuber.v2.json',
+                'layered_metadata': '/static/pngtuber/default/metadata.pngtube-remix.json',
                 'scale': 1.4,
                 'offset_x': -42,
                 'offset_y': 84,
@@ -163,7 +164,7 @@ async def test_pngtuber_save_defaults_missing_mobile_layout_fields(monkeypatch):
             'model_type': 'pngtuber',
             'pngtuber': {
                 'idle_image': '/static/pngtuber/default/idle.png',
-                'metadata': '/static/pngtuber/default/metadata.neko-pngtuber.v2.json',
+                'layered_metadata': '/static/pngtuber/default/metadata.pngtube-remix.json',
                 'scale': 2,
                 'offset_x': 12,
                 'offset_y': -34,
@@ -204,13 +205,75 @@ async def test_pngtuber_save_accepts_image_mode_without_metadata(monkeypatch):
 
     assert pngtuber['idle_image'] == '/static/simple-pngtuber/idle.png'
     assert pngtuber['talking_image'] == '/static/simple-pngtuber/talking.png'
-    assert pngtuber['metadata'] == ''
     assert pngtuber['layered_metadata'] == ''
     assert pngtuber['adapter'] == ''
-    assert pngtuber['protocol'] == ''
     assert pngtuber['scale'] == 1.2
     assert pngtuber['offset_x'] == 24
     assert pngtuber['offset_y'] == -18
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_save_drops_metadata_and_protocol_fields(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/simple-pngtuber/idle.png',
+                'talking_image': '/static/simple-pngtuber/talking.png',
+                'metadata': '/static/simple-pngtuber/metadata.pngtube-remix.json',
+                'protocol': 'neko.pngtuber.v2',
+                'scale': 1.2,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert 'metadata' not in pngtuber
+    assert 'protocol' not in pngtuber
+    assert pngtuber['layered_metadata'] == ''
+    assert pngtuber['adapter'] == ''
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('layered_metadata', 'expected_error'),
+    [
+        (
+            'https://example.invalid/metadata.pngtube-remix.json',
+            'PNGTuber分层metadata路径必须来自本地PNGTube模型包',
+        ),
+        (
+            '/static/pngtuber/default/anything.json',
+            'PNGTuber metadata 文件名不受支持',
+        ),
+    ],
+)
+async def test_pngtuber_save_rejects_remote_or_unknown_layered_metadata(
+    monkeypatch,
+    layered_metadata,
+    expected_error,
+):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/simple-pngtuber/idle.png',
+                'talking_image': '/static/simple-pngtuber/talking.png',
+                'layered_metadata': layered_metadata,
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert body['success'] is False
+    assert expected_error in body['error']
+    assert saved is None
 
 
 @pytest.mark.asyncio
@@ -292,12 +355,12 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
 
 
 @pytest.mark.asyncio
-async def test_pngtuber_save_accepts_legacy_auto_layer_metadata(monkeypatch, tmp_path):
+async def test_pngtuber_save_infers_pngtube_remix_metadata(monkeypatch, tmp_path):
     characters = _build_characters_fixture()
     pngtuber_dir = tmp_path / "pngtuber"
     avatar_dir = pngtuber_dir / "avatar"
     avatar_dir.mkdir(parents=True)
-    (avatar_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
+    (avatar_dir / "metadata.pngtube-remix.json").write_text("{}", encoding="utf-8")
 
     config_manager = DummyConfigManager(characters)
     config_manager.pngtuber_dir = pngtuber_dir
@@ -328,20 +391,18 @@ async def test_pngtuber_save_accepts_legacy_auto_layer_metadata(monkeypatch, tmp
     assert body['success'] is True
     catgirl = config_manager.saved_characters['猫娘']['测试角色']
     pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber', default={})
-    assert pngtuber['metadata'] == '/user_pngtuber/avatar/metadata.live2d-auto-layer.json'
-    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.live2d-auto-layer.json'
+    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.pngtube-remix.json'
     assert pngtuber['adapter'] == 'layered_canvas_v1'
-    assert pngtuber['protocol'] == ''
 
 
 @pytest.mark.asyncio
-async def test_pngtuber_save_infers_neko_v2_metadata_and_adapter(monkeypatch, tmp_path):
+async def test_pngtuber_save_ignores_unknown_metadata_name_and_infers_supported_metadata(monkeypatch, tmp_path):
     characters = _build_characters_fixture()
     pngtuber_dir = tmp_path / "pngtuber"
     avatar_dir = pngtuber_dir / "avatar"
     avatar_dir.mkdir(parents=True)
-    (avatar_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
-    (avatar_dir / "metadata.live2d-auto-layer.json").write_text("{}", encoding="utf-8")
+    (avatar_dir / "metadata.unknown.json").write_text("{}", encoding="utf-8")
+    (avatar_dir / "metadata.pngtuber-plus.json").write_text("{}", encoding="utf-8")
 
     config_manager = DummyConfigManager(characters)
     config_manager.pngtuber_dir = pngtuber_dir
@@ -372,70 +433,9 @@ async def test_pngtuber_save_infers_neko_v2_metadata_and_adapter(monkeypatch, tm
     assert body['success'] is True
     catgirl = config_manager.saved_characters['猫娘']['测试角色']
     pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber', default={})
-    assert pngtuber['metadata'] == '/user_pngtuber/avatar/metadata.neko-pngtuber.v2.json'
-    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.neko-pngtuber.v2.json'
-    assert pngtuber['adapter'] == 'neko_pngtuber_v2'
-    assert pngtuber['protocol'] == 'neko.pngtuber.v2'
+    assert pngtuber['layered_metadata'] == '/user_pngtuber/avatar/metadata.pngtuber-plus.json'
+    assert pngtuber['adapter'] == 'layered_canvas_v1'
     assert get_reserved(catgirl, 'avatar', 'model_type') == 'pngtuber'
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ('source_prefix', 'root_attr', 'relative_dir'),
-    [
-        ('static', 'project_root', Path('static') / 'pngtuber' / 'nested'),
-        ('workshop', 'workshop_dir', Path('pack') / 'nested'),
-    ],
-)
-async def test_pngtuber_save_infers_metadata_from_idle_image_directory(
-    monkeypatch,
-    tmp_path,
-    source_prefix,
-    root_attr,
-    relative_dir,
-):
-    characters = _build_characters_fixture()
-    project_root = tmp_path / "project"
-    workshop_dir = tmp_path / "workshop"
-    model_dir = (project_root / relative_dir) if root_attr == 'project_root' else (workshop_dir / relative_dir)
-    model_dir.mkdir(parents=True)
-    (model_dir / "metadata.neko-pngtuber.v2.json").write_text("{}", encoding="utf-8")
-
-    config_manager = DummyConfigManager(characters)
-    config_manager.project_root = project_root
-    config_manager.workshop_dir = workshop_dir
-
-    async def _noop_initialize():
-        return None
-
-    async def _noop_init_one(name, *, is_new=False):
-        return None
-
-    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
-    monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
-    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
-
-    url_dir = f"/{source_prefix}/pngtuber/nested" if source_prefix == 'static' else f"/{source_prefix}/pack/nested"
-    response = await characters_router_module.update_catgirl_l2d(
-        '测试角色',
-        DummyRequest({
-            'model_type': 'pngtuber',
-            'pngtuber': {
-                'idle_image': f'{url_dir}/idle.png',
-                'talking_image': f'{url_dir}/talking.png',
-            },
-        }),
-    )
-    body = json.loads(response.body)
-
-    assert response.status_code == 200
-    assert body['success'] is True
-    catgirl = config_manager.saved_characters['猫娘']['测试角色']
-    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber', default={})
-    assert pngtuber['metadata'] == f'{url_dir}/metadata.neko-pngtuber.v2.json'
-    assert pngtuber['layered_metadata'] == f'{url_dir}/metadata.neko-pngtuber.v2.json'
-    assert pngtuber['adapter'] == 'neko_pngtuber_v2'
-    assert pngtuber['protocol'] == 'neko.pngtuber.v2'
 
 
 @pytest.mark.asyncio
@@ -450,10 +450,8 @@ async def test_switching_back_to_live2d_preserves_saved_pngtuber_config(monkeypa
         {
             'idle_image': '/user_pngtuber/avatar/idle.png',
             'talking_image': '/user_pngtuber/avatar/talking.png',
-            'metadata': '/user_pngtuber/avatar/metadata.neko-pngtuber.v2.json',
-            'layered_metadata': '/user_pngtuber/avatar/metadata.neko-pngtuber.v2.json',
-            'adapter': 'neko_pngtuber_v2',
-            'protocol': 'neko.pngtuber.v2',
+            'layered_metadata': '/user_pngtuber/avatar/metadata.pngtube-remix.json',
+            'adapter': 'layered_canvas_v1',
             'scale': 1.4,
             'offset_x': 12,
             'offset_y': -8,
@@ -475,8 +473,7 @@ async def test_switching_back_to_live2d_preserves_saved_pngtuber_config(monkeypa
     saved_catgirl = saved['猫娘']['测试角色']
     assert get_reserved(saved_catgirl, 'avatar', 'model_type') == 'live2d'
     pngtuber = get_reserved(saved_catgirl, 'avatar', 'pngtuber', default={})
-    assert pngtuber['adapter'] == 'neko_pngtuber_v2'
-    assert pngtuber['protocol'] == 'neko.pngtuber.v2'
+    assert pngtuber['adapter'] == 'layered_canvas_v1'
     assert pngtuber['idle_image'] == '/user_pngtuber/avatar/idle.png'
     assert pngtuber['scale'] == 1.4
 

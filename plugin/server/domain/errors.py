@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass
 class ServerDomainError(Exception):
     code: str
     message: str
@@ -13,4 +13,3 @@ class ServerDomainError(Exception):
 
     def __str__(self) -> str:
         return self.message
-

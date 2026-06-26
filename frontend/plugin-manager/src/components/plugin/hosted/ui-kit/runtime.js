@@ -40,7 +40,7 @@ function reportHostedRuntimeError(scope, error, details) {
   const message = formatErrorMessage(error);
   try { console.error('[plugin-ui]', scope, { message, details, error }); } catch (_) {}
   try {
-    parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, scope, details: details || {}, fatal: false } }, '*');
+    parent.postMessage({ type: 'neko-hosted-surface-error', payload: { message, scope, details: details || {}, fatal: false } }, hostedTargetOrigin());
   } catch (_) {}
 }
 function createInlineError(title, error, details) {
@@ -215,7 +215,7 @@ function hostedTargetOrigin() {
   const payload = typeof window.__NEKO_PAYLOAD === 'object' && window.__NEKO_PAYLOAD ? window.__NEKO_PAYLOAD : {};
   const host = payload.host && typeof payload.host === 'object' ? payload.host : {};
   const origin = typeof host.origin === 'string' ? host.origin.trim() : '';
-  return origin || '*';
+  return origin || window.location.origin;
 }
 function safeInsert(parentDom, node, anchor) {
   const safeAnchor = anchor && anchor.parentNode === parentDom ? anchor : null;

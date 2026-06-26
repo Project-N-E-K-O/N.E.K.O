@@ -8,7 +8,7 @@ AGENT_UI_V2_JS = PROJECT_ROOT / "static" / "js" / "agent_ui_v2.js"
 APP_REACT_CHAT_WINDOW_JS = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_WEBSOCKET_JS = PROJECT_ROOT / "static" / "app-websocket.js"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
-PNGTUBER_PROTOCOL_JS = PROJECT_ROOT / "static" / "neko-pngtuber-protocol.js"
+LIVE2D_INIT_JS = PROJECT_ROOT / "static" / "live2d-init.js"
 
 
 def test_app_agent_includes_pngtuber_agent_prefix():
@@ -53,7 +53,6 @@ def test_agent_pngtuber_scripts_bust_static_asset_cache():
         APP_AGENT_JS,
         AGENT_UI_V2_JS,
         COMMON_UI_HUD_JS,
-        PNGTUBER_PROTOCOL_JS,
         PNGTUBER_CORE_JS,
         APP_REACT_CHAT_WINDOW_JS,
         APP_WEBSOCKET_JS,
@@ -72,3 +71,11 @@ def test_websocket_model_ready_listens_for_pngtuber_avatar_ready():
     script = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
 
     assert "window.addEventListener('pngtuber-model-loaded', _onModelReady);" in script
+
+
+def test_live2d_init_does_not_call_removed_pngtuber_emotion_api():
+    script = LIVE2D_INIT_JS.read_text(encoding="utf-8")
+
+    assert "window.pngtuberManager.setEmotion" not in script
+    assert "window.pngtuberManager.clearEmotion" not in script
+    assert "window.performPNGTuberEmotion" not in script

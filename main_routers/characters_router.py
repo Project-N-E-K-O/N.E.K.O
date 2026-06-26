@@ -70,15 +70,6 @@ from .shared_state import (
     get_remove_one_catgirl,
 )
 from .workshop_router import _ugc_sync_lock
-from .pngtuber_protocol import (
-    NEKO_PNGTUBER_ADAPTER,
-    NEKO_PNGTUBER_METADATA_FORMAT,
-    PNGTUBER_IMAGE_KEYS,
-    PNGTUBER_LAYERED_ADAPTERS,
-    PNGTUBER_METADATA_FILENAMES,
-    adapter_for_metadata,
-    infer_pngtuber_metadata_from_idle,
-)
 from main_logic.tts_client import (
     get_custom_tts_voices,
     CustomTTSVoiceFetchError,
@@ -178,9 +169,14 @@ _PNGTUBER_IMAGE_KEYS = (
     "angry_image",
     "surprised_image",
 )
-_PNGTUBER_PACKABLE_KEYS = (*_PNGTUBER_IMAGE_KEYS, "layered_metadata", "metadata")
+_PNGTUBER_PACKABLE_KEYS = (*_PNGTUBER_IMAGE_KEYS, "layered_metadata")
 _PNGTUBER_ALLOWED_PREFIXES = ('/user_pngtuber/', '/static/', '/workshop/')
 _PNGTUBER_ALLOWED_IMAGE_EXTS = ('.png', '.gif', '.jpg', '.jpeg', '.webp')
+_PNGTUBER_METADATA_FILENAMES = (
+    'metadata.pngtube-remix.json',
+    'metadata.pngtuber-plus.json',
+    'metadata.json',
+)
 
 
 def _strip_url_suffix(path: str) -> str:
@@ -251,32 +247,28 @@ def _with_pngtuber_model_path_rewrites(data, rewrites: dict[str, str]):
 def _infer_pngtuber_metadata_from_saved_image(idle_image: str, config_manager) -> str:
     """Infer layered metadata for character-save paths without changing runtime resolution."""
     idle_path = str(idle_image or "").strip().replace("\\", "/")
-    if idle_path.startswith('/user_pngtuber/'):
-        return infer_pngtuber_metadata_from_idle(idle_path, config_manager)
-
     parts = [part for part in idle_path.split('/') if part]
     if len(parts) < 3:
         return ''
     source_prefix = parts[0]
-    model_dir_parts = parts[1:-1]
+    model_folder = parts[1]
     try:
-        if source_prefix == 'static':
-            root = config_manager.project_root / 'static'
+        if source_prefix == 'user_pngtuber':
+            root = config_manager.pngtuber_dir / model_folder
+            url_prefix = '/user_pngtuber'
+        elif source_prefix == 'static':
+            root = config_manager.project_root / 'static' / model_folder
             url_prefix = '/static'
         elif source_prefix == 'workshop':
-            root = config_manager.workshop_dir
+            root = config_manager.workshop_dir / model_folder
             url_prefix = '/workshop'
         else:
             return ''
-        for part in model_dir_parts:
-            root = root / part
-        if model_dir_parts:
-            url_prefix = f'{url_prefix}/{"/".join(model_dir_parts)}'
     except Exception:
         return ''
-    for filename in PNGTUBER_METADATA_FILENAMES:
+    for filename in _PNGTUBER_METADATA_FILENAMES:
         if (root / filename).is_file():
-            return f'{url_prefix}/{filename}'
+            return f'{url_prefix}/{model_folder}/{filename}'
     return ''
 
 
@@ -284,7 +276,9 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
     """Validate and normalize a PNGTuber payload for _reserved.avatar.pngtuber."""
     raw_pngtuber = data.get('pngtuber') if isinstance(data.get('pngtuber'), dict) else {}
     pngtuber_payload = dict(raw_pngtuber)
-    for key in PNGTUBER_IMAGE_KEYS:
+    pngtuber_payload.pop('metadata', None)
+    pngtuber_payload.pop('protocol', None)
+    for key in _PNGTUBER_IMAGE_KEYS:
         if key not in pngtuber_payload and key in data:
             pngtuber_payload[key] = data.get(key)
 
@@ -292,7 +286,7 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
     if not idle_image:
         raise ValueError('未提供PNGTuber idle_image')
 
-    for key in PNGTUBER_IMAGE_KEYS:
+    for key in _PNGTUBER_IMAGE_KEYS:
         image_path = str(pngtuber_payload.get(key) or '').strip().replace('\\', '/')
         if not image_path:
             pngtuber_payload[key] = ''
@@ -309,45 +303,28 @@ def _prepare_pngtuber_save_payload(data: dict, config_manager) -> tuple[dict, st
             raise ValueError(f'PNGTuber图片格式必须是 PNG/GIF/JPG/JPEG/WebP: {key}')
         pngtuber_payload[key] = image_path
 
-    metadata_path = str(
-        pngtuber_payload.get('layered_metadata')
-        or pngtuber_payload.get('metadata')
-        or ''
-    ).strip().replace('\\', '/')
+    metadata_path = str(pngtuber_payload.get('layered_metadata') or '').strip().replace('\\', '/')
     if not metadata_path:
         metadata_path = _infer_pngtuber_metadata_from_saved_image(idle_image, config_manager)
 
     if not metadata_path:
-        raw_adapter = str(pngtuber_payload.get('adapter') or '').strip()
-        raw_protocol = str(pngtuber_payload.get('protocol') or '').strip()
-        if raw_adapter in PNGTUBER_LAYERED_ADAPTERS or raw_protocol == NEKO_PNGTUBER_METADATA_FORMAT:
-            raise ValueError('PNGTuber 必须提供分层 metadata JSON')
-        pngtuber_payload['metadata'] = ''
         pngtuber_payload['layered_metadata'] = ''
         pngtuber_payload['adapter'] = ''
-        pngtuber_payload['protocol'] = ''
     else:
         if metadata_path.startswith('data:'):
             raise ValueError('PNGTuber分层metadata路径不能使用data URL')
         if '..' in metadata_path:
             raise ValueError('PNGTuber分层metadata路径不能包含路径遍历（..）')
-        is_remote_metadata = metadata_path.startswith('http://') or metadata_path.startswith('https://')
-        if not is_remote_metadata and not any(metadata_path.startswith(prefix) for prefix in _PNGTUBER_ALLOWED_PREFIXES):
+        if metadata_path.startswith('http://') or metadata_path.startswith('https://'):
+            raise ValueError('PNGTuber分层metadata路径必须来自本地PNGTube模型包')
+        if not any(metadata_path.startswith(prefix) for prefix in _PNGTUBER_ALLOWED_PREFIXES):
             raise ValueError('PNGTuber分层metadata路径必须以 /user_pngtuber/、/static/ 或 /workshop/ 开头')
         metadata_ext_path = metadata_path.lower().split('?', 1)[0].split('#', 1)[0]
         metadata_filename = metadata_ext_path.rsplit('/', 1)[-1]
-        if metadata_filename not in PNGTUBER_METADATA_FILENAMES:
+        if metadata_filename not in _PNGTUBER_METADATA_FILENAMES:
             raise ValueError('PNGTuber metadata 文件名不受支持')
-        pngtuber_payload['metadata'] = metadata_path
         pngtuber_payload['layered_metadata'] = metadata_path
-        pngtuber_payload['adapter'] = adapter_for_metadata(metadata_path, str(pngtuber_payload.get('adapter') or ''))
-        if not pngtuber_payload['adapter']:
-            raise ValueError('PNGTuber metadata adapter 不受支持')
-        pngtuber_payload['protocol'] = (
-            NEKO_PNGTUBER_METADATA_FORMAT
-            if pngtuber_payload['adapter'] == NEKO_PNGTUBER_ADAPTER
-            else ''
-        )
+        pngtuber_payload['adapter'] = 'layered_canvas_v1'
 
     for key in ('source_type', 'source_format'):
         pngtuber_payload[key] = str(pngtuber_payload.get(key) or '').strip()
@@ -434,7 +411,10 @@ def _restore_imported_pngtuber_avatar_config(character_data: dict, source_data: 
     if model_type != "pngtuber" or not isinstance(pngtuber_config, dict):
         return character_data
 
-    restored = {"_reserved": {"avatar": {"pngtuber": copy.deepcopy(pngtuber_config)}}}
+    restored_pngtuber = copy.deepcopy(pngtuber_config)
+    restored_pngtuber.pop("metadata", None)
+    restored_pngtuber.pop("protocol", None)
+    restored = {"_reserved": {"avatar": {"pngtuber": restored_pngtuber}}}
     if rel_map:
         restored = _rewrite_imported_pngtuber_refs(restored, rel_map)
 

@@ -4874,16 +4874,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function getPNGTuberDiagnosticMetadataUrl(pngtuberConfig) {
-        const protocol = window.NekoPNGTuberProtocol;
-        if (protocol && typeof protocol.normalizeConfig === 'function') {
-            try {
-                const normalized = protocol.normalizeConfig(pngtuberConfig || {});
-                const normalizedUrl = normalized && (normalized.layered_metadata || normalized.metadata);
-                if (normalizedUrl) return String(normalizedUrl).trim();
-            } catch (error) {
-                console.warn('[PNGTuber] 诊断 metadata 路径规范化失败:', error);
-            }
-        }
         const metadataUrl = pngtuberConfig && (typeof pngtuberConfig.layered_metadata === 'string' || typeof pngtuberConfig.metadata === 'string')
             ? String(pngtuberConfig.layered_metadata || pngtuberConfig.metadata || '').trim()
             : '';
@@ -4936,11 +4926,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function resolvePNGTuberDiagnosticAsset(baseUrl, value) {
         if (!value) return '';
-        const protocol = window.NekoPNGTuberProtocol;
-        if (protocol && typeof protocol.resolveSiblingAsset === 'function') {
-            const resolved = protocol.resolveSiblingAsset(baseUrl || '', value);
-            return isSafePNGTuberDiagnosticUrl(resolved) ? resolved : '';
-        }
         const raw = String(value || '').trim().replace(/\\/g, '/');
         if (!raw) return '';
         const base = String(baseUrl || '').trim().replace(/\\/g, '/').split('/').slice(0, -1).join('/');

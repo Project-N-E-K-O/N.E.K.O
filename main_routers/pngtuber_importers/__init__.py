@@ -4,8 +4,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from main_routers.pngtuber_protocol import NEKO_PNGTUBER_PACKAGE_FORMAT
-
 from .pngtube_remix import PNGTubeRemixConversionError, import_pngtube_remix_model
 from .pngtuber_plus import import_pngtuber_plus_save
 from .simple_package import import_simple_package
@@ -34,9 +32,8 @@ def import_pngtuber_package(package_dir: Path, fallback_model_name: str) -> PNGT
     """Detect and normalize an uploaded PNGTuber package in-place."""
     simple_result = import_simple_package(package_dir)
     if simple_result:
-        source_format = NEKO_PNGTUBER_PACKAGE_FORMAT if simple_result.get("format") == NEKO_PNGTUBER_PACKAGE_FORMAT else "simple_package"
         return PNGTuberImportResult(
-            source_format=source_format,
+            source_format="simple_package",
             model_name=simple_result.get("name") or fallback_model_name,
             model_json=simple_result,
             message="PNGTuber 模型导入成功",

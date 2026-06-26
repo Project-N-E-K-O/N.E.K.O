@@ -6,16 +6,6 @@
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
-    const LAYERED_ADAPTERS = new Set(['neko_pngtuber_v2', 'layered_canvas_v1']);
-    const EMOTION_STATE_ALIASES = {
-        neutral: ['neutral', 'idle', 'default', 'normal', 'calm'],
-        idle: ['idle', 'neutral', 'default', 'normal', 'calm'],
-        happy: ['happy', 'joy', 'joyful', 'cheerful', 'smile', 'smiling', 'laugh', 'laughing'],
-        sad: ['sad', 'sorrow', 'cry', 'crying', 'down', 'depressed'],
-        angry: ['angry', 'anger', 'mad', 'annoyed', 'irritated'],
-        surprised: ['surprised', 'surprise', 'shock', 'shocked', 'amazed'],
-    };
-    const getProtocol = () => window.NekoPNGTuberProtocol || null;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -80,13 +70,6 @@
     }
 
     function normalizeConfig(config) {
-        const protocol = getProtocol();
-        if (protocol && typeof protocol.normalizeConfig === 'function') {
-            return protocol.normalizeConfig(config, {
-                placeholder: DEFAULT_PLACEHOLDER,
-                centerPreview: isModelManagerPage(),
-            });
-        }
         const source = config && typeof config === 'object' ? config : {};
         const normalized = Object.assign({}, source);
         IMAGE_KEYS.forEach((key) => {
@@ -110,35 +93,6 @@
         return normalized;
     }
 
-    function createLoadPlan(config) {
-        const protocol = getProtocol();
-        if (protocol && typeof protocol.createLoadPlan === 'function') {
-            return protocol.createLoadPlan(config, {
-                placeholder: DEFAULT_PLACEHOLDER,
-                centerPreview: isModelManagerPage(),
-            });
-        }
-        const normalized = normalizeConfig(config);
-        const hasLayeredMetadata = !!normalized.layered_metadata;
-        const layered = LAYERED_ADAPTERS.has(normalized.adapter) && hasLayeredMetadata;
-        return {
-            protocol: 'neko.pngtuber.load_plan.v2',
-            mode: layered ? 'layered' : 'image',
-            renderer: layered ? 'layered_canvas' : 'image',
-            adapter: normalized.adapter,
-            metadataUrl: normalized.layered_metadata || '',
-            config: normalized,
-            fallback: {
-                idle: normalized.idle_image,
-                talking: normalized.talking_image,
-            },
-            diagnostics: {
-                hasMetadata: hasLayeredMetadata,
-                sourceFormat: normalized.source_format || '',
-            },
-        };
-    }
-
     class PNGTuberManager {
         constructor(containerId = 'pngtuber-container') {
             this.containerId = containerId;
@@ -146,11 +100,9 @@
             this.image = null;
             this.imageElement = null;
             this.canvasElement = null;
-            this.loadPlan = createLoadPlan({});
-            this.config = this.loadPlan.config;
+            this.config = normalizeConfig({});
             this.layeredMetadata = null;
             this.layeredImages = new Map();
-            this.lastError = '';
             this.layeredBlinking = false;
             this.layeredBlinkTimer = null;
             this.layeredBlinkEndTimer = null;
@@ -174,7 +126,6 @@
             this.speakingBounceSquish = 0;
             this.lastSpeakingBounceAt = 0;
             this.clickTimer = null;
-            this.emotionTimer = null;
             this._suppressNextClick = false;
             this._boundSpeechStart = () => this.setSpeaking(true);
             this._boundSpeechEnd = () => this.setSpeaking(false);
@@ -222,12 +173,7 @@
         }
 
         isLayeredConfigured() {
-            if (this.loadPlan && this.loadPlan.mode === 'layered' && this.loadPlan.metadataUrl) return true;
-            const protocol = getProtocol();
-            if (protocol && typeof protocol.isLayeredAdapter === 'function') {
-                return protocol.isLayeredAdapter(this.config.adapter, this.config.layered_metadata);
-            }
-            return LAYERED_ADAPTERS.has(this.config.adapter) && !!this.config.layered_metadata;
+            return this.config.adapter === 'layered_canvas_v1' && !!this.config.layered_metadata;
         }
 
         isLayeredActive() {
@@ -451,95 +397,6 @@
             });
         }
 
-        normalizeEmotionName(emotion) {
-            const raw = String(emotion || '').trim().toLowerCase();
-            if (!raw) return 'neutral';
-            for (const [canonical, aliases] of Object.entries(EMOTION_STATE_ALIASES)) {
-                if (aliases.includes(raw)) return canonical;
-            }
-            return raw.replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'neutral';
-        }
-
-        emotionAliasesFor(emotion) {
-            const normalized = this.normalizeEmotionName(emotion);
-            const aliases = EMOTION_STATE_ALIASES[normalized] || [normalized];
-            return Array.from(new Set([normalized, ...aliases].map((item) => String(item || '').toLowerCase())));
-        }
-
-        resolveLayeredEmotionConfig(emotion) {
-            if (!this.layeredMetadata || typeof this.layeredMetadata !== 'object') return null;
-            const aliases = this.emotionAliasesFor(emotion);
-            const emotions = this.layeredMetadata.emotions;
-            if (!emotions || typeof emotions !== 'object' || Array.isArray(emotions)) return null;
-            const key = aliases.find((alias) => Object.prototype.hasOwnProperty.call(emotions, alias));
-            if (!key) return null;
-            const entry = emotions[key];
-            if (entry && typeof entry === 'object') {
-                return entry;
-            }
-            return null;
-        }
-
-        resolveLayeredEmotionTarget(emotion) {
-            const entry = this.resolveLayeredEmotionConfig(emotion);
-            return entry ? (entry.state_index ?? null) : null;
-        }
-
-        clearEmotion(options = {}) {
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
-            }
-            if (this.isLayeredActive()) {
-                this.setLayeredStateIndex(0, { source: options.source || 'emotion-clear' });
-            }
-            if (!this.isSpeaking) {
-                this.setState('idle');
-            }
-            return true;
-        }
-
-        setEmotion(emotion, options = {}) {
-            const normalized = this.normalizeEmotionName(emotion);
-            const emotionConfig = this.resolveLayeredEmotionConfig(normalized);
-            const durationMs = Math.max(0, Number(
-                options.durationMs
-                ?? options.returnToDefaultAfterMs
-                ?? emotionConfig?.duration_ms
-                ?? 3200
-            ) || 0);
-            if (normalized === 'neutral' || normalized === 'idle') {
-                return this.clearEmotion({ source: options.source || 'emotion' });
-            }
-
-            let applied = false;
-            const layeredTarget = emotionConfig ? (emotionConfig.state_index ?? null) : null;
-            if (this.isLayeredActive() && layeredTarget !== null && layeredTarget !== undefined && layeredTarget !== '') {
-                applied = this.setLayeredStateIndex(layeredTarget, {
-                    returnToDefaultAfterMs: durationMs,
-                    source: options.source || 'emotion'
-                }) || applied;
-            }
-            if (!applied && !this.isLayeredActive() && this.config[`${normalized}_image`]) {
-                this.setState(normalized);
-                applied = true;
-            }
-
-            if (!applied) return false;
-
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
-            }
-            if (durationMs > 0 && !this.isSpeaking) {
-                this.emotionTimer = setTimeout(() => {
-                    this.emotionTimer = null;
-                    this.clearEmotion({ source: 'emotion-timeout' });
-                }, durationMs);
-            }
-            return true;
-        }
-
         hotkeyMatchesEvent(hotkey, event) {
             const keycode = Number(hotkey.keycode || 0);
             if (keycode && event.keyCode !== keycode && event.which !== keycode) return false;
@@ -578,20 +435,15 @@
             this.layeredStateIndex = 0;
             if (!this.isLayeredConfigured()) return false;
             try {
-                const metadataUrl = this.loadPlan?.metadataUrl || this.config.layered_metadata;
-                const response = await fetch(metadataUrl, { cache: 'no-cache' });
+                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
                 const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
-                const protocol = getProtocol();
-                if (protocol && typeof protocol.validateMetadata === 'function') {
-                    const validation = protocol.validateMetadata(metadata);
-                    if (!validation.valid) throw new Error(validation.reason || 'invalid metadata');
-                } else if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
+                if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
                     throw new Error('metadata is not layered_canvas');
                 }
                 await Promise.all(layers.map(async (layer, index) => {
-                    const src = resolveSiblingAsset(metadataUrl, layer.image);
+                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
                     if (!src) return;
                     const img = await loadImageElement(src);
                     this.layeredImages.set(index, img);
@@ -610,11 +462,9 @@
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
                 this.attachLayeredPlayEvent();
-                this.lastError = '';
                 return true;
             } catch (error) {
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
-                this.lastError = String(error && error.message ? error.message : error || '');
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
                 return false;
@@ -1354,12 +1204,7 @@
 
         async load(config) {
             this.detachDragListeners();
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
-            }
-            this.loadPlan = createLoadPlan(config || {});
-            this.config = this.loadPlan.config;
+            this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();
             this.preloadImages();
@@ -1584,25 +1429,13 @@
             return {
                 active: !!(container && container.style.display !== 'none' && !container.classList.contains('hidden')),
                 modelType: (window.lanlan_config?.model_type || '').toLowerCase() || null,
-                protocol: this.loadPlan?.protocol || '',
-                mode: this.isLayeredActive() ? 'layered' : 'image',
-                plannedMode: this.loadPlan?.mode || '',
-                adapter: this.config.adapter || '',
-                metadataUrl: this.loadPlan?.metadataUrl || this.config.layered_metadata || '',
-                fallback: this.loadPlan?.fallback || {
-                    idle: this.config.idle_image || '',
-                    talking: this.config.talking_image || '',
-                },
-                lastError: this.lastError || '',
                 state: this.state,
-                currentState: this.state,
                 isSpeaking: !!this.isSpeaking,
                 speakingMouthOpen: !!this.speakingMouthOpen,
                 layered: this.isLayeredActive(),
                 layeredConfigured: this.isLayeredConfigured(),
                 layeredStateIndex: this.layeredStateIndex,
                 layerCount: layers.length,
-                loadedLayerImages: this.layeredImages ? this.layeredImages.size : 0,
                 renderedIdleLayerCount: this.renderedLayerCountForState('idle'),
                 renderedTalkingLayerCount: this.renderedLayerCountForState('talking'),
                 renderedLayers: this.renderedLayerDebugInfo(this.state || 'idle'),
@@ -1673,14 +1506,12 @@
                 }
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
-                this.attachLayeredPlayEvent();
             }
         }
 
         hide() {
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
-            this.detachLayeredPlayEvent();
             if (this.returnIdleTimer) {
                 clearTimeout(this.returnIdleTimer);
                 this.returnIdleTimer = null;
@@ -1688,10 +1519,6 @@
             if (this.clickTimer) {
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
-            }
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
             }
             this.stopSpeakingMouthAnimation();
             const container = this.container || document.getElementById(this.containerId);
@@ -1704,7 +1531,6 @@
         dispose() {
             this.detachSpeechListeners();
             this.detachDragListeners();
-            this.detachLayeredPlayEvent();
             if (this._saveTimer) {
                 clearTimeout(this._saveTimer);
                 this._saveTimer = null;
@@ -1716,10 +1542,6 @@
             if (this.clickTimer) {
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
-            }
-            if (this.emotionTimer) {
-                clearTimeout(this.emotionTimer);
-                this.emotionTimer = null;
             }
             if (typeof this.cleanupFloatingButtons === 'function') {
                 this.cleanupFloatingButtons();
@@ -2060,34 +1882,8 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
-    function performPNGTuberEmotion(emotion, options = {}) {
-        if (!window.pngtuberManager || typeof window.pngtuberManager.setEmotion !== 'function') {
-            return false;
-        }
-        return window.pngtuberManager.setEmotion(emotion, options);
-    }
-
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
-    window.performPNGTuberEmotion = performPNGTuberEmotion;
-    window.getPNGTuberDebugState = function getPNGTuberDebugState() {
-        if (!window.pngtuberManager || typeof window.pngtuberManager.getDebugState !== 'function') {
-            return {
-                protocol: '',
-                mode: 'unloaded',
-                plannedMode: '',
-                adapter: '',
-                metadataUrl: '',
-                layerCount: 0,
-                loadedLayerImages: 0,
-                currentState: '',
-                isSpeaking: false,
-                lastError: 'PNGTuber manager is not loaded',
-                fallback: { idle: '', talking: '' },
-            };
-        }
-        return window.pngtuberManager.getDebugState();
-    };
 })();
