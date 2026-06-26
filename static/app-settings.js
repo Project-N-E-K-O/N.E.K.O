@@ -97,6 +97,13 @@
             S.userLanguage = settings.userLanguage;
             changed = true;
         }
+        // saveSettings() builds currentSlopFilter from window.slopFilterEnabled ?? S,
+        // so a cross-window storage sync that only touched S would let a later save in
+        // this tab revert the switch from a stale window value. Mirror it here.
+        // (The other shared bool keys carry the same latent gap — pre-existing.)
+        if (Object.prototype.hasOwnProperty.call(settings, 'slopFilterEnabled')) {
+            window.slopFilterEnabled = S.slopFilterEnabled;
+        }
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
         }
