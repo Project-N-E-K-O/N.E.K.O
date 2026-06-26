@@ -475,7 +475,7 @@ def _extract_startup_error(start_result: object) -> str | None:
 def _is_startup_timeout_error(exc: PluginLifecycleError) -> bool:
     reason = str(getattr(exc, "reason", "") or "").lower()
     return getattr(exc, "event_type", None) == "startup" and bool(
-        re.fullmatch(r"startup timed out after \d+(?:\.\d+)?s", reason)
+        re.fullmatch(r"startup timed out after \d+(?:\.\d+)?(?:e[+-]?\d+)?s", reason)
     )
 
 

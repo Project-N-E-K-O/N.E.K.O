@@ -1183,6 +1183,108 @@ async def test_start_plugin_lets_timeout_aware_host_own_startup_timeout_cleanup(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_classifies_exponent_form_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "tiny_timeout_adapter" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'tiny_timeout_adapter'",
+                "name = 'Tiny Timeout Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+                "timeout = 1e-6",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _ExponentTimeoutHost(_FakeProcessHost):
+        instances: list["_ExponentTimeoutHost"] = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            _ExponentTimeoutHost.instances.append(self)
+
+        async def start(self, message_target_queue: object, startup_timeout: float | None = None) -> None:
+            self.started = True
+            self.startup_timeout = startup_timeout
+            raise PluginLifecycleError(
+                self.plugin_id,
+                "startup",
+                f"startup timed out after {startup_timeout}s",
+            )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["tiny_timeout_adapter"] = {
+                "id": "tiny_timeout_adapter",
+                "name": "Tiny Timeout Adapter",
+                "type": "adapter",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _ExponentTimeoutHost)
+        monkeypatch.setattr(
+            module,
+            "_import_plugin_module",
+            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+        )
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin("tiny_timeout_adapter", refresh_registry=False)
+
+        assert exc_info.value.code == "PLUGIN_START_TIMEOUT"
+        assert exc_info.value.status_code == 504
+        assert _ExponentTimeoutHost.instances
+        host = _ExponentTimeoutHost.instances[0]
+        assert host.startup_timeout == 1e-6
+        assert host.stopped is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_persists_entries_preview_and_invalidates_stale_caches(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
