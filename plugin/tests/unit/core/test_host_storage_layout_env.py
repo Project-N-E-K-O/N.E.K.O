@@ -178,6 +178,69 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_uses_timeout_when_reporting_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    timeouts: list[float | None] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
+
+    class _Sender:
+        def __init__(self, channel: str) -> None:
+            self.channel = channel
+
+        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+            payloads.append(payload)
+            timeouts.append(timeout)
+
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            self.put(payload)
+
+    class _ChildTransport:
+        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+            return
+
+        def channel_sender(self, channel: str) -> _Sender:
+            return _Sender(channel)
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_check_extension_type_guard", lambda *args, **kwargs: False)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+
+    def _raise_import_error(*_args, **_kwargs):
+        raise RuntimeError("import exploded")
+
+    monkeypatch.setattr(host_module, "_import_plugin_module", _raise_import_error)
+
+    with pytest.raises(RuntimeError, match="import exploded"):
+        host_module._plugin_process_runner(
+            plugin_id="demo",
+            entry_point="tests.fake:DemoPlugin",
+            config_path=config_path,
+            downlink_endpoint="ipc://down",
+            uplink_endpoint="ipc://up",
+        )
+
+    result_payloads = [
+        payload
+        for payload in payloads
+        if payload.get("req_id") in {"CRASH", host_module.STARTUP_RESULT_REQ_ID}
+    ]
+    assert [payload["req_id"] for payload in result_payloads] == ["CRASH", host_module.STARTUP_RESULT_REQ_ID]
+    assert timeouts == [10.0, 10.0]
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     selected_root = tmp_path / "selected-root"

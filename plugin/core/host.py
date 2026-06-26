@@ -1734,13 +1734,13 @@ def _plugin_process_runner(
                 "success": False,
                 "data": None,
                 "error": f"Process crashed: {str(e)}"
-            })
+            }, timeout=10.0)
             res_sender.put({
                 "req_id": STARTUP_RESULT_REQ_ID,
                 "success": False,
                 "data": None,
                 "error": f"Process crashed: {str(e)}"
-            })
+            }, timeout=10.0)
         except Exception:
             pass  # 如果队列也坏了，只能放弃
         raise  # 重新抛出，让进程退出
