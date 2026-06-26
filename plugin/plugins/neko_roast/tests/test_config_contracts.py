@@ -351,6 +351,8 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "Do not pretend a viewer sent a message" in request.prompt_text
     assert "Do not use generic host slogans" in request.prompt_text
     assert "Prefer one tiny observation over a plan, segment, or open-ended topic survey." in request.prompt_text
+    assert "Every active engagement line must give viewers one concrete reply handle" in request.prompt_text
+    assert "A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side" in request.prompt_text
     assert "Do not use generic Chinese host lines equivalent to" in request.prompt_text
     assert "澶у" not in request.prompt_text
     assert "Do not say special plan, everyone look, next let's, what should we talk about, or tell me what you want." in request.prompt_text

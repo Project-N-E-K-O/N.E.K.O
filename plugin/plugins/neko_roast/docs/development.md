@@ -532,11 +532,17 @@ danmaku_core on_event(cmd, 富模型)
 
 在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `RoastPipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
 
+直播修正：本轮会话中只要某个 UID 已经被选中进入出场首评窗口，pipeline 会先写入 session claim，再尝试 dispatcher 输出。即使这次输出失败或被跳过，后续同 UID 的普通弹幕也会走 `danmaku_response`，避免直播中反复对同一观众做头像 / ID 首评；持久观众档案仍只在真正 pushed 后写入。
+
 `danmaku_response` 的 prompt 只围绕当前弹幕接话：不能重复首次出场、头像、ID 或进场锐评模板；除非当前弹幕本身相关，否则不主动评价头像或昵称；独播（`solo_stream`）提示 NEKO 是台前唯一主播，需要自然接住话题；同播（`co_stream`）提示低打断，给主播留空间。
 
 **2026-06-25 长直播发现的输入隔离缺口**：路由已经能把同 UID 后续弹幕送进 `danmaku_response`，但 dispatcher 曾经在 `identity.avatar_bytes` 存在时无条件附加头像 image part。结果是后续接话虽然没有走 `avatar_roast`，模型仍然看到头像，容易再次评价同一观众头像。当前修复是把头像视觉输入限制在显式 opt-in 的请求：`avatar_roast`（以及显式的开发者 demo / 未来明确声明需要视觉输入的模块）可以带头像；`danmaku_response`、`idle_hosting`、`active_engagement`、`warmup_hosting` 默认是纯文本输出请求。这个问题是输入边界污染，不是 `roast_once_per_uid` 失效。
 
 `recent_interaction_context()` 会从最近成功投递或 dry_run 的互动结果中提取轻量上下文（路由、事件来源、观众弹幕或 idle hosting beat），供 `danmaku_response` 和 `idle_hosting` prompt 使用。它不假装掌握猫猫最终 TTS 文本，也不把完整历史 prompt 塞回模型；目标只是让下一次接话知道刚发生过什么，并明确避免复用同一个开场、包袱形状或主持节拍。
+
+独播冷场判断只应由可接话的观众弹幕活动刷新。`entry` / 进房、礼物、SC、Guard 或其他非弹幕 live health row 不应把房间误判为 engaged，否则低弹幕直播间会因为有人进出而一直无法触发 `idle_hosting`。Gift / SC / Guard 后续要作为独立高价值事件接入，不在这里冒充普通弹幕活跃度。
+
+`active_engagement` 只用于 quiet moment 的轻量主动营业。每次主动营业都必须给观众一个明确接话把手：A/B 选择、一个词/一个字回答、小立场或轻微可反驳的玩笑；禁止泛泛喊“大家互动”“弹幕刷起来”“想听什么”。内置 fallback 话题池只提供原材料，最终输出仍必须经过短回复合约和统一 dispatcher。
 
 NEKO 输出由 `adapters/neko_dispatcher.py` 中的 `NekoDispatcher.push_roast()` 统一负责，pipeline 通过 `self.ctx.dispatcher.push_roast(request)` 进入。`push_roast()` 直接使用 `request.prompt_text` 作为文本 part；只有 `request.allow_avatar_image=True` 时才会按可见性附加头像 image part（压缩后超预算则省略并在文本里说明降级），不再自行拼装字段；然后调用：
 

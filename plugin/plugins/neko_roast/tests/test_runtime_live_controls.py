@@ -475,6 +475,26 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
         "avatar_roast / live_danmaku from viewer: 绗竴娆℃潵",
     ]
 
+def test_live_state_viewer_activity_ignores_non_danmaku_health_rows(runtime: RoastRuntime) -> None:
+    rows = [
+        {"id": "live_ingest", "age_sec": 1.0, "last_outcome": "entry"},
+        {"id": "event_bus", "age_sec": 2.0, "last_outcome": "gift"},
+        {"id": "selection", "age_sec": 3.0, "last_outcome": "super_chat"},
+    ]
+
+    assert runtime._last_viewer_activity_age_sec(rows) is None
+
+
+def test_live_state_viewer_activity_keeps_danmaku_health_rows(runtime: RoastRuntime) -> None:
+    rows = [
+        {"id": "live_ingest", "age_sec": 1.0, "last_outcome": "entry"},
+        {"id": "event_bus", "age_sec": 8.0, "last_outcome": "danmaku"},
+        {"id": "selection", "age_sec": 12.0, "last_outcome": "live_danmaku"},
+    ]
+
+    assert runtime._last_viewer_activity_age_sec(rows) == 8.0
+
+
 def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: RoastRuntime) -> None:
     event = ViewerEvent(
         uid="__neko_active__",

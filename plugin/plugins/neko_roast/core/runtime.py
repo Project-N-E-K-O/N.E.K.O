@@ -845,6 +845,34 @@ class RoastRuntime:
                 "preferred_shape": "tiny_tease",
                 "hint": "Take one tiny NEKO stance and leave room for viewers to tease back.",
             },
+            {
+                "source": "fallback",
+                "key": "fallback:danmaku-password",
+                "title": "\u7ed9\u4eca\u665a\u76f4\u64ad\u95f4\u5b9a\u4e00\u4e2a\u4e09\u5b57\u6697\u53f7",
+                "preferred_shape": "small_challenge",
+                "hint": "Ask for one three-character room password; make it easy to answer in one short danmaku.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:cat-weather",
+                "title": "\u4eca\u665a\u732b\u732b\u72b6\u6001\u662f\u6674\u5929\u8fd8\u662f\u5c0f\u96e8",
+                "preferred_shape": "either_or",
+                "hint": "Turn this into one playful A/B mood vote; viewers can answer with one side.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:one-word-barrage",
+                "title": "\u7528\u4e00\u4e2a\u5b57\u7ed9\u732b\u732b\u73b0\u5728\u7684\u4e3b\u64ad\u529b\u6253\u5206",
+                "preferred_shape": "small_challenge",
+                "hint": "Ask for one character only; make it sound like NEKO inviting a tiny roast back.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:desk-item-choice",
+                "title": "\u5982\u679c\u684c\u9762\u4e0a\u53ea\u80fd\u7559\u4e00\u6837\uff1a\u6c34\u676f\u8fd8\u662f\u96f6\u98df",
+                "preferred_shape": "either_or",
+                "hint": "Make one concrete desk-life A/B choice, not a broad chat topic.",
+            },
         ]
 
     async def _active_engagement_topic_candidates(self) -> list[dict[str, Any]]:
@@ -1938,6 +1966,9 @@ class RoastRuntime:
             if not isinstance(row, dict):
                 continue
             if row.get("id") not in {"live_ingest", "event_bus", "selection"}:
+                continue
+            outcome = str(row.get("last_outcome") or "").strip()
+            if outcome not in {"danmaku", "live_danmaku"}:
                 continue
             age = row.get("age_sec")
             if age is None:
