@@ -15570,6 +15570,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "trig_table_use",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 特殊角三角函数值 with 三角函数表与计算; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "sine_cosine_tangent",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 特殊角三角函数值, use sin cos tan 定义 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Special-angle values anchor sine and cosine readings in simple harmonic motion graphs at standard phase positions."
         }
       ],
       "typical_misconceptions": [
@@ -15662,6 +15724,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "special_angles",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 三角函数表与计算 with 特殊角三角函数值; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "trig_application_height",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 三角函数表与计算, use 测高测距应用 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Using trigonometric values supports projectile-motion component calculations when launch angles are not special angles."
         }
       ],
       "typical_misconceptions": [
@@ -15765,6 +15889,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "right_triangle_solving",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 测高测距应用 with 解直角三角形; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "trig_comprehensive",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 测高测距应用, use 锐角三角函数综合题 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Height-and-distance trigonometry transfers directly to projectile and line-of-sight physical modeling."
         }
       ],
       "typical_misconceptions": [
@@ -15858,6 +16044,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "trig_area",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 锐角三角函数综合题 with 三角函数与面积; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 锐角三角函数综合题, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Comprehensive trigonometry supports wave-graph reading where phase, amplitude, and period are represented by sine or cosine models."
         }
       ],
       "typical_misconceptions": [
@@ -15930,7 +16178,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "algebraic_identity_difference_square",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 完全平方公式 with 平方差公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "factorization_formula",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 完全平方公式, use 公式法因式分解 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Perfect-square identities support algebraic simplification before stoichiometry equations are solved for limiting or excess quantities."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16001,7 +16312,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "algebraic_identity_square",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 平方差公式 with 完全平方公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "factorization_formula",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 平方差公式, use 公式法因式分解 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Difference-of-squares transformations simplify expressions before chemical amount relations are rearranged and solved."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16083,7 +16457,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "fractional_expression",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 分式方程 with 分式概念与运算; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "equation_check_solution",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 分式方程, use 方程解的检验 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Fractional equations model concentration and dilution problems where the unknown is embedded in a ratio or reciprocal relation."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16165,7 +16602,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "quadratic_parameter",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 含参方程 with 二次函数含参问题; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "quadratic_parameter_range",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 含参方程, use 二次函数参数范围 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Parameter equations connect to motion graphs when changing initial speed, acceleration, or time shifts the solution set of a physical model."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16247,7 +16747,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "distance_formula",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 坐标系中的面积 with 两点距离公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 坐标系中的面积, use 坐标法证明几何关系 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Coordinate-area reasoning connects to displacement from velocity-time graphs and to area interpretation in data-rich physical models."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16776,7 +17339,68 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "perpendicular_bisector",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 角平分线性质 with 垂直平分线性质; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "congruence_criteria",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 角平分线性质, use 三角形全等判定 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Angle-bisector properties feed proof organization by creating equal angles, congruent triangles, or proportional segments."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16847,7 +17471,68 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "angle_bisector",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 垂直平分线性质 with 角平分线性质; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "circle_concept",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 垂直平分线性质, use 圆的基本概念 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Perpendicular-bisector reasoning connects equal-distance loci with circle and triangle proof strategies."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16917,7 +17602,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "triangle_angle_sum",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 多边形内角和 with 三角形内角和; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "quadrilateral_proof",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 多边形内角和, use 特殊四边形判定与证明 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Polygon angle-sum reasoning supports circular and rotational geometry diagrams used in physical path and angle constraints."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -16999,7 +17747,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "tangent_concept",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 点线圆位置关系 with 切线概念; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "tangent_properties",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 点线圆位置关系, use 切线性质与判定 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Point-line-circle position relations transfer to circular-motion diagrams where radius, tangent direction, and contact conditions matter."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -17210,7 +18021,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "coordinate_symmetry",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 图形变换综合题 with 坐标对称; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "coordinate_rotation_symmetry",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 图形变换综合题, use 坐标旋转与中心对称 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Transformation reasoning supports symmetry and periodicity arguments in oscillation graphs and physical motion models."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -17292,7 +18166,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "trig_comprehensive",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 三角函数与面积 with 锐角三角函数综合题; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 三角函数与面积, use 向量数量积 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Trigonometric area and projection reasoning support force decomposition and vector component calculations."
+        }
+      ],
       "typical_misconceptions": [
         "忽略适用条件",
         "把图像或符号关系记反",
@@ -17373,6 +18310,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "real_number_concept",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 有理数混合运算 with 实数概念; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "fractional_expression",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 有理数混合运算, use 分式概念与运算 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Rational-number operations are used when concentration, dilution, and ratio data must be converted into consistent chemical calculations."
         }
       ],
       "typical_misconceptions": [
@@ -17454,6 +18453,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "irrational_number_estimation",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 平方根与立方根 with 无理数估算; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "quadratic_radical",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 平方根与立方根, use 二次根式 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Square-root reasoning appears when projectile-motion formulas are solved backward for time, speed, or height from quadratic relations."
         }
       ],
       "typical_misconceptions": [
@@ -17535,6 +18596,68 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "square_root_cube_root",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 无理数估算 with 平方根与立方根; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "number_axis",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 无理数估算, use 数轴与相反数 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Irrational-number estimation helps judge whether measured physical data and rounded experimental results are reasonable."
         }
       ],
       "typical_misconceptions": [
@@ -21308,6 +22431,29 @@
             "cross_subject": true,
             "added_for": "fixed_retrieval_eval_cross_subject_cases"
           }
+        },
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "application",
+          "reason": "Geometric proof organization and recursion-to-iteration conversion both require a base case, a repeatable step, and a correctness argument for each transition.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "bridge_direction": "math_to_computer_science",
+            "bridge_focus": "proof_structure_to_recursion_iteration",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24730,7 +25876,32 @@
       "chapter": "数与运算",
       "depth": 1,
       "difficulty": 0.18,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "chinese_primary_paragraph_main_idea",
+          "relation": "prerequisite",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chinese",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cycle_fix": "avoid_primary_math_prerequisite_cycle",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chinese"
+          },
+          "reason": "Basic paragraph main-idea reading supports number-sense tasks by helping learners extract quantities, place-value words, and comparison conditions from short problem statements without creating a math prerequisite cycle.",
+          "required_mastery": 0.55
+        }
+      ],
       "related": [
         {
           "id": "real_number_concept",
@@ -24756,6 +25927,68 @@
             "source_chapter": "数与运算",
             "target_chapter": "实数与代数式"
           }
+        },
+        {
+          "id": "real_number_concept",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 数感与数位 with 实数概念; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "rational_number_operations",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 数感与数位, use 有理数混合运算 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Number sense supports mole and quantity calculations by keeping units, place value, and magnitude estimates coherent before formula substitution."
         }
       ],
       "typical_misconceptions": [
@@ -30557,7 +31790,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_double_angle",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 两角和差公式 with 二倍角公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 两角和差公式, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Sum-difference formulas explain phase shifts and superposition patterns in wave interference problems."
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -30630,7 +31926,70 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_sum_difference_formula",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 二倍角公式 with 两角和差公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "senior_trig_graph",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 二倍角公式, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Double-angle formulas help transform oscillation expressions and interpret frequency-doubling patterns in harmonic models."
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -34900,6 +36259,48 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_limit_rules",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 两个重要极限 with 极限运算法则; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_computer_science"
+          },
+          "reason": "Important limits support asymptotic comparison when algorithm complexity focuses on dominant growth behavior."
         }
       ],
       "typical_misconceptions": [
@@ -37172,6 +38573,48 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 微分 with 函数图像信息读取; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Differentials connect local change in calculus with instantaneous velocity and small-displacement physical approximations."
         }
       ],
       "typical_misconceptions": [
@@ -37588,6 +39031,46 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_differential",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 泰勒公式 with 微分; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_series",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 泰勒公式, use 级数 as the next procedural step in solving or proving the problem."
         }
       ],
       "typical_misconceptions": [
@@ -41713,6 +43196,46 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_indefinite_integral",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 定积分性质 with 不定积分; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_integral_application",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 定积分性质, use 定积分应用 as the next procedural step in solving or proving the problem."
         }
       ],
       "skills": [
@@ -43998,6 +45521,26 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_double_integral_region",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 重积分 with 二重积分积分区域; learners often mix their conditions, formulas, or use cases."
         }
       ],
       "typical_misconceptions": [
@@ -44097,6 +45640,46 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_taylor_formula",
+          "relation": "confusable",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "Contrast 级数 with 泰勒公式; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_taylor_formula",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 级数, use 泰勒公式 as the next procedural step in solving or proving the problem."
         }
       ],
       "typical_misconceptions": [
@@ -53485,6 +55068,26 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_important_limits",
+          "relation": "procedure_step",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "math",
+            "added_for": "math_core_pack_third_batch_20260626"
+          },
+          "reason": "After 洛必达法则, use 两个重要极限 as the next procedural step in solving or proving the problem."
         }
       ],
       "typical_misconceptions": [

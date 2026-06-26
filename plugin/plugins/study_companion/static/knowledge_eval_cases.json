@@ -4,12 +4,18 @@
   "cases": [
     {
       "query": "极限和函数值有什么区别？",
-      "expected_topic_ids": ["college_limit_concept", "college_function_value"],
+      "expected_topic_ids": [
+        "college_limit_concept",
+        "college_function_value"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "连续为什么不一定可导？",
-      "expected_topic_ids": ["college_continuity", "college_derivative_existence"],
+      "expected_topic_ids": [
+        "college_continuity",
+        "college_derivative_existence"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -24,7 +30,10 @@
     },
     {
       "query": "极值和最值有什么区别？",
-      "expected_topic_ids": ["college_extreme_value_points", "college_absolute_extrema"],
+      "expected_topic_ids": [
+        "college_extreme_value_points",
+        "college_absolute_extrema"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -56,32 +65,48 @@
     },
     {
       "query": "二项分布和正态分布有什么关系？",
-      "expected_topic_ids": ["college_binomial_distribution", "college_normal_distribution"],
+      "expected_topic_ids": [
+        "college_binomial_distribution",
+        "college_normal_distribution"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "置信区间和假设检验有什么关系？",
-      "expected_topic_ids": ["college_confidence_interval", "college_hypothesis_testing"],
+      "expected_topic_ids": [
+        "college_confidence_interval",
+        "college_hypothesis_testing"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "图的最短路怎么学？",
-      "expected_topic_ids": ["college_graph_shortest_path", "college_graph_theory_intro"],
+      "expected_topic_ids": [
+        "college_graph_shortest_path",
+        "college_graph_theory_intro"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "受力分析怎么做？",
-      "expected_topic_ids": ["college_force_analysis"],
+      "expected_topic_ids": [
+        "college_force_analysis"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "BFS和DFS有什么区别？",
-      "expected_topic_ids": ["college_graph_traversal"],
+      "expected_topic_ids": [
+        "college_graph_traversal"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "最短路算法怎么学？",
-      "expected_topic_ids": ["college_ds_shortest_path", "college_graph_shortest_path"],
+      "expected_topic_ids": [
+        "college_ds_shortest_path",
+        "college_graph_shortest_path"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -94,32 +119,48 @@
     },
     {
       "query": "牛顿第二定律题怎么做？",
-      "expected_topic_ids": ["physics_senior_newton_laws"],
+      "expected_topic_ids": [
+        "physics_senior_newton_laws"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "氧化还原反应怎么配平？",
-      "expected_topic_ids": ["chem_senior_redox", "chem_senior_redox_balance"],
+      "expected_topic_ids": [
+        "chem_senior_redox",
+        "chem_senior_redox_balance"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "化学平衡移动怎么判断？",
-      "expected_topic_ids": ["chem_senior_equilibrium", "chem_senior_equilibrium_constant"],
+      "expected_topic_ids": [
+        "chem_senior_equilibrium",
+        "chem_senior_equilibrium_constant"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "基因型和表现型有什么区别？",
-      "expected_topic_ids": ["bio_senior_genetics_law", "bio_junior_inheritance_intro"],
+      "expected_topic_ids": [
+        "bio_senior_genetics_law",
+        "bio_junior_inheritance_intro"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "减数分裂和有丝分裂有什么区别？",
-      "expected_topic_ids": ["bio_senior_meiosis", "bio_senior_mitosis_image"],
+      "expected_topic_ids": [
+        "bio_senior_meiosis",
+        "bio_senior_mitosis_image"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "阅读理解主旨题怎么做？",
-      "expected_topic_ids": ["english_senior_reading_main_idea"],
+      "expected_topic_ids": [
+        "english_senior_reading_main_idea"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -133,27 +174,39 @@
     },
     {
       "query": "递归和迭代有什么区别？",
-      "expected_topic_ids": ["college_ds_recursion_iteration", "college_c_recursion_basic"],
+      "expected_topic_ids": [
+        "college_ds_recursion_iteration",
+        "college_c_recursion_basic"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "地图比例尺怎么看？",
-      "expected_topic_ids": ["geo_junior_map_skills"],
+      "expected_topic_ids": [
+        "geo_junior_map_skills"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "工业区位因素怎么分析？",
-      "expected_topic_ids": ["geo_senior_industrial_location", "geo_junior_agriculture_industry"],
+      "expected_topic_ids": [
+        "geo_senior_industrial_location",
+        "geo_junior_agriculture_industry"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "史料题怎么分析？",
-      "expected_topic_ids": ["history_senior_material_analysis"],
+      "expected_topic_ids": [
+        "history_senior_material_analysis"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "依法治国材料题怎么答？",
-      "expected_topic_ids": ["pol_senior_rule_of_law"],
+      "expected_topic_ids": [
+        "pol_senior_rule_of_law"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -166,17 +219,25 @@
     },
     {
       "query": "需求和供给曲线怎么看？",
-      "expected_topic_ids": ["college_micro_demand_supply"],
+      "expected_topic_ids": [
+        "college_micro_demand_supply"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "财政政策和货币政策有什么区别？",
-      "expected_topic_ids": ["college_macro_fiscal_policy", "college_macro_monetary_policy"],
+      "expected_topic_ids": [
+        "college_macro_fiscal_policy",
+        "college_macro_monetary_policy"
+      ],
       "expect_cross_subject": false
     },
     {
       "query": "驻点和极值点怎么区分？",
-      "expected_topic_ids": ["college_stationary_points", "college_critical_points"],
+      "expected_topic_ids": [
+        "college_stationary_points",
+        "college_critical_points"
+      ],
       "expect_cross_subject": false
     },
     {
@@ -190,7 +251,10 @@
     },
     {
       "query": "边际成本为什么用导数？",
-      "expected_topic_ids": ["college_derivative_definition", "college_micro_cost_short_run"],
+      "expected_topic_ids": [
+        "college_derivative_definition",
+        "college_micro_cost_short_run"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -204,17 +268,26 @@
     },
     {
       "query": "函数图像怎么看物理运动？",
-      "expected_topic_ids": ["function_graph_reading", "physics_senior_motion_graph_synthesis"],
+      "expected_topic_ids": [
+        "function_graph_reading",
+        "physics_senior_motion_graph_synthesis"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "需求供给曲线和函数图像有什么关系？",
-      "expected_topic_ids": ["college_micro_demand_supply", "linear_function_graph"],
+      "expected_topic_ids": [
+        "college_micro_demand_supply",
+        "linear_function_graph"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "弹性分析和斜率有什么关系？",
-      "expected_topic_ids": ["college_micro_elasticity", "linear_function_kb"],
+      "expected_topic_ids": [
+        "college_micro_elasticity",
+        "linear_function_kb"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -228,7 +301,10 @@
     },
     {
       "query": "积分和物理做功有什么关系？",
-      "expected_topic_ids": ["physics_junior_work_power", "college_integral_physics_application"],
+      "expected_topic_ids": [
+        "physics_junior_work_power",
+        "college_integral_physics_application"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -243,12 +319,19 @@
     },
     {
       "query": "向量和力的分解有什么关系？",
-      "expected_topic_ids": ["physics_senior_force_decomposition", "senior_plane_vector_concept"],
+      "expected_topic_ids": [
+        "physics_senior_force_decomposition",
+        "senior_plane_vector_concept"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "递归为什么和证明思路有关？",
-      "expected_topic_ids": ["geometric_proof_strategy", "college_c_recursion_basic", "proof_writing"],
+      "expected_topic_ids": [
+        "geometric_proof_strategy",
+        "college_c_recursion_basic",
+        "proof_writing"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -272,32 +355,50 @@
     },
     {
       "query": "二维数组和矩阵运算有什么关系？",
-      "expected_topic_ids": ["college_matrix_operations", "college_c_2d_array_matrix"],
+      "expected_topic_ids": [
+        "college_matrix_operations",
+        "college_c_2d_array_matrix"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "动态规划和矩阵思维有什么关系？",
-      "expected_topic_ids": ["college_ds_greedy_dp_intro", "college_matrix_operations"],
+      "expected_topic_ids": [
+        "college_ds_greedy_dp_intro",
+        "college_matrix_operations"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "边际收益和导数有什么关系？",
-      "expected_topic_ids": ["college_derivative_definition", "college_micro_firm_profit"],
+      "expected_topic_ids": [
+        "college_derivative_definition",
+        "college_micro_firm_profit"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "供需均衡为什么要看交点？",
-      "expected_topic_ids": ["linear_function_intersection", "college_micro_demand_supply"],
+      "expected_topic_ids": [
+        "linear_function_intersection",
+        "college_micro_demand_supply"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "比率变化和经济弹性怎么连接？",
-      "expected_topic_ids": ["college_micro_elasticity", "function_concept"],
+      "expected_topic_ids": [
+        "college_micro_elasticity",
+        "function_concept"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "位移时间图像和一次函数有什么关系？",
-      "expected_topic_ids": ["linear_function_graph", "physics_senior_motion_graph_synthesis"],
+      "expected_topic_ids": [
+        "linear_function_graph",
+        "physics_senior_motion_graph_synthesis"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -310,7 +411,10 @@
     },
     {
       "query": "变力做功为什么要用积分？",
-      "expected_topic_ids": ["college_integral_physics_application", "physics_senior_work_energy_path"],
+      "expected_topic_ids": [
+        "college_integral_physics_application",
+        "physics_senior_work_energy_path"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -360,7 +464,10 @@
     },
     {
       "query": "经济增长和指数函数有什么关系？",
-      "expected_topic_ids": ["college_econ_growth_productivity", "senior_exponential_function"],
+      "expected_topic_ids": [
+        "college_econ_growth_productivity",
+        "senior_exponential_function"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -402,22 +509,35 @@
     },
     {
       "query": "递归程序和数列递推有什么关系？",
-      "expected_topic_ids": ["college_c_recursion_basic", "recurrence_sequence"],
+      "expected_topic_ids": [
+        "college_ds_recursion_iteration",
+        "college_c_recursion_basic",
+        "recurrence_sequence"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "图论里的遍历和算法里的BFS DFS有什么关系？",
-      "expected_topic_ids": ["college_graph_traversal", "college_ds_graph_traversal"],
+      "expected_topic_ids": [
+        "college_graph_traversal",
+        "college_ds_graph_traversal"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "地图三要素和比例尺有什么关系？",
-      "expected_topic_ids": ["geo_junior_map_skills", "ratio_percentage"],
+      "expected_topic_ids": [
+        "geo_junior_map_skills",
+        "ratio_percentage"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "世界气候类型和函数图像信息读取有什么关系？",
-      "expected_topic_ids": ["geo_junior_climate_types", "function_graph_reading"],
+      "expected_topic_ids": [
+        "geo_junior_climate_types",
+        "function_graph_reading"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -438,7 +558,10 @@
     },
     {
       "query": "秦统一与中央集权和全面依法治国有什么关系？",
-      "expected_topic_ids": ["history_junior_qin_unification", "pol_senior_rule_of_law"],
+      "expected_topic_ids": [
+        "history_junior_qin_unification",
+        "pol_senior_rule_of_law"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -467,7 +590,10 @@
     },
     {
       "query": "市场机制与宏观调控和财政政策有什么关系？",
-      "expected_topic_ids": ["pol_senior_economy_market", "college_macro_fiscal_policy"],
+      "expected_topic_ids": [
+        "pol_senior_economy_market",
+        "college_macro_fiscal_policy"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -488,7 +614,10 @@
     },
     {
       "query": "作者态度与观点题和逻辑与思维方法有什么关系？",
-      "expected_topic_ids": ["english_senior_reading_author_attitude", "pol_senior_logical_thinking"],
+      "expected_topic_ids": [
+        "english_senior_reading_author_attitude",
+        "pol_senior_logical_thinking"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -501,37 +630,58 @@
     },
     {
       "query": "化学方程式配平和一元一次方程有什么关系？",
-      "expected_topic_ids": ["chem_junior_chemical_equation", "linear_equation"],
+      "expected_topic_ids": [
+        "chem_junior_chemical_equation",
+        "linear_equation"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "弱电解质电离与 pH 和对数函数有什么关系？",
-      "expected_topic_ids": ["chem_senior_ph_ionization", "senior_logarithmic_function"],
+      "expected_topic_ids": [
+        "chem_senior_ph_ionization",
+        "senior_logarithmic_function"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "化学反应速率影响因素和函数单调性有什么关系？",
-      "expected_topic_ids": ["chem_senior_rate_factors", "senior_function_monotonicity"],
+      "expected_topic_ids": [
+        "chem_senior_rate_factors",
+        "senior_function_monotonicity"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "酸碱中和滴定和一次函数交点有什么关系？",
-      "expected_topic_ids": ["chem_senior_acid_base_titration", "linear_function_intersection"],
+      "expected_topic_ids": [
+        "chem_senior_acid_base_titration",
+        "linear_function_intersection"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "孟德尔遗传定律和二项分布有什么关系？",
-      "expected_topic_ids": ["bio_senior_genetics_law", "senior_binomial_distribution"],
+      "expected_topic_ids": [
+        "bio_senior_genetics_law",
+        "senior_binomial_distribution"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "酶活性曲线分析和导数与极值最值有什么关系？",
-      "expected_topic_ids": ["bio_senior_enzyme_curve", "senior_derivative_extrema"],
+      "expected_topic_ids": [
+        "bio_senior_enzyme_curve",
+        "senior_derivative_extrema"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "实验误差与结论评价和方差有什么关系？",
-      "expected_topic_ids": ["bio_senior_experiment_error_analysis", "variance"],
+      "expected_topic_ids": [
+        "bio_senior_experiment_error_analysis",
+        "variance"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -544,22 +694,34 @@
     },
     {
       "query": "实验数据处理和方差有什么关系？",
-      "expected_topic_ids": ["physics_senior_experiment_data", "variance"],
+      "expected_topic_ids": [
+        "physics_senior_experiment_data",
+        "variance"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "几何光学和相似三角形有什么关系？",
-      "expected_topic_ids": ["college_physics_geometric_optics", "similar_triangles"],
+      "expected_topic_ids": [
+        "college_physics_geometric_optics",
+        "similar_triangles"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "有机同分异构和排列组合有什么关系？",
-      "expected_topic_ids": ["chem_senior_organic_isomer", "college_combination"],
+      "expected_topic_ids": [
+        "chem_senior_organic_isomer",
+        "college_combination"
+      ],
       "expect_cross_subject": true
     },
     {
       "query": "PCR和电泳与指数增长有什么关系？",
-      "expected_topic_ids": ["bio_senior_pcr_electrophoresis", "senior_exponential_function"],
+      "expected_topic_ids": [
+        "bio_senior_pcr_electrophoresis",
+        "senior_exponential_function"
+      ],
       "expect_cross_subject": true
     },
     {
@@ -575,6 +737,97 @@
       "expected_topic_ids": [
         "pol_senior_logical_thinking",
         "chinese_senior_composition_argument_layer"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "三角函数图像怎么解释简谐运动？",
+      "expected_topic_ids": [
+        "senior_trig_transform",
+        "senior_trig_graph",
+        "physics_senior_simple_harmonic",
+        "special_angles"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "波动干涉为什么要用和差角公式？",
+      "expected_topic_ids": [
+        "senior_double_angle",
+        "senior_sum_difference_formula",
+        "physics_senior_wave_interference",
+        "senior_trig_graph"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "角平分线和几何证明思路怎么连起来？",
+      "expected_topic_ids": [
+        "angle_bisector",
+        "geometric_proof_strategy",
+        "congruence_criteria"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "垂直平分线为什么能帮助判断圆上距离？",
+      "expected_topic_ids": [
+        "perpendicular_bisector",
+        "circle_concept",
+        "circle_position_relation"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "重要极限和算法复杂度渐近分析有什么关系？",
+      "expected_topic_ids": [
+        "college_important_limits",
+        "college_limit_concept",
+        "college_ds_algorithm_complexity"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "定积分性质怎么用来解释物理中的功？",
+      "expected_topic_ids": [
+        "college_definite_integral_properties",
+        "college_integral_physics_application",
+        "college_physics_work_energy_theorem"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "泰勒公式为什么能做物理小量近似？",
+      "expected_topic_ids": [
+        "college_taylor_formula",
+        "college_differential",
+        "college_physics_simple_harmonic_oscillation"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "坐标系中的面积和运动图像位移有什么关系？",
+      "expected_topic_ids": [
+        "coordinate_area",
+        "physics_senior_motion_graph_synthesis"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "含参方程怎么和物理建模连接？",
+      "expected_topic_ids": [
+        "equation_parameter",
+        "physics_senior_motion_graph_synthesis",
+        "mathematical_modeling"
+      ],
+      "expect_cross_subject": true
+    },
+    {
+      "query": "方差怎么支持实验误差与结论评价？",
+      "expected_topic_ids": [
+        "senior_variance",
+        "college_standard_deviation",
+        "bio_senior_experiment_error_analysis"
       ],
       "expect_cross_subject": true
     }
