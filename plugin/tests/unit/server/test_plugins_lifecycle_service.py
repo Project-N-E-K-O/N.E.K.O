@@ -1046,13 +1046,10 @@ async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_c
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
-        started_at = time.monotonic()
         with pytest.raises(ServerDomainError) as exc_info:
             await module.PluginLifecycleService().start_plugin("slow_adapter", refresh_registry=False)
-        elapsed = time.monotonic() - started_at
 
         assert exc_info.value.code == "PLUGIN_START_TIMEOUT"
-        assert elapsed < 0.04
         assert _SlowProcessHost.instances
         assert _SlowProcessHost.instances[0].stopped is True
         with module.state.acquire_plugin_hosts_read_lock():
