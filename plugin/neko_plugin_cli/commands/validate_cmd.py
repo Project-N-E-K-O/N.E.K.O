@@ -446,11 +446,17 @@ def _check_runtime_table(value: object, issues: list[tuple[str, str]]) -> None:
     if not isinstance(value, dict):
         issues.append(("error", "[plugin_runtime] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "auto_start", "priority", "timeout"}, "[plugin_runtime]", issues)
+    _warn_unknown_keys(value, {"enabled", "auto_start", "priority", "timeout", "startup_failure"}, "[plugin_runtime]", issues)
     _check_optional_bool(value, "enabled", "[plugin_runtime].enabled", issues)
     _check_optional_bool(value, "auto_start", "[plugin_runtime].auto_start", issues)
     _check_optional_number(value, "priority", "[plugin_runtime].priority", issues, integer=True)
-    _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues, minimum=0)
+    _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues)
+    timeout = value.get("timeout")
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout <= 0:
+        issues.append(("error", "[plugin_runtime].timeout must be > 0"))
+    startup_failure = value.get("startup_failure")
+    if startup_failure is not None:
+        _check_enum(startup_failure, "[plugin_runtime].startup_failure", {"warn", "fail", "ignore"}, issues)
 
 
 def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> None:

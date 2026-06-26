@@ -135,6 +135,27 @@ class PluginRuntimeSchema(BaseModel):
     auto_start: bool = False
     priority: Optional[int] = None
     timeout: Optional[float] = None
+    startup_failure: Literal["warn", "fail", "ignore"] = "warn"
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def validate_timeout(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("plugin_runtime.timeout must be a positive number")
+        if float(value) <= 0:
+            raise ValueError("plugin_runtime.timeout must be a positive number")
+        return value
+
+    @field_validator("startup_failure", mode="before")
+    @classmethod
+    def validate_startup_failure(cls, value: object) -> object:
+        if value is None:
+            return "warn"
+        if value not in {"warn", "fail", "ignore"}:
+            raise ValueError("plugin_runtime.startup_failure must be one of: warn, fail, ignore")
+        return value
 
 
 class PluginConfigSchema(BaseModel):
