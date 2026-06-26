@@ -776,6 +776,7 @@
         "pendingImagesAriaLabel": "送信待ち画像",
         "pendingImageAlt": "画像 {{index}}",
         "removePendingImage": "画像を削除",
+        "closeMemeAriaLabel": "画像を閉じる",
         "emojiButtonAriaLabel": "絵文字",
         "toolIconsAriaLabel": "ツールアイコン",
         "toolLollipop": "キャンディー",

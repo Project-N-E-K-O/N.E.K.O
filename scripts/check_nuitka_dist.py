@@ -57,12 +57,17 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     # 守 dist 里确有它们，否则 /api/changelog、/api/survey（Steam-only）打包后读空。
     ("config/changelog", None),
     ("config/surveys", None),
+    # 本地化角色种子目录 config/characters/<locale>.json（PR #1282）。--include-package=config
+    # 只编 .py 不带；守该目录里至少有一份 locale json，否则非默认语言用户的角色种子回退错语言。
+    ("config/characters", "*.json"),
     ("static", None),
     ("templates", None),
     ("assets", None),
     ("data/browser_use_prompts", None),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
+    # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。
+    ("docs/zh-CN/guide", None),
 )
 
 # 内置插件目录里每一个子目录都必须有 plugin.toml；用来抓 ``plugin/plugins``

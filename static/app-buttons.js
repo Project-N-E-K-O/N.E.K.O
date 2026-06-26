@@ -2558,6 +2558,7 @@
             window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
             window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
             var isReactWindowSource = options.source === 'react-chat-window';
+            var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
@@ -2756,12 +2757,16 @@
                         for (var extraIndex = 0; extraIndex < extraImageDataUrls.length; extraIndex += 1) {
                             var extraUrl = extraImageDataUrls[extraIndex];
                             sentImageUrls.push(extraUrl);
-                            S.socket.send(JSON.stringify({
+                            var extraMessage = {
                                 action: 'stream_data',
                                 data: extraUrl,
                                 input_type: 'avatar_drop_image',
                                 request_id: requestId
-                            }));
+                            };
+                            if (messageSource) {
+                                extraMessage.source = messageSource;
+                            }
+                            S.socket.send(JSON.stringify(extraMessage));
                         }
 
                         sentUserContent = true;
@@ -2791,6 +2796,9 @@
                         };
                         if (memoryText) {
                             textMessage.memory_text = memoryText;
+                        }
+                        if (messageSource) {
+                            textMessage.source = messageSource;
                         }
                         S.socket.send(JSON.stringify(textMessage));
 

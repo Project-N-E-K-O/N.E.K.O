@@ -776,6 +776,7 @@
         "pendingImagesAriaLabel": "Изображения к отправке",
         "pendingImageAlt": "Изображение {{index}}",
         "removePendingImage": "Удалить изображение",
+        "closeMemeAriaLabel": "Закрыть изображение",
         "emojiButtonAriaLabel": "Эмодзи",
         "toolIconsAriaLabel": "Значки инструментов",
         "toolLollipop": "Леденец",

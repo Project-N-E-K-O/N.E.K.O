@@ -15,6 +15,7 @@
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D モデルパラメータの微調整 |
 | `/live2d_emotion_manager` | `live2d_emotion_manager.html` | Live2D 感情マッピング |
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM 感情マッピング |
+| `/mmd_emotion_manager` | `mmd_emotion_manager.html` | MMD 感情（モーフ）マッピング |
 | `/voice_clone` | `voice_clone.html` | ボイスクローニングインターフェース |
 | `/memory_browser` | `memory_browser.html` | メモリの閲覧と編集 |
 
@@ -34,4 +35,7 @@
 | `/static` | `static/` | JS、CSS、画像、ロケール |
 | `/user_live2d` | ユーザードキュメント | ユーザーがインポートした Live2D モデル |
 | `/user_vrm` | ユーザードキュメント | ユーザーがインポートした VRM モデル |
+| `/user_mmd` | ユーザーデータ | ユーザーがインポートした MMD モデル（PMX/PMD） |
+| `/user_mmd/animation` | ユーザーデータ | ユーザーがインポートした VMD アニメーション |
+| `/user_pngtuber` | ユーザーデータ | ユーザーがインポートした PNGTuber パッケージ |
 | `/workshop` | Steam Workshop | Workshop でサブスクライブしたモデル |

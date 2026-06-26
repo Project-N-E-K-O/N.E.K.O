@@ -2524,8 +2524,16 @@
         batch.forEach(function (action) {
             try {
                 if (action.type === 'append' && action.message) {
-                    host.appendMessage(action.message);
                     shouldOpenHost = true;
+                    return Promise.resolve(host.appendMessage(action.message)).then(function (result) {
+                        if (!result) return result;
+                        return waitForIcebreakerChatHostMounted(host).then(function () {
+                            syncIcebreakerAssistantCompactCaption(action.message);
+                            return result;
+                        });
+                    }).catch(function (error) {
+                        console.warn('[NewUserIcebreaker] Failed to append bridge message:', error);
+                    });
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
                     shouldOpenHost = true;
@@ -2558,6 +2566,62 @@
     function clearIcebreakerChoicePromptFromBroadcast(sessionId) {
         if (!isStandaloneChatPage()) return;
         queueIcebreakerBridgeAction({ type: 'clear_prompt', sessionId: String(sessionId || '') });
+    }
+
+    // Also defined in new-user-icebreaker.js for the local chat host path.
+    function getIcebreakerMessageText(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i] && blocks[i].type === 'text') {
+                var text = String(blocks[i].text || '').trim();
+                if (text) return text;
+            }
+        }
+        return '';
+    }
+
+    function syncIcebreakerAssistantCompactCaption(message) {
+        if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;
+        var line = getIcebreakerMessageText(message);
+        if (!line) return;
+        var turnId = String(message.turnId || message.id || ('icebreaker-turn-' + Date.now()));
+        try {
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+                detail: {
+                    turnId: turnId,
+                    source: 'new_user_icebreaker'
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+                detail: {
+                    turnId: turnId,
+                    segmentId: turnId + ':icebreaker',
+                    text: line,
+                    source: 'new_user_icebreaker'
+                }
+            }));
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] compact caption sync failed:', error);
+        }
+    }
+
+    function waitForIcebreakerChatHostMounted(host) {
+        return new Promise(function (resolve) {
+            var attempts = 0;
+            function checkMounted() {
+                var isMounted = false;
+                try {
+                    isMounted = !!(host && typeof host.isMounted === 'function' && host.isMounted());
+                } catch (_) {}
+                if (isMounted || attempts >= 100) {
+                    yuiGuideInterpageResources.setTimeout(resolve, 0);
+                    return;
+                }
+                attempts += 1;
+                yuiGuideInterpageResources.setTimeout(checkMounted, 50);
+            }
+            checkMounted();
+        });
     }
 
     function isIcebreakerBridgeAction(action) {

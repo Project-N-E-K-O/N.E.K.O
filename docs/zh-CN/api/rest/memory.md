@@ -25,13 +25,16 @@
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "哥哥", "text": "Hello!" },
+    { "role": "小天", "text": "Hi there!" }
   ]
 }
 ```
+
+角色名称由 `filename` 推导得出（通过 `extract_catgirl_name_from_recent_filename`），而不是从请求体读取。每个聊天条目都需要一个 `role` 字符串；消息文本从 `text` 字段读取。
+
+注意：`role` 是 `recent.json` 中存储的说话者名字——人类发言用主人配置的名字，AI 发言用角色的名字——而不是 `"user"`/`"assistant"`。处理程序会原样写入每个条目的 `role`。
 
 ::: info
 角色名称通过支持 CJK 字符的正则表达式进行验证。聊天记录条目会验证必填字段。

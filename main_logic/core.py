@@ -3724,7 +3724,14 @@ class LLMSessionManager:
                 "details": {"command": command},
             }))
 
-    async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
+    async def handle_input_transcript(
+        self,
+        transcript: str,
+        *,
+        is_voice_source: bool = True,
+        source: str | None = None,
+        metadata: dict | None = None,
+    ):
         """Sync transcript text into queues/cache and push it to the frontend.
 
         ``is_voice_source`` defaults to True for the realtime-client
@@ -3844,6 +3851,11 @@ class LLMSessionManager:
 
         # 推送到同步消息队列
         user_message = {"input_type": "transcript", "data": record_transcript_text}
+        source_value = str(source or "").strip()
+        if source_value:
+            user_message["source"] = source_value
+        if isinstance(metadata, dict) and metadata:
+            user_message["metadata"] = metadata
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
         self.sync_message_queue.put({"type": "user", "data": user_message})
@@ -9447,6 +9459,7 @@ class LLMSessionManager:
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
                     memory_text = self._clean_frontend_memory_text(message.get("memory_text"))
+                    message_source = str(message.get("source") or "").strip()
                     record_data = memory_text or data
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
@@ -9582,8 +9595,21 @@ class LLMSessionManager:
                     _focus_thinking = await self._focus_inline_decision(record_data)
                     input_transcript_callback = None
                     if memory_text:
-                        async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
-                            await self.handle_input_transcript(_memory_text, is_voice_source=False)
+                        transcript_metadata = {"source": message_source} if message_source else None
+
+                        async def input_transcript_callback(
+                            _transcript: str,
+                            *,
+                            _memory_text: str = memory_text,
+                            _message_source: str = message_source,
+                            _transcript_metadata: dict | None = transcript_metadata,
+                        ) -> None:
+                            await self.handle_input_transcript(
+                                _memory_text,
+                                is_voice_source=False,
+                                source=_message_source,
+                                metadata=_transcript_metadata,
+                            )
 
                     stream_text_kwargs = {
                         "system_prefix": _agent_cb_ctx or None,
@@ -9789,6 +9815,9 @@ class LLMSessionManager:
                                 "has_image": True,
                                 "mime_type": "image/jpeg",
                             }
+                            message_source = str(message.get("source") or "").strip()
+                            if message_source:
+                                image_message["source"] = message_source
                             if message.get("request_id"):
                                 image_message["request_id"] = message.get("request_id")
                             self.sync_message_queue.put({
