@@ -1494,6 +1494,100 @@ async def test_pipeline_session_marker_prevents_repeat_avatar_roast_when_persist
 
 
 @pytest.mark.asyncio
+async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_dispatcher_fails():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        def __init__(self):
+            self.mark_calls = 0
+
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            self.mark_calls += 1
+
+    class Dispatcher:
+        def __init__(self):
+            self.calls = 0
+
+        async def push_roast(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary output failure")
+            return f"queued_to_neko({request.prompt_text})"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"avatar_roast:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    class DanmakuResponse:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"danmaku_response:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    viewer_profile = ViewerProfileModule()
+    dispatcher = Dispatcher()
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=viewer_profile,
+        avatar_roast=AvatarRoast(),
+        danmaku_response=DanmakuResponse(),
+        dispatcher=dispatcher,
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+    pipeline = RoastPipeline(ctx)
+
+    first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
+    second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+
+    assert first.status == "failed"
+    assert second.status == "pushed"
+    assert first.request is not None
+    assert second.request is not None
+    assert first.request.prompt_text == "avatar_roast:first"
+    assert second.request.prompt_text == "danmaku_response:second"
+    assert viewer_profile.mark_calls == 0
+    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_records_idle_hosting_as_own_route():
     class Audit:
         def record(self, *_args, **_kwargs):

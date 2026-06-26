@@ -145,6 +145,9 @@ class RoastPipeline:
                     should_mark_roasted = not is_transient_event
                     response_module_id = "avatar_roast"
                 steps.append(PipelineStep(response_module_id, "ok"))
+                if should_mark_roasted and uid_lock is not None:
+                    self._session_roasted_uids.add(identity.uid)
+                    steps.append(PipelineStep("viewer_gate.session_claim", "ok", response_module_id))
 
                 output_decision = self.ctx.safety_guard.before_output(event)
                 if not output_decision.allowed:
