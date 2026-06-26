@@ -8,17 +8,28 @@ from typing import Any
 SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words."
 
 
-def short_reply_rules() -> list[str]:
-    return [
+def short_reply_rules(*, kind: str = "reply") -> list[str]:
+    shared = [
         SHORT_REPLY_CONTRACT,
-        "If the viewer's danmaku is short, answer even shorter.",
-        "For one-word or very short danmaku, answer with a tiny reaction.",
         "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
-        "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
         "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",
         "Avoid phrases like special plan, everyone look, next let's, what should we talk about, or tell me what you want.",
+    ]
+    if kind == "host":
+        return [
+            *shared,
+            "If the room is quiet, keep the line even smaller.",
+            "One small host beat only; if asking, ask one concrete low-pressure question.",
+            "If recent context was longer than this host beat, shrink the line instead of matching it.",
+            "No explanation, no setup, no second sentence, no extra follow-up after the concrete hook.",
+        ]
+    return [
+        *shared,
+        "If the viewer's danmaku is short, answer even shorter.",
+        "For one-word or very short danmaku, answer with a tiny reaction.",
+        "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",
         "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one.",
     ]
 

@@ -95,7 +95,7 @@ class AvatarRoastModule(BaseModule):
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
-            *short_reply_rules(),
+            *short_reply_rules(kind="host"),
             "Output only the line NEKO should say.",
         ]
         return (

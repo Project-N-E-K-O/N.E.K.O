@@ -74,7 +74,7 @@ class ActiveEngagementModule(BaseModule):
             "Do not pretend a viewer sent a message.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep one short TTS-friendly line.",
-            *short_reply_rules(),
+            *short_reply_rules(kind="host"),
             "Output only NEKO's line.",
         ]
         return (

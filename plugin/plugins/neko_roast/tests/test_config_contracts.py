@@ -196,14 +196,43 @@ def test_live_interaction_prompts_share_short_reply_contract():
         ViewerProfile(uid="__neko_active__", nickname="NEKO"),
     )
 
+    common_rules = [
+        short_contract,
+        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
+        "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
+        "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
+        "Do not chain multiple clauses with commas",
+    ]
+    reply_rules = [
+        "If the viewer's danmaku is short, answer even shorter.",
+        "For one-word or very short danmaku, answer with a tiny reaction.",
+        "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",
+        "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one.",
+    ]
+    host_rules = [
+        "If the room is quiet, keep the line even smaller.",
+        "One small host beat only; if asking, ask one concrete low-pressure question.",
+        "If recent context was longer than this host beat, shrink the line instead of matching it.",
+        "No explanation, no setup, no second sentence, no extra follow-up after the concrete hook.",
+    ]
+
     for request in [danmaku_request, avatar_request, idle_request, warmup_request, active_request]:
-        assert short_contract in request.prompt_text
-        assert "If the viewer's danmaku is short, answer even shorter." in request.prompt_text
-        assert "Do not turn a reply into a host script, segment intro, plan, or audience survey." in request.prompt_text
-        assert "Do not chain multiple clauses with commas" in request.prompt_text
-        assert "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one." in request.prompt_text
-        assert "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works." in request.prompt_text
-        assert "If recent context was longer than the current danmaku, shrink the reply instead of matching it." in request.prompt_text
+        for rule in common_rules:
+            assert rule in request.prompt_text
+
+    for request in [danmaku_request, avatar_request]:
+        for rule in reply_rules:
+            assert rule in request.prompt_text
+        assert "One small host beat only; if asking, ask one concrete low-pressure question." not in request.prompt_text
+
+    for request in [idle_request, warmup_request, active_request]:
+        for rule in host_rules:
+            assert rule in request.prompt_text
+        assert "If the viewer's danmaku is short, answer even shorter." not in request.prompt_text
+        assert (
+            "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one."
+            not in request.prompt_text
+        )
 
 
 def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():

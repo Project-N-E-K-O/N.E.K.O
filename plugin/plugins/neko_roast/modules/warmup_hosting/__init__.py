@@ -51,7 +51,7 @@ class WarmupHostingModule(BaseModule):
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it TTS-friendly and easy to continue from.",
-            *short_reply_rules(),
+            *short_reply_rules(kind="host"),
             "Output only NEKO's line.",
         ]
         return (
