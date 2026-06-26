@@ -193,6 +193,7 @@
   "panel.liveStatusReason.dry_run": "测试模式已开启，NEKO 不会真实输出。",
   "panel.liveStatusReason.manual_paused": "NEKO 已被手动暂停。",
   "panel.liveStatusReason.room_not_configured": "还没有设置直播间。",
+  "panel.liveStatusReason.live_disabled": "NEKO Live 尚未启用。",
   "panel.liveStatusReason.live_ingest_disconnected": "直播接收还没有开始监听。",
   "panel.liveStatusReason.cooldown": "NEKO 正在等待冷却结束。",
   "panel.liveStatusReason.safety_tripped": "自动安全停机已触发。",

@@ -3161,6 +3161,42 @@ async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: 
 
 
 @pytest.mark.asyncio
+async def test_live_disabled_blocks_solo_auto_hosting_even_with_stale_connection(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = False
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    warmup = await runtime.maybe_trigger_warmup_hosting()
+
+    assert warmup is None
+    assert len(runtime.recent_results) == 0
+
+    _record_result_at(runtime, age_seconds=90)
+    active = await runtime.maybe_trigger_active_engagement()
+
+    assert active is None
+    assert len(runtime.recent_results) == 1
+
+    runtime.recent_results.clear()
+    _record_result_at(runtime, age_seconds=240)
+    idle = await runtime.maybe_trigger_idle_hosting()
+
+    assert idle is None
+    assert len(runtime.recent_results) == 1
+
+    state = await runtime.dashboard_state()
+    assert state["live_status"]["summary"] == "cannot_stream"
+    assert state["live_status"]["reason"] == "live_disabled"
+    assert state["live_state"]["state"] == "blocked"
+    assert state["live_state"]["warmup_hosting_candidate"] is False
+    assert state["live_state"]["idle_hosting_candidate"] is False
+    assert state["live_director_status"]["next_auto_action"] == "none"
+
+
+@pytest.mark.asyncio
 async def test_live_director_status_picks_active_engagement_for_solo_quiet(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True

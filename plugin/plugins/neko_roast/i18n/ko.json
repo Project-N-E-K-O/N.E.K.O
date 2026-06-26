@@ -193,6 +193,7 @@
   "panel.liveStatusReason.dry_run": "드라이런이 켜져 있어 NEKO가 실제로 출력하지 않습니다.",
   "panel.liveStatusReason.manual_paused": "NEKO가 수동으로 일시정지되었습니다.",
   "panel.liveStatusReason.room_not_configured": "방송방이 설정되지 않았습니다.",
+  "panel.liveStatusReason.live_disabled": "NEKO Live가 활성화되어 있지 않습니다.",
   "panel.liveStatusReason.live_ingest_disconnected": "라이브 수신이 아직 리스닝 중이 아닙니다.",
   "panel.liveStatusReason.cooldown": "NEKO가 쿨다운이 끝나기를 기다리고 있습니다.",
   "panel.liveStatusReason.safety_tripped": "자동 안전 정지가 활성화되었습니다.",

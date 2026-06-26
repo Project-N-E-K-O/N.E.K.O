@@ -193,6 +193,7 @@
   "panel.liveStatusReason.dry_run": "ドライラン中のため、NEKO は実際には出力しません。",
   "panel.liveStatusReason.manual_paused": "NEKO は手動で一時停止されています。",
   "panel.liveStatusReason.room_not_configured": "配信ルームが設定されていません。",
+  "panel.liveStatusReason.live_disabled": "NEKO Live は有効化されていません。",
   "panel.liveStatusReason.live_ingest_disconnected": "ライブ受信がまだリスニングしていません。",
   "panel.liveStatusReason.cooldown": "NEKO はクールダウン終了を待っています。",
   "panel.liveStatusReason.safety_tripped": "自動安全停止が有効です。",

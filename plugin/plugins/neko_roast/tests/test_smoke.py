@@ -298,6 +298,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.liveStatusReason.dry_run",
         "panel.liveStatusReason.manual_paused",
         "panel.liveStatusReason.room_not_configured",
+        "panel.liveStatusReason.live_disabled",
         "panel.liveStatusReason.live_ingest_disconnected",
         "panel.liveStatusReason.cooldown",
         "panel.liveStatusReason.safety_tripped",

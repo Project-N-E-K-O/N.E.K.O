@@ -520,6 +520,7 @@ danmaku_core on_event(cmd, 富模型)
 任何需要让猫猫回应的功能都必须通过 `NekoDispatcher`。不要在模块里直接调用 `plugin.push_message()`。
 
 插件启动和配置变化时只在 `live_enabled=true` 后通过 `NekoDispatcher.push_context_instructions()` 注入一段 `ai_behavior="read"` 的轻量上下文，告诉猫猫这是直播间弹幕/头像锐评场景，以及锐评要自然、短句、适合 TTS 播放。未开启直播插件时必须保持 `not_injected` 或执行恢复，不得向主猫注入直播语境，避免影响 Warthunder 等其他插件发言。这段上下文只用于让 LLM 理解插件语境，不写观众档案，不进入直播总结，也不代表一次锐评已经发生。
+`live_enabled` 也是运行态输出总闸，而不只是 UI 开关或 permission gate。`live_status_summary()` 必须在 `live_enabled=false` 时返回 `cannot_stream/live_disabled`，即使旧监听器快照仍显示 connected；自动 `warmup_hosting` / `active_engagement` / `idle_hosting` 因此不得进入 pipeline、不得写 recent result，避免 NEKO Live 未开启时污染其他插件测试或主猫普通发言。
 如果 `developer_tools_enabled=true`，插件会在直播语境之后通过 `NekoDispatcher.push_developer_instructions()` 叠加开发者调试语境。手动从面板开启开发者模式时，额外通过 `respond` 播报一次进入调试状态；插件启动或配置重载时只静默注入，不自动播报。
 关闭开发者模式时，插件会发送开发者调试恢复语境，只退出调试态，不关闭直播锐评语境，也不清空沙盒记录。
 插件停止、断开直播间或关闭 `live_enabled` 时会通过 `NekoDispatcher.push_context_restore()` 再发送一段 `ai_behavior="read"` 的恢复上下文，提醒猫猫停止把后续普通对话理解成直播间弹幕、头像锐评事件或观众互动事件。xTLM 的做法是连接后注入常驻玩法语境，本插件在此基础上额外补了关闭恢复，避免关闭后仍残留直播锐评状态。
@@ -628,7 +629,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-27：`uv run pytest plugin/plugins/neko_roast/tests -q` → **317 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-27：`uv run pytest plugin/plugins/neko_roast/tests -q` → **318 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

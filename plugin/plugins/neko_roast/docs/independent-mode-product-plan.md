@@ -394,9 +394,9 @@ Next implementation focus before another long live run:
 
 1. Voice Playback Gate: current development package makes the browser open the backend playback gate as soon as audio has drained, even if the later turn-completion bookkeeping is delayed or missing. The next live run must verify that repeated `voice playback gate watchdog` stalls disappear.
 2. Avatar Image Scope: current development package makes dispatcher attach avatar image parts only for explicit visual opt-in requests. `avatar_roast` owns the first-appearance visual input; `danmaku_response`, `idle_hosting`, `active_engagement`, and `warmup_hosting` are text-only by default.
-3. Test Isolation: keep unrelated proactive plugins, especially Warthunder, out of the controlled solo-stream validation window.
+3. Test Isolation: current development package treats `live_enabled=false` as a runtime preflight blocker even when a stale live connection snapshot still looks connected. Automatic `warmup_hosting`, `active_engagement`, and `idle_hosting` should not enter the pipeline or write recent results while NEKO Live is disabled. Controlled solo-stream validations should still keep unrelated proactive plugins, especially Warthunder, out of the test window.
 
-Do not redo already-landed prompt work as if it were missing. Prompt context isolation, live-mode prompt split, shorter reply contract, conservative Active Engagement pacing, result labels, warmup testability, Gift Signal v0, Avatar Image Scope, and the Playback Gate source-level fix are already implemented in the current development line. The next unresolved blocker is controlled test isolation, followed by live verification that playback watchdog stalls no longer recur.
+Do not redo already-landed prompt work as if it were missing. Prompt context isolation, live-mode prompt split, shorter reply contract, conservative Active Engagement pacing, result labels, warmup testability, Gift Signal v0, Avatar Image Scope, the Playback Gate source-level fix, and the `live_enabled` runtime preflight blocker are already implemented in the current development line. The next unresolved blocker is live verification that playback watchdog stalls no longer recur under a clean controlled test window.
 
 ## Third Long Live Validation - 2026-06-25
 

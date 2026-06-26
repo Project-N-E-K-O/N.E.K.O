@@ -193,6 +193,7 @@
   "panel.liveStatusReason.dry_run": "Dry run está activo; NEKO no enviará salida real.",
   "panel.liveStatusReason.manual_paused": "NEKO está pausada manualmente.",
   "panel.liveStatusReason.room_not_configured": "No hay sala configurada.",
+  "panel.liveStatusReason.live_disabled": "NEKO Live no está activado.",
   "panel.liveStatusReason.live_ingest_disconnected": "La recepción en vivo no está escuchando.",
   "panel.liveStatusReason.cooldown": "NEKO espera a que termine el enfriamiento.",
   "panel.liveStatusReason.safety_tripped": "La parada automática de seguridad está activa.",

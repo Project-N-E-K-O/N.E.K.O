@@ -1540,6 +1540,10 @@ class RoastRuntime:
             summary = "cannot_stream"
             reason = "room_not_configured"
             can_output = False
+        elif not self.config.live_enabled:
+            summary = "cannot_stream"
+            reason = "live_disabled"
+            can_output = False
         elif not connected:
             summary = "cannot_stream"
             reason = "live_ingest_disconnected"

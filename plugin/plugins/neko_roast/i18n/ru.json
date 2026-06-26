@@ -193,6 +193,7 @@
   "panel.liveStatusReason.dry_run": "Включен dry run, NEKO не отправит реальный вывод.",
   "panel.liveStatusReason.manual_paused": "NEKO поставлена на паузу вручную.",
   "panel.liveStatusReason.room_not_configured": "Комната для эфира не настроена.",
+  "panel.liveStatusReason.live_disabled": "NEKO Live не включен.",
   "panel.liveStatusReason.live_ingest_disconnected": "Прием live-событий не слушает комнату.",
   "panel.liveStatusReason.cooldown": "NEKO ждет окончания задержки.",
   "panel.liveStatusReason.safety_tripped": "Автоматическая безопасная остановка активна.",
