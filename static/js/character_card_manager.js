@@ -4573,9 +4573,7 @@ function _animateCharaCardParticles() {
     } else {
         cancelAnimationFrame(charaCardParticleFrame);
         charaCardParticleFrame = 0;
-        if (!charaCardParticles.length) {
-            _teardownCharaCardParticleCanvas();
-        }
+        _teardownCharaCardParticleCanvas();
     }
 }
 
@@ -4598,13 +4596,17 @@ async function _dissolveCharaCardElement(target) {
     const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     target.style.pointerEvents = 'none';
-    target.classList.add('is-dissolving');
 
-    if (!reduceMotion) {
-        _ensureCharaCardParticleCanvas();
-        _spawnCharaCardParticles(target);
-        _startCharaCardParticles();
+    if (reduceMotion) {
+        target.style.opacity = '0';
+        target.style.visibility = 'hidden';
+        return;
     }
+
+    target.classList.add('is-dissolving');
+    _ensureCharaCardParticleCanvas();
+    _spawnCharaCardParticles(target);
+    _startCharaCardParticles();
 
     await _wait(CHARA_CARD_DISSOLVE_DURATION);
     if (runId !== charaCardDissolveRunId) {
@@ -4621,18 +4623,33 @@ async function _dissolveCharaCardElement(target) {
 }
 
 async function _deleteCharaCardWithParticle(name, targetCardElement, triggerButton) {
-    const deleted = await workshopDeleteCatgirl(name, { skipReload: true });
-    if (!deleted) {
+    try {
+        const deleted = await workshopDeleteCatgirl(name, { skipReload: true });
+        if (!deleted) {
+            if (triggerButton) triggerButton.disabled = false;
+            return false;
+        }
+
+        if (targetCardElement) {
+            await _dissolveCharaCardElement(targetCardElement);
+        }
+
+        try {
+            await loadCharacterCards();
+        } catch (error) {
+            console.error('刷新角色卡列表失败:', error);
+            if (targetCardElement && targetCardElement.parentNode) {
+                targetCardElement.parentNode.removeChild(targetCardElement);
+            } else if (triggerButton) {
+                triggerButton.disabled = false;
+            }
+        }
+        return true;
+    } catch (error) {
+        console.error('删除角色卡粒子消散流程失败:', error);
         if (triggerButton) triggerButton.disabled = false;
         return false;
     }
-
-    if (targetCardElement) {
-        await _dissolveCharaCardElement(targetCardElement);
-    }
-
-    await loadCharacterCards();
-    return true;
 }
 
 // 卡片视图渲染

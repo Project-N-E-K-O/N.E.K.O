@@ -4579,7 +4579,7 @@ margin-top: 10px;
 .chara-card-item.is-dissolving,
 .chara-list-item.is-dissolving {
     pointer-events: none;
-    animation: chara-card-ghost-out 680ms ease forwards;
+    animation: var(--chara-card-dissolve-animation, chara-card-ghost-out 680ms ease forwards);
 }
 
 .chara-card-particle-canvas {
@@ -4601,6 +4601,14 @@ margin-top: 10px;
         opacity: 0;
         filter: blur(6px);
         transform: translateY(-6px) scale(0.985);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chara-card-item.is-dissolving,
+    .chara-list-item.is-dissolving {
+        --chara-card-dissolve-animation: none;
+        animation: none;
     }
 }
 

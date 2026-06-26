@@ -12,9 +12,9 @@
 ## 相关文件
 
 - `static/js/memory_browser.js`
-  - `executeDissolveAction`
-  - `bindMemoryDissolveButton`
   - `dissolveChatItems`
+  - `deleteChat`
+  - `#clear-memory-btn` 的点击绑定
   - `addMemoryItemParticles`、`sampleMemoryElementParticles`、`startMemoryParticles`
   - `teardownMemoryParticleCanvas`
 - `static/css/memory_browser.css`
@@ -26,99 +26,81 @@
 
 删除和清空不再直接执行 DOM 删除，而是走“先动画、后重渲染”流程：
 
-1. 根据按钮配置拿到目标元素列表；
+1. 删除入口拿到目标元素列表；
 2. 修改 `chatData` 数据源；
-3. 调用统一溶解入口执行粒子动画；
+3. 调用 `dissolveChatItems` 执行粒子动画；
 4. 动画完成后回调刷新列表（`renderChatEdit`）；
 5. 最后恢复按钮状态。
 
-这个流程避免了各按钮重复维护动画时序和状态开关。
+这个流程把动画时序集中在 `dissolveChatItems`，删除入口只负责找到目标、修改数据和传入完成回调。
 
-## 通用方法（已抽象）
+## 现有入口
 
-### `executeDissolveAction(config)`
+### `dissolveChatItems(items, onComplete)`
 
-该方法接收一个配置对象 `config`，并按统一流程执行。
+这是当前记忆浏览器的粒子消散入口。它接收要消散的 `.chat-item` 列表，并在动画结束后执行 `onComplete`。
 
-字段说明：
+当前职责：
 
-- `getTargets`：返回当前操作的 DOM 列表（例如单条 `.chat-item`）
-- `mutateData`：在动画前执行数据变更（例如 `chatData.splice`、过滤）
-- `onComplete`：动画完成后的回调（一般用于 `renderChatEdit`）
-- `onEmpty`：无目标项时的兜底回调
+- 检查 `prefers-reduced-motion` 和目标数量；
+- 设置 `memoryDissolveInProgress`，禁用清空和单条删除按钮；
+- 为目标元素错峰添加粒子和 `.is-dissolving`；
+- 调用 `collapseMemoryItem` 收起元素高度；
+- 在收尾时执行 `onComplete` 并恢复按钮状态。
 
 执行顺序：
 
-1. 先检查 `memoryDissolveInProgress`，防止并发重入；
-2. 组装并过滤目标；
-3. 目标为空则触发 `onEmpty` 并返回；
-4. 执行 `mutateData`；
-5. 调 `dissolveChatItems(targets, onComplete)`。
-
-### `bindMemoryDissolveButton(button, config)`
-
-统一按钮绑定入口。传入任意按钮 DOM 与配置即可完成点击绑定。
-
-伪码：
-
-```js
-bindMemoryDissolveButton(btn, {
-  getTargets,
-  mutateData,
-  onComplete,
-  onEmpty
-});
-```
+1. 过滤空目标；
+2. reduced-motion 或目标过多时直接执行完成回调；
+3. 启动粒子画布和逐项消散动画；
+4. 动画结束后执行完成回调。
 
 ## 现有接入方式
 
 ### 单条删除
 
-每个 `.delete-btn` 仍由渲染逻辑绑定到 `deleteChat(i)`，内部通过通用入口执行：
+每个 `.delete-btn` 由渲染逻辑绑定到 `deleteChat(i)`，内部按真实 DOM 和数据索引执行：
 
-- `getTargets`：当前 `data-chat-index` 对应 `.chat-item`
-- `mutateData`：`chatData.splice(idx, 1)`
-- `onComplete`：`renderChatEdit`
+- 通过 `data-chat-index` 找到当前 `.chat-item`；
+- 执行 `chatData.splice(idx, 1)`；
+- 调用 `dissolveChatItems([item], renderChatEdit)`。
 
 ### 清空按钮
 
-`#clear-memory-btn` 直接使用 `bindMemoryDissolveButton` 绑定：
+`#clear-memory-btn` 使用现有点击处理器直接接入：
 
-- `getTargets`：所有 human/ai 消息节点；
-- `mutateData`：过滤 `chatData`，仅保留 `system`；
-- `onComplete`：`renderChatEdit` + 提示文案；
-- `onEmpty`：无对话可清时直接提示。
+- 查询所有 human/ai 消息节点；
+- 无可清空项时直接提示；
+- 过滤 `chatData`，仅保留非 human/ai 的消息（例如 system 备忘录）；
+- 调用 `dissolveChatItems(itemsToDissolve, callback)`；
+- 在回调中执行 `renderChatEdit()` 并展示清空提示。
 
-这意味着后续新增“删除某类消息”按钮时无需改动画代码，只需提供一组配置。
+这意味着后续新增“删除某类消息”按钮时，应沿用同样模式：入口先收集 DOM 目标并修改 `chatData`，然后把目标列表和完成回调交给 `dissolveChatItems`。
 
 ## 使用新功能的接入模板（新增按钮）
 
 ```js
-bindMemoryDissolveButton(
-  document.getElementById('btn-delete-ai-only'),
-  {
-    getTargets: function () {
-      return Array.from(
-        document.querySelectorAll('#memory-chat-edit .chat-item[data-role="ai"]')
-      );
-    },
-    mutateData: function () {
-      chatData = chatData.filter(function (item) {
-        return item && item.role !== 'ai';
-      });
-    },
-    onEmpty: function () {
-      showSaveStatus('当前没有 AI 消息可删除', false);
-    },
-    onComplete: function () {
-      renderChatEdit();
-      showSaveStatus('已删除 AI 消息', false);
-    }
+document.getElementById('btn-delete-ai-only').onclick = function () {
+  if (memoryDissolveInProgress) return;
+  const itemsToDissolve = Array.from(
+    document.querySelectorAll('#memory-chat-edit .chat-item[data-role="ai"]')
+  );
+  if (!itemsToDissolve.length) {
+    showSaveStatus('当前没有 AI 消息可删除', false);
+    return;
   }
-);
+
+  chatData = chatData.filter(function (item) {
+    return item && item.role !== 'ai';
+  });
+  dissolveChatItems(itemsToDissolve, function () {
+    renderChatEdit();
+    showSaveStatus('已删除 AI 消息', false);
+  });
+};
 ```
 
-> 建议：`getTargets` 必须与 `mutateData` 语义一致。否则会出现“动画了却没删/删了但动画不对上”的问题。
+> 建议：DOM 目标查询必须与 `chatData` 过滤语义一致。否则会出现“动画了却没删/删了但动画不对上”的问题。
 
 ## 关键状态与并发控制
 
@@ -133,7 +115,7 @@ bindMemoryDissolveButton(
 
 ## 粒子与动效参数
 
-- 默认触发粒子时长约束：
+- 默认粒子数量与项目上限：
   - `maxParticleItems = 40`：超过该数量时走无粒子快速路径（直接完成）；
   - `maxStaggeredItems = 6`：分摊最多 6 个元素的错峰时间，避免长列表时整体等待过长；
   - `prefers-reduced-motion` 时直接跳过粒子与折叠动画，保持可访问性友好。
@@ -158,7 +140,7 @@ bindMemoryDissolveButton(
 2. 清空所有消息（含无消息时）；
 3. `prefers-reduced-motion: reduce` 用户下点击按钮行为；
 4. 动画中关闭弹层（`pagehide`）后无残留节点和按钮卡死；
-5. 后续新增按钮只需配置三四个回调，无需改 `dissolveChatItems`。
+5. 后续新增按钮只需复用“查询目标、修改 `chatData`、调用 `dissolveChatItems`”的接入模式。
 
 ## 与现有工作流关系
 
