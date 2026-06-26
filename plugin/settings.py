@@ -1,4 +1,5 @@
 
+import math
 import os
 import warnings
 from pathlib import Path
@@ -552,7 +553,7 @@ def validate_config() -> None:
     if PLUGIN_TRIGGER_TIMEOUT > 3600:
         raise ValueError("PLUGIN_TRIGGER_TIMEOUT is unreasonably large (max: 3600s)")
 
-    if PLUGIN_STARTUP_TIMEOUT <= 0:
+    if not math.isfinite(PLUGIN_STARTUP_TIMEOUT) or PLUGIN_STARTUP_TIMEOUT <= 0:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT must be positive")
     if PLUGIN_STARTUP_TIMEOUT > 300:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT is unreasonably large (max: 300s)")
