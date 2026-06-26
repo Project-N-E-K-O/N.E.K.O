@@ -270,10 +270,11 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "runtime.isLinuxX11" in source
     assert "runtime.platform === 'linux'" in source
     assert "electronCat1PairMoveBoundsFrame" in source
-    assert "function scheduleElectronCat1PairMoveBounds(bounds)" in source
-    assert "async function applyElectronCat1PairMoveBounds(bounds)" in source
+    assert "electronCat1PairMovePendingForce" in source
+    assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in source
+    assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in source
     assert "window.addEventListener('neko:idle-chat-pair-move-bounds'" in source
-    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds)" in source
+    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force })" in source
     assert "if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;" in source
     assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
@@ -281,17 +282,25 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
 
     apply_block = _between(
         source,
-        "async function applyElectronCat1PairMoveBounds(bounds) {",
-        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+        "async function applyElectronCat1PairMoveBounds(bounds, options) {",
+        "function scheduleElectronCat1PairMoveBounds(bounds, options) {",
     )
-    assert "if (isElectronLinuxRuntime()) return;" in apply_block
+    assert "var force = !!(options && options.force);" in apply_block
+    assert "if (isElectronLinuxRuntime() && !force) return;" in apply_block
+    assert "if (isElectronLinuxRuntime()) return;" not in apply_block
 
     schedule_block = _between(
         source,
-        "function scheduleElectronCat1PairMoveBounds(bounds) {",
+        "function scheduleElectronCat1PairMoveBounds(bounds, options) {",
         "function isElectronIdleDockCurrent(generation) {",
     )
-    assert "if (isElectronLinuxRuntime()) return;" in schedule_block
+    assert "var force = !!(options && options.force);" in schedule_block
+    assert "if (isElectronLinuxRuntime() && !force) return;" in schedule_block
+    assert "if (isElectronLinuxRuntime()) return;" not in schedule_block
+    assert "electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;" in schedule_block
+    assert "var pendingForce = electronCat1PairMovePendingForce;" in schedule_block
+    assert "electronCat1PairMovePendingForce = false;" in schedule_block
+    assert "applyElectronCat1PairMoveBounds(pendingBounds, { force: pendingForce });" in schedule_block
 
 
 def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():

@@ -3124,6 +3124,7 @@
         for (let i = 0; i < buttons.length; i += 1) {
             const state = buttons[i].__nekoIdleCat1PlaygroundDropState;
             if (state && state.active && !state.released) return true;
+            if (buttons[i].__nekoIdleCat1PlaygroundPendingEntry) return true;
         }
         return false;
     }

@@ -43,6 +43,11 @@ def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
     assert "function canPostIdleReturnBallDesktopState()" in source
     assert "function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()" in source
     assert "__nekoIdleCat1PlaygroundDropState" in source
+    assert "__nekoIdleCat1PlaygroundPendingEntry" in source
+    bridge_start = source.index("function isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()")
+    bridge_end = source.index("function canPostIdleReturnBallDesktopState()", bridge_start)
+    bridge_block = source[bridge_start:bridge_end]
+    assert "buttons[i].__nekoIdleCat1PlaygroundPendingEntry" in bridge_block
     assert "if (isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;" in source
     assert "electron-chat-window" in source
     assert "function getReturnBallDragScreenRect(" in source

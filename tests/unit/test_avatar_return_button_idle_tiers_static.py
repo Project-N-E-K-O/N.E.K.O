@@ -291,6 +291,16 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);" in source
     assert "body.wallLeft = -insets.left;" in source
     assert "body.wallRight = Math.max(body.wallLeft, window.innerWidth - body.width + insets.right);" in source
+    assert "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)" in source
+    reclamp_block = _source_slice_between(
+        source,
+        "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)",
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "cat1 playground resize reclamp",
+    )
+    assert "const wasGrounded = !!body.grounded;" in reclamp_block
+    assert "body.y = body.floorY;" in reclamp_block
+    assert "_setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });" in reclamp_block
     assert "getImageData" not in source
 
     assert "function _createNekoIdleCat1PlaygroundDesktopYarnMirror(rect)" in source
@@ -333,6 +343,13 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
     assert "body.vx = 0;" in physics_block
     assert "body.y = body.floorY;" in physics_block
+    resize_listener_block = _source_slice_between(
+        source,
+        "bind(window, 'resize', () => {",
+        "function _dispatchNekoIdleReturnClickFromButton(button)",
+        "cat1 playground resize listener",
+    )
+    assert "state.bodies.forEach(_reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange);" in resize_listener_block
     collision_tick_block = _source_slice_between(
         source,
         "if (_resolveNekoIdleCat1PlaygroundBodyCollisions(state)) {",

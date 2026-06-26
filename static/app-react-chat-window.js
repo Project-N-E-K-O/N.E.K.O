@@ -60,6 +60,7 @@
     var electronChatMinimizedStatePublishedAt = 0;
     var electronCat1PairMoveBoundsFrame = 0;
     var electronCat1PairMovePendingBounds = null;
+    var electronCat1PairMovePendingForce = false;
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
@@ -4786,12 +4787,15 @@
         if (!isElectronChatWindow()) return;
         if (isElectronLinuxRuntime() && !force) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
+        electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
             var pendingBounds = electronCat1PairMovePendingBounds;
+            var pendingForce = electronCat1PairMovePendingForce;
             electronCat1PairMovePendingBounds = null;
+            electronCat1PairMovePendingForce = false;
             electronCat1PairMoveBoundsFrame = 0;
-            applyElectronCat1PairMoveBounds(pendingBounds, { force: force });
+            applyElectronCat1PairMoveBounds(pendingBounds, { force: pendingForce });
         });
     }
 

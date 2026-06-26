@@ -1763,6 +1763,22 @@ function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
     body.grounded = body.y >= body.floorY - 0.5;
 }
 
+function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
+    if (!body) return;
+    const wasGrounded = !!body.grounded;
+    _updateNekoIdleCat1PlaygroundBodyBounds(body);
+    body.x = Math.max(body.wallLeft, Math.min(body.x, body.wallRight));
+    if (wasGrounded) {
+        body.y = body.floorY;
+        body.vy = 0;
+        body.grounded = true;
+    } else {
+        body.y = Math.min(body.y, body.floorY);
+        body.grounded = body.y >= body.floorY - 0.5;
+    }
+    _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });
+}
+
 function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second) {
     if (!state || !first || !second || first === second) return false;
     const firstRect = _getNekoIdleCat1PlaygroundBodyCollisionRect(first);
@@ -2289,7 +2305,7 @@ function _installNekoIdleCat1PlaygroundPointerListeners(button) {
     bind(window, 'resize', () => {
         if (!_isNekoIdleCat1PlaygroundDropActive(button)) return;
         _refreshNekoIdleCat1PlaygroundViewportBottom(button);
-        state.bodies.forEach(_updateNekoIdleCat1PlaygroundBodyBounds);
+        state.bodies.forEach(_reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange);
         _startNekoIdleCat1PlaygroundPhysics(button);
     });
 }
