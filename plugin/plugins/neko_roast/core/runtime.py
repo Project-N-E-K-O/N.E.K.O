@@ -748,12 +748,15 @@ class RoastRuntime:
                     continue
                 chosen = candidate
                 break
-        shape = str(chosen.get("preferred_shape") or shape).strip() or shape
-        shape = self._active_engagement_guarded_shape(shape)
+        preferred_shape = str(chosen.get("preferred_shape") or shape).strip() or shape
+        shape = self._active_engagement_guarded_shape(preferred_shape)
         key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
         self._active_engagement_recent_topic_keys.append(key)
         title = str(chosen.get("title") or fallback["title"]).strip()
         intent = self._active_engagement_intent_text(shape)
+        hint = str(chosen.get("hint") or fallback["hint"]).strip()
+        if shape != preferred_shape:
+            hint = self._active_engagement_hint_text(shape)
         topic = {
             "source": str(chosen.get("source") or "fallback"),
             "shape": shape,
@@ -763,7 +766,7 @@ class RoastRuntime:
             "pattern": self._active_engagement_pattern_text(shape),
             "intent": intent,
             "reply_affordance": self._active_engagement_reply_affordance_text(shape),
-            "hint": str(chosen.get("hint") or fallback["hint"]).strip(),
+            "hint": hint,
         }
         self._active_engagement_recent_topic_sources.append(str(topic["source"]))
         self._active_engagement_recent_shapes.append(shape)
@@ -1412,6 +1415,15 @@ class RoastRuntime:
             "tiny_tease": "one small playful jab, then stop before it becomes a bit",
             "small_challenge": "one tiny challenge viewers can answer in a few words",
         }.get(shape, "one concrete reply point viewers can answer quickly")
+
+    @staticmethod
+    def _active_engagement_hint_text(shape: str) -> str:
+        return {
+            "either_or": "Make one tiny A/B choice; both sides must be concrete and easy to answer.",
+            "light_stance": "Make one tiny NEKO stance; leave room for viewers to agree or push back.",
+            "tiny_tease": "Make one tiny playful tease; stop before it becomes a bit.",
+            "small_challenge": "Make one tiny low-pressure challenge viewers can answer in a few words.",
+        }.get(shape, "Make one specific low-pressure hook viewers can answer quickly.")
 
     @staticmethod
     def _active_engagement_intent_text(shape: str) -> str:

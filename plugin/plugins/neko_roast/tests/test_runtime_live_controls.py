@@ -2441,6 +2441,8 @@ async def test_active_engagement_avoids_repeating_recent_intent_shape(runtime: R
     assert topic["shape"] != "either_or"
     assert topic["intent"] != "quick_vote"
     assert topic["shape_guard_reason"] == "recent_shape_streak"
+    assert "A/B" not in topic["hint"]
+    assert "choice" not in topic["hint"].lower()
 
 
 @pytest.mark.asyncio
