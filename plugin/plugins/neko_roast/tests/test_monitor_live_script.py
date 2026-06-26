@@ -40,7 +40,7 @@ def _context_with_latency(latency_ms: int) -> dict:
 def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> dict:
     return {
         "state": {
-            "config": {"dry_run": False, "live_mode": "solo_stream"},
+            "config": {"dry_run": False, "live_mode": "solo_stream", "activity_level": "standard"},
             "live_connection": {"state": "connected", "connected": True},
             "live_status": {"summary": "ready_to_stream", "reason": "ready"},
             "live_state": {
@@ -49,6 +49,8 @@ def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> di
                 "idle_hosting_candidate": False,
                 "last_viewer_activity_age_sec": 42.0,
                 "last_output_age_sec": 8.0,
+                "engaged_threshold_seconds": 60.0,
+                "idle_threshold_seconds": 120.0,
             },
             "idle_hosting_status": {
                 "eligible": False,
@@ -57,6 +59,7 @@ def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> di
             "active_engagement_status": {
                 "eligible": False,
                 "reason": "recent_danmaku_output",
+                "min_interval_seconds": 120.0,
                 "minimum_interval_remaining": 0.0,
                 "recent_danmaku_cooldown_remaining": 24.0,
                 "idle_hosting_wait_remaining": 4.5,
@@ -90,6 +93,8 @@ def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> di
                         "topic_key": "bili:BV_TEST",
                         "topic_hook": "Make the topic into one concrete A/B choice.",
                         "topic_pattern": "Turn the title into two concrete sides.",
+                        "topic_recent_skip_reason": "single_viewer_flood",
+                        "host_beat_key": "idle:soft_observation:quiet-room",
                         "host_beat_shape": "soft_observation",
                         "host_beat_title": "\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b",
                         "host_beat_hint": "Say one soft concrete observation.",
@@ -236,6 +241,24 @@ def test_monitor_live_script_prints_live_test_help() -> None:
     assert "-ExpectRealOutput" in completed.stdout
     assert "-BackendLogPath" in completed.stdout
     assert "alerts" in completed.stdout
+    assert "quiet_after / idle_after" in completed.stdout
+    assert "latest_uid / avatar_repeat_uid" in completed.stdout
+    assert "latest_output_len" in completed.stdout
+    assert "recent_generic_host_prompt_count" in completed.stdout
+    assert "log_generic_host_prompt" in completed.stdout
+    assert "avatar_repeat_count" in completed.stdout
+    assert "recent_total" in completed.stdout
+    assert "recent_*" in completed.stdout
+    assert "recent_pushed / recent_dry_run / recent_skipped / recent_failed" in completed.stdout
+    assert "recent_topic_skip_*" in completed.stdout
+    assert "topic_repeat / avatar_repeat" in completed.stdout
+    assert "topic_filter_direct_request" in completed.stdout
+    assert "topic_filter_reaction" in completed.stdout
+    assert "topic_filter_runtime_feedback" in completed.stdout
+    assert "generic_host_prompt" in completed.stdout
+    assert "host_beat_repeat" in completed.stdout
+    assert "idle_missing / active_missing" in completed.stdout
+    assert "test_isolation" in completed.stdout
 
 
 def test_monitor_live_script_reports_checkout_mismatch(tmp_path: Path) -> None:
@@ -290,17 +313,23 @@ def test_monitor_live_script_reports_pacing_and_active_topic_fields(tmp_path: Pa
     assert completed.returncode == 0, completed.stderr
     assert "viewer_age=42.0s" in completed.stdout
     assert "output_age=8.0s" in completed.stdout
+    assert "quiet_after=60.0s" in completed.stdout
+    assert "idle_after=120.0s" in completed.stdout
+    assert "entrance_pacing_window=45.0s" in completed.stdout
     assert "latest_topic_source=bili_trending" in completed.stdout
     assert "latest_topic_shape=either_or" in completed.stdout
     assert "latest_topic_title=猫猫今天怎么这么安静" in completed.stdout
     assert "latest_topic_key=bili:BV_TEST" in completed.stdout
     assert "latest_topic_hook=Make_the_topic_into_one_concrete_A/B_choice." in completed.stdout
     assert "latest_topic_pattern=Turn_the_title_into_two_concrete_sides." in completed.stdout
+    assert "latest_topic_recent_skip_reason=single_viewer_flood" in completed.stdout
     assert "latest_topic_repeat=False" in completed.stdout
+    assert "latest_host_beat_key=idle:soft_observation:quiet-room" in completed.stdout
     assert "latest_host_beat_shape=soft_observation" in completed.stdout
     assert "latest_host_beat_title=\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b" in completed.stdout
     assert "latest_host_beat_hint=Say_one_soft_concrete_observation." in completed.stdout
     assert "active_min_wait=0.0s" in completed.stdout
+    assert "active_min_interval=120.0s" in completed.stdout
     assert "active_danmaku_wait=24.0s" in completed.stdout
     assert "active_idle_wait=4.5s" in completed.stdout
     assert "director_action=idle_hosting" in completed.stdout
@@ -314,6 +343,15 @@ def test_monitor_live_script_reports_pacing_and_active_topic_fields(tmp_path: Pa
     assert "readiness_warn=test_isolation" in completed.stdout
     assert "readiness_blocked=-" in completed.stdout
     assert "solo_test_hint=clear_viewer_profiles" in completed.stdout
+
+
+def test_monitor_live_script_alerts_when_real_output_test_is_not_isolated(tmp_path: Path) -> None:
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(), "-ExpectRealOutput")
+
+    assert completed.returncode == 0, completed.stderr
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "test_isolation" in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_reports_repeated_active_topic_key(tmp_path: Path) -> None:
@@ -335,6 +373,365 @@ def test_monitor_live_script_reports_repeated_active_topic_key(tmp_path: Path) -
     assert completed.returncode == 0, completed.stderr
     assert "latest_topic_key=bili:BV_TEST" in completed.stdout
     assert "latest_topic_repeat=True" in completed.stdout
+    assert "alerts=topic_repeat" in completed.stdout
+
+
+def test_monitor_live_script_reports_repeated_avatar_roast_uid(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "avatar_roast",
+            "event": {"source": "live_danmaku", "uid": "42", "danmaku_text": "第一句"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "danmaku_response",
+            "event": {"source": "live_danmaku", "uid": "77", "danmaku_text": "路过"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "avatar_roast",
+            "event": {"source": "live_danmaku", "uid": "42", "danmaku_text": "又来了"},
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context, "-ExpectRealOutput")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_uid=42" in completed.stdout
+    assert "avatar_repeat_uid=42" in completed.stdout
+    assert "avatar_repeat_count=2" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "avatar_repeat" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_latest_output_is_long(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"][0]["output"] = "x" * 81
+    missing_log = tmp_path / "missing-backend.log"
+
+    completed = _run_monitor(
+        tmp_path,
+        context,
+        "-ExpectRealOutput",
+        "-BackendLogPath",
+        str(missing_log),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_output_len=81" in completed.stdout
+    assert "latest_output_length_status=warn" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "long_reply" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_recent_output_contains_long_reply(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "danmaku_response", "output": "short"},
+        {"status": "pushed", "response_module": "active_engagement", "output": "x" * 82},
+        {"status": "pushed", "response_module": "idle_hosting", "output": "tiny"},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_long_reply_count=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "long_reply" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_active_output_looks_like_generic_host_bait(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "output": "大家快来互动吧，弹幕刷起来",
+        },
+        {"status": "pushed", "response_module": "danmaku_response", "output": "短短接住"},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_generic_host_prompt_count=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "generic_host_prompt" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_active_output_uses_english_chat_bait(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "output": "Let's get the chat moving a little.",
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_generic_host_prompt_count=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "generic_host_prompt" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_reports_recent_route_counts(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "pushed", "response_module": "danmaku_response", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "pushed", "response_module": "idle_hosting", "event": {"uid": "__neko_idle__", "source": "idle_hosting"}},
+        {"status": "pushed", "response_module": "active_engagement", "event": {"uid": "__neko_active__", "source": "active_engagement"}},
+        {"status": "skipped", "response_module": "active_engagement", "event": {"uid": "__neko_active__", "source": "active_engagement"}},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_avatar_roast=1" in completed.stdout
+    assert "recent_danmaku_response=1" in completed.stdout
+    assert "recent_idle_hosting=1" in completed.stdout
+    assert "recent_active_engagement=2" in completed.stdout
+
+
+def test_monitor_live_script_alerts_when_recent_route_mix_is_avatar_biased(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "2", "source": "live_danmaku"}},
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "3", "source": "live_danmaku"}},
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "4", "source": "live_danmaku"}},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "avatar_roast_share=100%" in completed.stdout
+    assert "avatar_roast_bias=True" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "avatar_bias" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_reports_recent_status_counts(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "avatar_roast", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "dry_run", "response_module": "danmaku_response", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "skipped", "response_module": "idle_hosting", "event": {"uid": "__neko_idle__", "source": "idle_hosting"}},
+        {"status": "failed", "response_module": "active_engagement", "event": {"uid": "__neko_active__", "source": "active_engagement"}},
+        {"status": "pushed", "response_module": "active_engagement", "event": {"uid": "__neko_active__", "source": "active_engagement"}},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_total=5" in completed.stdout
+    assert "recent_pushed=2" in completed.stdout
+    assert "recent_dry_run=1" in completed.stdout
+    assert "recent_skipped=1" in completed.stdout
+    assert "recent_failed=1" in completed.stdout
+
+
+def test_monitor_live_script_reports_recent_topic_skip_reason_counts(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "single_viewer_flood"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "single_viewer_flood"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "stale_recent_danmaku"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "avatar_roast_context"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "non_output_danmaku"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "filtered_recent_danmaku"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "filtered_direct_request"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "filtered_reaction"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_recent_skip_reason": "filtered_runtime_feedback"},
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_topic_skip_single_viewer_flood=2" in completed.stdout
+    assert "recent_topic_skip_stale_recent_danmaku=1" in completed.stdout
+    assert "recent_topic_skip_avatar_roast_context=1" in completed.stdout
+    assert "recent_topic_skip_non_output_danmaku=1" in completed.stdout
+    assert "recent_topic_skip_filtered_recent_danmaku=1" in completed.stdout
+    assert "recent_topic_skip_filtered_direct_request=1" in completed.stdout
+    assert "recent_topic_skip_filtered_reaction=1" in completed.stdout
+    assert "recent_topic_skip_filtered_runtime_feedback=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    alert_parts = alerts_match.group(1).split(",")
+    assert "topic_filter_direct_request" in alert_parts
+    assert "topic_filter_reaction" in alert_parts
+    assert "topic_filter_runtime_feedback" in alert_parts
+
+
+def test_monitor_live_script_alerts_when_recent_result_failed(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {"status": "pushed", "response_module": "danmaku_response", "event": {"uid": "1", "source": "live_danmaku"}},
+        {"status": "failed", "response_module": "active_engagement", "event": {"uid": "__neko_active__", "source": "active_engagement"}},
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_status=pushed" in completed.stdout
+    assert "recent_failed=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "recent_failed" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_idle_is_ready_but_missing_recent_output(tmp_path: Path) -> None:
+    context = _solo_idle_context()
+    context["state"]["live_director_status"] = {
+        "next_auto_action": "idle_hosting",
+        "eligible": True,
+        "reason": "solo_idle",
+        "cooldown_remaining": 0.0,
+    }
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "director_action=idle_hosting" in completed.stdout
+    assert "director_eligible=True" in completed.stdout
+    assert "recent_idle_hosting=0" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "idle_missing" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_active_is_ready_but_missing_recent_output(tmp_path: Path) -> None:
+    context = _solo_quiet_context()
+    context["state"]["active_engagement_status"] = {
+        "eligible": True,
+        "reason": "eligible",
+        "minimum_interval_remaining": 0.0,
+        "recent_danmaku_cooldown_remaining": 0.0,
+        "idle_hosting_wait_remaining": 60.0,
+    }
+    context["state"]["live_director_status"] = {
+        "next_auto_action": "active_engagement",
+        "eligible": True,
+        "reason": "solo_quiet",
+        "cooldown_remaining": 0.0,
+    }
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "director_action=active_engagement" in completed.stdout
+    assert "director_eligible=True" in completed.stdout
+    assert "recent_active_engagement=0" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "active_missing" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_focuses_active_engagement_when_director_says_active_is_ready(tmp_path: Path) -> None:
+    context = _solo_quiet_context()
+    context["state"]["active_engagement_status"] = {
+        "eligible": True,
+        "reason": "eligible",
+        "minimum_interval_remaining": 0.0,
+        "recent_danmaku_cooldown_remaining": 0.0,
+        "idle_hosting_wait_remaining": 60.0,
+    }
+    context["state"]["live_director_status"] = {
+        "next_auto_action": "active_engagement",
+        "eligible": True,
+        "reason": "solo_quiet",
+        "cooldown_remaining": 0.0,
+    }
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "director_action=active_engagement" in completed.stdout
+    assert "solo_test_hint=expect_active_engagement" in completed.stdout
+    assert "solo_test_focus=active_engagement" in completed.stdout
+
+
+def test_monitor_live_script_alerts_when_idle_host_beat_repeats(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:soft_observation:quiet-room",
+                "host_beat_shape": "soft_observation",
+                "host_beat_title": "quiet room",
+            },
+        },
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:soft_observation:quiet-room",
+                "host_beat_shape": "soft_observation",
+                "host_beat_title": "quiet room again",
+            },
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "latest_host_beat_key=idle:soft_observation:quiet-room" in completed.stdout
+    assert "latest_host_beat_repeat=True" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "host_beat_repeat" in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_reports_backend_log_watchdog_and_contamination(tmp_path: Path) -> None:
@@ -345,6 +742,7 @@ def test_monitor_live_script_reports_backend_log_watchdog_and_contamination(tmp_
                 "[voice] voice playback gate watchdog timeout",
                 "[project-N-E-K-O-Warthunder] proactive bridge output queued",
                 "[neko] send_lanlan_response len=123",
+                "[neko] send_lanlan_response text=大家快来互动吧",
             ]
         ),
         encoding="utf-8",
@@ -357,6 +755,7 @@ def test_monitor_live_script_reports_backend_log_watchdog_and_contamination(tmp_
     assert "log_contamination=warthunder" in completed.stdout
     assert "log_reply_len=123" in completed.stdout
     assert "log_reply_length_status=warn" in completed.stdout
+    assert "log_generic_host_prompt=True" in completed.stdout
     assert "solo_test_focus=test_isolation" in completed.stdout
 
 
@@ -372,6 +771,27 @@ def test_monitor_live_script_auto_detects_default_backend_log(tmp_path: Path) ->
 
     assert completed.returncode == 0, completed.stderr
     assert "log_watchdog=True" in completed.stdout
+
+
+def test_monitor_live_script_does_not_flag_generic_host_prompt_from_prompt_instructions(tmp_path: Path) -> None:
+    log_path = tmp_path / "backend.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "[prompt] Do not say get the chat moving, keep the chat alive, or keep the chat going.",
+                "[neko] send_lanlan_response len=18",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_monitor(tmp_path, _context_with_latest_route_and_signal(), "-BackendLogPath", str(log_path))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "log_generic_host_prompt=False" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "generic_host_prompt" not in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_alerts_when_real_output_log_is_missing(tmp_path: Path) -> None:
@@ -396,6 +816,7 @@ def test_monitor_live_script_aggregates_real_output_alerts(tmp_path: Path) -> No
             [
                 "[voice] voice playback gate watchdog timeout",
                 "[neko] send_lanlan_response len=123",
+                "[neko] send_lanlan_response text=Let's get the chat moving.",
             ]
         ),
         encoding="utf-8",
@@ -412,7 +833,7 @@ def test_monitor_live_script_aggregates_real_output_alerts(tmp_path: Path) -> No
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "alerts=dry_run,latest_stale,playback_watchdog,long_reply" in completed.stdout
+    assert "alerts=dry_run,test_isolation,latest_stale,playback_watchdog,long_reply,generic_host_prompt" in completed.stdout
 
 
 def test_monitor_live_script_reports_solo_stream_idle_readiness(tmp_path: Path) -> None:

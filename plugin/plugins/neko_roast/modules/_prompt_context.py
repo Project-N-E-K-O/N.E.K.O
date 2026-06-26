@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 18 Chinese characters or 10 English words."
+SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words."
 
 
 def short_reply_rules() -> list[str]:
@@ -15,6 +15,7 @@ def short_reply_rules() -> list[str]:
         "For one-word or very short danmaku, answer with a tiny reaction.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
+        "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",
         "Avoid phrases like special plan, everyone look, next let's, what should we talk about, or tell me what you want.",
         "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one.",
     ]

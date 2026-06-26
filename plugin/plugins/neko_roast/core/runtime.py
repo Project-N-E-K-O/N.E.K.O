@@ -45,11 +45,12 @@ class RoastRuntime:
     # （update_own_config 偶发卡满 10s）拖垮 update_config / connect 等 action。
     _CONFIG_PERSIST_BUDGET_SECONDS = 4.0
     _LIVE_STATE_ENGAGED_SECONDS = 60.0
-    _LIVE_STATE_IDLE_SECONDS = 180.0
+    _LIVE_STATE_IDLE_SECONDS = 120.0
     _IDLE_HOSTING_CHECK_INTERVAL_SECONDS = 5.0
     _IDLE_HOSTING_MIN_INTERVAL_SECONDS = 120.0
     _IDLE_HOSTING_FAILURE_LIMIT = 3
-    _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 150.0
+    _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 75.0
+    _ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS = 360.0
     _ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS = 15.0
 
     def __init__(self, plugin: Any) -> None:
@@ -93,8 +94,9 @@ class RoastRuntime:
         self._active_engagement_topic_fetcher: Any = None
         self._active_engagement_topic_cache: list[dict[str, Any]] = []
         self._active_engagement_topic_cache_at: float = 0.0
-        self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=8)
+        self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=12)
         self._active_engagement_recent_shapes: deque[str] = deque(maxlen=4)
+        self._active_engagement_recent_topic_skip_reason: str = ""
         self._active_engagement_shape_index: int = 0
         self._config_lock: asyncio.Lock | None = None
 
@@ -703,17 +705,44 @@ class RoastRuntime:
         fallback = fallback_candidates[0]
         shape = self._next_active_engagement_shape()
         chosen = fallback
-        for candidate in [*candidates, *fallback_candidates]:
+        exhausted_cached_topics = bool(candidates)
+        for candidate in candidates:
             key = str(candidate.get("key") or candidate.get("title") or "").strip()
             if not key or key in self._active_engagement_recent_topic_keys:
                 continue
             chosen = candidate
+            exhausted_cached_topics = False
             break
+        if exhausted_cached_topics:
+            self._active_engagement_topic_cache = []
+            self._active_engagement_topic_cache_at = 0.0
+            for candidate in await self._active_engagement_topic_candidates():
+                key = str(candidate.get("key") or candidate.get("title") or "").strip()
+                if not key or key in self._active_engagement_recent_topic_keys:
+                    continue
+                chosen = candidate
+                exhausted_cached_topics = False
+                break
+        if exhausted_cached_topics:
+            for candidate in fallback_candidates:
+                key = str(candidate.get("key") or candidate.get("title") or "").strip()
+                if not key or key in self._active_engagement_recent_topic_keys:
+                    continue
+                chosen = candidate
+                break
+        elif chosen is fallback:
+            for candidate in fallback_candidates:
+                key = str(candidate.get("key") or candidate.get("title") or "").strip()
+                if not key or key in self._active_engagement_recent_topic_keys:
+                    continue
+                chosen = candidate
+                break
+        shape = str(chosen.get("preferred_shape") or shape).strip() or shape
         key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
         self._active_engagement_recent_topic_keys.append(key)
         self._active_engagement_recent_shapes.append(shape)
         title = str(chosen.get("title") or fallback["title"]).strip()
-        return {
+        topic = {
             "source": str(chosen.get("source") or "fallback"),
             "shape": shape,
             "key": key,
@@ -722,56 +751,104 @@ class RoastRuntime:
             "pattern": self._active_engagement_pattern_text(shape),
             "hint": str(chosen.get("hint") or fallback["hint"]).strip(),
         }
+        skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
+        if skip_reason:
+            topic["recent_topic_skip_reason"] = skip_reason
+        return topic
 
     @staticmethod
     def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
         return [
             {
                 "source": "fallback",
-                "key": "fallback:small-choice",
-                "title": "\u76f4\u64ad\u95f4\u5c0f\u9009\u62e9",
-                "hint": "Turn this into one low-pressure A/B or tiny stance that viewers can answer quickly.",
+                "key": "fallback:snack-choice",
+                "title": "\u591c\u91cc\u53ea\u80fd\u9009\u4e00\u6837\uff1a\u5c0f\u751c\u98df\u8fd8\u662f\u70ed\u996e",
+                "preferred_shape": "either_or",
+                "hint": "Turn this into one tiny A/B choice; both sides must be concrete and easy to answer.",
             },
             {
                 "source": "fallback",
-                "key": "fallback:late-night-energy",
-                "title": "\u76f4\u64ad\u95f4\u73b0\u5728\u7684\u7cbe\u795e\u72b6\u6001",
-                "hint": "Make one tiny NEKO-flavored observation that invites a quick answer.",
+                "key": "fallback:keyboard-busy",
+                "title": "\u952e\u76d8\u4eca\u5929\u50cf\u5728\u5077\u5077\u6253\u76f9",
+                "preferred_shape": "tiny_tease",
+                "hint": "Make one playful observation; leave a tiny opening without talking about room silence.",
             },
             {
                 "source": "fallback",
-                "key": "fallback:cat-choice",
-                "title": "\u732b\u732b\u5f0f\u4e8c\u9009\u4e00",
-                "hint": "Ask one concrete A/B choice, not a broad topic survey.",
+                "key": "fallback:serious-cat",
+                "title": "\u732b\u732b\u8981\u5047\u88c5\u6b63\u7ecf\u4e09\u79d2",
+                "preferred_shape": "small_challenge",
+                "hint": "Make one small challenge viewers can react to in a few words.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:tiny-confession",
-                "title": "\u732b\u732b\u7684\u5c0f\u5766\u767d",
-                "hint": "Make one tiny confession about NEKO's current mood, then leave a small opening for viewers.",
+                "title": "\u732b\u732b\u5076\u5c14\u4e5f\u4f1a\u88ab\u81ea\u5df1\u7684\u8ba4\u771f\u5413\u5230",
+                "preferred_shape": "light_stance",
+                "hint": "Make one tiny confession, then stop before it becomes a monologue.",
             },
             {
                 "source": "fallback",
-                "key": "fallback:room-temperature",
-                "title": "\u76f4\u64ad\u95f4\u6c14\u6c1b\u6e29\u5ea6",
-                "hint": "Describe the room mood in one playful concrete image, then invite one short reaction.",
+                "key": "fallback:blanket-temperature",
+                "title": "\u6b64\u523b\u6c14\u6c1b\u50cf\u6bdb\u6bef\u521a\u70ed\u8d77\u6765",
+                "preferred_shape": "light_stance",
+                "hint": "Describe this concrete mood image and invite one short reaction.",
             },
             {
                 "source": "fallback",
-                "key": "fallback:viewer-mini-vote",
-                "title": "\u89c2\u4f17\u5c0f\u6295\u7968",
-                "hint": "Ask one tiny vote that can be answered with a short phrase, not a long explanation.",
+                "key": "fallback:today-mood-vote",
+                "title": "\u4eca\u5929\u7684\u72b6\u6001\u66f4\u50cf\u5145\u7535\u4e2d\u8fd8\u662f\u5df2\u6b7b\u673a",
+                "preferred_shape": "either_or",
+                "hint": "Ask one tiny vote that can be answered with one side, not a long explanation.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:cat-radio-room",
+                "title": "\u4eca\u665a\u76f4\u64ad\u95f4\u66f4\u50cf\u732b\u7a9d\u8fd8\u662f\u5c0f\u7535\u53f0",
+                "preferred_shape": "either_or",
+                "hint": "Turn this into one cozy A/B choice; keep it concrete and easy to answer.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:night-owl-energy",
+                "title": "\u591c\u732b\u5b50\u73b0\u5728\u662f\u771f\u6e05\u9192\u8fd8\u662f\u5728\u786c\u6491",
+                "preferred_shape": "either_or",
+                "hint": "Make one small stance or A/B choice about late-night energy.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:screen-staring-back",
+                "title": "\u76ef\u5c4f\u5e55\u4e45\u4e86\uff0c\u732b\u732b\u6000\u7591\u5c4f\u5e55\u4e5f\u5728\u76ef\u56de\u6765",
+                "preferred_shape": "tiny_tease",
+                "hint": "Make one tiny playful observation, not a generic question.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:three-word-task",
+                "title": "\u7ed9\u732b\u732b\u4e00\u4e2a\u4e09\u5b57\u5c0f\u4efb\u52a1\uff1a\u5356\u840c\u3001\u5410\u69fd\u3001\u88c5\u4e56",
+                "preferred_shape": "small_challenge",
+                "hint": "Make one tiny challenge that viewers can answer with a short choice.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:room-temperature-word",
+                "title": "\u7528\u4e00\u4e2a\u8bcd\u5f62\u5bb9\u73b0\u5728\u76f4\u64ad\u95f4\u7684\u6e29\u5ea6",
+                "preferred_shape": "small_challenge",
+                "hint": "Ask for one word only; avoid open-ended long discussion.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:serious-hosting",
+                "title": "\u732b\u732b\u6b63\u5728\u52aa\u529b\u50cf\u4e2a\u6b63\u7ecf\u4e3b\u64ad\uff0c\u5148\u522b\u7b11",
+                "preferred_shape": "tiny_tease",
+                "hint": "Take one tiny NEKO stance and leave room for viewers to tease back.",
             },
         ]
 
     async def _active_engagement_topic_candidates(self) -> list[dict[str, Any]]:
-        candidates = await self._bili_trending_topic_candidates()
-        if candidates:
-            return candidates
         recent = self._recent_danmaku_topic_candidates()
-        if recent:
-            return recent
-        return []
+        trending = await self._bili_trending_topic_candidates()
+        return [*recent, *trending]
 
     async def _bili_trending_topic_candidates(self) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -806,12 +883,15 @@ class RoastRuntime:
             title = str(item.get("title") or "").strip()
             if not title:
                 continue
+            if not self._is_meaningful_active_topic_text(title):
+                continue
             key = str(item.get("bvid") or item.get("id") or title).strip()
+            compact_title = self._compact_context_text(title, limit=40)
             candidates.append(
                 {
                     "source": "bili_trending",
                     "key": f"bili:{key}",
-                    "title": title,
+                    "title": compact_title,
                     "hint": "Use this Bilibili topic as material for one playful live-room line; do not read it like news.",
                 }
             )
@@ -822,17 +902,48 @@ class RoastRuntime:
         return list(candidates)
 
     def _recent_danmaku_topic_candidates(self) -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
+        self._active_engagement_recent_topic_skip_reason = ""
+        recent_items: list[tuple[str, str]] = []
         for result in reversed(self.recent_results):
             if not isinstance(result, dict):
                 continue
             event = result.get("event") if isinstance(result.get("event"), dict) else {}
             if str(event.get("source") or "") != "live_danmaku":
                 continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = "non_output_danmaku"
+                continue
+            route = self._route_from_result(result)
+            if route == "avatar_roast":
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = "avatar_roast_context"
+                continue
+            age = self._iso_age_sec(result.get("created_at"))
+            if age is not None and age > self._ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS:
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = "stale_recent_danmaku"
+                continue
             text = str(event.get("danmaku_text") or "").strip()
             if not text:
                 continue
+            if not self._is_meaningful_active_topic_text(text):
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = (
+                        self._active_topic_filter_reason(text) or "filtered_recent_danmaku"
+                    )
+                continue
             compact = self._compact_context_text(text, limit=40)
+            uid = str(event.get("uid") or "").strip()
+            recent_items.append((uid, compact))
+            if len(recent_items) >= 6:
+                break
+        speaker_ids = {uid for uid, _ in recent_items if uid}
+        if len(recent_items) >= 3 and len(speaker_ids) == 1:
+            self._active_engagement_recent_topic_skip_reason = "single_viewer_flood"
+            return []
+        candidates: list[dict[str, Any]] = []
+        for _uid, compact in recent_items[:3]:
             candidates.append(
                 {
                     "source": "recent_danmaku",
@@ -843,7 +954,278 @@ class RoastRuntime:
             )
             if len(candidates) >= 3:
                 break
+        if candidates:
+            self._active_engagement_recent_topic_skip_reason = ""
         return candidates
+
+    @staticmethod
+    def _is_meaningful_active_topic_text(text: str) -> bool:
+        compact = " ".join(str(text or "").strip().split())
+        if not compact:
+            return False
+        lowered = compact.lower()
+        if lowered in {"hi", "hello", "ok", "1", "?", "？", "好", "嗯", "啊", "草", "6"}:
+            return False
+        generic_host_phrases = (
+            "what should we talk about",
+            "what are we doing",
+            "what should we do",
+            "everyone interact",
+            "send danmaku",
+            "come chat",
+            "tell me what you want",
+            "get the chat moving",
+            "keep the chat moving",
+            "keep the chat alive",
+            "keep the chat going",
+            "any recommendations",
+            "what do you recommend",
+            "recommend me",
+            "give me recommendations",
+            "sponsored",
+            "giveaway",
+            "subscribe and win",
+            "limited offer",
+            "promo code",
+            "death toll",
+            "casualties",
+            "accident",
+            "disaster",
+            "suicide",
+            "murder",
+            "scandal",
+            "controversy",
+            "harassment",
+            "doxx",
+            "why so quiet",
+            "so quiet here",
+            "suddenly quiet",
+            "room is silent",
+            "stream is quiet",
+            "chat is quiet",
+            "nobody is talking",
+            "no one is talking",
+            "dead chat",
+            "\u5927\u5bb6\u4e92\u52a8",
+            "\u53d1\u5f39\u5e55",
+            "\u6765\u804a\u5929",
+            "\u804a\u4ec0\u4e48",
+            "\u505a\u4ec0\u4e48",
+            "\u4eca\u665a\u505a\u4ec0\u4e48",
+            "\u60f3\u542c\u4ec0\u4e48",
+            "\u6765\u70b9\u5f39\u5e55",
+            "\u62631",
+            "\u5f39\u5e55\u5237\u8d77\u6765",
+            "\u60f3\u770b\u4ec0\u4e48",
+            "\u60f3\u804a\u4ec0\u4e48",
+            "\u5927\u5bb6\u60f3\u770b",
+            "\u6709\u4ec0\u4e48\u63a8\u8350",
+            "\u6c42\u63a8\u8350",
+            "\u63a8\u8350\u4e00\u4e0b",
+            "\u62bd\u5956",
+            "\u8f6c\u53d1\u62bd\u5956",
+            "\u5173\u6ce8\u8f6c\u53d1",
+            "\u9650\u65f6\u798f\u5229",
+            "\u9650\u65f6\u4f18\u60e0",
+            "\u5e7f\u544a",
+            "\u7a81\u53d1\u4e8b\u6545",
+            "\u4e8b\u6545",
+            "\u4f24\u4ea1",
+            "\u6b7b\u4ea1",
+            "\u53bb\u4e16",
+            "\u707e\u5bb3",
+            "\u5730\u9707",
+            "\u5760\u673a",
+            "\u706b\u707e",
+            "\u584c\u623f",
+            "\u4e89\u8bae",
+            "\u7f51\u66b4",
+            "\u5f00\u76d2",
+            "\u81ea\u6740",
+            "\u51f6\u6740",
+            "\u6709\u4ec0\u4e48\u597d\u804a\u7684",
+            "\u76f4\u64ad\u95f4\u600e\u4e48\u8fd9\u4e48\u5b89\u9759",
+            "\u600e\u4e48\u8fd9\u4e48\u5b89\u9759",
+            "\u4e3a\u4ec0\u4e48\u7a81\u7136\u5b89\u9759",
+            "\u7a81\u7136\u5b89\u9759",
+            "\u6ca1\u4eba\u8bf4\u8bdd",
+            "\u6ca1\u5f39\u5e55",
+            "\u5f39\u5e55\u5c11",
+            "\u51b7\u573a",
+        )
+        dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+        if (
+            ("?" in compact or "\uff1f" in compact or dense_lowered.endswith("\u5417"))
+            and (
+                any(target in dense_lowered for target in ("\u4f60", "\u732b\u732b", "neko"))
+                or any(
+                    marker in lowered
+                    for marker in ("do you", "are you", "what do you", "can you", "could you", "will you", "would you")
+                )
+            )
+        ):
+            return False
+        if (
+            "\u4f60\u89c9\u5f97" in dense_lowered
+            or "\u732b\u732b\u89c9\u5f97" in dense_lowered
+            or "doyouthink" in dense_lowered
+        ):
+            return False
+        if RoastRuntime._is_direct_neko_request_or_ack(dense_lowered):
+            return False
+        if RoastRuntime._is_untargeted_request_or_reaction(dense_lowered):
+            return False
+        if RoastRuntime._is_live_test_or_runtime_feedback(dense_lowered):
+            return False
+        if any(
+            phrase in lowered
+            or "".join(ch for ch in phrase if ch.isalnum() or "\u4e00" <= ch <= "\u9fff") in dense_lowered
+            for phrase in generic_host_phrases
+        ):
+            return False
+        signal_chars = [ch for ch in compact if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"]
+        return len(signal_chars) >= 4
+
+    @staticmethod
+    def _active_topic_filter_reason(text: str) -> str:
+        compact = " ".join(str(text or "").strip().split())
+        if not compact:
+            return "filtered_recent_danmaku"
+        lowered = compact.lower()
+        dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+        if RoastRuntime._is_direct_neko_request_or_ack(dense_lowered) or RoastRuntime._is_untargeted_request(
+            dense_lowered
+        ):
+            return "filtered_direct_request"
+        if RoastRuntime._is_live_test_or_runtime_feedback(dense_lowered):
+            return "filtered_runtime_feedback"
+        if RoastRuntime._is_reaction_only(dense_lowered):
+            return "filtered_reaction"
+        return "filtered_recent_danmaku"
+
+    @staticmethod
+    def _is_direct_neko_request_or_ack(dense_lowered: str) -> bool:
+        if not any(target in dense_lowered for target in ("\u732b\u732b", "neko")):
+            return False
+        chinese_markers = (
+            "\u8bb2\u8bb2",
+            "\u8bf4\u8bf4",
+            "\u804a\u804a",
+            "\u8bc4\u4ef7\u4e00\u4e0b",
+            "\u9510\u8bc4\u4e00\u4e0b",
+            "\u70b9\u8bc4\u4e00\u4e0b",
+            "\u5e2e\u6211",
+            "\u7ed9\u6211",
+            "\u80fd\u4e0d\u80fd",
+            "\u53ef\u4e0d\u53ef\u4ee5",
+            "\u53ef\u4ee5\u4e0d\u53ef\u4ee5",
+            "\u8981\u4e0d\u8981",
+            "\u8c22\u8c22",
+            "\u611f\u8c22",
+            "\u8f9b\u82e6\u4e86",
+        )
+        english_markers = (
+            "tellus",
+            "helpme",
+            "giveme",
+            "ratemy",
+            "tellme",
+            "canyou",
+            "couldyou",
+            "willyou",
+            "wouldyou",
+            "please",
+            "pls",
+            "thankyou",
+            "thanks",
+            "thx",
+        )
+        return any(marker in dense_lowered for marker in chinese_markers + english_markers)
+
+    @staticmethod
+    def _is_untargeted_request_or_reaction(dense_lowered: str) -> bool:
+        return RoastRuntime._is_untargeted_request(dense_lowered) or RoastRuntime._is_reaction_only(dense_lowered)
+
+    @staticmethod
+    def _is_untargeted_request(dense_lowered: str) -> bool:
+        request_markers = (
+            "\u8bb2\u8bb2",
+            "\u8bf4\u8bf4",
+            "\u804a\u804a",
+            "\u8bc4\u4ef7\u4e00\u4e0b",
+            "\u9510\u8bc4\u4e00\u4e0b",
+            "\u70b9\u8bc4\u4e00\u4e0b",
+            "\u63a8\u8350\u4e00\u4e0b",
+            "\u9009\u4e00\u4e0b",
+            "\u8d77\u4e2a\u5916\u53f7",
+            "\u5e2e\u6211",
+            "\u7ed9\u6211",
+            "tellme",
+            "recommendme",
+            "giveme",
+            "ratemy",
+            "helpme",
+            "canyou",
+            "couldyou",
+            "please",
+            "pls",
+        )
+        return any(marker in dense_lowered for marker in request_markers)
+
+    @staticmethod
+    def _is_reaction_only(dense_lowered: str) -> bool:
+        reaction_markers = (
+            "\u54c8\u54c8",
+            "\u7b11\u6b7b",
+            "\u7ef7\u4e0d\u4f4f",
+            "\u8349\u8349",
+            "\u725b\u554a",
+            "\u725b\u903c",
+            "\u597d\u8036",
+            "666",
+            "lol",
+            "lmao",
+        )
+        return len(dense_lowered) <= 8 and any(marker in dense_lowered for marker in reaction_markers)
+
+    @staticmethod
+    def _is_live_test_or_runtime_feedback(dense_lowered: str) -> bool:
+        control_markers = (
+            "\u4e0b\u4e00\u6b65",
+            "\u770b\u72b6\u6001",
+            "\u68c0\u6d4b\u72b6\u6001",
+            "\u91cd\u542f",
+            "\u5173\u95ed",
+            "\u5f00\u542f",
+            "\u63d0\u4ea4",
+            "\u63a8\u9001",
+            "\u6d4b\u8bd5\u7ed3\u675f",
+            "nextstep",
+            "checkstatus",
+            "restart",
+            "reload",
+            "shutdown",
+        )
+        if any(marker in dense_lowered for marker in control_markers):
+            return True
+        feedback_markers = (
+            "\u5ef6\u8fdf",
+            "\u5361\u4e86",
+            "\u5361\u4f4f",
+            "\u6709\u70b9\u957f",
+            "\u592a\u957f",
+            "\u56de\u590d\u957f",
+            "\u8f93\u51fa\u957f",
+            "\u6ca1\u8f93\u51fa",
+            "\u6ca1\u6709\u8f93\u51fa",
+            "\u6ca1\u89e6\u53d1",
+            "\u89e6\u53d1\u4e86",
+            "latency",
+            "toolong",
+            "nooutput",
+            "notriggered",
+        )
+        return any(marker in dense_lowered for marker in feedback_markers)
 
     def _next_active_engagement_shape(self) -> str:
         shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
@@ -1157,6 +1539,7 @@ class RoastRuntime:
             "minimum_interval_remaining": minimum_interval_remaining,
             "recent_danmaku_cooldown_remaining": recent_danmaku_cooldown,
             "idle_hosting_wait_remaining": idle_hosting_wait_remaining,
+            "minimum_interval_seconds": float(min_interval),
             "min_interval_seconds": float(min_interval),
         }
 
@@ -1314,9 +1697,9 @@ class RoastRuntime:
     def _active_engagement_min_interval_seconds(self) -> float:
         return {
             "quiet": 300.0,
-            "active": 120.0,
-            "standard": 180.0,
-        }.get(str(getattr(self.config, "activity_level", "standard")), 180.0)
+            "active": 90.0,
+            "standard": 120.0,
+        }.get(str(getattr(self.config, "activity_level", "standard")), 120.0)
 
     def _active_engagement_after_danmaku_interval_seconds(self) -> float:
         return {
@@ -1750,6 +2133,7 @@ class RoastRuntime:
 
     async def clear_viewer_profiles(self) -> dict[str, Any]:
         result = await self.viewer_store.clear_profiles()
+        self.pipeline.clear_dry_run_session_state()
         self.audit.record("viewer_profiles_clear", "viewer profiles cleared", detail=result)
         return result
 

@@ -127,6 +127,21 @@ async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(ru
 
 
 @pytest.mark.asyncio
+async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: RoastRuntime) -> None:
+    calls = 0
+
+    def clear_marker() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.pipeline.clear_dry_run_session_state = clear_marker
+
+    await runtime.clear_viewer_profiles()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_update_config_restarts_listener_when_room_changes(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
@@ -433,7 +448,7 @@ def _record_result_at(
 
 
 def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: RoastRuntime) -> None:
-    first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku")
+    first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="绗竴娆℃潵", source="live_danmaku")
     second_event = ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting")
     runtime.record_result(
         InteractionResult(
@@ -457,7 +472,7 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
 
     assert context == [
         "idle_hosting / idle_hosting: solo quiet-room host beat",
-        "avatar_roast / live_danmaku from viewer: 第一次来",
+        "avatar_roast / live_danmaku from viewer: 绗竴娆℃潵",
     ]
 
 def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: RoastRuntime) -> None:
@@ -469,7 +484,7 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
             "topic_material": {
                 "source": "bili_trending",
                 "shape": "either_or",
-                "title": "猫猫今天怎么这么安静",
+                "title": "鐚尗浠婂ぉ鎬庝箞杩欎箞瀹夐潤",
                 "key": "bili:BV1",
             }
         },
@@ -485,7 +500,7 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
 
     context = runtime.recent_interaction_context(limit=1)
 
-    assert context == ["active_engagement / active_engagement: bili_trending either_or - 猫猫今天怎么这么安静"]
+    assert context == ["active_engagement / active_engagement: bili_trending either_or - 鐚尗浠婂ぉ鎬庝箞杩欎箞瀹夐潤"]
 
 
 def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRuntime) -> None:
@@ -510,6 +525,33 @@ def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRun
     assert latest["event_signal"] == "gift_signal"
 
 
+def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=ViewerEvent(
+                uid="__neko_active__",
+                nickname="NEKO",
+                source="active_engagement",
+                raw={
+                    "topic_material": {
+                        "source": "bili_trending",
+                        "key": "bili:BV_ROOM_NEUTRAL",
+                        "title": "room neutral tiny desk vote",
+                        "recent_topic_skip_reason": "single_viewer_flood",
+                    }
+                },
+            ),
+            steps=[PipelineStep("active_engagement", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    event = runtime.recent_results[-1]["event"]
+    assert event["topic_source"] == "bili_trending"
+    assert event["topic_recent_skip_reason"] == "single_viewer_flood"
+
+
 @pytest.mark.parametrize(
     ("event_type", "expected_signal"),
     [
@@ -526,7 +568,7 @@ def test_record_result_uses_live_event_type_for_signal_observation(
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
-        danmaku_text="谢谢猫猫",
+        danmaku_text="璋㈣阿鐚尗",
         source="live_danmaku",
         raw={"event_type": event_type},
     )
@@ -722,7 +764,7 @@ async def test_activity_level_controls_live_state_thresholds(runtime: RoastRunti
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=121)
 
     runtime.config.activity_level = "quiet"
     quiet_state = await runtime.dashboard_state()
@@ -733,9 +775,10 @@ async def test_activity_level_controls_live_state_thresholds(runtime: RoastRunti
 
     runtime.config.activity_level = "standard"
     standard_state = await runtime.dashboard_state()
-    assert standard_state["live_state"]["state"] == "quiet"
+    assert standard_state["live_state"]["state"] == "idle"
+    assert standard_state["live_state"]["idle_hosting_candidate"] is True
     assert standard_state["live_state"]["engaged_threshold_seconds"] == 60.0
-    assert standard_state["live_state"]["idle_threshold_seconds"] == 180.0
+    assert standard_state["live_state"]["idle_threshold_seconds"] == 120.0
 
     runtime.config.activity_level = "active"
     active_state = await runtime.dashboard_state()
@@ -961,7 +1004,7 @@ async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runti
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     state = await runtime.dashboard_state()
 
@@ -981,7 +1024,7 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     runtime.safety_guard.set_connected(True)
     _record_result_at(
         runtime,
-        age_seconds=120,
+        age_seconds=70,
         steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
     )
 
@@ -992,7 +1035,7 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     assert state["active_engagement_status"]["eligible"] is False
     assert state["active_engagement_status"]["reason"] == "recent_danmaku_output"
     assert state["active_engagement_status"]["minimum_interval_remaining"] == 0.0
-    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 30.0
+    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 15.0
     assert state["live_director_status"]["next_auto_action"] == "active_engagement"
     assert state["live_director_status"]["eligible"] is False
     assert state["live_director_status"]["reason"] == "recent_danmaku_output"
@@ -1030,7 +1073,7 @@ async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: R
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=175)
+    _record_result_at(runtime, age_seconds=115)
 
     state = await runtime.dashboard_state()
 
@@ -1052,7 +1095,7 @@ async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: R
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     result = await runtime.trigger_active_engagement()
 
@@ -1068,8 +1111,8 @@ async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastR
         return {
             "success": True,
             "videos": [
-                {"title": "测试热梗：猫猫为什么突然安静", "bvid": "BV1"},
-                {"title": "测试热梗：今天直播间最适合选边站", "bvid": "BV2"},
+                {"title": "测试热榜：猫猫为什么突然安静", "bvid": "BV1"},
+                {"title": "测试热榜：今天直播间适合选哪边", "bvid": "BV2"},
             ],
         }
 
@@ -1080,13 +1123,13 @@ async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastR
     runtime._active_engagement_topic_fetcher = fetch_topics
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     result = await runtime.trigger_active_engagement()
 
     topic = result.event.raw["topic_material"]
     assert topic["source"] == "bili_trending"
-    assert topic["title"] == "测试热梗：猫猫为什么突然安静"
+    assert topic["title"] == "测试热榜：今天直播间适合选哪边"
     assert topic["shape"] in {"either_or", "light_stance", "tiny_tease", "small_challenge"}
     assert topic["hook"]
     assert topic["pattern"]
@@ -1103,9 +1146,9 @@ async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtim
         return {
             "success": True,
             "videos": [
-                {"title": "重复检查用话题 A", "bvid": "BV_A"},
-                {"title": "重复检查用话题 B", "bvid": "BV_B"},
-                {"title": "重复检查用话题 C", "bvid": "BV_C"},
+                {"title": "閲嶅妫€鏌ョ敤璇濋 A", "bvid": "BV_A"},
+                {"title": "閲嶅妫€鏌ョ敤璇濋 B", "bvid": "BV_B"},
+                {"title": "閲嶅妫€鏌ョ敤璇濋 C", "bvid": "BV_C"},
             ],
         }
 
@@ -1119,12 +1162,1542 @@ async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtim
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_prefers_meaningful_recent_danmaku_over_trending(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "bili trending should wait", "bvid": "BV_WAIT"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="42", nickname="viewer", danmaku_text="keyboard sounds sleepy tonight", source="live_danmaku"),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "recent_danmaku"
+    assert topic["title"] == "keyboard sounds sleepy tonight"
+    assert topic["key"] == "danmaku:keyboard sounds sleepy tonight"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_valid_recent_danmaku_clears_prior_skip_reason(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "bili trending should still wait", "bvid": "BV_WAIT_SKIP"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keyboard sounds sleepy tonight",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="skipped",
+            reason="safety.cooldown",
+            event=ViewerEvent(
+                uid="77",
+                nickname="viewer2",
+                danmaku_text="this skipped line should not poison the next topic",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "skipped", "safety.cooldown")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "recent_danmaku"
+    assert topic["title"] == "keyboard sounds sleepy tonight"
+    assert "recent_topic_skip_reason" not in topic
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_single_viewer_danmaku_flood_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "room neutral tiny desk vote", "bvid": "BV_ROOM_NEUTRAL"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    for text in [
+        "keyboard sounds sleepy tonight",
+        "the chair is judging me",
+        "this mug looks dramatic",
+    ]:
+        runtime.record_result(
+            InteractionResult(
+                accepted=True,
+                status="pushed",
+                event=ViewerEvent(uid="42", nickname="viewer", danmaku_text=text, source="live_danmaku"),
+                steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+            )
+        )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_ROOM_NEUTRAL"
+    assert topic["title"] == "room neutral tiny desk vote"
+    assert topic["recent_topic_skip_reason"] == "single_viewer_flood"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_stale_recent_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "fresh neutral desk vote", "bvid": "BV_FRESH_NEUTRAL"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keyboard sounds sleepy tonight",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+            created_at=_created_at_age(361),
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_FRESH_NEUTRAL"
+    assert topic["recent_topic_skip_reason"] == "stale_recent_danmaku"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_avatar_roast_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral room choice after first roast", "bvid": "BV_AFTER_FIRST_ROAST"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keyboard sounds sleepy tonight",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("avatar_roast", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_FIRST_ROAST"
+    assert topic["recent_topic_skip_reason"] == "avatar_roast_context"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_non_output_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral topic after skipped danmaku", "bvid": "BV_AFTER_SKIPPED"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="skipped",
+            reason="safety.cooldown",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keyboard sounds sleepy tonight",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "skipped", "safety.cooldown")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_SKIPPED"
+    assert topic["recent_topic_skip_reason"] == "non_output_danmaku"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_labels_filtered_recent_danmaku_skip_reason(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral topic after filtered danmaku", "bvid": "BV_AFTER_FILTERED"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u80fd\u4e0d\u80fd\u9009\u4e00\u676f\u996e\u6599",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_FILTERED"
+    assert topic["recent_topic_skip_reason"] == "filtered_direct_request"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_labels_reaction_topic_skip_reason(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral topic after reaction", "bvid": "BV_AFTER_REACTION"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u54c8\u54c8\u54c8\u54c8\u7b11\u6b7b\u4e86",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_REACTION"
+    assert topic["recent_topic_skip_reason"] == "filtered_reaction"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_labels_runtime_feedback_topic_skip_reason(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral topic after runtime feedback", "bvid": "BV_AFTER_RUNTIME_FEEDBACK"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u56de\u590d\u6709\u70b9\u957f\uff0c\u5ef6\u8fdf\u4e5f\u6709\u70b9\u5927",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_RUNTIME_FEEDBACK"
+    assert topic["recent_topic_skip_reason"] == "filtered_runtime_feedback"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_does_not_label_non_danmaku_skips_as_danmaku_topic_skip(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "neutral topic after skipped active beat", "bvid": "BV_AFTER_ACTIVE_SKIP"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="skipped",
+            reason="active_engagement.minimum_interval",
+            event=ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement"),
+            steps=[PipelineStep("active_engagement_gate", "skipped", "minimum_interval")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_AFTER_ACTIVE_SKIP"
+    assert "recent_topic_skip_reason" not in topic
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "useful trending fallback", "bvid": "BV_USEFUL"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="42", nickname="viewer", danmaku_text="6", source="live_danmaku"),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["title"] == "useful trending fallback"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_questions_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny desk setup choices for late night", "bvid": "BV_DIRECT_QUESTION_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u4f60\u559c\u6b22\u5976\u8336\u5417",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_QUESTION_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_opinion_questions_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny keyboard sound choice", "bvid": "BV_DIRECT_OPINION_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u4f60\u89c9\u5f97\u952e\u76d8\u5435\u4e0d\u5435",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_OPINION_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny snack ranking choice", "bvid": "BV_DIRECT_REQUEST_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u8bb2\u8bb2\u4eca\u5929\u7684\u5c0f\u96f6\u98df",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_REQUEST_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_review_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny drink ranking choice", "bvid": "BV_DIRECT_REVIEW_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u9510\u8bc4\u4e00\u4e0b\u6211\u7684\u952e\u76d8",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_REVIEW_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_help_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late night drink choice", "bvid": "BV_DIRECT_HELP_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u5e2e\u6211\u9009\u4e00\u4e0b\u996e\u6599",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_HELP_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_direct_assignment_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny nickname voting choice", "bvid": "BV_DIRECT_ASSIGNMENT_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u7ed9\u6211\u8d77\u4e2a\u5916\u53f7",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_DIRECT_ASSIGNMENT_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_direct_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny desk drink choice", "bvid": "BV_EN_DIRECT_REQUEST_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO help me choose a drink",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_DIRECT_REQUEST_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_tell_me_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny desk snack choice", "bvid": "BV_EN_TELL_ME_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO tell me a tiny joke",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_TELL_ME_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_can_you_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late desk choice", "bvid": "BV_EN_CAN_YOU_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO can you choose a drink",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_CAN_YOU_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_could_you_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late desk snack", "bvid": "BV_EN_COULD_YOU_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO could you pick a snack",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_COULD_YOU_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_please_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late desk game", "bvid": "BV_EN_PLEASE_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO please pick a snack",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_PLEASE_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_pls_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late desk puzzle", "bvid": "BV_EN_PLS_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO pls pick a snack",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_PLS_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_thanks_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny late desk poll", "bvid": "BV_EN_THANKS_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="NEKO thank you",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_THANKS_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_chinese_thanks_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u684c\u9762\u5c0f\u6295\u7968", "bvid": "BV_ZH_THANKS_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u8c22\u8c22\u732b\u732b",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_ZH_THANKS_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_chinese_can_you_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u996e\u6599\u4e8c\u9009\u4e00", "bvid": "BV_ZH_CAN_YOU_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u80fd\u4e0d\u80fd\u9009\u4e00\u676f\u996e\u6599",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_ZH_CAN_YOU_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_chinese_should_you_requests_to_neko_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u5c0f\u96f6\u98df\u4e8c\u9009\u4e00", "bvid": "BV_ZH_SHOULD_YOU_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u732b\u732b\u8981\u4e0d\u8981\u9009\u4e00\u676f\u996e\u6599",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_ZH_SHOULD_YOU_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_untargeted_direct_requests_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u684c\u9762\u5c0f\u7269\u6295\u7968", "bvid": "BV_UNTARGETED_REQUEST_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u8bb2\u8bb2\u4eca\u5929\u7684\u5c0f\u96f6\u98df",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_UNTARGETED_REQUEST_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_reaction_only_danmaku_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u996e\u6599\u4e8c\u9009\u4e00", "bvid": "BV_REACTION_ONLY_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u54c8\u54c8\u54c8\u54c8\u7b11\u6b7b\u4e86",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_REACTION_ONLY_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_untargeted_requests_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny desk light choice", "bvid": "BV_EN_UNTARGETED_REQUEST_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="tell me a tiny joke",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_UNTARGETED_REQUEST_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_reaction_only_danmaku_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "tiny snack vote", "bvid": "BV_EN_REACTION_ONLY_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="lololol",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_EN_REACTION_ONLY_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_status_control_danmaku_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u7535\u53f0\u5c0f\u6295\u7968", "bvid": "BV_STATUS_CONTROL_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u4e0b\u4e00\u6b65\u770b\u4e00\u4e0b\u72b6\u6001",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_STATUS_CONTROL_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_latency_and_length_feedback_as_topic_material(
+    runtime: RoastRuntime,
+) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u6df1\u591c\u684c\u9762\u5c0f\u7269\u4e8c\u9009\u4e00", "bvid": "BV_LATENCY_FEEDBACK_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u56de\u590d\u6709\u70b9\u957f\uff0c\u5ef6\u8fdf\u4e5f\u6709\u70b9\u5927",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_LATENCY_FEEDBACK_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_room_silence_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "\u76f4\u64ad\u95f4\u600e\u4e48\u8fd9\u4e48\u5b89\u9759", "bvid": "BV_SILENCE"},
+                {"title": "\u6df1\u591c\u684c\u9762\u5c0f\u7269\u4e8c\u9009\u4e00", "bvid": "BV_USEFUL_SILENCE_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="\u6ca1\u4eba\u8bf4\u8bdd\u4e86",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_SILENCE_FILTER"
+    assert topic["title"] == "\u6df1\u591c\u684c\u9762\u5c0f\u7269\u4e8c\u9009\u4e00"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_short_chinese_quiet_room_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "猫猫为什么突然安静", "bvid": "BV_SHORT_QUIET_CN"},
+                {"title": "深夜饮料二选一", "bvid": "BV_USEFUL_SHORT_QUIET_CN"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="猫猫突然安静了",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_SHORT_QUIET_CN"
+    assert topic["title"] == "深夜饮料二选一"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_room_silence_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "why is the cat suddenly quiet", "bvid": "BV_SILENCE_EN"},
+                {"title": "late night drink choice", "bvid": "BV_USEFUL_SILENCE_EN_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="cat is suddenly quiet",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_SILENCE_EN_FILTER"
+    assert topic["title"] == "late night drink choice"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "ok", "bvid": "BV_TINY"},
+                {"title": "useful concrete trending fallback", "bvid": "BV_USEFUL"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL"
+    assert topic["title"] == "useful concrete trending fallback"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_compacts_long_trending_titles(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {
+                    "title": "late night tiny desk setup choice with many extra details that would make NEKO ramble",
+                    "bvid": "BV_LONG_TOPIC",
+                },
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_LONG_TOPIC"
+    assert len(topic["title"]) <= 40
+    assert topic["title"].endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "what should we talk about today", "bvid": "BV_GENERIC"},
+                {"title": "tiny desk setup choices for late night", "bvid": "BV_USEFUL"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="everyone interact with NEKO",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL"
+    assert topic["title"] == "tiny desk setup choices for late night"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_english_chat_bait_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "let's get the chat moving tonight", "bvid": "BV_CHAT_BAIT"},
+                {"title": "tiny keyboard sound choice", "bvid": "BV_USEFUL_CHAT_BAIT_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keep the chat alive",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_CHAT_BAIT_FILTER"
+    assert topic["title"] == "tiny keyboard sound choice"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_recommendation_request_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "any recommendations for tonight", "bvid": "BV_RECOMMEND_EN"},
+                {"title": "夜里桌面小物二选一", "bvid": "BV_USEFUL_RECOMMEND_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="有什么推荐吗",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_RECOMMEND_FILTER"
+    assert topic["title"] == "夜里桌面小物二选一"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_promo_or_giveaway_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "关注转发抽奖限时福利", "bvid": "BV_PROMO_CN"},
+                {"title": "sponsored giveaway subscribe and win", "bvid": "BV_PROMO_EN"},
+                {"title": "猫猫今晚认真三秒挑战", "bvid": "BV_USEFUL_PROMO_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_PROMO_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_heavy_or_controversial_topic_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "突发事故致多人伤亡", "bvid": "BV_HEAVY_CN"},
+                {"title": "celebrity scandal controversy death toll", "bvid": "BV_HEAVY_EN"},
+                {"title": "猫猫今晚认真三秒挑战", "bvid": "BV_USEFUL_HEAVY_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_HEAVY_FILTER"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_open_ended_topic_survey_material(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "what are we doing tonight", "bvid": "BV_OPEN_SURVEY"},
+                {"title": "late night drink choices", "bvid": "BV_USEFUL_OPEN_SURVEY_FILTER"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="今晚做什么",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_OPEN_SURVEY_FILTER"
+    assert topic["title"] == "late night drink choices"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_punctuated_english_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "what! should! we! talk! about! today", "bvid": "BV_GENERIC_EN_PUNCT"},
+                {"title": "late night tiny desk choices", "bvid": "BV_USEFUL_EN_PUNCT"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="everyone!!! interact!!! with!!! NEKO",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_EN_PUNCT"
+    assert topic["title"] == "late night tiny desk choices"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "想看什么就发弹幕", "bvid": "BV_GENERIC_CN"},
+                {"title": "夜里桌面小物二选一", "bvid": "BV_USEFUL_CN"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="来点弹幕扣1",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_CN"
+    assert topic["title"] == "夜里桌面小物二选一"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_spaced_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "想 看 什 么 就 发 弹 幕", "bvid": "BV_GENERIC_SPACED_CN"},
+                {"title": "猫猫深夜桌面物件投票", "bvid": "BV_USEFUL_SPACED_CN"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="来 点 弹 幕 扣 1",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_SPACED_CN"
+    assert topic["title"] == "猫猫深夜桌面物件投票"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_ignores_punctuated_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "想！看！什！么！就！发！弹！幕！", "bvid": "BV_GENERIC_PUNCT_CN"},
+                {"title": "猫猫深夜饮料二选一", "bvid": "BV_USEFUL_PUNCT_CN"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="来！点！弹！幕！扣！1！",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_USEFUL_PUNCT_CN"
+    assert topic["title"] == "猫猫深夜饮料二选一"
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_uses_fallback_instead_of_repeating_recent_single_topic(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
             "videos": [
-                {"title": "閲嶅妫€鏌ョ敤鍗曚竴鐑悳", "bvid": "BV_ONLY"},
+                {"title": "闁插秴顦插Λ鈧弻銉ф暏閸楁洑绔撮悜顓熸偝", "bvid": "BV_ONLY"},
             ],
         }
 
@@ -1139,16 +2712,80 @@ async def test_active_engagement_uses_fallback_instead_of_repeating_recent_singl
 
 
 @pytest.mark.asyncio
+async def test_active_engagement_refreshes_trending_when_cached_topics_are_exhausted(
+    runtime: RoastRuntime,
+) -> None:
+    calls = 0
+
+    async def fetch_topics(limit: int = 6) -> dict:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "success": True,
+                "videos": [
+                    {"title": "first tiny desk choice", "bvid": "BV_FIRST_TOPIC"},
+                ],
+            }
+        return {
+            "success": True,
+            "videos": [
+                {"title": "second tiny desk choice", "bvid": "BV_SECOND_TOPIC"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["source"] == "bili_trending"
+    assert first["key"] == "bili:BV_FIRST_TOPIC"
+    assert second["source"] == "bili_trending"
+    assert second["key"] == "bili:BV_SECOND_TOPIC"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stream(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
     runtime._active_engagement_topic_fetcher = fetch_topics
 
-    topics = [await runtime._select_active_engagement_topic() for _ in range(6)]
+    topics = [await runtime._select_active_engagement_topic() for _ in range(10)]
 
     assert all(topic["source"] == "fallback" for topic in topics)
-    assert len({topic["key"] for topic in topics}) == 6
+    assert len({topic["key"] for topic in topics}) == 10
+    assert all("fallback:" in topic["key"] for topic in topics)
+    assert all(topic["key"] not in {"fallback:small-choice", "fallback:viewer-mini-vote"} for topic in topics)
+    assert all(len(topic["title"]) >= 8 for topic in topics)
+
+
+def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(runtime: RoastRuntime) -> None:
+    blocked_fragments = ("\u5f39\u5e55\u5c11", "\u6ca1\u5f39\u5e55", "\u6ca1\u4eba\u8bf4\u8bdd", "\u51b7\u573a", "\u5b89\u9759")
+
+    titles = [topic["title"] for topic in runtime._active_engagement_fallback_topic_candidates()]
+
+    assert titles
+    assert not any(fragment in title for title in titles for fragment in blocked_fragments)
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["key"] == "fallback:snack-choice"
+    assert first["shape"] == "either_or"
+    assert second["key"] == "fallback:keyboard-busy"
+    assert second["shape"] == "tiny_tease"
+    assert "tiny playful tease" in second["hook"]
 
 
 @pytest.mark.asyncio
@@ -1157,7 +2794,7 @@ async def test_active_engagement_topic_shapes_keep_rotating_after_full_cycle(run
         return {
             "success": True,
             "videos": [
-                {"title": f"轮换检查用话题 {index}", "bvid": f"BV_ROTATE_{index}"}
+                {"title": f"杞崲妫€鏌ョ敤璇濋 {index}", "bvid": f"BV_ROTATE_{index}"}
                 for index in range(8)
             ],
         }
@@ -1184,7 +2821,7 @@ async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: Roast
     runtime.config.live_mode = "co_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     result = await runtime.trigger_active_engagement()
 
@@ -1200,7 +2837,7 @@ async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     result = await runtime.maybe_trigger_active_engagement()
 
@@ -1220,16 +2857,45 @@ async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRu
     runtime._active_engagement_now = lambda: 150.0
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=120)
+    _record_result_at(runtime, age_seconds=90)
 
     result = await runtime.maybe_trigger_active_engagement()
 
     assert result is None
     state = await runtime.dashboard_state()
     assert state["active_engagement_status"]["reason"] == "minimum_interval"
-    assert state["active_engagement_status"]["minimum_interval_remaining"] == 130.0
-    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 30.0
+    assert state["active_engagement_status"]["minimum_interval_remaining"] == 70.0
+    assert state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] == 0.0
     assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_activity_level_controls_active_engagement_minimum_interval(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._active_engagement_last_attempt_at = 100.0
+    runtime._active_engagement_now = lambda: 150.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=90)
+
+    runtime.config.activity_level = "quiet"
+    quiet_state = await runtime.dashboard_state()
+
+    runtime.config.activity_level = "standard"
+    standard_state = await runtime.dashboard_state()
+
+    runtime.config.activity_level = "active"
+    active_state = await runtime.dashboard_state()
+
+    assert quiet_state["active_engagement_status"]["minimum_interval_seconds"] == 300.0
+    assert quiet_state["active_engagement_status"]["minimum_interval_remaining"] == 250.0
+    assert standard_state["active_engagement_status"]["minimum_interval_seconds"] == 120.0
+    assert standard_state["active_engagement_status"]["minimum_interval_remaining"] == 70.0
+    assert active_state["active_engagement_status"]["minimum_interval_seconds"] == 90.0
+    assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
 
 
 @pytest.mark.asyncio
@@ -1289,7 +2955,7 @@ async def test_live_director_status_picks_active_engagement_for_solo_quiet(runti
     runtime.config.live_mode = "solo_stream"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
-    _record_result_at(runtime, age_seconds=160)
+    _record_result_at(runtime, age_seconds=90)
 
     state = await runtime.dashboard_state()
 

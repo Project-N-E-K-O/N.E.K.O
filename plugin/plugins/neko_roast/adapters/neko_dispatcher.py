@@ -110,6 +110,19 @@ def resolve_plugin_target_lanlan(plugin: Any, raw: dict[str, Any] | None = None)
     return _resolve_target_lanlan(plugin, request)  # type: ignore[arg-type]
 
 
+def _response_module_hint(request: InteractionRequest) -> str:
+    source = str(request.event.source or "")
+    if source in {"warmup_hosting", "idle_hosting", "active_engagement"}:
+        return source
+    if source == "live_danmaku":
+        if request.allow_avatar_image:
+            return "avatar_roast"
+        return "danmaku_response"
+    if source == "developer_sandbox":
+        return "developer_sandbox"
+    return source or "unknown"
+
+
 class NekoDispatcher:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -273,7 +286,9 @@ class NekoDispatcher:
             # 安全测试态：整条 pipeline 已跑完（身份/锐评/头像/安全门），但不真的投给猫猫。
             return (
                 f"dry_run(target={target_lanlan or 'none'}, ai_behavior=respond, "
-                f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)})"
+                f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)}, "
+                f"reply_contract=short_tts_line, max_reply_chars=40, "
+                f"response_module_hint={_response_module_hint(request)})"
             )
         if request.event.source == "developer_sandbox" and not target_lanlan:
             raise ValueError("missing_target_lanlan: 当前界面猫猫不可用，无法发送模拟弹幕。")
@@ -282,6 +297,9 @@ class NekoDispatcher:
             "uid": identity.uid,
             "live_mode": request.live_mode,
             "demo": is_demo_event,
+            "live_reply_contract": "short_tts_line",
+            "max_reply_chars": 40,
+            "response_module_hint": _response_module_hint(request),
         }
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan

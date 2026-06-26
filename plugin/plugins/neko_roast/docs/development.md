@@ -197,7 +197,7 @@ Protected Modules 是需要核心维护者 review 的高风险区域。触碰这
 - `viewer_profile`：维护观众档案和首次触发判断。
 - `avatar_roast`：构造首次出场的头像 / ID / 第一句话锐评请求，并集中产出完整锐评指令（见“输出边界”的自适应焦点规则）。
 - `danmaku_response`：构造同一观众后续普通弹幕的接话请求。它不做头像 / ID 首评，不写首评计数，不绕过 pipeline / safety guard / dispatcher；用于让 Independent Mode 下的持续对话不被 `roast_once_per_uid` 整体挡掉。
-- `active_engagement`：构造猫猫独播安静状态下的一次主动营业请求。当前 v1 支持保守自动触发和手动触发，不接 Gift / SC / Guard；它必须继续经过 pipeline / safety guard / dispatcher，用于后续统一直播验证猫猫能否自然抛出一个观众愿意接的话题。v1 会给请求附带轻量 `topic_material`，优先来自 B 站公开推荐素材，失败时回退到近期弹幕或内置小话题；内置 fallback 话题池需要覆盖多种低压力接话形态，并避免在短时间内重复同一个话题。prompt 会把 `topic_shape` 展开为 `shape task` 和 `example pattern`，只约束接话结构，不硬编码猫猫台词。recent result 会暴露 `topic_source` / `topic_shape` / `topic_title` / `topic_key` / `topic_hook` / `topic_pattern`，监控脚本还会根据最近结果输出 `latest_topic_repeat`，便于复盘主动营业为什么说这一句、想让观众怎么接、是否复用了同一个素材。
+- `active_engagement`：构造猫猫独播安静状态下的一次主动营业请求。当前 v1 支持保守自动触发和手动触发，不接 Gift / SC / Guard；它必须继续经过 pipeline / safety guard / dispatcher，用于后续统一直播验证猫猫能否自然抛出一个观众愿意接的话题。v1 会给请求附带轻量 `topic_material`，优先复用 6 分钟内有信息量且已经成功输出或 dry-run 到 dispatcher 的近期直播间弹幕；没有合适弹幕时再回退到 B 站公开推荐素材，最后使用内置小话题。内置 fallback 话题池需要覆盖多种低压力接话形态，并避免在短时间内重复同一个话题；topic material 不能把“没人说话 / 弹幕少 / 冷场 / 突然安静 / nobody is talking / suddenly quiet”这类房间沉默描述当成主动营业素材，也不能把“求推荐 / 有什么推荐 / any recommendations”这类让观众替 NEKO 选题的内容，或“今晚做什么 / what are we doing”这类开放式选题问句当成主动营业素材；观众直接问 NEKO 的问题、“猫猫你觉得...”这类直接征询 NEKO 看法的弹幕、以及“猫猫讲讲 / 说说 / 聊聊 / 评价一下 / 锐评一下 / 帮我 / 给我 / 能不能 / 可不可以 / 要不要...”和“谢谢 / 感谢 / 辛苦了”这类中文点名请求或感谢，以及 `NEKO help me / give me / rate my / tell me / can you / could you / please / pls / thank you / thanks...` 这类英文点名请求或感谢也不再作为主动营业素材；未点名但明显是“讲讲 / 说说 / tell me / recommend me”式请求，“哈哈 / 笑死 / lol”式纯反应弹幕，以及“状态 / 下一步 / 重启 / 延迟 / 回复太长”式测试或运行反馈，也应由 `danmaku_response` 接住或进入测试复盘，不作为主动营业二次开题素材，避免已经由 `danmaku_response` 接过的话题被二次开场，并分别通过 `topic_recent_skip_reason=filtered_direct_request` / `filtered_reaction` / `filtered_runtime_feedback` 复盘；低信息量但无法归类的近期弹幕仍使用 `filtered_recent_danmaku`；`get the chat moving` / `keep the chat alive` 这类英文主持模板也必须过滤，避免和 Idle Hosting 或观众求助职责混淆；公开推荐素材还会过滤营销、广告、关注转发、抽奖、giveaway / sponsored，以及事故、死亡、灾害、争议、网暴、scandal / controversy 这类沉重或高争议标题，避免猫猫主动营业像在念推广或把直播气氛带偏；外部标题进入 `topic_material` 前会压缩到 40 字以内，避免长标题诱导长篇输出。若当前缓存的外部话题都已经用过，会清一次缓存并尝试重新拉取外部话题，再回退到内置小话题，避免长直播后半段过早耗尽公开素材。首评 `avatar_roast` 的同条弹幕不能再作为主动营业素材，避免首次出场锐评后围绕同一句话二次开题，并通过 `topic_recent_skip_reason=avatar_roast_context` 复盘；被 skipped / failed 的弹幕不能被主动营业放大，并通过 `topic_recent_skip_reason=non_output_danmaku` 复盘；若短窗口内有效 recent danmaku 全部来自同一 UID 且达到 3 条，主动营业不再拿这位观众的弹幕继续开题，而是回退到公开推荐或内置小话题，避免独播被单个观众刷屏素材带偏，并在 recent result 暴露 `topic_recent_skip_reason=single_viewer_flood` 方便复盘；若只有过期 recent danmaku 被过滤，则暴露 `topic_recent_skip_reason=stale_recent_danmaku`。prompt 会把 `topic_shape` 展开为 `shape task` 和 `example pattern`，只约束接话结构，不硬编码猫猫台词，也禁止让观众替 NEKO 决定“想听什么 / 聊什么”。recent result 会暴露 `topic_source` / `topic_shape` / `topic_title` / `topic_key` / `topic_hook` / `topic_pattern`，监控脚本还会根据最近结果输出 `latest_topic_repeat`，便于复盘主动营业为什么说这一句、想让观众怎么接、是否复用了同一个素材。
 - `warmup_hosting`：构造猫猫独播刚开始、尚无近期互动时的一次开场暖场请求。它与 `idle_hosting` 分开，避免开播第一句话听起来像冷场补位；同样必须经过 pipeline / safety guard / dispatcher。
 - `live_director_status`：面板状态聚合，不新增输出路径；它只解释下一次自动开口会是 `none` / `warmup_hosting` / `active_engagement` / `idle_hosting`、当前是否 eligible、以及还要等多久，方便统一直播测试时判断猫猫为什么不说话。
 - `solo_test_readiness`: dashboard-only streamer readiness aggregation for solo-stream validation. It summarizes preflight, test isolation, warmup hosting, first-viewer roast, follow-up danmaku reply, active engagement, idle hosting, and pacing control; it does not add a new output path, bypass safety, or replace runtime status.
@@ -370,7 +370,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 - `standard`：默认节奏，保留当前低弹幕独播基线。
 - `active`：更积极，较早进入 `idle`，Idle Hosting 间隔更短。
 
-当前实现同时影响三类决策：`live_state_summary()` 的 `quiet` / `idle` 阈值、`idle_hosting_status()` 的最小陪播间隔，以及 Idle Hosting prompt 的主持姿态。`quiet` 更偏轻观察、少直接提问；`active` 允许一个具体、低压力的小问题；`standard` 保持中间策略。`live_state_summary()` 会把观众活动与 NEKO 自己的输出分开统计：`last_viewer_activity_age_sec` 决定 `engaged` / `quiet` / `idle`，`last_output_age_sec` 只用于解释最近是否说过话，避免猫猫自己的主动营业永久阻止冷场陪播。面板会展示最近观众活动间隔、最近输出间隔、多久算安静、多久算冷场，便于主播理解为什么猫猫现在说或不说。
+当前实现同时影响四类决策：`live_state_summary()` 的 `quiet` / `idle` 阈值、`idle_hosting_status()` 的最小陪播间隔、独播首评节流窗口，以及 Idle Hosting prompt 的主持姿态。`quiet` 更偏轻观察、少直接提问；`active` 允许一个具体、低压力的小问题；`standard` 保持中间策略。当前 `standard` 会在约 60 秒无观众活动后进入 `quiet`，约 120 秒后进入 `idle`；自动 Active Engagement 在普通弹幕输出后等待约 75 秒，标准档自身最小间隔约 120 秒，保证不抢刚发生的接话，同时仍能在下一次真实测试中更容易观察到主动营业；`active` 档自身最小间隔约 90 秒，`quiet` 档约 300 秒。独播首评节流窗口为 `quiet=75s`、`standard=45s`、`active=30s`：安静档更少连续头像 / ID 出场锐评，活跃档更快放开新观众出场。`live_state_summary()` 会把观众活动与 NEKO 自己的输出分开统计：`last_viewer_activity_age_sec` 决定 `engaged` / `quiet` / `idle`，`last_output_age_sec` 只用于解释最近是否说过话，避免猫猫自己的主动营业永久阻止冷场陪播。面板会展示最近观众活动间隔、最近输出间隔、多久算安静、多久算冷场，便于主播理解为什么猫猫现在说或不说。
 
 面板的控制台、冷场陪播卡和主动营业卡必须保留这两个节奏字段；主动营业卡还要拆分展示 `minimum_interval_remaining`、`recent_danmaku_cooldown_remaining` 与 `idle_hosting_wait_remaining`，避免只看到一个合并 cooldown 时无法判断到底是自身最小间隔、刚接过弹幕导致等待，还是已经接近冷场窗口而主动让位给 Idle Hosting。当前决策卡也会展示最近主动营业的 `topic_source` / `topic_shape` / `topic_title` / `topic_key` / `topic_hook` / `topic_pattern`，用于下一次直播复盘话题是否足够具体、是否吸引观众接话。
 
@@ -378,7 +378,9 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 Idle Hosting 不是简单定时器输出。每次 `idle_hosting` 事件会附带一个轻量 `host_beat`，在软观察、小二选一、轻吐槽、小状态等低压力主持节拍之间轮换；prompt 只能把它当方向，最终仍必须生成一句自然的 NEKO 直播补位。`host_beat_key` / `host_beat_shape` / `host_beat_title` 会进入 recent result、recent interaction context、面板当前决策卡与 `monitor_live.ps1` 输出，方便下一次冷场补位避免复用同一个开场、包袱形状或主持节拍。
 
-直播测试时，`monitor_live.ps1` 可以通过 `-BackendLogPath <path>` 读取后端日志尾部并输出 `log_watchdog` / `log_contamination` / `log_reply_len` / `log_reply_length_status`；真实输出测试可加 `-ExpectRealOutput` 聚合 `alerts`。这些字段只用于验收复盘：`log_watchdog` 帮助发现 playback gate watchdog 或缺失 `voice_play_end` 造成的卡顿，`log_contamination` 帮助识别 Warthunder 等非 NEKO Live 主动输出污染，`log_reply_length_status` 帮助标记 `send_lanlan_response` 长度异常，`alerts` 帮助现场优先发现 dry_run、断连、stale、失败/跳过、延迟、watchdog、串台、长回复和 `backend_log_missing`；它们不参与业务路由、节奏判断或输出决策。`backend_log_missing` 只表示监控没有读到后端日志，不能据此判断 playback / TTS / 长回复风险已经消失。
+直播测试时，`monitor_live.ps1` 可以通过 `-BackendLogPath <path>` 读取后端日志尾部并输出 `log_watchdog` / `log_contamination` / `log_reply_len` / `log_reply_length_status` / `log_generic_host_prompt`；真实输出测试可加 `-ExpectRealOutput` 聚合 `alerts`。这些字段只用于验收复盘：`log_watchdog` 帮助发现 playback gate watchdog 或缺失 `voice_play_end` 造成的卡顿，`log_contamination` 帮助识别 Warthunder 等非 NEKO Live 主动输出污染，`log_reply_length_status` / `recent_long_reply_count` 帮助标记最新或最近窗口内的回复长度异常，`recent_generic_host_prompt_count` / `log_generic_host_prompt` / `generic_host_prompt` 帮助抓出“大家快来互动 / 发弹幕 / get the chat moving”这类模板式营业话术；其中 `log_generic_host_prompt` 只检查后端日志里的 `send_lanlan_response text=...` 回复文本，不扫描 prompt 指令，避免把“禁止说某句”的提示词误报成猫猫已说出口。`avatar_roast_share` / `avatar_roast_bias` 帮助识别普通弹幕路线是否仍被首次出场锐评吞掉，`entrance_pacing_window` 帮助确认当前活跃度下连续首评会被压多久，`latest_topic_recent_skip_reason` 和 `recent_topic_skip_*` 帮助复盘主动营业素材为什么被过滤，例如单 UID 刷屏、旧弹幕、首评上下文、未输出弹幕，或近期弹幕本身不适合主动营业；点名/未点名请求、纯反应和运行反馈类素材过滤会额外在 `alerts` 中提示 `topic_filter_direct_request` / `topic_filter_reaction` / `topic_filter_runtime_feedback`，方便直播现场快速判断主动营业为什么没有拿近期弹幕开题；`alerts` 还帮助现场优先发现 dry_run、断连、stale、失败/跳过、延迟、watchdog、串台、长回复、模板式营业、测试隔离不干净、最近失败、头像锐评偏航、冷场陪播缺席、主动营业缺席和 `backend_log_missing`；它们不参与业务路由、节奏判断或输出决策。`backend_log_missing` 只表示监控没有读到后端日志，不能据此判断 playback / TTS / 长回复风险已经消失。
+
+Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 `live_reply_contract=short_tts_line`、`max_reply_chars=40` 和 `response_module_hint=...`。这不是绕过核心生成逻辑的硬截断，而是直播插件向核心输出链路和现场调试面暴露的短回复意图；若后端实际 `send_lanlan_response` 仍变长，以 `monitor_live.ps1` 的长回复告警为准继续收敛。
 
 ## 富模型弹幕解析（`livedanmaku.LiveDanmaku.from_danmaku`）
 
@@ -522,7 +524,7 @@ danmaku_core on_event(cmd, 富模型)
 
 `danmaku_response.build_request()` 只用于同一 UID 已经完成出场锐评后的普通 `live_danmaku` 后续接话。`roast_once_per_uid` 的语义因此收敛为“每个观众只做一次出场锐评”，而不是“每个观众只能让 NEKO 回应一次”。后续弹幕仍必须经过 viewer profile、safety guard、dispatcher、dry_run 和 pacing；成功输出不调用 `viewer_profile.mark_roasted()`，避免把普通聊天回复继续累计成首评次数。
 
-独播首评有独立节流：`solo_stream` 中真正的 `avatar_roast` 之间至少间隔 45 秒。若短时间内又有新 UID 发送弹幕，pipeline 不再连续做头像 / ID 出场锐评，而是把这条弹幕交给 `danmaku_response` 正常接话，并把该 UID 标记为已完成出场处理，避免之后又补一次头像锐评。
+独播首评有独立节流：`solo_stream` 中真正的 `avatar_roast` 之间按活跃度间隔，`quiet=75s`、`standard=45s`、`active=30s`。若短时间内又有新 UID 发送弹幕，pipeline 不再连续做头像 / ID 出场锐评，而是把这条弹幕交给 `danmaku_response` 正常接话，并把该 UID 标记为已完成出场处理，避免之后又补一次头像锐评。
 
 在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `RoastPipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
 
@@ -614,7 +616,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-26：`uv run pytest plugin/plugins/neko_roast/tests -q` → **207 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-26：`uv run pytest plugin/plugins/neko_roast/tests -q` → **283 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 
@@ -660,4 +662,4 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 
 维护时不要只给字段说明。需要保留“猫猫是直播间同播伙伴，不是后台系统或插件播报员”的场景，让模型把弹幕当作直播现场互动来接话。即时事件提示词可以包含 UID、昵称、弹幕、强度、直播模式等结构化字段，但输出要求必须强调自然短句、不要复述字段、不要解释流程。
 
-直播输出 prompt 的短回复合约集中在 `modules/_prompt_context.py` 的 `short_reply_rules()`：所有会让 NEKO 开口的直播路径都应共享同一套约束，即一句话、不写段落、最多 18 个中文字符或 10 个英文词；短弹幕要更短地回，优先给一个紧凑的直播包袱，不解释、不铺垫、不写第二句，也不续写上一轮话题。当前已接入 `avatar_roast`、`danmaku_response`、`warmup_hosting`、`idle_hosting` 和 `active_engagement`。新增开口模块时必须复用该合约，并补契约测试锁住。
+直播输出 prompt 的短回复合约集中在 `modules/_prompt_context.py` 的 `short_reply_rules()`：所有会让 NEKO 开口的直播路径都应共享同一套约束，即一句话、不写段落、最多 14 个中文字符或 8 个英文词；短弹幕要更短地回，优先给一个紧凑的直播包袱，不解释、不铺垫、不写第二句，不用逗号串多个分句，也不续写上一轮话题。当前已接入 `avatar_roast`、`danmaku_response`、`warmup_hosting`、`idle_hosting` 和 `active_engagement`。新增开口模块时必须复用该合约，并补契约测试锁住。

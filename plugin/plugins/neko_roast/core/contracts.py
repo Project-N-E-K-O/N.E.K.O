@@ -163,6 +163,7 @@ class ViewerEvent:
                     ("key", "topic_key"),
                     ("hook", "topic_hook"),
                     ("pattern", "topic_pattern"),
+                    ("recent_topic_skip_reason", "topic_recent_skip_reason"),
                 ):
                     value = str(topic.get(raw_key) or "").strip()
                     if value:

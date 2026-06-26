@@ -157,7 +157,7 @@ def test_danmaku_response_prompt_blocks_previous_reply_pollution():
 def test_live_interaction_prompts_share_short_reply_contract():
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
-    short_contract = "Hard length limit: one sentence, no paragraph, at most 18 Chinese characters or 10 English words."
+    short_contract = "Hard length limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words."
 
     danmaku = DanmakuResponseModule()
     danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
@@ -200,6 +200,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
         assert short_contract in request.prompt_text
         assert "If the viewer's danmaku is short, answer even shorter." in request.prompt_text
         assert "Do not turn a reply into a host script, segment intro, plan, or audience survey." in request.prompt_text
+        assert "Do not chain multiple clauses with commas" in request.prompt_text
         assert "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one." in request.prompt_text
 
 
@@ -386,6 +387,22 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
     assert "avoid yes/no questions" in request.prompt_text
 
 
+def test_active_engagement_prompt_blocks_broad_engagement_bait():
+    module = ActiveEngagementModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+
+    request = module.build_request(
+        ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
+        ViewerIdentity(uid="__neko_active__", nickname="NEKO"),
+        ViewerProfile(uid="__neko_active__", nickname="NEKO"),
+    )
+
+    assert "Do not ask viewers what they want to hear" in request.prompt_text
+    assert "Do not ask viewers to choose the stream topic for NEKO" in request.prompt_text
+    assert "Do not say get the chat moving" in request.prompt_text
+    assert "Do not say 大家快来互动, 弹幕刷起来, 接下来我们, or 特别企划." in request.prompt_text
+
+
 def test_warmup_hosting_prompt_is_opening_not_idle_filler():
     module = WarmupHostingModule()
     module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True))
@@ -556,6 +573,56 @@ async def test_dispatcher_does_not_attach_avatar_image_without_visual_opt_in():
     assert "queued_to_neko(" in result
     assert "image_part_bytes=0" in result
     assert plugin.parts == [{"type": "text", "text": "reply"}]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_marks_live_requests_with_short_reply_contract():
+    class Plugin:
+        def __init__(self):
+            self.metadata = None
+
+        def push_message(self, **kwargs):
+            self.metadata = kwargs["metadata"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="live_danmaku", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=True,
+    )
+
+    await NekoDispatcher(plugin).push_roast(request)
+
+    assert plugin.metadata["live_reply_contract"] == "short_tts_line"
+    assert plugin.metadata["max_reply_chars"] == 40
+    assert plugin.metadata["response_module_hint"] == "avatar_roast"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_dry_run_summary_includes_short_reply_contract():
+    class Plugin:
+        def push_message(self, **_kwargs):
+            raise AssertionError("dry_run requests must not be pushed")
+
+    request = InteractionRequest(
+        event=ViewerEvent(uid="42", nickname="viewer", source="live_danmaku", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+        dry_run=True,
+    )
+
+    result = await NekoDispatcher(Plugin()).push_roast(request)
+
+    assert "reply_contract=short_tts_line" in result
+    assert "max_reply_chars=40" in result
+    assert "response_module_hint=danmaku_response" in result
 
 
 @pytest.mark.asyncio
@@ -1301,6 +1368,125 @@ async def test_pipeline_dry_run_session_marker_can_be_cleared_for_fresh_validati
     assert second.status == "dry_run"
     assert any(step.id == "avatar_roast" and step.status == "ok" for step in second.steps)
     assert not any(step.id == "danmaku_response" for step in second.steps)
+
+
+def test_pipeline_session_state_clear_resets_entrance_pacing_marker():
+    pipeline = RoastPipeline(SimpleNamespace())
+    now = [100.0]
+    pipeline._now = lambda: now[0]
+
+    pipeline._record_avatar_roast_sent()
+    now[0] += 10.0
+    assert pipeline._entrance_pacing_active() is True
+
+    pipeline.clear_dry_run_session_state()
+
+    assert pipeline._entrance_pacing_active() is False
+
+
+def test_pipeline_entrance_pacing_interval_follows_activity_level():
+    now = [100.0]
+
+    quiet_pipeline = RoastPipeline(SimpleNamespace(config=RoastConfig(activity_level="quiet")))
+    quiet_pipeline._now = lambda: now[0]
+    quiet_pipeline._record_avatar_roast_sent()
+    now[0] += 50.0
+    assert quiet_pipeline._entrance_pacing_active() is True
+
+    now[0] = 100.0
+    active_pipeline = RoastPipeline(SimpleNamespace(config=RoastConfig(activity_level="active")))
+    active_pipeline._now = lambda: now[0]
+    active_pipeline._record_avatar_roast_sent()
+    now[0] += 35.0
+    assert active_pipeline._entrance_pacing_active() is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_session_marker_prevents_repeat_avatar_roast_when_persist_fails():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        def __init__(self):
+            self.mark_calls = 0
+
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            self.mark_calls += 1
+            raise RuntimeError("store temporarily unavailable")
+
+    class Dispatcher:
+        async def push_roast(self, request):
+            return f"queued_to_neko({request.prompt_text})"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"avatar_roast:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    class DanmakuResponse:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"danmaku_response:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    viewer_profile = ViewerProfileModule()
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=viewer_profile,
+        avatar_roast=AvatarRoast(),
+        danmaku_response=DanmakuResponse(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+    pipeline = RoastPipeline(ctx)
+
+    first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
+    second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+
+    assert first.status == "pushed"
+    assert second.status == "pushed"
+    assert first.request is not None
+    assert second.request is not None
+    assert first.request.prompt_text == "avatar_roast:first"
+    assert second.request.prompt_text == "danmaku_response:second"
+    assert viewer_profile.mark_calls == 1
+    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,11 @@ from typing import Any
 from .contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerProfile
 
 ENTRANCE_ROAST_MIN_INTERVAL_SECONDS = 45.0
+ENTRANCE_ROAST_INTERVAL_BY_ACTIVITY = {
+    "quiet": 75.0,
+    "standard": ENTRANCE_ROAST_MIN_INTERVAL_SECONDS,
+    "active": 30.0,
+}
 
 
 class RoastPipeline:
@@ -16,18 +21,26 @@ class RoastPipeline:
         self.ctx = ctx
         self._uid_locks: dict[str, asyncio.Lock] = {}
         self._dry_run_roasted_uids: set[str] = set()
+        self._session_roasted_uids: set[str] = set()
         self._last_avatar_roast_at: float | None = None
 
     def clear_dry_run_session_state(self) -> None:
         self._dry_run_roasted_uids.clear()
+        self._session_roasted_uids.clear()
+        self._last_avatar_roast_at = None
 
     def _now(self) -> float:
         return time.monotonic()
 
+    def _entrance_pacing_interval_seconds(self) -> float:
+        config = getattr(self.ctx, "config", None)
+        level = str(getattr(config, "activity_level", "standard") or "standard")
+        return ENTRANCE_ROAST_INTERVAL_BY_ACTIVITY.get(level, ENTRANCE_ROAST_MIN_INTERVAL_SECONDS)
+
     def _entrance_pacing_active(self) -> bool:
         if self._last_avatar_roast_at is None:
             return False
-        return (self._now() - self._last_avatar_roast_at) < ENTRANCE_ROAST_MIN_INTERVAL_SECONDS
+        return (self._now() - self._last_avatar_roast_at) < self._entrance_pacing_interval_seconds()
 
     def _record_avatar_roast_sent(self) -> None:
         self._last_avatar_roast_at = self._now()
@@ -76,6 +89,8 @@ class RoastPipeline:
                 already_roasted = False
                 if uid_lock is not None:
                     already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
+                    if not already_roasted:
+                        already_roasted = identity.uid in self._session_roasted_uids
                     if not already_roasted and self.ctx.config.dry_run and event.source == "live_danmaku":
                         already_roasted = identity.uid in self._dry_run_roasted_uids
                 is_repeat_live_danmaku = (
@@ -193,6 +208,7 @@ class RoastPipeline:
                 if response_module_id == "avatar_roast":
                     self._record_avatar_roast_sent()
                 if should_mark_roasted:
+                    self._session_roasted_uids.add(identity.uid)
                     try:
                         await self.ctx.viewer_profile.mark_roasted(identity.uid, output)
                         steps.append(PipelineStep("viewer_profile.mark_roasted", "ok"))
