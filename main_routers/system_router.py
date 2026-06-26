@@ -2001,6 +2001,78 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     return leading + rest, "CHAT"
 
 
+# Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,
+# CJK + ASCII brackets). Stripped from both ends before matching so e.g.
+# "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
+_INTENT_LABEL_DECOR = '*-•◦·#`_~【】「」[]《》（）() \t'
+
+
+def _strip_proactive_intent_label_leak(text: str) -> str:
+    """Strip an internal guidance label echoed as a leading heading.
+
+    Weak models sometimes copy a tone-angle seed or memory-cue label from
+    the proactive Phase 2 prompt and emit the bare label as the first line
+    of the reply; the client then splits it into its own chat bubble. Such
+    labels are pure scaffolding and must never be spoken.
+
+    Removes, from the START of ``text`` only and repeating to peel stacked
+    labels:
+    - a standalone first line that exactly matches a known label (optional
+      decoration / trailing colon), when real content follows on a later
+      line;
+    - a leading ``<label>:`` / ``<label>：`` prefix on the first line,
+      keeping the rest of that line as content.
+
+    Exact (decoration-trimmed, casefolded) matching against the derived
+    label set keeps generic words from being scrubbed out of normal speech.
+    Returns ``text`` unchanged when the leading segment is not a known label.
+    """
+    if not text:
+        return text
+    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
+    labels = get_proactive_intent_leak_labels()
+    if not labels:
+        return text
+
+    def _norm(segment: str) -> str:
+        out = segment.strip().strip(_INTENT_LABEL_DECOR)
+        out = out.rstrip('：:').strip(_INTENT_LABEL_DECOR)
+        return out.strip()
+
+    # Bounded peel — a handful of stacked labels at most; never loop the body.
+    for _ in range(4):
+        body = text.lstrip()
+        if not body:
+            break
+        nl = body.find('\n')
+        first = body if nl == -1 else body[:nl]
+        rest = '' if nl == -1 else body[nl + 1:]
+
+        # Case 1: the whole first line is a label, with real content after it.
+        if rest.strip() and _norm(first).casefold() in labels:
+            text = rest
+            continue
+
+        # Case 2: "<label>：<content>" sharing one line.
+        sep_idx = -1
+        for sep in ('：', ':'):
+            idx = first.find(sep)
+            if idx > 0:
+                sep_idx = idx
+                break
+        if sep_idx > 0:
+            cand = _norm(first[:sep_idx]).casefold()
+            after = first[sep_idx + 1:].strip()
+            if cand in labels and (after or rest.strip()):
+                if after:
+                    text = after + ('\n' + rest if rest else '')
+                else:
+                    text = rest
+                continue
+        break
+    return text
+
+
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     Look up the link matching a Phase 1 output title in all_web_links.
@@ -7614,6 +7686,11 @@ async def proactive_chat(request: Request):
         # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
         # 分钟 TTL 兜底过期。
         _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
+        # 输出侧兜底：剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成
+        # 首行小标题念出来的泄漏（前端 realistic 模式会把它按换行切成单独一个气泡）。
+        # 这些标签纯属脚手架，绝不该进 TTS / 历史。response_text 同时喂 TTS 与 finish
+        # 历史写入，故在投递前一次性清掉即可覆盖 tagless / tagged / BM25-regen 全部路径。
+        response_text = _strip_proactive_intent_label_leak(response_text)
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
