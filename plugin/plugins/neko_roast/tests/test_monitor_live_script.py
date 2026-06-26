@@ -259,6 +259,7 @@ def test_monitor_live_script_prints_live_test_help() -> None:
     assert "recent_pushed / recent_dry_run / recent_skipped / recent_failed" in completed.stdout
     assert "recent_topic_skip_*" in completed.stdout
     assert "recent_topic_source_*" in completed.stdout
+    assert "recent_topic_shape_*" in completed.stdout
     assert "recent_topic_intent_*" in completed.stdout
     assert "topic_repeat / avatar_repeat" in completed.stdout
     assert "topic_filter_direct_request" in completed.stdout
@@ -266,6 +267,7 @@ def test_monitor_live_script_prints_live_test_help() -> None:
     assert "topic_filter_runtime_feedback" in completed.stdout
     assert "topic_intent_bias" in completed.stdout
     assert "topic_source_bias" in completed.stdout
+    assert "topic_shape_bias" in completed.stdout
     assert "generic_host_prompt" in completed.stdout
     assert "host_beat_repeat" in completed.stdout
     assert "proactive_in_engaged" in completed.stdout
@@ -571,6 +573,41 @@ def test_monitor_live_script_reports_active_topic_source_mix(tmp_path: Path) -> 
     assert "recent_topic_source_fallback=1" in completed.stdout
     assert "recent_topic_source_bili_trending=1" in completed.stdout
     assert "recent_topic_source_recent_danmaku=1" in completed.stdout
+
+
+def test_monitor_live_script_alerts_when_active_topic_shape_is_one_note(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_shape": "either_or", "topic_key": "topic:1"},
+        },
+        {
+            "status": "dry_run",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_shape": "either_or", "topic_key": "topic:2"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_shape": "either_or", "topic_key": "topic:3"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_shape": "light_stance", "topic_key": "topic:4"},
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_topic_shape_either_or=3" in completed.stdout
+    assert "recent_topic_shape_light_stance=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "topic_shape_bias" in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_alerts_when_active_topic_source_is_one_note(tmp_path: Path) -> None:

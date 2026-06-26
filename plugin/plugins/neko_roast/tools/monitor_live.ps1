@@ -58,6 +58,8 @@ Key fields:
                     Recent active-topic material skip reason counts: single-viewer flood, stale danmaku, avatar-roast context, or non-output danmaku.
   recent_topic_source_*
                     Recent Active Engagement topic source counts for fallback, Bili trending, and recent danmaku material.
+  recent_topic_shape_*
+                    Recent Active Engagement topic shape counts, useful for spotting whether proactive topics keep using the same interaction shape.
   recent_topic_intent_*
                     Recent Active Engagement reply-intent counts, useful for spotting whether proactive topics are too one-note.
   avatar_roast_share / avatar_roast_bias
@@ -77,6 +79,8 @@ Key fields:
                     Alert name when recent Active Engagement topics overuse one reply intent, making proactive hosting feel one-note.
   topic_source_bias
                     Alert name when recent Active Engagement topics overuse one source, making proactive hosting material feel narrow.
+  topic_shape_bias
+                    Alert name when recent Active Engagement topics overuse one interaction shape, making proactive hosting feel repetitive.
   live_disabled     Alert name for real-output tests when the NEKO Live plugin is disabled.
   generic_host_prompt
                     Alert name for template-like "please interact / send danmaku" output.
@@ -586,6 +590,12 @@ function Write-Snapshot {
         bili_trending = 0
         recent_danmaku = 0
     }
+    $recentTopicShapeCounts = @{
+        either_or = 0
+        light_stance = 0
+        tiny_tease = 0
+        small_challenge = 0
+    }
     $recentLongReplyRouteCounts = @{
         avatar_roast = 0
         danmaku_response = 0
@@ -632,6 +642,10 @@ function Write-Snapshot {
                 $topicSource = "$(Get-Field $result.event.topic_source)"
                 if ($recentTopicSourceCounts.ContainsKey($topicSource)) {
                     $recentTopicSourceCounts[$topicSource] += 1
+                }
+                $topicShape = "$(Get-Field $result.event.topic_shape)"
+                if ($recentTopicShapeCounts.ContainsKey($topicShape)) {
+                    $recentTopicShapeCounts[$topicShape] += 1
                 }
             }
         }
@@ -680,6 +694,18 @@ function Write-Snapshot {
     $topicSourceBias = "False"
     if ($topicSourceTotal -ge 3 -and (($topicSourceMax * 100.0) / $topicSourceTotal) -ge 75.0) {
         $topicSourceBias = "True"
+    }
+    $topicShapeTotal = 0
+    $topicShapeMax = 0
+    foreach ($shapeCount in $recentTopicShapeCounts.Values) {
+        $topicShapeTotal += [int]$shapeCount
+        if ([int]$shapeCount -gt $topicShapeMax) {
+            $topicShapeMax = [int]$shapeCount
+        }
+    }
+    $topicShapeBias = "False"
+    if ($topicShapeTotal -ge 3 -and (($topicShapeMax * 100.0) / $topicShapeTotal) -ge 75.0) {
+        $topicShapeBias = "True"
     }
     $latest = $null
     if ($recent.Count -gt 0) {
@@ -956,6 +982,9 @@ function Write-Snapshot {
     if ("$topicSourceBias" -eq "True") {
         $alerts += "topic_source_bias"
     }
+    if ("$topicShapeBias" -eq "True") {
+        $alerts += "topic_shape_bias"
+    }
     if ("$latestHostBeatRepeat" -eq "True") {
         $alerts += "host_beat_repeat"
     }
@@ -1079,6 +1108,11 @@ function Write-Snapshot {
         "recent_topic_source_bili_trending=$($recentTopicSourceCounts['bili_trending'])",
         "recent_topic_source_recent_danmaku=$($recentTopicSourceCounts['recent_danmaku'])",
         "recent_topic_source_bias=$topicSourceBias",
+        "recent_topic_shape_either_or=$($recentTopicShapeCounts['either_or'])",
+        "recent_topic_shape_light_stance=$($recentTopicShapeCounts['light_stance'])",
+        "recent_topic_shape_tiny_tease=$($recentTopicShapeCounts['tiny_tease'])",
+        "recent_topic_shape_small_challenge=$($recentTopicShapeCounts['small_challenge'])",
+        "recent_topic_shape_bias=$topicShapeBias",
         "recent_topic_intent_quick_vote=$($recentTopicIntentCounts['quick_vote'])",
         "recent_topic_intent_tiny_answer=$($recentTopicIntentCounts['tiny_answer'])",
         "recent_topic_intent_tease_back=$($recentTopicIntentCounts['tease_back'])",
