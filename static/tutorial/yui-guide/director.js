@@ -7582,8 +7582,8 @@
             });
         }
 
-        async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise) {
-            return this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise);
+        async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext) {
+            return this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext);
         }
 
         closeChatToolPopover() {
@@ -7959,8 +7959,8 @@
             return sceneRunId === this.sceneRunId && !this.isStopping();
         }
 
-        async playAvatarFloatingScene(scene, day, index, total) {
-            return this.sceneOrchestrator.playScene(scene, day, index, total);
+        async playAvatarFloatingScene(scene, day, index, total, roundContext) {
+            return this.sceneOrchestrator.playScene(scene, day, index, total, roundContext);
         }
 
         async playAvatarFloatingRound(round, options) {
@@ -11142,17 +11142,136 @@
             this.clearIntroGreetingChatHighlight();
         }
 
-        async runIntroGreetingHugPerformance() {
+        async runDailyIntroGreetingPerformance(scene, day, options) {
+            return this.runDailyIntroAvatarPerformance(Object.assign({}, scene || {}, {
+                introAvatarPerformance: Object.assign({
+                    preset: 'wave-zoom'
+                }, (scene && scene.introAvatarPerformance) || {})
+            }), day, options);
+        }
+
+        async runDailyIntroAvatarPerformance(scene, day, options) {
+            const normalizedOptions = options || {};
             const api = window.YuiGuideAvatarStage;
-            if (!api || typeof api.playIntroGreetingHug !== 'function') {
-                return null;
-            }
-            return api.playIntroGreetingHug({
-                approachMs: 2200,
-                settleMs: 1250,
-                reducedMotion: this.shouldReduceTutorialMotion(),
-                isCancelled: () => this.isStopping()
+            let revealed = false;
+            const resolveOnReveal = normalizedOptions.isFirstDailyScene === true;
+            let revealReadyResolve = null;
+            let revealReadySettled = false;
+            let revealReadyFallbackTimer = 0;
+            const revealReadyPromise = new Promise((resolve) => {
+                revealReadyResolve = resolve;
             });
+            const revealReadyFallbackMs = Number.isFinite(Number(normalizedOptions.revealReadyFallbackMs))
+                ? Math.max(0, Math.floor(Number(normalizedOptions.revealReadyFallbackMs)))
+                : 1600;
+            const resolveRevealReady = (value) => {
+                if (revealReadySettled) {
+                    return;
+                }
+                revealReadySettled = true;
+                if (revealReadyFallbackTimer) {
+                    window.clearTimeout(revealReadyFallbackTimer);
+                    revealReadyFallbackTimer = 0;
+                }
+                if (typeof revealReadyResolve === 'function') {
+                    revealReadyResolve(value);
+                }
+            };
+            const revealPrepared = typeof normalizedOptions.revealPrepared === 'function'
+                ? function revealDailyIntroPrepared(reason) {
+                    if (revealed) {
+                        return;
+                    }
+                    revealed = true;
+                    normalizedOptions.revealPrepared(reason || 'daily-intro-avatar-performance');
+                    resolveRevealReady(true);
+                }
+                : null;
+            if (!api || typeof api.playAvatarMotion !== 'function') {
+                if (revealPrepared) {
+                    revealPrepared('daily-intro-avatar-stage-unavailable');
+                }
+                resolveRevealReady(false);
+                return resolveOnReveal ? revealReadyPromise : null;
+            }
+            const performance = scene && scene.introAvatarPerformance
+                ? scene.introAvatarPerformance
+                : {};
+            const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
+            const text = scene && scene.text ? scene.text : '';
+            const durationMs = Number.isFinite(Number(performance.durationMs))
+                ? Math.max(0, Math.floor(Number(performance.durationMs)))
+                : this.getAvatarFloatingNarrationDurationMs(voiceKey, text);
+            const motionPromise = api.playAvatarMotion({
+                preset: performance.preset || 'wave-zoom',
+                position: performance.position || performance.targetPosition || '',
+                durationMs: durationMs,
+                restore: performance.restore || 'half-body',
+                approachMs: Number.isFinite(Number(performance.approachMs))
+                    ? Math.max(0, Math.floor(Number(performance.approachMs)))
+                    : (Number.isFinite(normalizedOptions.approachMs)
+                        ? Math.max(0, Math.floor(normalizedOptions.approachMs))
+                        : 2200),
+                settleMs: Number.isFinite(Number(performance.settleMs))
+                    ? Math.max(0, Math.floor(Number(performance.settleMs)))
+                    : (Number.isFinite(normalizedOptions.settleMs)
+                        ? Math.max(0, Math.floor(normalizedOptions.settleMs))
+                        : 1250),
+                frameScale: Number.isFinite(Number(performance.frameScale))
+                    ? Number(performance.frameScale)
+                    : undefined,
+                frameY: Number.isFinite(Number(performance.frameY))
+                    ? Number(performance.frameY)
+                    : undefined,
+                enterMs: Number.isFinite(Number(performance.enterMs))
+                    ? Math.max(0, Math.floor(Number(performance.enterMs)))
+                    : undefined,
+                releaseMs: Number.isFinite(Number(performance.releaseMs))
+                    ? Math.max(0, Math.floor(Number(performance.releaseMs)))
+                    : undefined,
+                readyWaitMs: Number.isFinite(Number(performance.readyWaitMs))
+                    ? Math.max(0, Math.floor(Number(performance.readyWaitMs)))
+                    : undefined,
+                freezeFloatingButtons: performance.freezeFloatingButtons === false ? false : undefined,
+                rotateFloatingButtons: performance.rotateFloatingButtons === true,
+                revealPrepared: revealPrepared,
+                reducedMotion: typeof normalizedOptions.reducedMotion === 'boolean'
+                    ? normalizedOptions.reducedMotion
+                    : this.shouldReduceTutorialMotion(),
+                isCancelled: typeof normalizedOptions.isCancelled === 'function'
+                    ? normalizedOptions.isCancelled
+                    : () => this.isStopping()
+            });
+            if (resolveOnReveal) {
+                if (!revealReadySettled && revealReadyFallbackMs > 0 && typeof window.setTimeout === 'function') {
+                    revealReadyFallbackTimer = window.setTimeout(() => {
+                        if (revealPrepared) {
+                            revealPrepared('daily-intro-avatar-reveal-timeout');
+                            return;
+                        }
+                        resolveRevealReady(false);
+                    }, revealReadyFallbackMs);
+                }
+                motionPromise.then(
+                    () => {
+                        resolveRevealReady(true);
+                    },
+                    (error) => {
+                        console.warn('[YuiGuide] 每日开场模型演出失败:', error);
+                        if (revealPrepared) {
+                            revealPrepared('daily-intro-avatar-motion-failed');
+                            return;
+                        }
+                        resolveRevealReady(false);
+                    }
+                );
+                return revealReadyPromise;
+            }
+            return motionPromise;
+        }
+
+        async runIntroGreetingHugPerformance() {
+            return this.runDailyIntroGreetingPerformance({ id: 'day1_intro_greeting' });
         }
 
         async runIntroGiftHeartPerformance() {

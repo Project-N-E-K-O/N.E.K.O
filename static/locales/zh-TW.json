@@ -769,12 +769,14 @@
         "reactWindowLoadFailed": "聊天框資源加載失敗",
         "reactWindowAriaLabel": "Neko 聊天視窗",
         "focusIndicator": "凝神中",
+        "focusThinking": "正在思考",
         "reactWindowInputHint": "Enter 發送，Shift + Enter 換行",
         "messageListAriaLabel": "聊天訊息列表",
         "composerToolsAriaLabel": "輸入工具列",
         "pendingImagesAriaLabel": "待發送圖片",
         "pendingImageAlt": "圖片 {{index}}",
         "removePendingImage": "移除圖片",
+        "closeMemeAriaLabel": "關閉圖片",
         "emojiButtonAriaLabel": "表情",
         "toolIconsAriaLabel": "工具圖示",
         "toolLollipop": "棒棒糖",
@@ -942,7 +944,7 @@
         "freeVersionHint": "（免費版無需填寫）",
         "coreApiPlaceholder": "請輸入您的API Key",
         "coreApiProvider": "核心API（語音對話，僅支援全模態，DeepSeek 為純文字不可用）",
-        "assistApiProvider": "輔助API（記憶/Agent/文本聊天/自定義語音）",
+        "assistApiProvider": "輔助API（記憶/Agent/文本聊天）",
         "saveSettings": "保存設置",
         "closeSettings": "關閉",
         "newbieRecommendTitle": "新手推薦",
@@ -950,7 +952,7 @@
         "advancedOptions": "高級選項（可選）",
         "providerDescription": "API服務商說明：",
         "coreApiDesc": "核心API：負責對話功能",
-        "assistApiDesc": "輔助API：負責記憶管理、自定義語音、文本聊天、Agent模式",
+        "assistApiDesc": "輔助API：負責記憶管理、文本聊天、Agent模式",
         "providerFeatures": "各服務商特點：",
         "aliFeature": "阿里：有免費額度，功能最全面",
         "glmFeature": "智譜：速率限製極其嚴苛。音視頻模型已下架，無法作為核心API使用",
@@ -959,26 +961,27 @@
         "siliconFeature": "矽基流動：有免費額度，性價比高，功能少，只作為輔助API使用",
         "geminiFeature": "Gemini：智能和性價比極高",
         "configSuggestion": "配置建議：",
-        "freeVersionSuggestion": "免費版：完全免費，無需API Key，適合新手體驗（不支持自定義語音、Agent模式）",
+        "freeVersionSuggestion": "免費版：完全免費，無需API Key，適合新手體驗（Agent 有免費額度）",
         "coreApiSuggestion": "核心API：負責對話功能，建議根據預算和需求選擇",
-        "assistApiSuggestion": "輔助API：負責文本聊天、記憶管理、自定義語音、Agent模式，只有阿里支持自定義語音",
+        "assistApiSuggestion": "輔助API：負責文本聊天、記憶管理、Agent模式",
         "coreApiTitle": "核心API負責語音對話功能：",
-        "freeVersionCore": "免費版：完全免費，智能水平高，支持聯網搜索，不支持自定義語音和Agent模式",
+        "freeVersionCore": "免費版：完全免費，智能水平高，支持聯網搜索",
         "aliCore": "阿里：有免費額度，功能全面",
         "glmCore": "智譜：模型已經暫時下架，無法使用",
         "stepCore": "階躍星辰：完全免費，智能水平高，但速率限製太嚴苛、因此不建議使用",
         "openaiCore": "OpenAI：智能水平最高，但價格昂貴",
         "geminiCore": "Gemini：智能和性價比極高",
-        "assistApiTitle": "輔助API負責記憶管理、文本對話、Agent模式和自定義語音：",
-        "freeVersionAssist": "免費版：完全免費，但不支持自定義語音和Agent模式",
-        "aliAssist": "阿里：推薦選擇，支持自定義語音和Agent模式",
+        "assistApiTitle": "輔助API負責記憶管理、文本對話和Agent模式：",
+        "freeVersionAssist": "免費版：完全免費，Agent 有免費額度",
+        "aliAssist": "阿里：推薦選擇，功能最全面，支持Agent模式",
         "glmAssist": "智譜：記憶管理免費，但並發、RPM限製極其嚴重，不建議使用",
         "stepAssist": "階躍星辰：價格便宜，但並發、RPM限製極其嚴重，不建議使用",
         "siliconAssist": "矽基流動：性價比高，支持Agent模式",
         "openaiAssist": "OpenAI：記憶管理能力強",
         "geminiAssist": "Gemini：智能和性價比極高",
         "kimiAssist": "Kimi：支持長上下文和視覺",
-        "assistApiNote": "注意：只有阿里支持自定義語音功能。不建議使用智譜和階躍星辰。",
+        "kimiCodeAssist": "Kimi Code：Anthropic Messages 相容格式，適合程式碼與長文字任務",
+        "assistApiNote": "注意：不建議使用智譜和階躍星辰。",
         "assistApiKeyQwen": "輔助API Key - 阿里",
         "assistApiKeyOpenai": "輔助API Key - OpenAI",
         "assistApiKeyGlm": "輔助API Key - 智譜",
@@ -986,6 +989,7 @@
         "assistApiKeySilicon": "輔助API Key - 矽基流動",
         "assistApiKeyGemini": "輔助API Key - Gemini",
         "assistApiKeyKimi": "輔助API Key - Kimi",
+        "assistApiKeyKimiCode": "輔助API Key - Kimi Code",
         "assistApiKeyHint": "（僅當輔助API為{{provider}}時需要填寫）",
         "assistApiKeyPlaceholder": "留空使用管理簿對應 Key",
         "providerNames": {
@@ -995,6 +999,7 @@
             "step": "階躍星辰",
             "silicon": "矽基流動",
             "gemini": "Gemini",
+            "kimi_code": "Kimi Code（月之暗面）",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
@@ -1016,6 +1021,7 @@
             "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)",
             "gemini": "Gemini（谷歌，智能極高）",
             "kimi": "Kimi（月之暗面，支持長上下文）",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（中國）",
@@ -1064,6 +1070,7 @@
             "silicon": "矽基流動",
             "gemini": "Gemini（Google）",
             "kimi": "Kimi（月之暗面）",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "豆包（字節跳動）",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際服）",
@@ -1076,18 +1083,18 @@
         },
         "freeVersionNoApiKey": "免費版無需API Key",
         "pleaseEnterApiKey": "請輸入您的API Key",
-        "freeVersionConfig": "免費版配置：支持音視頻對話、文本對話和記憶管理，不支持自定義語音、Agent模式",
-        "qwenRecommendation": "阿里作為核心API時，建議輔助API也選擇阿里以獲得最佳的自定義語音體驗",
-        "glmRecommendation": "智譜作為核心API時，有免費額度，支持聯網搜索。語音預設含浮水印嗶嗶聲（可在智譜控制台手動關閉）。建議輔助API選擇阿里以支持自定義語音功能",
-        "openaiRecommendation": "OpenAI作為核心API時，建議輔助API選擇阿里以支持自定義語音功能",
-        "stepRecommendation": "階躍星辰作為核心API時，建議輔助API選擇阿里以支持自定義語音功能",
-        "geminiRecommendation": "Gemini作為核心API時，建議輔助API選擇阿里以支持自定義語音功能",
-        "assistApiTooltipTitle": "輔助API負責記憶管理、文本對話和自定義語音：",
+        "freeVersionConfig": "免費版配置：支持音視頻對話、文本對話和記憶管理，Agent 有免費額度",
+        "qwenRecommendation": "阿里作為核心API時，輔助API也推薦阿里，功能最全面。",
+        "glmRecommendation": "智譜作為核心API時，有免費額度，支持聯網搜索。語音預設含浮水印嗶嗶聲（可在智譜控制台手動關閉）。",
+        "openaiRecommendation": "OpenAI作為核心API時，價格較高。",
+        "stepRecommendation": "階躍星辰作為核心API時，價格便宜但智能水平一般",
+        "geminiRecommendation": "Gemini作為核心API時，性價比非常高。",
+        "assistApiTooltipTitle": "輔助API負責記憶管理、文本對話和Agent模式：",
         "currentSuggestion": "當前建議：",
         "configSuggestionFull": "配置建議：",
-        "freeVersionSuggestionFull": "完全免費，無需API Key，適閤新手體驗（不支持自定義語音和Agent模式）",
+        "freeVersionSuggestionFull": "完全免費，無需API Key，適合新手體驗（Agent 有免費額度）",
         "coreApiSuggestionFull": "負責對話功能（建議根據預算和需求選擇）",
-        "assistApiSuggestionFull": "負責記憶管理、文本對話和自定義語音（只有阿里支持自定義語音）",
+        "assistApiSuggestionFull": "負責記憶管理、文本對話和Agent模式",
         "assistApiKeyRequiredHint": "需在對應的輸入框內填寫API才能選擇其對應的供應商",
         "mcpRouterToken": "MCP Router Token",
         "mcpRouterTokenDesc": "MCP Router Token說明：",
@@ -1367,6 +1374,7 @@
         "vrmAnimation": {
             "title": "VRM動作預覽:",
             "selectAnimation": "選擇動作",
+            "addAnimation": "新增動作",
             "noAnimations": "未找到動作文件",
             "loading": "正在加載動作列表...",
             "animationListLoaded": "動作列表加載成功",
@@ -1968,7 +1976,7 @@
         "systemPrompt": "系統指令（謹慎修改）",
         "systemPromptWarning": "系統指令 - 修改可能導致角色行為異常，後果自負",
         "addField": "新增設定",
-        "aiAssist": "AI 輔助生成",
+        "aiAssist": "貓貓輔助生成",
         "aiCompanionSub": "設定捏人助手 · YUI 暫代開發貓",
         "aiCompanionClose": "關閉",
         "aiCompanionMinimize": "收起",
@@ -2536,6 +2544,8 @@
             "allowInterrupt": "允許打斷",
             "mergeMessages": "合併消息",
             "avatarReactionBubble": "表情氣泡",
+            "focusCognition": "凝神模式",
+            "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "proactiveChat": "主動搭話",
@@ -3244,7 +3254,7 @@
             },
             "step5": {
                 "title": "🔧 輔助 API 服務商",
-                "desc": "輔助 API 負責記憶管理和自定義語音功能。\n\n• 免費版：完全免費，但不支持自定義語音\n• 阿里：推薦選擇，支持自定義語音\n• 智譜：支持 Agent 模式\n• OpenAI：記憶管理能力強\n\n注意：只有阿里支持自定義語音功能。"
+                "desc": "輔助 API 負責記憶管理、文本對話和 Agent 模式。\n\n• 免費版：完全免費，無需 API Key\n• 阿里：推薦選擇，功能最全面\n• 智譜：支持 Agent 模式\n• OpenAI：記憶管理能力強\n\n注意：自定義語音（聲音克隆）只需在管理簿保存相應運營商的 Key 即可啟用，無需切換核心或輔助 API。"
             },
             "step6": {
                 "title": "🔑 輔助 API Key",
@@ -4278,10 +4288,7 @@
          "modeSwitcher": "羽毛球模式",
          "mode": {
              "spectator": "自由練習",
-             "shooter": "羽毛球挑戰",
-             "duel": "跟 Yui 對戰",
-             "timed": "限時挑戰",
-             "horse": "HORSE"
+             "duel": "和 Yui 對戰"
          },
          "hud": {
              "score": "得分 {{score}}",
@@ -4294,16 +4301,11 @@
              "practice": "自由練習",
              "yourTurn": "輪到你",
             "nekoTurn": "Neko 揮拍",
-             "horseLetters": "你 {{player}} / Neko {{neko}}",
-             "horseChallenge": "復刻 {{distance}} {{angle}}°",
-             "horseSet": "出題回合",
              "unlimitedAttempts": "不限次數",
              "chances": "機會 {{count}}",
              "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
              "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
              "duelTitle": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
-            "timedTitle": "限時挑戰：60 秒內不限揮拍次數",
-             "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
              "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
              "on": "開",
              "off": "關"
@@ -4316,8 +4318,6 @@
              "rating": "操控評級：{{rating}}",
              "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
             "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 失誤：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
-             "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
-             "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
              "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
              "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
              "attemptsSummary": "羽毛球摘要：{{summary}}",
@@ -4334,7 +4334,6 @@
              "title": "排行榜",
              "global": "全球",
              "local": "本地",
-             "shooter": "操控",
              "duel": "對戰",
              "empty": "暫無記錄",
              "totalPlayers": "總玩家 {{count}}",
@@ -4342,11 +4341,8 @@
              "recent": "最近 {{count}} 局",
              "loading": "載入中...",
              "mode": {
-                 "shooter": "操控",
-                 "duel": "對戰",
-                 "timed": "限時",
-                 "horse": "HORSE",
-                 "spectator": "觀戰"
+                 "spectator": "觀戰",
+                 "duel": "對戰"
              }
          },
          "debug": {
@@ -4367,8 +4363,7 @@
                  "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
                  "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
                  "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
-                 "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4515,64 +4510,6 @@
                      "拍面再抬一點"
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "沒事，別亂帶拍",
-                     "穩一點，我跟得上"
-                 ],
-                 "game_over": [
-                     "這次操控還得練",
-                    "下次別讓我白跑"
-                 ],
-                 "long_aim": [
-                     "快點啦，手要僵了",
-                     "還沒想好角度嗎"
-                 ],
-                 "close_to_record": [
-                     "紀錄快到了",
-                     "這拍別抖"
-                 ],
-                 "new_record": [
-                     "好吧，新紀錄",
-                     "這次配合還行"
-                 ],
-                 "streak_5": [
-                     "五連了，別飄",
-                     "這節奏還算穩"
-                 ],
-                 "streak_10": [
-                     "十連了？別得意",
-                     "你手還挺穩"
-                 ],
-                 "streak_15": [
-                     "十五連？別太得意",
-                     "這次確實接住了"
-                 ],
-                 "streak_20": [
-                     "二十連？還不停嗎",
-                     "這局有點離譜"
-                 ],
-                 "line_in": [
-                     "哼，這次算你準",
-                     "拍面控得還行"
-                 ],
-                 "net_touch": [
-                     "擦網也被你蹭過了",
-                     "角度險得剛好"
-                 ],
-                 "zone_in": [
-                     "落點挺會挑",
-                     "這落點還挺會選"
-                 ],
-                 "out": [
-                     "力度再收一點",
-                     "你剛剛急了吧"
-                 ],
-                 "net": [
-                     "你往哪兒帶拍呢",
-                     "拍面再抬一點啦"
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "下一回合補回來",
@@ -4689,10 +4626,6 @@
                  "lastBehind": "這球拿下就贏了",
                  "playerAhead": "你還挺厲害嘛...",
                  "playerBehind": "再加把勁喵"
-             },
-             "horse": {
-                 "nekoMiss": "沒復刻上？記一個 {{letters}}",
-                 "playerMiss": "你也記一個 {{letters}}"
              },
              "mindGame": [
                  "你手在抖哦",

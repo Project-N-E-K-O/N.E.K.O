@@ -359,6 +359,7 @@ class GalgameLLMBackend:
         base_url = _as_str(api_config.get("base_url")).strip()
         model = _as_str(api_config.get("model")).strip()
         api_key = _as_str(api_config.get("api_key")).strip()
+        provider_type = api_config.get("provider_type")
         if not base_url or not model:
             raise SdkError(f"missing configured {model_role} model")
         if any(_message_has_image_content(message) for message in messages) and not bool(
@@ -377,6 +378,7 @@ class GalgameLLMBackend:
             _api_key_cache_fingerprint(api_key),
             model,
             max_completion_tokens,
+            provider_type,
         )
         llm = await self._get_or_create_llm(
             cache_key=cache_key,
@@ -384,6 +386,7 @@ class GalgameLLMBackend:
             base_url=base_url,
             api_key=api_key,
             max_completion_tokens=max_completion_tokens,
+            provider_type=provider_type,
         )
         return await self._invoke_llm_with_retry(
             model_role=model_role,
@@ -440,6 +443,7 @@ class GalgameLLMBackend:
         base_url: str,
         api_key: str,
         max_completion_tokens: int,
+        provider_type: str | None = None,
     ) -> ChatOpenAI:
         async with self._cache_lock():
             cached = self._llm_cache.get(cache_key)
@@ -451,6 +455,7 @@ class GalgameLLMBackend:
                 api_key=api_key,
                 max_completion_tokens=max_completion_tokens,
                 timeout=float(getattr(self._config, "llm_call_timeout_seconds", 30.0) or 30.0) + 0.5,
+                provider_type=provider_type,
             )
             self._llm_cache[cache_key] = llm
             return llm

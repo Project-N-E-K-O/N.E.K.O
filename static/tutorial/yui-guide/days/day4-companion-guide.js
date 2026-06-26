@@ -32,12 +32,23 @@
                 {
                     id: 'day4_intro_companion',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day4_intro_companion', target: 'chat-capsule-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
+                    ],
                     textKey: 'tutorial.avatarFloating.day4.intro',
                     voiceKey: 'avatar_floating_day4_intro',
                     text: '今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。',
                     emotion: 'happy',
                     target: 'chat-capsule-input',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'soft-approach'
+                    }
                 },
                 {
                     id: 'day4_chat_settings',

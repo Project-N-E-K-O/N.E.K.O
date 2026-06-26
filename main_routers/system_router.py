@@ -55,7 +55,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from utils.llm_client import SystemMessage, HumanMessage, ThinkingStreamStripper, create_chat_llm_async
+from utils.llm_client import (
+    SystemMessage,
+    HumanMessage,
+    ThinkingStreamStripper,
+    anthropic_retry_error_types,
+    create_chat_llm_async,
+)
 from utils.tokenize import count_tokens
 import ssl
 import httpx
@@ -73,6 +79,14 @@ from PIL import Image
 #     that's a few milliseconds saved per turn, but more importantly avoids
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
+
+_PROACTIVE_LLM_RETRY_ERROR_TYPES = (
+    asyncio.TimeoutError,
+    APIConnectionError,
+    InternalServerError,
+    RateLimitError,
+    *anthropic_retry_error_types(),
+)
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -1238,9 +1252,10 @@ async def get_changelog(since: str = "", lang: str = ""):
     The frontend passes the lastNotifiedVersion stored in localStorage; the backend
     returns all changelog entries > since (ascending by version) plus the current
     version number.
-    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW);
-    for non-Chinese locales the matching translation is preferred, falling back to en,
-    then to the original Chinese.
+    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW).
+    A concrete locale (including Chinese variants like zh-TW) prefers its own subdir
+    first; non-Chinese locales then fall back to en; everything finally lands on the
+    Simplified Chinese base file. Mirrors the survey loader's fallback chain.
     """
     from config import APP_VERSION
     import glob as _glob
@@ -1259,14 +1274,16 @@ async def get_changelog(since: str = "", lang: str = ""):
     # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
     # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
     lang = _safe_locale(lang)
-    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    # 确定 fallback 链，与 survey 下发口（_load_survey_for_version）保持一致：
+    # 具体 locale（含 zh-TW 等中文变体）先试自己的子目录 -> 非中文再回退 en ->
+    # 最后都落到简体中文原文（zh_content）。zh-TW 也 startswith("zh")，但简体
+    # base 并无 zh-CN/ 子目录，所以简体请求自然落回原文，不受影响。
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
-    if not is_chinese:
-        if lang:
-            fallback_langs.append(lang)
-        if "en" not in fallback_langs:
-            fallback_langs.append("en")
+    if lang:
+        fallback_langs.append(lang)
+    if not is_chinese and "en" not in fallback_langs:
+        fallback_langs.append("en")
 
     def _read_localized(stem: str, zh_content: str) -> str:
         """Look up the localized version along the fallback chain; returns the original Chinese when not found."""
@@ -1292,7 +1309,7 @@ async def get_changelog(since: str = "", lang: str = ""):
                         zh_content = f.read()
                 except Exception:
                     zh_content = ""
-                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                content = _read_localized(stem, zh_content)
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
@@ -3035,6 +3052,7 @@ async def _deliver_break_reminder_via_llm(
         correction_model = correction_config.get('model')
         correction_base_url = correction_config.get('base_url')
         correction_api_key = correction_config.get('api_key')
+        correction_provider_type = correction_config.get('provider_type')
         if not correction_model or not correction_api_key:
             logger.warning(
                 "[%s] break reminder skipped: correction model misconfigured",
@@ -3082,6 +3100,7 @@ async def _deliver_break_reminder_via_llm(
         async with asyncio.timeout(timeout_seconds):
             async with (await create_chat_llm_async(
                 correction_model, correction_base_url, correction_api_key,
+                provider_type=correction_provider_type,
                 temperature=1.0,
                 max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
                 streaming=True,
@@ -3609,6 +3628,7 @@ async def emotion_analysis(request: Request):
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
+        emotion_provider_type = emotion_config.get('provider_type')
         
         # 优先使用请求参数，其次使用配置
         api_key = api_key or emotion_api_key
@@ -3642,6 +3662,7 @@ async def emotion_analysis(request: Request):
             model,
             emotion_base_url,
             api_key,
+            provider_type=emotion_provider_type,
             temperature=0.3,
             # Gemini 模型可能返回 markdown 格式，需要更多 token
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
@@ -6020,6 +6041,7 @@ async def proactive_chat(request: Request):
             conversation_model = conversation_config.get('model')
             conversation_base_url = conversation_config.get('base_url')
             conversation_api_key = conversation_config.get('api_key')
+            conversation_provider_type = conversation_config.get('provider_type')
 
             if not conversation_model or not conversation_api_key:
                 logger.error("对话模型配置缺失: model或api_key未设置")
@@ -6033,6 +6055,7 @@ async def proactive_chat(request: Request):
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
+            vision_provider_type = vision_config.get('provider_type')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
                 logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
@@ -6055,14 +6078,17 @@ async def proactive_chat(request: Request):
             """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
+                provider_type = vision_provider_type
             else:
                 m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
+                provider_type = conversation_provider_type
             from config import DIALOG_LLM_STREAM_TIMEOUT_SECONDS
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 streaming=True,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard for the streaming call
+                provider_type=provider_type,
             )
             if not disable_thinking:
                 # Focus thinking-on: strip ONLY the thinking-disable keys from
@@ -6116,7 +6142,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:500]}...\n")
                         return response.content.strip()
-                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
+                except _PROACTIVE_LLM_RETRY_ERROR_TYPES as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
@@ -7580,6 +7606,14 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
+        # 只要本轮后端拿到了截图、且有可用 vision 模型（phase2_use_vision 同时
+        # 蕴含 screenshot_b64_for_phase2 非空），就缓存最后这张主动搭话截图，等
+        # 用户下一条 text 回复时注入——不按最终投递通道筛（哪怕这轮文案落到了
+        # music/web，屏幕仍是这轮看过的画面，留着供用户追问）。截图在
+        # finish_proactive_delivery 内 commit 成功后才真正落 session：新一轮主动
+        # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
+        # 分钟 TTL 兜底过期。
+        _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
@@ -7587,6 +7621,7 @@ async def proactive_chat(request: Request):
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
                 source_tag=_delivered_tag,
+                vision_screenshot_b64=_stage_vision_screenshot,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
@@ -8206,54 +8241,6 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
-# ========== 个性化内容接口 ==========
-
-@router.post('/personal_dynamics')
-async def get_personal_dynamics(request: Request):
-    """
-    Get personalized content data.
-    """
-    validation_error = _validate_local_mutation_request(request)
-    if validation_error is not None:
-        return validation_error
-
-    from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
-    try:
-
-        data = await request.json()
-        limit = data.get('limit', 10)
-
-        # 获取个性化内容
-        personal_content = await fetch_personal_dynamics(limit=limit)
-
-        if not personal_content['success']:
-            return JSONResponse({
-                "success": False,
-                "error": "无法获取个性化内容",
-                "detail": personal_content.get('error', '未知错误')
-            }, status_code=500)
-
-        # 格式化内容用于前端显示
-        formatted_content = format_personal_dynamics(personal_content)
-
-        return JSONResponse({
-            "success": True,
-            "data": {
-                "raw": personal_content,
-                "formatted": formatted_content,
-                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
-            }
-        })
-
-    except Exception as e:
-        logger.error(f"获取个性化内容失败: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
-
 
 # Self-register the mini-game-invite keyword matcher with main_logic's
 # event bus. Same rationale as plugin/core/state.py: ``main_logic.core``

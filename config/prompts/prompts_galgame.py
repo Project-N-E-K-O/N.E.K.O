@@ -17,6 +17,10 @@
 Used by /api/galgame/options to generate three reply options (A/B/C) for the
 user, given the recent dialogue turn. The summary-tier model produces a JSON
 payload of style-typed candidates the user can click to send.
+
+GalGame is a dialogue/story mode, not a minigame, so it does not share the
+minigame prompt infrastructure (prompts_minigame_common / prompts_minigame_route).
+It localizes directly through prompts_sys._loc instead.
 """
 from __future__ import annotations
 

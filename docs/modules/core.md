@@ -1,6 +1,6 @@
 # LLMSessionManager
 
-**File:** `main_logic/core.py` (~2300 lines)
+**File:** `main_logic/core.py` (~10400 lines)
 
 The `LLMSessionManager` is the heart of N.E.K.O. — one instance per character, managing the entire conversation lifecycle.
 
@@ -56,9 +56,9 @@ Releases all resources when the WebSocket disconnects.
 
 Injects pending agent results into the next LLM conversation turn, allowing the character to reference agent findings.
 
-### `translate_if_needed(text)`
+### `_get_translation_service()`
 
-Translates text when user language differs from character language.
+Lazily initializes and returns a shared `TranslationService` (from `utils/language_utils.py`), which performs robust translation via `translate_text_robust()` / `translate_dict()` with a googletrans → translatepy → LLM fallback chain. Note: `LLMSessionManager` only exposes this accessor; there is no `translate_if_needed(text)` method. The actual "translate when the user's language differs from the character's language" behavior lives in the REST layer (e.g. `main_routers/characters_router.py`, which translates character profile fields), not on the session manager.
 
 ## Thread model
 

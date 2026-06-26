@@ -399,9 +399,9 @@ def test_pngtuber_return_restores_pointer_events():
     ]
 
     assert "prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });" in branch
-    assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" in branch
+    assert "pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');" in branch
     assert "pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');" in branch
-    assert "pngtuberContainer.style.pointerEvents = 'none';" not in branch
+    assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" not in branch
 
 
 def test_return_button_idle_tier_styles_are_present():

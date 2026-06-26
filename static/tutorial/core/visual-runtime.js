@@ -531,7 +531,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             if (director.operationRegistry && typeof director.operationRegistry.run === 'function') {
@@ -539,7 +540,8 @@
                     legacyScene,
                     primaryTarget,
                     context ? context.narrationStartedAt : 0,
-                    context ? context.narrationPromise : null
+                    context ? context.narrationPromise : null,
+                    context
                 );
             }
             return false;

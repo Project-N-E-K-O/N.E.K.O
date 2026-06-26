@@ -10,10 +10,6 @@
 
 列出所有可用的 VRM 模型。
 
-### `GET /api/model/vrm/models/{model_name}`
-
-获取特定 VRM 模型的详细信息。
-
 ### `POST /api/model/vrm/upload`
 
 上传新的 VRM 模型。
@@ -24,21 +20,25 @@
 最大文件大小：**200 MB**。文件以 1 MB 的分块进行流式传输。
 :::
 
-### `DELETE /api/model/vrm/delete/{model_name}`
+### `DELETE /api/model/vrm/model/{model_name}`
 
-删除 VRM 模型。
+按名称删除用户导入的 VRM 模型（当不存在同名内置模型时，同时删除其关联的表情映射配置）。内置/静态模型无法删除（返回 404）。
 
 ::: warning
 路径遍历攻击由 `safe_vrm_path()` 验证进行防护。
 :::
 
+### `DELETE /api/model/vrm/model`
+
+按 URL 删除用户导入的 VRM 模型。请求体为 JSON `{ "url": "/user_vrm/<file>.vrm" }`。仅允许删除 `/user_vrm/` 下的顶层 `.vrm` 文件。
+
 ## 动画
 
-### `GET /api/model/vrm/animation/list`
+### `GET /api/model/vrm/animations`
 
 列出所有可用的 VRM 动画。
 
-### `POST /api/model/vrm/animation/upload`
+### `POST /api/model/vrm/upload_animation`
 
 上传 VRM 动画文件。
 
@@ -46,10 +46,10 @@
 
 ## 表情映射
 
-### `GET /api/model/vrm/emotion_mapping`
+### `GET /api/model/vrm/emotion_mapping/{model_name}`
 
-获取 VRM 模型的情感-动画映射。
+获取特定 VRM 模型的情感-动画映射。
 
-### `POST /api/model/vrm/emotion_mapping`
+### `POST /api/model/vrm/emotion_mapping/{model_name}`
 
-更新 VRM 表情映射。
+更新特定 VRM 模型的表情映射。

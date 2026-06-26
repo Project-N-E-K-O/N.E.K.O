@@ -4,14 +4,14 @@ N.E.K.O. uses different AI models for different tasks. Each can be individually 
 
 ## Model roles
 
-| Role | Default | Env var | Purpose |
-|------|---------|---------|---------|
-| Conversation | `qwen-max` | - | Character chat (offline mode) |
-| Summary | `qwen-plus` | `NEKO_SUMMARY_MODEL` | Conversation summarization |
-| Correction | `qwen-max` | `NEKO_CORRECTION_MODEL` | Text correction |
-| Emotion | `qwen-flash` | `NEKO_EMOTION_MODEL` | Emotion analysis for expressions |
-| Vision | `qwen3-vl-plus-2025-09-23` | `NEKO_VISION_MODEL` | Image/screenshot understanding |
-| Agent | `qwen3.5-plus` | `NEKO_AGENT_MODEL` | Agent task execution |
+| Role | Default | Purpose |
+|------|---------|---------|
+| Conversation | `qwen-max` | Character chat (offline mode) |
+| Summary | `qwen-plus` | Conversation summarization |
+| Correction | `qwen-max` | Text correction |
+| Emotion | `qwen3.6-flash-2026-04-16` | Emotion analysis for expressions |
+| Vision | `qwen3-vl-plus-2025-09-23` | Image/screenshot understanding |
+| Agent | `qwen3.5-plus` | Agent task execution |
 
 ## Custom model endpoints
 

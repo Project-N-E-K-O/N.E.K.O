@@ -154,6 +154,31 @@ describe('App', () => {
   ) => render(<App compactChatState="input" {...props} />);
   const queryAvatarCursorOverlay = () => document.body.querySelector<HTMLElement>('.avatar-cursor-overlay');
   const queryHammerCursorCompactImage = () => document.body.querySelector<HTMLImageElement>('.hammer-cursor-overlay-compact-image');
+  const installLive2dBoundsMock = () => {
+    const testWindow = window as Window & { live2dManager?: unknown };
+    const hadLive2dManager = Object.prototype.hasOwnProperty.call(testWindow, 'live2dManager');
+    const previousLive2dManager = testWindow.live2dManager;
+
+    testWindow.live2dManager = {
+      currentModel: {},
+      getModelScreenBounds: () => ({
+        left: 100,
+        right: 200,
+        top: 100,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      }),
+    };
+
+    return () => {
+      if (hadLive2dManager) {
+        testWindow.live2dManager = previousLive2dManager;
+      } else {
+        delete testWindow.live2dManager;
+      }
+    };
+  };
 
   it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
@@ -659,6 +684,7 @@ describe('App', () => {
   });
 
   it('keeps the proactive meme overlay through the same-turn assistant caption that follows it', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     // 回归：主动分享是「发表情包 + 说台词」，台词是 assistant 消息、紧随 meme 落地。
     // 旧逻辑「有新消息就收起」会让图一瞬间被台词顶掉（线上实测：图闪一下就没）。
     const meme = parseChatMessage({
@@ -691,6 +717,7 @@ describe('App', () => {
   });
 
   it('collapses the meme overlay once the user speaks again', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const meme = parseChatMessage({
       id: 'meme-abc123', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
       blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }], status: 'sent',
@@ -709,6 +736,7 @@ describe('App', () => {
   });
 
   it('keeps the meme overlay alongside a music card from the same share (independent widgets)', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const meme = parseChatMessage({
       id: 'meme-xyz', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
       blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=y', alt: 'lol' }], status: 'sent',
@@ -724,6 +752,7 @@ describe('App', () => {
   });
 
   it('keeps the meme overlay even when a much later music-only turn arrives (no user message)', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     // 表情包是独立挂件，不被猫娘后续的音乐分享收起；只有用户开口才换场。
     const meme = parseChatMessage({
       id: 'meme-old', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1000,
@@ -737,6 +766,154 @@ describe('App', () => {
       <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, laterMusic]} />,
     );
     expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=z');
+  });
+
+  it('keeps the meme overlay through a same-turn caption that shares its turnId', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    // host 给主动分享 meme 打上它所属轮的 turnId（与同轮台词相同）；同轮台词不该顶掉图。
+    const meme = parseChatMessage({
+      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
+    });
+    const sameTurnCaption = parseChatMessage({
+      id: 'assistant-caption', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2, turnId: 'turn-1',
+      blocks: [{ type: 'text', text: '给你看个图～' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, sameTurnCaption]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
+  });
+
+  it('collapses the meme overlay once a new assistant turn (different turnId) arrives', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    // 真正的新一轮回复/主动搭话（不同 turnId）应顶掉旧图，即便用户没开口。
+    const meme = parseChatMessage({
+      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
+
+    const newTurnReply = parseChatMessage({
+      id: 'assistant-newturn', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2, turnId: 'turn-2',
+      blocks: [{ type: 'text', text: '在干嘛呀～' }], status: 'sent',
+    });
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, newTurnReply]} />);
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+  });
+
+  it('keeps the meme overlay when a non-assistant (tool/system) message with a different turnId follows', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    // 只有「不同 turnId 的助手发言」算换场；tool/system 不是发言，不该顶掉图。
+    const meme = parseChatMessage({
+      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
+    });
+    const toolMsg = parseChatMessage({
+      id: 'tool-x', role: 'tool', author: 'Tool', time: '10:01', createdAt: 2, turnId: 'turn-2',
+      blocks: [{ type: 'text', text: 'tool result' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, toolMsg]} />,
+    );
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
+  });
+
+  it('renders a close button on the meme overlay and hides the overlay when clicked', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-closeme', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=close', alt: 'lol' }], status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+    const closeButton = container.querySelector('.compact-meme-overlay-close');
+    expect(closeButton).not.toBeNull();
+    // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
+    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+    expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
+
+    fireEvent.click(closeButton as Element);
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+  });
+
+  it('refreshes compact interaction geometry when the meme close hit region changes', async () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const meme = parseChatMessage({
+      id: 'meme-close-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=geometry', alt: 'lol' }], status: 'sent',
+    });
+    const geometryRefreshes: Event[] = [];
+    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+      );
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      geometryRefreshes.length = 0;
+
+      const img = container.querySelector('.compact-meme-overlay img');
+      expect(img).not.toBeNull();
+      fireEvent.load(img as Element);
+      expect(geometryRefreshes.length).toBe(0);
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      geometryRefreshes.length = 0;
+
+      fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
+      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+    } finally {
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    }
+  });
+
+  it('shows a newer meme even after the previous one was manually closed', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const memeA = parseChatMessage({
+      id: 'meme-A', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=A', alt: 'A' }], status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[memeA]} />,
+    );
+    fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+
+    // 叉掉旧图后，来一张新表情包（不同 id）应照常显示——dismiss 只钉旧 id。
+    const memeB = parseChatMessage({
+      id: 'meme-B', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=B', alt: 'B' }], status: 'sent',
+    });
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[memeA, memeB]} />);
+    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=B');
+  });
+
+  it('hides the proactive meme overlay while compact history is open', () => {
+    const meme = parseChatMessage({
+      id: 'meme-visible-in-history',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history', alt: 'history meme' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
+    );
+
+    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+    const historyImage = container.querySelector(
+      '[data-compact-export-history-message-id="meme-visible-in-history"] .message-block-image img',
+    );
+    expect(historyImage).toHaveAttribute('src', '/api/meme/proxy-image?url=history');
   });
 
   it('defaults compact history open and preserves history controls through visibility toggles', async () => {
@@ -8270,6 +8447,106 @@ describe('App', () => {
     fireEvent.pointerMove(window, { clientX: 420, clientY: 360 });
 
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(398.16px, 334.24px, 0)');
+  });
+
+  it('expands the desktop avatar tool overlay when the pointer enters the avatar range', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+    const restoreLive2dManager = installLive2dBoundsMock();
+
+    try {
+      renderInputApp({ onAvatarToolStateChange });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      const overlay = queryAvatarCursorOverlay();
+      expect(overlay).not.toBeNull();
+      expect(overlay).toHaveClass('is-compact');
+      expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1_cursor.png');
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(overlay).not.toHaveClass('is-compact');
+        expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'fist',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
+      });
+    } finally {
+      restoreLive2dManager();
+      live2dContainer.remove();
+    }
+  });
+
+  it('expands the desktop hammer overlay on avatar range hover before clicking', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+    const restoreLive2dManager = installLive2dBoundsMock();
+
+    try {
+      renderInputApp({ onAvatarToolStateChange });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(screen.getByRole('button', { name: '锤子' }), {
+        clientX: 20,
+        clientY: 20,
+      });
+
+      expect(queryHammerCursorCompactImage()).not.toBeNull();
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: true,
+        }));
+      });
+
+      onAvatarToolStateChange.mockClear();
+      fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { clientX: 20, clientY: 20 });
+
+      await waitFor(() => {
+        expect(queryHammerCursorCompactImage()).toBeNull();
+        expect(document.body.querySelector('.hammer-cursor-overlay')).not.toHaveClass('is-compact');
+        expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+          active: true,
+          toolId: 'hammer',
+          imageKind: 'icon',
+          withinAvatarRange: false,
+        }));
+      });
+    } finally {
+      restoreLive2dManager();
+      live2dContainer.remove();
+    }
   });
 
   it('clears the tool cursor when the composer is hidden for voice mode', async () => {

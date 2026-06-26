@@ -769,12 +769,14 @@
         "reactWindowLoadFailed": "チャットウィンドウのリソース読み込みに失敗しました",
         "reactWindowAriaLabel": "Neko チャットウィンドウ",
         "focusIndicator": "集中モード",
+        "focusThinking": "考え中",
         "reactWindowInputHint": "Enter で送信、Shift + Enter で改行",
         "messageListAriaLabel": "チャットメッセージ一覧",
         "composerToolsAriaLabel": "入力ツールバー",
         "pendingImagesAriaLabel": "送信待ち画像",
         "pendingImageAlt": "画像 {{index}}",
         "removePendingImage": "画像を削除",
+        "closeMemeAriaLabel": "画像を閉じる",
         "emojiButtonAriaLabel": "絵文字",
         "toolIconsAriaLabel": "ツールアイコン",
         "toolLollipop": "キャンディー",
@@ -942,7 +944,7 @@
         "freeVersionHint": "（無料版は不要）",
         "coreApiPlaceholder": "APIキーを入力してください",
         "coreApiProvider": "Core API（音声会話、オムニモーダルのみ）",
-        "assistApiProvider": "Assist API（記憶/Agent/テキスト/カスタム音声）",
+        "assistApiProvider": "Assist API（記憶/Agent/テキスト）",
         "saveSettings": "設定を保存",
         "closeSettings": "閉じる",
         "newbieRecommendTitle": "初心者への推奨",
@@ -950,7 +952,7 @@
         "advancedOptions": "詳細設定（オプション）",
         "providerDescription": "APIプロバイダー説明:",
         "coreApiDesc": "Core API: 会話機能全般を担当",
-        "assistApiDesc": "Assist API: 記憶管理、カスタム音声、テキストチャット、Agentモードを担当",
+        "assistApiDesc": "Assist API: 記憶管理、テキストチャット、Agentモードを担当",
         "providerFeatures": "プロバイダーの特徴:",
         "aliFeature": "Alibaba: 無料枠あり、機能が最も充実",
         "glmFeature": "GLM: 制限が非常に厳格。音声動画モデル停止中によりCore API利用不可",
@@ -959,26 +961,27 @@
         "siliconFeature": "SiliconFlow: 無料枠あり、コスパ良、機能限定、Assist APIのみ",
         "geminiFeature": "Gemini: 知能・コスパ共に極めて優秀",
         "configSuggestion": "設定の提案:",
-        "freeVersionSuggestion": "無料版: 完全無料、キー不要、初心者向け（カスタム音声/Agent不可）",
+        "freeVersionSuggestion": "無料版: 完全無料、キー不要、初心者向け（Agentは無料枠あり）",
         "coreApiSuggestion": "Core API: 会話機能を担当。予算とニーズで選択",
-        "assistApiSuggestion": "Assist API: 記憶やテキスト会話等を担当。カスタム音声はAlibabaのみ対応",
+        "assistApiSuggestion": "Assist API: テキスト会話、記憶管理、Agentモードを担当",
         "coreApiTitle": "Core API（音声チャット担当）:",
-        "freeVersionCore": "無料版: 完全無料、高知能、Web検索対応（カスタム音声/Agent不可）",
+        "freeVersionCore": "無料版: 完全無料、高知能、Web検索対応",
         "aliCore": "Alibaba: 無料枠あり、機能充実",
         "glmCore": "GLM: モデル一時停止中のため利用不可",
         "stepCore": "StepFun: 完全無料、高知能だが制限厳しいため非推奨",
         "openaiCore": "OpenAI: 最高知能だが高価",
         "geminiCore": "Gemini: 知能・コスパ共に極めて優秀",
-        "assistApiTitle": "Assist API（記憶/テキスト/Agent/カスタム音声担当）:",
-        "freeVersionAssist": "無料版: 完全無料、キー不要（カスタム音声不可）",
-        "aliAssist": "Alibaba: 推奨。カスタム音声とAgentモード対応",
+        "assistApiTitle": "Assist API（記憶/テキスト/Agent担当）:",
+        "freeVersionAssist": "無料版: 完全無料、キー不要（Agentは無料枠あり）",
+        "aliAssist": "Alibaba: 推奨。機能が最も充実、Agentモード対応",
         "glmAssist": "GLM: 記憶管理は無料だが制限が厳しいため非推奨",
         "stepAssist": "StepFun: 安価だが制限が厳しいため非推奨",
         "siliconAssist": "SiliconFlow: コスパ良、Agentモード対応",
         "openaiAssist": "OpenAI: 記憶管理能力が高い",
         "geminiAssist": "Gemini: 知能・コスパ共に極めて優秀",
         "kimiAssist": "Kimi: ロングコンテキスト・ビジョン対応",
-        "assistApiNote": "注: カスタム音声機能はAlibabaのみ対応です。GLMとStepFunは非推奨です。",
+        "kimiCodeAssist": "Kimi Code: Anthropic Messages 互換、コードと長文タスク向け",
+        "assistApiNote": "注: GLMとStepFunは非推奨です。",
         "assistApiKeyQwen": "Assist APIキー - Alibaba",
         "assistApiKeyOpenai": "Assist APIキー - OpenAI",
         "assistApiKeyGlm": "Assist APIキー - GLM",
@@ -986,6 +989,7 @@
         "assistApiKeySilicon": "Assist APIキー - SiliconFlow",
         "assistApiKeyGemini": "Assist APIキー - Gemini",
         "assistApiKeyKimi": "Assist APIキー - Kimi",
+        "assistApiKeyKimiCode": "Assist APIキー - Kimi Code",
         "assistApiKeyHint": "（Assist APIが {{provider}} の場合のみ必要）",
         "assistApiKeyPlaceholder": "空欄時は管理簿のキーを自動使用",
         "providerNames": {
@@ -995,6 +999,7 @@
             "step": "StepFun",
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
@@ -1016,6 +1021,7 @@
             "silicon": "SiliconFlow（高コスパ、推奨）",
             "gemini": "Gemini（Google、高知能）",
             "kimi": "Kimi（Moonshot、ロングコンテキスト対応）",
+            "kimi_code": "Kimi Code（Moonshot）",
             "deepseek": "DeepSeek",
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
@@ -1064,6 +1070,7 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini（Google）",
             "kimi": "Moonshot（Kimi）",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
@@ -1076,18 +1083,18 @@
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
         "pleaseEnterApiKey": "APIキーを入力してください",
-        "freeVersionConfig": "無料版構成: 音声通話、テキストチャット、記憶管理に対応。カスタム音声とAgentは非対応",
-        "qwenRecommendation": "Core APIがAlibabaの場合、最高の体験（カスタム音声等）のためにAssist APIもAlibaba推奨",
-        "glmRecommendation": "GLMをCore APIとして使用する場合、無料枠があり、Web検索に対応。音声にはデフォルトで透かし（ビープ音）が含まれます（智譜コンソールで手動無効化可能）。カスタム音声にはAssist APIにAlibabaを推奨",
-        "openaiRecommendation": "Core APIがOpenAIの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
-        "stepRecommendation": "Core APIがStepFunの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
-        "geminiRecommendation": "Core APIがGeminiの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
-        "assistApiTooltipTitle": "Assist APIは記憶管理、テキストチャット、カスタム音声を担当:",
+        "freeVersionConfig": "無料版構成: 音声通話、テキストチャット、記憶管理に対応。Agentは無料枠あり",
+        "qwenRecommendation": "Core APIがAlibabaの場合、Assist APIもAlibabaが推奨で機能が最も充実します。",
+        "glmRecommendation": "GLMをCore APIとして使用する場合、無料枠があり、Web検索に対応。音声にはデフォルトで透かし（ビープ音）が含まれます（智譜コンソールで手動無効化可能）。",
+        "openaiRecommendation": "Core APIがOpenAIの場合、価格は高めです。",
+        "stepRecommendation": "Core APIがStepFunの場合、価格は安いですが、知能レベルは平均的です",
+        "geminiRecommendation": "Core APIがGeminiの場合、コストパフォーマンスが非常に高いです。",
+        "assistApiTooltipTitle": "Assist APIは記憶管理、テキストチャット、Agentモードを担当:",
         "currentSuggestion": "現在の提案:",
         "configSuggestionFull": "設定の提案:",
-        "freeVersionSuggestionFull": "完全無料、キー不要、初心者向け（カスタム音声/Agent不可）",
+        "freeVersionSuggestionFull": "完全無料、キー不要、初心者向け（Agentは無料枠あり）",
         "coreApiSuggestionFull": "会話機能を担当（予算とニーズで選択）",
-        "assistApiSuggestionFull": "記憶管理/テキスト/カスタム音声を担当（カスタム音声はAlibabaのみ）",
+        "assistApiSuggestionFull": "記憶管理、テキスト会話、Agentモードを担当",
         "assistApiKeyRequiredHint": "対応する入力欄にAPIを入力すると、そのプロバイダを選択できます",
         "mcpRouterToken": "MCPルータートークン",
         "mcpRouterTokenDesc": "MCPルータートークン説明:",
@@ -1367,6 +1374,7 @@
         "vrmAnimation": {
             "title": "VRMアニメーションプレビュー:",
             "selectAnimation": "アニメーション",
+            "addAnimation": "アニメーションを追加",
             "noAnimations": "アニメーションファイルなし",
             "loading": "リスト読み込み中...",
             "animationListLoaded": "リスト読み込み成功",
@@ -1968,7 +1976,7 @@
         "systemPrompt": "システムプロンプト（注意して編集してください）",
         "systemPromptWarning": "システムプロンプト - 変更により予期しない動作が発生する可能性があります。自己責任で編集してください。",
         "addField": "フィールドを追加",
-        "aiAssist": "AI アシスト生成",
+        "aiAssist": "猫ちゃんアシスト生成",
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",
@@ -2536,6 +2544,8 @@
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
             "avatarReactionBubble": "表情バブル",
+            "focusCognition": "集中モード",
+            "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
             "autoCat": "自動ねこ化",
             "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "proactiveChat": "自発的会話",
@@ -3244,7 +3254,7 @@
             },
             "step5": {
                 "title": "🔧 補助APIプロバイダー",
-                "desc": "補助APIはメモリ管理とカスタム音声を処理します。\n\n• 無料版：完全無料、カスタム音声非対応\n• Alibaba：推奨、カスタム音声対応\n• Zhipu：Agentモード対応\n• OpenAI：強力なメモリ管理\n\n注意：Alibabaのみカスタム音声をサポートしています。"
+                "desc": "補助APIはメモリ管理、テキスト会話、Agentモードを処理します。\n\n• 無料版：完全無料、APIキー不要\n• Alibaba：推奨、機能が最も充実\n• Zhipu：Agentモード対応\n• OpenAI：強力なメモリ管理\n\n注意：カスタム音声（ボイスクローン）は管理簿に該当プロバイダーのキーを保存するだけで利用でき、コアAPIまたは補助APIを切り替える必要はありません。"
             },
             "step6": {
                 "title": "🔑 補助APIキー",
@@ -4278,10 +4288,7 @@
          "modeSwitcher": "バドミントンモード",
          "mode": {
              "spectator": "フリー練習",
-             "shooter": "バドミントンチャレンジ",
-             "duel": "Yui と対戦",
-             "timed": "タイムアタック",
-             "horse": "HORSE"
+             "duel": "Yui と勝負"
          },
          "hud": {
              "score": "スコア {{score}}",
@@ -4294,16 +4301,11 @@
              "practice": "フリー練習",
              "yourTurn": "あなたの番",
              "nekoTurn": "Neko のショット",
-             "horseLetters": "あなた {{player}} / Neko {{neko}}",
-             "horseChallenge": "再現 {{distance}} {{angle}}°",
-             "horseSet": "お題ターン",
              "unlimitedAttempts": "無制限",
              "chances": "残り {{count}}",
              "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
              "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
              "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
-             "timedTitle": "タイムアタック：60 秒間は何度でも打てます",
-             "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "オン",
              "off": "オフ"
@@ -4316,8 +4318,6 @@
              "rating": "操作評価：{{rating}}",
              "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
              "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-             "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
-             "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
              "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
              "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
              "attemptsSummary": "ショット概要：{{summary}}",
@@ -4334,7 +4334,6 @@
              "title": "ランキング",
              "global": "グローバル",
              "local": "ローカル",
-             "shooter": "ショット",
              "duel": "対戦",
              "empty": "記録はまだありません",
              "totalPlayers": "プレイヤー {{count}}",
@@ -4342,11 +4341,8 @@
              "recent": "最近 {{count}} 試合",
              "loading": "読み込み中...",
              "mode": {
-                 "shooter": "ショット",
-                 "duel": "対戦",
-                 "timed": "タイム",
-                 "horse": "HORSE",
-                 "spectator": "観戦"
+                 "spectator": "観戦",
+                 "duel": "対戦"
              }
          },
          "debug": {
@@ -4367,8 +4363,7 @@
                  "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
                  "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
                  "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
-                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4515,64 +4510,6 @@
                      "??????????"
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "?????????",
-                     "?????????????"
-                 ],
-                 "game_over": [
-                     "?????????",
-                     "??????????"
-                 ],
-                 "long_aim": [
-                     "?????????",
-                     "???????????"
-                 ],
-                 "close_to_record": [
-                     "???????",
-                     "???????????"
-                 ],
-                 "new_record": [
-                     "???????",
-                     "????????"
-                 ],
-                 "streak_5": [
-                     "????????????",
-                     "????????????"
-                 ],
-                 "streak_10": [
-                     "??????????",
-                     "?????????????"
-                 ],
-                 "streak_15": [
-                     "?????????????",
-                     "????????????"
-                 ],
-                 "streak_20": [
-                     "???????????",
-                     "????????????????"
-                 ],
-                 "line_in": [
-                     "?????????",
-                     "?????????????"
-                 ],
-                 "net_touch": [
-                     "?????????",
-                     "??????????"
-                 ],
-                 "zone_in": [
-                     "???????????",
-                     "??????????"
-                 ],
-                 "out": [
-                     "????????",
-                     "????????"
-                 ],
-                 "net": [
-                     "??????????",
-                     "??????????"
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "まだチャンスはある。",
@@ -4689,10 +4626,6 @@
                  "lastBehind": "これを決めれば勝ち。",
                  "playerAhead": "なかなかやるね...",
                  "playerBehind": "もっと押して。"
-             },
-             "horse": {
-                 "nekoMiss": "再現できなかったね。{{letters}} を追加。",
-                 "playerMiss": "あなたにも {{letters}} を追加。"
              },
              "mindGame": [
                  "手が震えてるよ。",

@@ -1271,6 +1271,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             summary_config['api_key'],
             timeout=10.0, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; short keyword output but covers a thinking model's reasoning too
+            provider_type=summary_config.get('provider_type'),
         )
         
         # 清理/脱敏窗口标题用于日志显示

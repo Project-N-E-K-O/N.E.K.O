@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-static-asset-version="{{ static_asset_version }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/indoor-badminton-arena-bg-v4.jpg?v=20260618g">
 <link rel="preload" as="image" href="/static/game/games/badminton/images/miami-beach-sunset-bg-v2.webp?v=20260618b">
+<link rel="preload" as="image" href="/static/game/games/badminton/images/yui-octopus-ink-overlay.png?v={{ static_asset_version }}">
 <title>羽毛球挑战 - Badminton</title>
 <script>
   (function () {
@@ -807,6 +808,7 @@
   var badmintonLoadingProgress = 8;
   var badmintonLoadingTimer = 0;
   var badmintonStartAccepted = false;
+  var badmintonStartMenuAudioActivated = false;
   var badmintonRouteStartPromise = null;
   var BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY = 'bd_start_tutorial_dismissed';
   var BADMINTON_BUBBLE_EMOTE_IMAGES = {
@@ -968,7 +970,12 @@
   var badmintonCourtCache = { key: '', canvas: null };
   var badmintonSpriteCache = {};
   var badmintonFrameNow = 0;
+  var badmintonFrameRequestId = 0;
+  var badmintonHiddenFrameTimer = 0;
   var badmintonResizeFrame = 0;
+  var badmintonGameDisposed = false;
+  var badmintonEventCleanupFns = [];
+  var badmintonStartMenuAudioListenerCleanups = [];
   var NET_COLS = 17;
   var NET_ROWS = 7;
   var BADMINTON = {
@@ -1028,6 +1035,7 @@
   var NET_CONTACT_IMPULSE = 320;
   var NET_CONTACT_HOLD_MS = 90;
   var PLAYER_MOVE_SPEED = 1040;
+  var PLAYER_POST_SERVE_MOVE_LOCK_MS = 420;
   var PLAYER_JUMP_SPEED = 430;
   var PLAYER_JUMP_GRAVITY = 1350;
   var PLAYER_JUMP_MAX_OFFSET = 82;
@@ -1063,6 +1071,12 @@
   var YUI_RACKET_RESCUE_GATE_REACH_Y = 54;
   var YUI_RACKET_SAVE_REACH_X = 84;
   var YUI_RACKET_SAVE_REACH_Y = 86;
+  var YUI_SHORT_DROP_SAVE_REACH_X = 96;
+  var YUI_SHORT_DROP_SAVE_REACH_Y = 118;
+  var YUI_SHORT_DROP_SAVE_NET_WINDOW_PX = 112;
+  var YUI_SHORT_DROP_SAVE_MAX_Z = 96;
+  var YUI_SHORT_DROP_SAVE_MIN_Z = 4;
+  var YUI_SHORT_DROP_SAVE_POWER_MAX = 32;
   var YUI_SMASH_MIN_SHUTTLE_Z = 64;
   var YUI_SMASH_FULL_SHUTTLE_Z = 138;
   var YUI_CHEAT_RANDOM_CHANCE = 0.72;
@@ -1083,6 +1097,11 @@
   var YUI_LIVE2D_RACKET_LAYOUT_SAMPLE_MS = 240;
   var YUI_LIVE2D_RACKET_IDLE_RENDER_MS = 66;
   var BADMINTON_HIDDEN_FRAME_DELAY_MS = 250;
+  var NET_CONTACT_EFFECT_DURATION_MS = 560;
+  var NET_CONTACT_EFFECT_LIGHT_DURATION_MS = 360;
+  var NET_CONTACT_EFFECT_MAX = 5;
+  var NET_CONTACT_EFFECT_LIGHT_MAX = 3;
+  var NET_CONTACT_EFFECT_LIGHT_DPR = 1.5;
   var netNodes = [];
   var modeParams = null;
   try { modeParams = new URLSearchParams(window.location.search); } catch (_) { modeParams = null; }
@@ -1118,7 +1137,7 @@
   if (!MOODS[currentMood]) currentMood = 'calm';
   var currentThemeKey = readJson('bd_theme', 'default');
   if (!THEMES[currentThemeKey]) currentThemeKey = 'default';
-  var firstTutorialShotGuaranteed = localStorage.getItem('bd_first_tutorial_hit_done') !== '1';
+  var firstTutorialShotGuaranteed = readBadmintonStorage('bd_first_tutorial_hit_done') !== '1';
   var lineInCombo = 0;
   var netCombo = 0;
   var cardEventHistory = readJson('bd_card_event_history', {});
@@ -1148,7 +1167,6 @@
   var isPositionTransitioning = false;
   var shotAnimationTimer = 0;
   var yuiActionTimer = 0;
-  var latestShooterRating = '';
   function createBadmintonSessionId() {
     return 'badminton-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   }
@@ -1156,6 +1174,7 @@
   var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
   var routeActive = false;
   var endedRoute = false;
+  var routeStartPromise = null;
   var routeEndFetchPending = false;
   var routeEndBeaconDelivered = false;
   var routeEndPromise = null;
@@ -1242,7 +1261,7 @@
   var DISTANCE_MARKERS_STORAGE_KEY = 'bd_badminton_distance_markers_enabled';
   var distanceMarkersEnabled = readJson(DISTANCE_MARKERS_STORAGE_KEY, false) === true;
   var activeAvatarType = 'fallback';
-  var lastFinalStreak = Number(localStorage.getItem('bd_last_final_streak') || '0') || 0;
+  var lastFinalStreak = Number(readBadmintonStorage('bd_last_final_streak') || '0') || 0;
   var nekoVrmContainer = document.getElementById('neko-vrm-container');
   var nekoVrmCanvas = document.getElementById('neko-vrm-canvas');
   var nekoMmdContainer = document.getElementById('neko-mmd-container');
@@ -1262,10 +1281,17 @@
   var playerVrmHeldShuttle = null;
   var yuiVrmRacket = null;
   var SENSEI_VRM_PATH = '/static/vrm/sensei.vrm';
+  function badmintonAssetUrl(path) {
+    var version = '';
+    try { version = document.documentElement.getAttribute('data-static-asset-version') || ''; } catch (_) {}
+    return version ? path + '?v=' + encodeURIComponent(version) : path;
+  }
   var BADMINTON_RACKET_SPRITE_SRC = '/static/game/games/badminton/images/badminton-racket-sprite.svg?v=20260618a';
   var YUI_BANANA_PEEL_SPRITE_SRC = '/static/game/games/badminton/images/yui-banana-peel-sprite.png?v=20260622a';
+  var YUI_CHEAT_INK_OVERLAY_SRC = badmintonAssetUrl('/static/game/games/badminton/images/yui-octopus-ink-overlay.png');
   var badmintonRacketSpriteImage = null;
   var yuiBananaPeelSpriteImage = null;
+  var yuiInkOverlayImage = null;
   function preloadBadmintonRacketSprite() {
     var image = new Image();
     image.decoding = 'async';
@@ -1282,6 +1308,14 @@
     image.src = YUI_BANANA_PEEL_SPRITE_SRC;
     yuiBananaPeelSpriteImage = image;
   }
+  function preloadYuiInkOverlayImage() {
+    var image = new Image();
+    image.decoding = 'async';
+    image.onload = function () { image.__ready = true; };
+    image.onerror = function () { image.__ready = false; };
+    image.src = YUI_CHEAT_INK_OVERLAY_SRC;
+    yuiInkOverlayImage = image;
+  }
   function isBadmintonRacketSpriteReady() {
     return !!(badmintonRacketSpriteImage && (
       badmintonRacketSpriteImage.__ready ||
@@ -1294,8 +1328,15 @@
       (yuiBananaPeelSpriteImage.complete && yuiBananaPeelSpriteImage.naturalWidth > 0)
     ));
   }
+  function isYuiInkOverlayImageReady() {
+    return !!(yuiInkOverlayImage && (
+      yuiInkOverlayImage.__ready ||
+      (yuiInkOverlayImage.complete && yuiInkOverlayImage.naturalWidth > 0)
+    ));
+  }
   try { preloadBadmintonRacketSprite(); } catch (_) { badmintonRacketSpriteImage = null; }
   try { preloadYuiBananaPeelSprite(); } catch (_) { yuiBananaPeelSpriteImage = null; }
+  try { preloadYuiInkOverlayImage(); } catch (_) { yuiInkOverlayImage = null; }
   window.badmintonVrmManager = window.badmintonVrmManager || null;
   window.badmintonMmdManager = window.badmintonMmdManager || null;
   window.badmintonPlayerVrmManager = window.badmintonPlayerVrmManager || null;
@@ -1330,7 +1371,41 @@
     streak_15: ['十五连还不断', '我开始认真看了'],
     streak_20: ['二十连也太久了', '这回合还没结束？']
   };
+  var quickLinesFallbackEn = {
+    line_in: ['On the line!', 'Nice placement'],
+    net_touch: ['Net touch, still over', 'That angle was close'],
+    zone_in: ['Right in the zone', 'Sharp landing'],
+    out: ['Just out', 'A little too long'],
+    net: ['Caught by the net', 'Lift the racket face a bit'],
+    shot_missed: ['Still in it', 'Settle in and try again'],
+    game_over: ['Another round?', 'I will remember that rally'],
+    long_aim: ['Swing soon', 'Wait too long and you will freeze'],
+    close_to_record: ['Almost at the record', 'One steadier beat'],
+    new_record: ['New record!', 'That one counts'],
+    streak_5: ['Five in a row', 'You are warming up'],
+    streak_10: ['Ten straight?', 'That is steady'],
+    streak_15: ['Fifteen is wild', 'This rally has grit'],
+    streak_20: ['Twenty?!', 'This round will not end']
+  };
+  var quickLinesFallbackJa = {
+    line_in: ['ラインぎりぎり！', 'いい落としどころ'],
+    net_touch: ['ネットに触れたけど入った', '今の角度、危なかったね'],
+    zone_in: ['ゾーンに入ったよ', '落点が鋭いね'],
+    out: ['少しアウト', 'ちょっと長かったね'],
+    net: ['ネットに捕まったね', 'ラケット面を少し上げて'],
+    shot_missed: ['まだいけるよ', '落ち着いてもう一回'],
+    game_over: ['もう一回やる？', 'この一本、覚えておくね'],
+    long_aim: ['そろそろ振って', '待ちすぎると固まるよ'],
+    close_to_record: ['記録まであと少し', 'もう一拍、安定させて'],
+    new_record: ['新記録だね！', '今のは認めるよ'],
+    streak_5: ['五連続だね', '調子が上がってきた'],
+    streak_10: ['十連続？すごいね', 'かなり安定してる'],
+    streak_15: ['十五連続はすごい', 'このラリー、粘るね'],
+    streak_20: ['二十連続？！', 'まだ終わらないの？']
+  };
   var generatedQuickLines = {};
+  var generatedQuickLinesRequestSeq = 0;
+  var gameOverLineSpokenSessionId = '';
   var YUI_PASSIVE_LINES_DUEL = {
     line_in: ['这球压得挺准', '边线都帮你了'],
     net_touch: ['擦网也敢打啊', '这球贴得真险'],
@@ -1338,7 +1413,7 @@
     out: ['就差那么一点', '这球飞太深了'],
     net: ['球网替我拦你', '这拍急了吧'],
     shot_missed: ['别慌，下一拍', '刚刚慢了半拍'],
-    game_over: ['这次先到这儿', '下一局别跑'],
+    game_over: ['这次先到这儿', '下一局别跑', '这局先收着', '比分摆在这儿'],
     long_aim: ['该挥拍了吧', '想太久会僵哦'],
     close_to_record: ['纪录就在拍尖上', '再稳一拍就到了'],
     new_record: ['行吧，这球漂亮', '新纪录先借你'],
@@ -1346,6 +1421,38 @@
     streak_10: ['十连了？有意思', '我开始盯紧了'],
     streak_15: ['十五连还不断', '别让我太没面子'],
     streak_20: ['二十连也太久了', '这回合还不结束？']
+  };
+  var YUI_PASSIVE_LINES_DUEL_EN = {
+    line_in: ['That line was clean', 'The sideline helped you'],
+    net_touch: ['A net touch and still brave', 'That skim was close'],
+    zone_in: ['Nice landing choice', 'I almost reached that'],
+    out: ['Missed by a little', 'That one flew too deep'],
+    net: ['The net stopped it for me', 'You rushed that swing'],
+    shot_missed: ['Stay calm, next shot', 'You were half a beat late'],
+    game_over: ['That is it for now', 'Do not run from the next round', 'We will hold this score', 'The scoreboard remembers'],
+    long_aim: ['Time to swing', 'Think too long and you will stiffen'],
+    close_to_record: ['The record is on your racket', 'One steadier shot'],
+    new_record: ['Fine, that was good', 'You can borrow the new record'],
+    streak_5: ['Five connected', 'The rhythm is coming together'],
+    streak_10: ['Ten straight? Interesting', 'I am watching more closely now'],
+    streak_15: ['Fifteen and still going', 'Do not make me look too bad'],
+    streak_20: ['Twenty is too long', 'Is this rally ever ending?']
+  };
+  var YUI_PASSIVE_LINES_DUEL_JA = {
+    line_in: ['今のライン、きれいだったね', 'サイドラインに助けられたね'],
+    net_touch: ['ネットに触れても攻めるんだ', '今のかすり方、ぎりぎり'],
+    zone_in: ['落点の選び方、いいね', 'もう少しで届いたのに'],
+    out: ['ほんの少し外れたね', '今のは奥まで飛びすぎ'],
+    net: ['ネットが私の味方をしたね', 'その一振り、急ぎすぎ'],
+    shot_missed: ['落ち着いて、次の一拍', '今のは半拍遅れたね'],
+    game_over: ['今回はここまで', '次のラウンド、逃げないでね', 'このスコアは預かっておくね', '点数はちゃんと残ったよ'],
+    long_aim: ['そろそろ振ろうか', '考えすぎると固まるよ'],
+    close_to_record: ['記録はラケットの先だよ', 'もう一拍だけ安定させて'],
+    new_record: ['いいよ、今のはきれい', '新記録、少しだけ貸してあげる'],
+    streak_5: ['五本つながったね', 'リズムが合ってきた'],
+    streak_10: ['十連続？面白いね', '少し本気で見てるよ'],
+    streak_15: ['十五連続、まだ続くの？', '私の面目も少し考えて'],
+    streak_20: ['二十連続は長すぎるよ', 'このラリー、終わる気ある？']
   };
   // Endpoint contract:
   // /api/game/badminton/route/start
@@ -1359,20 +1466,95 @@
   // /api/game/badminton/character
   // /api/game/badminton/leaderboard
 
+  function encodeBadmintonStorageScopeName(value) {
+    var raw = String(value || '').trim();
+    if (!raw) return 'default';
+    try {
+      return encodeURIComponent(raw.toLowerCase())
+        .replace(/%/g, '~')
+        .replace(/[^a-z0-9_~-]+/g, '_') || 'default';
+    } catch (_) {
+      return 'default';
+    }
+  }
+  function getBadmintonStorageScope() {
+    var name = '';
+    try { name = (window.lanlan_config && window.lanlan_config.lanlan_name) || ''; } catch (_) {}
+    if (!name) {
+      try {
+        var params = new URLSearchParams(window.location.search);
+        name = params.get('lanlan_name') || params.get('name') || '';
+      } catch (_) {}
+    }
+    return encodeBadmintonStorageScopeName(name || 'default');
+  }
+  function badmintonStorageKey(key) {
+    var normalized = String(key || '');
+    if (normalized.indexOf('bd_') !== 0) return normalized;
+    var scope = getBadmintonStorageScope();
+    return 'bd:' + scope + ':' + key;
+  }
+  function readBadmintonStorage(key) {
+    try {
+      var scopedKey = badmintonStorageKey(key);
+      var scopedValue = localStorage.getItem(scopedKey);
+      if (scopedValue != null) return scopedValue;
+      if (scopedKey !== key) return localStorage.getItem(key);
+      return scopedValue;
+    } catch (_) {
+      return null;
+    }
+  }
+  function writeBadmintonStorage(key, value) {
+    try { localStorage.setItem(badmintonStorageKey(key), value); } catch (_) {}
+  }
+  function removeBadmintonStorage(key) {
+    try {
+      var scopedKey = badmintonStorageKey(key);
+      localStorage.removeItem(scopedKey);
+      if (scopedKey !== key) localStorage.removeItem(key);
+    } catch (_) {}
+  }
   function readJson(key, fallback) {
     try {
-      var raw = localStorage.getItem(key);
+      var raw = readBadmintonStorage(key);
       return raw ? JSON.parse(raw) : fallback;
     } catch (_) {
       return fallback;
     }
   }
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
+    writeBadmintonStorage(key, JSON.stringify(value));
+  }
+  function addBadmintonEventListener(target, type, handler, options) {
+    if (!target || typeof target.addEventListener !== 'function') return function () {};
+    target.addEventListener(type, handler, options);
+    var active = true;
+    var cleanup = function () {
+      if (!active) return;
+      active = false;
+      try { target.removeEventListener(type, handler, options); } catch (_) {}
+      var cleanupIndex = badmintonEventCleanupFns.indexOf(cleanup);
+      if (cleanupIndex >= 0) badmintonEventCleanupFns.splice(cleanupIndex, 1);
+    };
+    badmintonEventCleanupFns.push(cleanup);
+    return cleanup;
   }
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
   function getBadmintonFrameNow() {
     return badmintonFrameNow || performance.now();
+  }
+  function isElectronBadmintonRuntime() {
+    try {
+      return !!(window.nekoHost || (navigator.userAgent && /Electron/i.test(navigator.userAgent)));
+    } catch (_) {
+      return false;
+    }
+  }
+  function shouldUseLightweightNetContactEffects() {
+    var dpr = 1;
+    try { dpr = window.devicePixelRatio || 1; } catch (_) {}
+    return isElectronBadmintonRuntime() || dpr >= NET_CONTACT_EFFECT_LIGHT_DPR;
   }
   function setTextIfChanged(element, text) {
     var value = String(text == null ? '' : text);
@@ -1499,6 +1681,11 @@
     return z >= getNetBottomZ() - shuttleRadius * 0.18
       && z <= getNetTopZ() + shuttleRadius * 0.12;
   }
+  function didShuttleLegallyClearNet(shuttle, crossing) {
+    var shuttleRadius = (shuttle && shuttle.radius) || BALL_R;
+    var z = crossing ? crossing.z : getShuttleCourtZ(shuttle, false);
+    return z > getNetTopZ() + shuttleRadius * 0.12;
+  }
   function getCourtDistanceMark(key) {
     for (var i = 0; i < COURT_DISTANCE_MARKS.length; i++) {
       if (COURT_DISTANCE_MARKS[i].key === key) return COURT_DISTANCE_MARKS[i];
@@ -1589,21 +1776,49 @@
     }
     var _bdBgmCurrentKey = '';
     var _bdResultBgmTriggered = false;
-    var _bdSelectedInGameBgm = (function () {
+    function _bdPickInGameBgm() {
       var variants = Array.isArray(config.bgm.inGame && config.bgm.inGame.variants)
         ? config.bgm.inGame.variants
         : [];
       if (!variants.length) return null;
       return variants[Math.floor(Math.random() * variants.length)];
-    })();
+    }
+    function _bdShouldReselectInGameBgm() {
+      return _bdBgmCurrentKey.indexOf('mood:') === 0;
+    }
+    var _bdSelectedInGameBgm = _bdPickInGameBgm();
     function _bdResolvePlaylist() {
+      if (!badmintonStartAccepted) {
+        return { key: 'startMenu', playlist: config.bgm.startMenu, repeat: true };
+      }
       if (game.state === 'game_over') {
         var gameOverBgm = config.bgm.result && config.bgm.result.gameOver;
         return { key: 'gameOver', playlist: gameOverBgm || config.bgm.startMenu, repeat: false };
       }
       var moodBgm = config.bgm.mood && config.bgm.mood[currentMood];
       if (moodBgm && (Array.isArray(moodBgm) ? moodBgm.length : moodBgm)) {
-        return { key: 'mood:' + currentMood, playlist: moodBgm, repeat: true };
+        if (currentMood === 'angry' && getDuelDifficultyName() !== 'max') {
+          moodBgm = null;
+        }
+        if ((currentMood === 'happy' || currentMood === 'relaxed') && ['lv3', 'lv4'].indexOf(getDuelDifficultyName()) === -1) {
+          moodBgm = null;
+        }
+      }
+      if (moodBgm && (Array.isArray(moodBgm) ? moodBgm.length : moodBgm)) {
+        var moodBgmKey = (currentMood === 'happy' || currentMood === 'relaxed')
+          ? 'mood:chocobos'
+          : 'mood:' + currentMood;
+        if (moodBgm.loop) {
+          return {
+            key: moodBgmKey,
+            loopedConfig: moodBgm,
+            repeat: true,
+          };
+        }
+        return { key: moodBgmKey, playlist: moodBgm, repeat: true };
+      }
+      if (_bdShouldReselectInGameBgm()) {
+        _bdSelectedInGameBgm = _bdPickInGameBgm();
       }
       if (_bdSelectedInGameBgm && _bdSelectedInGameBgm.loop) {
         return {
@@ -1718,6 +1933,11 @@
         if (!audio) return;
         audio.stopBgm();
       },
+      destroy: function () {
+        if (!audio) return;
+        if (typeof audio.destroy === 'function') audio.destroy();
+        else audio.stopBgm();
+      },
       unlock: function () { if (audio && audio.unlock) audio.unlock().catch(function () {}); },
       setBgmVolume: function (volume) { return audio ? audio.setBgmVolume(volume) : volume; },
       setSfxVolume: function (volume) { return audio ? audio.setSfxVolume(volume) : volume; },
@@ -1742,17 +1962,39 @@
     });
   }
   function _shouldSkipBadmintonStartTutorial() {
-    try { return localStorage.getItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY) === '1'; }
+    try { return readBadmintonStorage(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY) === '1'; }
     catch (_) { return false; }
   }
   function _setBadmintonStartTutorialSkipped(skipped) {
     try {
-      if (skipped) localStorage.setItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY, '1');
-      else localStorage.removeItem(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY);
+      if (skipped) writeBadmintonStorage(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY, '1');
+      else removeBadmintonStorage(BADMINTON_START_TUTORIAL_SKIP_STORAGE_KEY);
     } catch (_) {}
   }
   function isBadmintonStartOverlayActive() {
     return !!(badmintonStartOverlay && !badmintonStartOverlay.hidden && !badmintonStartAccepted);
+  }
+  function removeBadmintonStartMenuAudioListeners() {
+    while (badmintonStartMenuAudioListenerCleanups.length) {
+      var cleanup = badmintonStartMenuAudioListenerCleanups.pop();
+      try { cleanup(); } catch (_) {}
+    }
+  }
+  function activateBadmintonStartMenuAudio(ev) {
+    if (badmintonStartMenuAudioActivated || !isBadmintonStartOverlayActive()) return;
+    if (
+      badmintonStartButton &&
+      ev &&
+      ev.target &&
+      typeof badmintonStartButton.contains === 'function' &&
+      badmintonStartButton.contains(ev.target)
+    ) return;
+    badmintonStartMenuAudioActivated = true;
+    var ac = getAudioCtx();
+    if (ac && ac.state === 'suspended') ac.resume().catch(function () {});
+    badmintonGameAudio.unlock();
+    if (bgmEnabled) startBgm();
+    removeBadmintonStartMenuAudioListeners();
   }
   function hideBadmintonStartOverlay() {
     if (!badmintonStartOverlay || badmintonStartOverlay.hidden) return;
@@ -1768,6 +2010,7 @@
     options = options || {};
     if (badmintonStartAccepted) return badmintonRouteStartPromise || Promise.resolve();
     badmintonStartAccepted = true;
+    removeBadmintonStartMenuAudioListeners();
     if (options.skipTutorial || (badmintonStartNeverToggle && badmintonStartNeverToggle.checked)) {
       _setBadmintonStartTutorialSkipped(true);
     }
@@ -2099,6 +2342,7 @@
     }, 150);
   }
   function closeBadmintonWindow() {
+    disposeBadmintonGame('exit_button');
     var host = window.nekoHost;
     if (host && typeof host.closeWindow === 'function') {
       try {
@@ -2128,35 +2372,142 @@
   function formatLeaderboardMode(value) {
     var mode = String(value || '');
     if (mode === 'duel') return _i18n('leaderboard.mode.duel', '对拉');
-    return _i18n('leaderboard.mode.duel', '对拉');
+    if (mode === 'shooter') return _i18n('leaderboard.mode.shooter', '投篮');
+    if (mode === 'practice') return _i18n('leaderboard.mode.practice', '练习');
+    return mode || _i18n('leaderboard.mode.duel', '对拉');
   }
-  function pickLocalizedLine(scope, key, fallback) {
+  function normalizeRequestLanguagePrimary(value) {
+    var lang = String(value || '').trim().replace(/_/g, '-').toLowerCase();
+    if (!lang || lang === 'undefined' || lang === 'null') return '';
+    return lang.split('-')[0] || '';
+  }
+  function normalizeRequestLanguageTag(value) {
+    var lang = String(value || '').trim().replace(/_/g, '-');
+    if (!lang || lang === 'undefined' || lang === 'null') return '';
+    return lang;
+  }
+  function getDefaultQuickLineFallback(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return quickLines;
+    if (primary === 'ja') return quickLinesFallbackJa;
+    return quickLinesFallbackEn;
+  }
+  function getQuickLineFallbackSource(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return YUI_PASSIVE_LINES_DUEL;
+    if (primary === 'ja') return YUI_PASSIVE_LINES_DUEL_JA;
+    return YUI_PASSIVE_LINES_DUEL_EN;
+  }
+  function getNeutralQuickLineFallback(primary) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return ['稳一下节奏', '下一拍继续'];
+    if (primary === 'ja') return ['リズムを整えよう', '次の一本に集中しよう'];
+    return ['Settle the rhythm', 'Focus on the next rally'];
+  }
+  function isLikelyChineseFallbackLine(line) {
+    var text = String(line || '').trim();
+    if (!/[\u3400-\u9fff]/.test(text)) return false;
+    if (/[\u3040-\u30ff\uac00-\ud7af]/.test(text)) return false;
+    if (/[A-Za-zÀ-ÖØ-öø-ÿ\u0400-\u04ff]/.test(text)) return false;
+    return true;
+  }
+  var _jaFallbackLineLookup = null;
+  function isKnownJapaneseFallbackLine(text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (!_jaFallbackLineLookup) {
+      _jaFallbackLineLookup = Object.create(null);
+      [quickLinesFallbackJa, YUI_PASSIVE_LINES_DUEL_JA].forEach(function (pool) {
+        Object.keys(pool || {}).forEach(function (key) {
+          (pool[key] || []).forEach(function (line) {
+            var normalized = String(line || '').trim();
+            if (normalized) _jaFallbackLineLookup[normalized] = true;
+          });
+        });
+      });
+    }
+    return !!_jaFallbackLineLookup[t];
+  }
+  var _zhFallbackLineLookup = null;
+  function isKnownChineseFallbackLine(text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    if (!_zhFallbackLineLookup) {
+      _zhFallbackLineLookup = Object.create(null);
+      [quickLines, YUI_PASSIVE_LINES_DUEL].forEach(function (pool) {
+        Object.keys(pool || {}).forEach(function (key) {
+          (pool[key] || []).forEach(function (line) {
+            var normalized = String(line || '').trim();
+            if (normalized) _zhFallbackLineLookup[normalized] = true;
+          });
+        });
+      });
+    }
+    return !!_zhFallbackLineLookup[t];
+  }
+  function replaceUnexpectedChineseFallbackLine(line, event) {
+    var text = String(line || '').trim();
+    var primary = normalizeRequestLanguagePrimary(getRequestLanguage());
+    if (primary === 'zh') return text;
+    if (event && (event.kind === 'user_reply' || event.isUserReply || event.source === 'user_reply')) return text;
+    if (primary === 'ja' && isKnownJapaneseFallbackLine(text)) return text;
+    if (primary === 'ja' && !isKnownChineseFallbackLine(text)) return text;
+    if (!isLikelyChineseFallbackLine(text)) return text;
+    var fallbackKey = getFallbackLineKey(event || {});
+    var fallback = pickLine(fallbackKey, primary, { skipGenerated: true });
+    return fallback || (primary === 'ja' ? 'もう一回やる？' : 'One more rally.');
+  }
+  function pickLocalizedLine(scope, key, fallback, primary, options) {
     var generated = generatedQuickLines[key] || [];
-    if (generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
+    if (!(options && options.skipGenerated) && generated.length) return generated[Math.floor(Math.random() * generated.length)] || '';
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    var defaultFallback = getDefaultQuickLineFallback(primary);
     var lines = _i18nArray('lines.' + scope + '.' + key, fallback || []);
-    if (!lines.length && scope !== 'default') lines = _i18nArray('lines.default.' + key, quickLines[key] || []);
-    if (!lines.length) lines = _i18nArray('lines.fallback', ['再来一次喵']);
+    if (!lines.length && scope !== 'default') lines = _i18nArray('lines.default.' + key, defaultFallback[key] || quickLinesFallbackEn[key] || quickLines[key] || []);
+    if (!lines.length) lines = _i18nArray('lines.fallback', primary === 'zh' ? ['再来一次喵'] : ['One more rally.']);
     return lines[Math.floor(Math.random() * lines.length)] || '';
   }
-  function pickLine(key) {
-    var source = YUI_PASSIVE_LINES_DUEL;
+  function pickLine(key, primary, options) {
+    primary = primary || normalizeRequestLanguagePrimary(getRequestLanguage());
+    var source = getQuickLineFallbackSource(primary);
+    var defaultFallback = getDefaultQuickLineFallback(primary);
     var scope = 'duel';
-    var fallback = source[key] || quickLines[key] || source.game_over || quickLines.game_over || ['再来一次喵'];
-    return moodStyleLine(pickLocalizedLine(scope, key, fallback), currentMood);
+    var isGameOverKey = key === 'game_over';
+    var fallback = source[key] || defaultFallback[key] || (isGameOverKey ? (source.game_over || defaultFallback.game_over) : null) || getNeutralQuickLineFallback(primary);
+    return moodStyleLine(pickLocalizedLine(scope, key, fallback, primary, options), currentMood);
   }
   function getRequestLanguage() {
     var candidates = [];
+    var hasResolvedI18nLanguage = false;
+    function pushResolvedLanguage(value) {
+      var lang = normalizeRequestLanguageTag(value);
+      if (!lang) return false;
+      candidates.push(lang);
+      hasResolvedI18nLanguage = true;
+      return true;
+    }
     try {
       var params = new URLSearchParams(window.location.search);
-      candidates.push(params.get('i18n_language'), params.get('lang'), params.get('locale'));
+      pushResolvedLanguage(params.get('i18n_language')) || pushResolvedLanguage(params.get('lang')) || pushResolvedLanguage(params.get('locale'));
     } catch (_) {}
-    try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
-    try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
-    try { candidates.push(localStorage.getItem('i18nextLng')); } catch (_) {}
-    candidates.push((document.documentElement && document.documentElement.lang) || '', navigator.language || '');
+    try {
+      var i18nInstance = window.i18n || window.i18next;
+      if (i18nInstance && i18nInstance.language && i18nInstance.isInitialized) pushResolvedLanguage(i18nInstance.language);
+    } catch (_) {}
+    try {
+      if (window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE) {
+        pushResolvedLanguage(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE);
+      }
+    } catch (_) {}
+    try { pushResolvedLanguage(localStorage.getItem('i18nextLng')); } catch (_) {}
+    var documentLang = '';
+    try { documentLang = (document.documentElement && document.documentElement.lang) || ''; } catch (_) {}
+    var documentLangIsTemplateDefault = /^zh(?:-CN)?$/i.test(documentLang) && !hasResolvedI18nLanguage;
+    if (documentLang && !documentLangIsTemplateDefault) candidates.push(documentLang);
+    candidates.push(navigator.language || '');
     for (var i = 0; i < candidates.length; i++) {
-      var lang = String(candidates[i] || '').trim();
-      if (lang) return lang.replace('_', '-');
+      var lang = normalizeRequestLanguageTag(candidates[i]);
+      if (lang) return lang;
     }
     return 'zh';
   }
@@ -2169,7 +2520,14 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
       signal: controller ? controller.signal : undefined
-    }).then(function (r) { return r.json(); }).finally(function () {
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (text) {
+          return { ok: false, reason: 'http_error', status: r.status, statusText: r.statusText || '', body: text || '' };
+        });
+      }
+      return r.json().catch(function () { return { ok: r.ok }; });
+    }).finally(function () {
       if (timer) clearTimeout(timer);
     });
   }
@@ -2205,10 +2563,12 @@
     var target = String(name || '').trim();
     for (var i = 0; i < DUEL_DIFFICULTY.length; i++) {
       if (DUEL_DIFFICULTY[i].name === target) {
+        var changed = duelDifficultyIdx !== i;
         duelDifficultyIdx = i;
         writeJson('bd_duel_difficulty', target);
         showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: target }));
         updateDebugReadout();
+        if (changed && bgmEnabled) badmintonGameAudio.sync('difficulty-changed');
         return true;
       }
     }
@@ -2372,7 +2732,7 @@
     else if (event.kind === 'streak_10') { kind = 'streak_10'; rarity = 'sr'; }
     else if (event.kind === 'streak_5') { kind = 'streak_5'; rarity = 'r'; }
     else if (event.kind === 'game_over' && isDuelMode() && isDuelEliminated() && didPlayerWinDuel()) { kind = 'duel_win'; rarity = 'sr'; }
-    else if (event.kind === 'game_over' && localStorage.getItem('bd_daily_first_game') !== new Date().toISOString().slice(0, 10)) { kind = 'daily_first_game'; rarity = 'n'; localStorage.setItem('bd_daily_first_game', new Date().toISOString().slice(0, 10)); }
+    else if (event.kind === 'game_over' && readBadmintonStorage('bd_daily_first_game') !== new Date().toISOString().slice(0, 10)) { kind = 'daily_first_game'; rarity = 'n'; writeBadmintonStorage('bd_daily_first_game', new Date().toISOString().slice(0, 10)); }
     else if (event.result === 'scored' && Number(event.distance || 0) > 600) { kind = 'ultra_range'; rarity = 'sr'; }
     else if (canonicalShotType(event.shot_type) === 'line_in' && !cardEventHistory.first_line_in) { kind = 'first_line_in'; rarity = 'n'; }
     if (!kind) return event;
@@ -2421,18 +2781,22 @@
   }
   function loadGeneratedQuickLines() {
     if (debugMode) return;
+    var quickLinesRequestSeq = ++generatedQuickLinesRequestSeq;
+    var quickLinesRequestLanguage = getRequestLanguage();
+    var quickLinesRequestPrimary = normalizeRequestLanguagePrimary(quickLinesRequestLanguage);
     var QUICK_LINE_KEYS = [
       'line_in', 'net_touch', 'zone_in', 'out', 'net',
       'shot_missed', 'game_over', 'long_aim', 'close_to_record',
       'new_record', 'streak_5', 'streak_10', 'streak_15', 'streak_20',
     ];
-    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: getRequestLanguage() }, 5000).then(function (res) {
+    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: quickLinesRequestLanguage }, 5000).then(function (res) {
+      if (quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return;
+      if (quickLinesRequestPrimary !== normalizeRequestLanguagePrimary(getRequestLanguage())) return;
       if (!res || !res.lines) return;
       QUICK_LINE_KEYS.forEach(function (key) {
         var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
         if (pool.length) {
           generatedQuickLines[key] = pool;
-          quickLines[key] = pool;
         }
       });
     }).catch(function () {});
@@ -2457,9 +2821,10 @@
     var kind = String(event && event.kind || '');
     var label = String(event && event.label || '');
     if (kind === 'game_over' || event && event.is_new_record || kind === 'new_record' || /^streak_(15|20)$/.test(kind)) return 0;
+    if (kind === 'yui_cheat_item') return 0;
+    if (kind === 'yui_cheat_hit') return 0;
+    if (kind === 'yui_cheat_score') return 0;
     if (/^streak_(5|10)$/.test(kind)) return 1;
-    if (kind === 'yui_cheat_item') return 1;
-    if (kind === 'yui_cheat_score') return 1;
     if (label.indexOf('duel') !== -1) return 1;
     if (kind === 'shot_missed' || kind === 'close_to_record') return 2;
     if (kind === 'long_aim' || kind === 'very_long_aim') return 3;
@@ -2508,9 +2873,18 @@
     if (_voiceEntryExpired(entry)) return;
     var pending = voiceArbiter.pending;
     if (_voiceEntryExpired(pending)) pending = voiceArbiter.pending = null;
+    if (shouldInterruptVoiceAudio(entry.event)) {
+      voiceArbiter.pending = entry;
+      _scheduleVoiceArbiterFlush(0);
+      return;
+    }
     if (pending && pending.priority <= entry.priority) return;
     voiceArbiter.pending = entry;
     _scheduleVoiceArbiterFlush(entry.tailWaitMs);
+  }
+  function shouldInterruptVoiceAudio(event) {
+    var kind = String(event && event.kind || '');
+    return kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score';
   }
   function _mirrorAndSpeak(entry) {
     if (debugMode && debugVoiceMuted && !debugVoiceMode && !(entry.event && entry.event.force_voice_in_debug)) return Promise.resolve();
@@ -2541,7 +2915,7 @@
       request_id: 'bd-' + entry.id,
       mirror_text: false,
       emit_turn_end: false,
-      interrupt_audio: false,
+      interrupt_audio: shouldInterruptVoiceAudio(entry.event),
       line: entry.line,
       i18n_language: getRequestLanguage(),
       event: payloadEvent
@@ -2549,18 +2923,24 @@
     lastVoiceRequest = speakPayload;
     lastVoiceResult = null;
     lastVoiceFallbackReason = '';
-    return post('/mirror-assistant', mirrorPayload, 2500)
-      .catch(function () {})
-      .then(function () {
-        return post('/speak', speakPayload, 3500).then(function (res) {
-          lastVoiceResult = res || null;
-          return res;
-        }).catch(function () {
-          lastVoiceFallbackReason = 'project_speak_failed';
-          lastVoiceResult = { ok: false, reason: 'project_speak_failed' };
-          return lastVoiceResult;
-        });
+    function requestMirror() {
+      return post('/mirror-assistant', mirrorPayload, 2500).catch(function () {});
+    }
+    function requestSpeak() {
+      return post('/speak', speakPayload, 3500).then(function (res) {
+        lastVoiceResult = res || null;
+        return res;
+      }).catch(function () {
+        lastVoiceFallbackReason = 'project_speak_failed';
+        lastVoiceResult = { ok: false, reason: 'project_speak_failed' };
+        return lastVoiceResult;
       });
+    }
+    if (shouldInterruptVoiceAudio(entry.event)) {
+      void requestMirror();
+      return requestSpeak();
+    }
+    return requestMirror().then(requestSpeak);
   }
   function _requestVoicePlayback(entry) {
     if (!_voiceEntryMatchesCurrentSession(entry)) return Promise.resolve();
@@ -2568,9 +2948,11 @@
     voiceArbiter.inFlight = {
       id: entry.id,
       line: entry.line,
-      expiresAt: Date.now() + holdMs
+      expiresAt: Date.now() + holdMs,
+      isUserReply: !!entry.isUserReply,
+      eventKind: String(entry.event && entry.event.kind || '')
     };
-    showBubble(entry.line, entry.control);
+    showBubble(entry.line, entry.control, entry.event);
     return _mirrorAndSpeak(entry).finally(function () {
       if (voiceArbiter.inFlight && voiceArbiter.inFlight.id === entry.id) {
         setTimeout(function () {
@@ -2597,14 +2979,20 @@
       return;
     }
     if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt) {
+      if (shouldInterruptVoiceAudio(pending.event) && !voiceArbiter.inFlight.isUserReply) {
+        voiceArbiter.inFlight = null;
+        voiceArbiter.pending = null;
+        void _requestVoicePlayback(pending);
+        return;
+      }
       _scheduleVoiceArbiterFlush(Math.max(80, voiceArbiter.inFlight.expiresAt - Date.now()));
       return;
     }
     voiceArbiter.pending = null;
     void _requestVoicePlayback(pending);
   }
-  function showBubble(line, control) {
-    var text = String(line || '').trim();
+  function showBubble(line, control, event) {
+    var text = replaceUnexpectedChineseFallbackLine(line, event);
     if (!text) return;
     if (shouldKeepCurrentBubble(control || {})) return false;
     bubble.dataset.mood = (control && control.mood) || '';
@@ -2646,14 +3034,15 @@
     var lines = pools[kind] || pools.banana;
     var line = lines[Math.floor(Math.random() * lines.length)] || '';
     var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 3200, bubbleDurationMs: 4200 };
-    showBubble(line, control);
-    speakLine(line, control, {
+    var event = {
       kind: 'yui_cheat_item',
       label: 'yui_cheat_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
-      voice_deadline_ms: 3600
-    });
+      voice_deadline_ms: 6200
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
   }
   function showYuiCheatScoreLine(kind) {
     var pools = {
@@ -2663,14 +3052,30 @@
     var lines = pools[kind] || pools.banana;
     var line = lines[Math.floor(Math.random() * lines.length)] || '';
     var control = { expression: 'tease', intensity: 'high', mood: 'happy', bubbleVariant: 'yui-cheat-score', bubblePriority: 9, bubbleHoldMs: 3600, bubbleDurationMs: 4600 };
-    showBubble(line, control);
-    speakLine(line, control, {
+    var event = {
       kind: 'yui_cheat_score',
       label: 'yui_cheat_score_' + kind,
       item_kind: kind,
       force_voice_in_debug: true,
-      voice_deadline_ms: 5200
-    });
+      voice_deadline_ms: 6800
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
+  }
+  function showYuiCheatHitLine(kind) {
+    var line = kind === 'octopus'
+      ? _i18n('toast.yuiCheatInk', 'Yui 扔了墨汁')
+      : _i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了');
+    var control = { expression: 'tease', intensity: 'medium', mood: 'surprised', bubbleVariant: 'yui-cheat', bubblePriority: 8, bubbleHoldMs: 2800, bubbleDurationMs: 3800 };
+    var event = {
+      kind: 'yui_cheat_hit',
+      label: 'yui_cheat_hit_' + kind,
+      item_kind: kind,
+      force_voice_in_debug: true,
+      voice_deadline_ms: 6200
+    };
+    showBubble(line, control, event);
+    speakLine(line, control, event);
   }
   function renderBubbleContent(text, emote) {
     text = String(text || '').trim();
@@ -2749,13 +3154,23 @@
     var label = String(event && event.label || '');
     if (event && (event.force_voice || event.force_voice_in_debug || event.voice_always)) return true;
     if (kind === 'user_reply' || event.isUserReply || event.source === 'user_reply') return true;
-    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_score') return true;
+    if (kind === 'yui_cheat_item' || kind === 'yui_cheat_hit' || kind === 'yui_cheat_score') return true;
     if (kind === 'difficulty_ramp') return true;
     if (event && event.point_winner === 'neko' && label === 'neko_duel_shot') return true;
     if (label.indexOf('duel_difficulty_') === 0) return true;
     return false;
   }
+  function shouldSuppressRepeatedGameOverLine(event) {
+    if (!event || event.kind !== 'game_over') return false;
+    var eventSessionId = String(event.session_id || sessionId || '');
+    if (!eventSessionId) return false;
+    if (gameOverLineSpokenSessionId === eventSessionId) return true;
+    gameOverLineSpokenSessionId = eventSessionId;
+    return false;
+  }
   function speakLine(line, control, event) {
+    if (shouldSuppressRepeatedGameOverLine(event || {})) return;
+    line = replaceUnexpectedChineseFallbackLine(line, event);
     if (!shouldReadBadmintonVoice(event, control)) {
       lastVoiceRequest = {
         line: line,
@@ -2769,7 +3184,7 @@
       };
       lastVoiceFallbackReason = '';
       lastVoiceMutedReason = 'voice_event_not_selected';
-      showBubble(line, control || {});
+      showBubble(line, control || {}, event);
       return;
     }
     lastVoiceMutedReason = '';
@@ -2813,6 +3228,12 @@
       return;
     }
     if (voiceArbiter.inFlight && Date.now() < voiceArbiter.inFlight.expiresAt && voiceArbiter.inFlight.id !== entry.id) {
+      if (shouldInterruptVoiceAudio(entry.event) && !voiceArbiter.inFlight.isUserReply) {
+        voiceArbiter.inFlight = null;
+        voiceArbiter.pending = null;
+        void _requestVoicePlayback(entry);
+        return;
+      }
       _storeVoicePending(entry);
       return;
     }
@@ -3599,6 +4020,13 @@
     if (event.kind === 'very_long_aim') return 'long_aim';
     return shotTypeLabelKey(event.shot_type) || event.kind;
   }
+  function shouldSuppressChatFallback(res) {
+    return !!(res && res.suppress_fallback);
+  }
+  function pickChatFallbackLine(res, event) {
+    if (shouldSuppressChatFallback(res)) return '';
+    return pickLine(getFallbackLineKey(event), null, {});
+  }
   function buildBadmintonCurrentStatePayload() {
     var state = {
       game: 'badminton',
@@ -3650,6 +4078,7 @@
     notifyBadmintonEventListeners(event);
     event.i18n_language = getRequestLanguage();
     var shouldCall = shouldCallLLMDuel(event);
+    if (event.local_voice_already_spoken) return;
     if (debugMode) {
       speakLine(pickLine(getFallbackLineKey(event)), {}, event);
       return;
@@ -3674,10 +4103,6 @@
     }), chatClientTimeoutMs)
       .then(function (res) {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
-        if (res && res.shooter_rating) {
-          latestShooterRating = res.shooter_rating;
-          if (resultPanel.classList.contains('show')) showResult();
-        }
         if (res && res.control) {
           if (res.control.difficulty) setDuelDifficulty(res.control.difficulty);
           if (res.control.mood) setMood(res.control.mood, { reason: 'llm' });
@@ -3685,11 +4110,15 @@
         if (res && res.difficulty) setDuelDifficulty(res.difficulty);
         if (res && res.mood) setMood(res.mood, { reason: 'llm' });
         if (res && res.line) speakLine(moodStyleLine(res.line, currentMood), res.control || {}, event);
-        else speakLine(pickLine(getFallbackLineKey(event)), {}, event);
+        else {
+          var fallbackLine = pickChatFallbackLine(res, event);
+          if (fallbackLine) speakLine(fallbackLine, {}, event);
+        }
       })
       .catch(function () {
         if (event.session_id !== sessionId || event.mode !== currentMode) return;
-        speakLine(pickLine(getFallbackLineKey(event)), {}, event);
+        var fallbackLine = pickChatFallbackLine({ error: 'request_failed' }, event);
+        if (fallbackLine) speakLine(fallbackLine, {}, event);
       });
   }
 
@@ -3909,7 +4338,7 @@
     bestStreak: 0,
     madeCount: 0,
     distance: 200,
-    recordDistance: Number(localStorage.getItem('bd_record_distance') || '0') || 0,
+    recordDistance: Number(readBadmintonStorage('bd_record_distance') || '0') || 0,
     attemptsTotal: 3,
     attemptsRemaining: 3,
     attemptsResults: [],
@@ -3921,6 +4350,7 @@
     heldShuttleVisible: true,
     pendingSwing: null,
     shuttleSeq: 0,
+    playerMoveLockedUntil: 0,
     playerCourt: { x: PLAYER_START_X, y: PLAYER_START_Y, targetX: PLAYER_START_X, targetY: PLAYER_START_Y },
     playerJump: { offset: 0, velocity: 0, active: false, cooldownUntil: 0, lastSmashAt: 0 },
     playerCheatEffect: { slowUntil: 0, spinUntil: 0, spinStartedAt: 0, spinAngle: 0 },
@@ -3954,7 +4384,7 @@
       specialUsed: false,
       sandbagShots: 0
     },
-    tutorialStep: localStorage.getItem('bd_tutorial_done') === '1' ? 3 : 0
+    tutorialStep: readBadmintonStorage('bd_tutorial_done') === '1' ? 3 : 0
   };
   var lastPlayerPointer = null;
 
@@ -3995,6 +4425,7 @@
     game.playerCourt.y = PLAYER_START_Y;
     game.playerCourt.targetX = PLAYER_START_X;
     game.playerCourt.targetY = PLAYER_START_Y;
+    game.playerMoveLockedUntil = 0;
     resetPlayerJump();
     resetYuiCheats();
     game.yuiCourt.x = YUI_START_X;
@@ -4126,6 +4557,7 @@
       item_kind: item.kind,
       close_score: close,
       duel: buildDuelStatePayload(),
+      local_voice_already_spoken: true,
       voice_deadline_ms: 900
     });
     return true;
@@ -4177,6 +4609,7 @@
     markYuiCheatHit('banana');
     badmintonGameAudio.playSfx('yuiCheat.bananaSlip', { volumeMultiplier: 0.9 });
     showAssistHint(_i18n('toast.yuiCheatBananaSlip', '踩到香蕉皮了'));
+    showYuiCheatHitLine('banana');
     setPlayerAction('react-disappointed', 560);
     sendGameEvent({
       kind: 'yui_cheat_hit',
@@ -4185,6 +4618,7 @@
       item_kind: 'banana',
       item_id: item && item.id,
       duel: buildDuelStatePayload(),
+      local_voice_already_spoken: true,
       voice_deadline_ms: 900
     });
   }
@@ -4356,45 +4790,67 @@
     return clamp(heightQuality * timingQuality * contactQuality, 0, 1);
   }
   function isPlayerSmashReady(incomingBall) {
-    if (isPlayerServeSetup()) return false;
     return getPlayerSmashQuality(incomingBall) >= 0.22;
   }
   function getYuiNeutralRacketContactPoint() {
     var contact = getYuiShotOrigin();
     return { x: contact.x, y: contact.y, source: 'neutral-racket-anchor' };
   }
+  function getYuiRacketRangeStateForPoint(incomingBall, racket, reachX, reachY) {
+    var contact = racket || getYuiNeutralRacketContactPoint();
+    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : contact.x;
+    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : contact.y;
+    var dx = Math.abs(ballX - contact.x);
+    var dy = Math.abs(ballY - contact.y);
+    var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
+    return { dx: dx, dy: dy, normalized: normalized, racket: contact, source: contact.source || '' };
+  }
   function getYuiRacketRangeState(incomingBall, reachX, reachY) {
     var neutral = getYuiNeutralRacketContactPoint();
     var visible = getYuiVisibleRacketContactPoint();
-    var ballX = incomingBall && Number.isFinite(incomingBall.x) ? incomingBall.x : neutral.x;
-    var ballY = incomingBall && Number.isFinite(incomingBall.y) ? incomingBall.y : neutral.y;
-    function stateFor(racket) {
-      var dx = Math.abs(ballX - racket.x);
-      var dy = Math.abs(ballY - racket.y);
-      var normalized = Math.pow(dx / reachX, 2) + Math.pow(dy / reachY, 2);
-      return { dx: dx, dy: dy, normalized: normalized, racket: racket, source: racket.source || '' };
-    }
-    var best = stateFor(neutral);
+    var best = getYuiRacketRangeStateForPoint(incomingBall, neutral, reachX, reachY);
     if (visible) {
-      var visibleState = stateFor(visible);
+      var visibleState = getYuiRacketRangeStateForPoint(incomingBall, visible, reachX, reachY);
       if (visibleState.normalized < best.normalized) best = visibleState;
     }
     return best;
   }
+  function getYuiVisibleOrNeutralRacketRangeState(incomingBall, reachX, reachY) {
+    var visible = getYuiVisibleRacketContactPoint();
+    return getYuiRacketRangeStateForPoint(incomingBall, visible || getYuiNeutralRacketContactPoint(), reachX, reachY);
+  }
   function getYuiRacketHitRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_HIT_REACH_X, YUI_RACKET_HIT_REACH_Y);
   }
   function isYuiRacketHitInRange(incomingBall) {
     return getYuiRacketHitRangeState(incomingBall).normalized <= 1;
   }
   function getYuiRacketRescueGateState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_RESCUE_GATE_REACH_X, YUI_RACKET_RESCUE_GATE_REACH_Y);
   }
   function getYuiRacketSaveRangeState(incomingBall) {
-    return getYuiRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_RACKET_SAVE_REACH_X, YUI_RACKET_SAVE_REACH_Y);
+  }
+  function getYuiShortDropSaveRangeState(incomingBall) {
+    return getYuiVisibleOrNeutralRacketRangeState(incomingBall, YUI_SHORT_DROP_SAVE_REACH_X, YUI_SHORT_DROP_SAVE_REACH_Y);
   }
   function isYuiSmashSaveReachable(incomingBall) {
     return !!(incomingBall && incomingBall.isSmash) && getYuiRacketRescueGateState(incomingBall).normalized > 1 && getYuiRacketSaveRangeState(incomingBall).normalized <= 1;
+  }
+  function isYuiShortDropSaveReachable(incomingBall) {
+    if (!incomingBall || incomingBall.isSmash || incomingBall.hitNet) return false;
+    if (incomingBall.shooter !== 'player' || incomingBall.direction !== 1 || !incomingBall.crossedNet) return false;
+    var shuttleRadius = incomingBall.radius || BALL_R;
+    var shuttleCourtY = getShuttleCourtY(incomingBall, false);
+    var nearNetLeft = BADMINTON.netX + shuttleRadius * 0.5;
+    var nearNetRight = nearNetLeft + YUI_SHORT_DROP_SAVE_NET_WINDOW_PX;
+    if (shuttleCourtY < nearNetLeft || shuttleCourtY > nearNetRight) return false;
+    var shuttleZ = getShuttleCourtZ(incomingBall, false);
+    var minSaveZ = Math.max(YUI_SHORT_DROP_SAVE_MIN_Z, shuttleRadius * 0.25 + 0.5);
+    if (shuttleZ <= minSaveZ || shuttleZ > YUI_SHORT_DROP_SAVE_MAX_Z) return false;
+    var shotPower = Number.isFinite(incomingBall.power) ? incomingBall.power : ((incomingBall.swingForce || 0) * 100);
+    if (shotPower > YUI_SHORT_DROP_SAVE_POWER_MAX) return false;
+    return getYuiRacketHitRangeState(incomingBall).normalized > 1 && getYuiShortDropSaveRangeState(incomingBall).normalized <= 1;
   }
   function getYuiSmashHeightQuality(incomingBall) {
     if (!incomingBall) return 0;
@@ -4791,13 +5247,16 @@
     if (isPlayerReceivingReturn()) return canPlayerReturnIncomingShuttle();
     return !isPositionTransitioning;
   }
+  function isPlayerPostServeMoveLocked() {
+    return performance.now() < (game.playerMoveLockedUntil || 0);
+  }
   function canPlayerMoveCourt() {
     if (isBadmintonLoadingActive()) return false;
     var incomingYuiBall = game.ball && game.ball.shooter === 'neko' && game.ball.direction === -1 && !game.ball.resolved;
     var playerShotInFlight = game.ball && game.ball.shooter === 'player' && game.ball.direction === 1 && !game.ball.resolved;
     var yuiTurnActive = game.state === 'neko_thinking' || game.duel.activeShooter === 'neko';
     var yuiSwinging = game.pendingSwing && game.pendingSwing.shooter === 'neko';
-    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || playerShotInFlight || yuiTurnActive || incomingYuiBall || yuiSwinging);
+    return isDuelMode() && (isPlayerServeSetup() || canPlayerControlShot() || (playerShotInFlight && !isPlayerPostServeMoveLocked()) || yuiTurnActive || incomingYuiBall || yuiSwinging);
   }
   function isPlayerServeSetup() {
     return isDuelMode() && game.state === 'ready' && isPlayerTurn() && game.heldShuttleVisible && !game.ball && !game.pendingSwing;
@@ -5067,12 +5526,13 @@
     var netTopZ = getNetTopZ();
     var forwardSpeed = Math.abs(ball.vCourtY || ball.vx || 0);
     var risingSpeed = Math.max(0, ball.vz || -(ball.vy || 0));
-    var highOnTape = z >= netTopZ - shuttleRadius * 0.72;
+    var clearsTape = z >= netTopZ - shuttleRadius * 0.26;
     var hasCarry = forwardSpeed >= 115 || risingSpeed >= 36;
-    var barelyOverTape = z >= netTopZ - shuttleRadius * 0.26;
-    return highOnTape && (hasCarry || barelyOverTape);
+    var aboveTape = z >= netTopZ;
+    return clearsTape && (hasCarry || aboveTape);
   }
   function spawnNetContactEffect(ball, crossing) {
+    var lightweight = shouldUseLightweightNetContactEffects();
     var contactX = crossing && Number.isFinite(crossing.screenX) ? crossing.screenX : (ball ? ball.x : BADMINTON.netX);
     var contactY = crossing && Number.isFinite(crossing.screenY) ? crossing.screenY : (ball ? ball.y : BADMINTON.netTop);
     var speed = ball && typeof ball.speed === 'function'
@@ -5080,23 +5540,25 @@
       : Math.sqrt(Math.pow(ball && ball.vx || 0, 2) + Math.pow(ball && ball.vy || 0, 2));
     var strength = clamp(speed / 430, 0.56, 1.24);
     var now = performance.now();
+    var maxEffects = lightweight ? NET_CONTACT_EFFECT_LIGHT_MAX : NET_CONTACT_EFFECT_MAX;
     netContactEffects.push({
       x: contactX,
       y: contactY,
       startAt: now,
-      duration: 560,
+      duration: lightweight ? NET_CONTACT_EFFECT_LIGHT_DURATION_MS : NET_CONTACT_EFFECT_DURATION_MS,
       strength: strength,
       direction: ball && ball.direction === -1 ? -1 : 1
     });
     netPhysicsActiveUntil = Math.max(netPhysicsActiveUntil, now + 720);
     netPhysicsAtRest = false;
-    if (netContactEffects.length > 5) netContactEffects = netContactEffects.slice(netContactEffects.length - 5);
+    if (netContactEffects.length > maxEffects) netContactEffects = netContactEffects.slice(netContactEffects.length - maxEffects);
     if (debugMode) {
       window.__badmintonNetEffectDebug = {
         count: netContactEffects.length,
         x: contactX,
         y: contactY,
         strength: strength,
+        lightweight: lightweight,
         startedAt: now
       };
     }
@@ -5104,6 +5566,7 @@
   function resetGame() {
     clearTimeout(resultTimer);
     resultTimer = 0;
+    gameOverLineSpokenSessionId = '';
     netContactEffects = [];
     if (debugMode && window.__badmintonNetEffectDebug) {
       window.__badmintonNetEffectDebug = {
@@ -5111,17 +5574,30 @@
         clearedAt: performance.now()
       };
     }
-    var shouldRestartRoute = endedRoute || routeActive || heartbeatTimer || drainTimer;
+    var shouldRestartRoute = endedRoute || routeActive || routeStartPromise || routeEndPromise || heartbeatTimer || drainTimer;
     if (shouldRestartRoute) {
-      if (!endedRoute) endRoute(false);
+      var routeSessionToEnd = sessionId;
+      var routeWasEnded = endedRoute;
+      var pendingRouteStart = routeStartPromise;
+      var pendingRouteEnd = routeEndPromise;
+      sessionId = createBadmintonSessionId();
       endedRoute = false;
       routeEndFetchPending = false;
       routeEndBeaconDelivered = false;
       routeEndPromise = null;
+      routeStartPromise = null;
       routeActive = false;
+      var routeReadyForEnd = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }) : Promise.resolve();
+      var restartAfterRouteEnd = routeReadyForEnd.then(function () {
+        if (routeWasEnded) return pendingRouteEnd || Promise.resolve();
+        return endRoute(false, { force: true, sessionId: routeSessionToEnd, detached: true });
+      });
       resetVoiceArbiter();
-      sessionId = createBadmintonSessionId();
-      startRoute();
+      Promise.resolve(restartAfterRouteEnd).catch(function () {}).then(function () {
+        if (badmintonGameDisposed) return;
+        routeActive = false;
+        startRoute();
+      });
     }
     game.state = 'ready';
     game.totalScore = 0;
@@ -5167,8 +5643,8 @@
     game.duel.pendingShot = null;
     game.duel.specialUsed = false;
     game.duel.sandbagShots = 0;
+    if (bgmEnabled) badmintonGameAudio.sync('reset');
     currentSessionEntryId = '';
-    latestShooterRating = '';
     isPositionTransitioning = false;
     clearTimeout(shotAnimationTimer);
     clearTimeout(yuiActionTimer);
@@ -5380,6 +5856,8 @@
     shuttle.forceScore = false;
     shuttle.crossedNet = false;
     shuttle.hitNet = false;
+    shuttle.legalNetClearance = false;
+    shuttle.netCarryToTargetSide = false;
     shuttle.netContactAt = 0;
     shuttle.netContactHoldUntil = 0;
     shuttle.awaitingReturnBy = '';
@@ -5412,6 +5890,9 @@
     };
     game.pendingSwing = swing;
     game.heldShuttleVisible = false;
+    if (shotShooter === 'player' && !incomingBall) {
+      game.playerMoveLockedUntil = performance.now() + SWING_IMPACT_DELAY_MS + PLAYER_POST_SERVE_MOVE_LOCK_MS;
+    }
     if (game.ball && game.ball.shooter !== shotShooter && !incomingBall) game.ball = null;
     game.charging = false;
     game.state = 'swinging';
@@ -5431,7 +5912,7 @@
       if (game.ball && swing.forceScore) {
         game.ball.forceScore = true;
         firstTutorialShotGuaranteed = false;
-        localStorage.setItem('bd_first_tutorial_hit_done', '1');
+        writeBadmintonStorage('bd_first_tutorial_hit_done', '1');
       }
     }, SWING_IMPACT_DELAY_MS);
   }
@@ -5453,7 +5934,7 @@
     resumeAudio();
     if (game.tutorialStep === 2) {
       game.tutorialStep = 3;
-      localStorage.setItem('bd_tutorial_done', '1');
+      writeBadmintonStorage('bd_tutorial_done', '1');
       tutorialOverlay.classList.add('done');
       game.distance = 200;
       game.streak = 0;
@@ -5499,7 +5980,14 @@
   function stepAwaitingPlayerReturn(dt) {
     var ball = game.ball;
     if (!ball || ball.awaitingReturnBy !== 'player') return false;
-    if (performance.now() > ball.returnDeadlineAt) {
+    if (ball.resolved) {
+      if (performance.now() >= ball.resolveAt) {
+        finishShot(ball.pendingScored, ball.pendingShotType, ball);
+        return true;
+      }
+      return false;
+    }
+    if (!ball.hitNet && performance.now() > ball.returnDeadlineAt) {
       ball.shooter = 'player';
       finishShot(false, 'out', ball);
       return true;
@@ -5570,6 +6058,7 @@
     ball.hitNet = true;
     ball.netTouched = true;
     ball.netCarryToTargetSide = carriesToTargetSide;
+    ball.legalNetClearance = false;
     ball.crossedNet = carriesToTargetSide;
     ball.netContactAt = performance.now();
     ball.netContactHoldUntil = ball.netContactAt + NET_CONTACT_HOLD_MS;
@@ -5583,18 +6072,26 @@
     ball.vy = Math.max(Math.abs(ball.vy || 0) * 0.10 + (carriesToTargetSide ? 132 : 150), carriesToTargetSide ? 132 : 150);
     syncShuttleCourtCoordinates(ball);
   }
-  function checkShuttleLanding(ball) {
-    if (!ball || ball.resolved) return;
+  function updateShuttleNetCrossing(ball) {
+    if (!ball || ball.resolved) return false;
     var direction = ball.direction === -1 ? -1 : 1;
     var crossedNet = didShuttleCrossMidcourtNet(ball, direction);
     if (!ball.crossedNet && crossedNet) {
-      ball.crossedNet = true;
       var netCrossing = getMidcourtNetCrossing(ball);
-      if (isShuttleInsideNetZ(ball, netCrossing)) {
+      if (!didShuttleLegallyClearNet(ball, netCrossing)) {
         applyMidcourtNetContact(ball, netCrossing);
-        return;
+        return true;
       }
+      ball.crossedNet = true;
+      ball.legalNetClearance = true;
     }
+    return false;
+  }
+  function checkShuttleLanding(ball) {
+    if (!ball || ball.resolved) return;
+    var direction = ball.direction === -1 ? -1 : 1;
+    // This is a no-op after the main physics loop, but required by stepAwaitingPlayerReturn.
+    if (updateShuttleNetCrossing(ball)) return;
     var ballRadius = ball.radius || BALL_R;
     if (ball.y >= FLOOR_Y - ballRadius * 0.25) {
       if (ball.netContactHoldUntil && performance.now() < ball.netContactHoldUntil) return;
@@ -5605,15 +6102,17 @@
       var inTargetY = ball.y >= BADMINTON.targetTop && ball.y <= BADMINTON.courtBottom + ballRadius;
       var landedOnTargetSide = direction > 0 ? landingCourtY >= targetLeft : landingCourtY <= targetRight;
       if (ball.hitNet) {
-        var netScored = landedOnTargetSide && inTargetX && inTargetY;
-        var netShotType = !landedOnTargetSide ? 'net' : (netScored ? 'net_touch' : 'out');
+        var netCarriedOver = ball.netCarryToTargetSide === true;
+        var netScored = netCarriedOver && landedOnTargetSide && inTargetX && inTargetY;
+        var netShotType = (!netCarriedOver || !landedOnTargetSide) ? 'net' : (netScored ? 'net_touch' : 'out');
         queueShotResolution(ball, netScored, netShotType, netScored ? 140 : 80);
         ball.vx *= 0.18;
         ball.vy = -Math.abs(ball.vy) * 0.08;
         return;
       }
-      var scored = ball.crossedNet && inTargetX && inTargetY;
-      var shotType = (!ball.crossedNet || !landedOnTargetSide) ? 'net' : 'out';
+      var legallyOverNet = ball.legalNetClearance === true;
+      var scored = legallyOverNet && inTargetX && inTargetY;
+      var shotType = (!legallyOverNet || !landedOnTargetSide) ? 'net' : 'out';
       if (scored) {
         var nearBaseline = direction > 0 ? ball.x > targetRight - 34 : ball.x < targetLeft + 34;
         var nearNet = direction > 0 ? ball.x < targetLeft + 34 : ball.x > targetRight - 34;
@@ -5643,14 +6142,17 @@
     var shuttleRadius = ball.radius || BALL_R;
     var yuiReachLeft = BADMINTON.netX + shuttleRadius * 0.5;
     var yuiReachRight = BADMINTON.courtRight - shuttleRadius * 0.5;
+    var yuiRacketHitState = getYuiRacketHitRangeState(ball);
+    var yuiRacketHitInRange = yuiRacketHitState.normalized <= 1;
     var crossesYuiReach = Math.max(previousShuttleCourtY, shuttleCourtY) >= yuiReachLeft
       && Math.min(previousShuttleCourtY, shuttleCourtY) <= yuiReachRight;
-    var inYuiReach = crossesYuiReach
+    var inYuiReach = yuiRacketHitInRange || (crossesYuiReach
       && shuttleZ <= yuiContactTopZ
-      && shuttleZ >= yuiContactBottomZ;
-    if (!inYuiReach) return false;
-    var yuiSave = isYuiSmashSaveReachable(ball);
-    if (!isYuiRacketHitInRange(ball) && !yuiSave) return false;
+      && shuttleZ >= yuiContactBottomZ);
+    var yuiShortDropSave = isYuiShortDropSaveReachable(ball);
+    var yuiSave = isYuiSmashSaveReachable(ball) || yuiShortDropSave;
+    if (!inYuiReach && !yuiSave) return false;
+    if (!yuiRacketHitInRange && !yuiSave) return false;
     game.duel.activeShooter = 'neko';
     game.duel.rallyHits += 1;
     maybeTriggerYuiCheat('rally_return');
@@ -5885,7 +6387,7 @@
         newRecord = previousDistance > game.recordDistance;
         if (newRecord) {
           game.recordDistance = previousDistance;
-          localStorage.setItem('bd_record_distance', String(Math.round(game.recordDistance)));
+          writeBadmintonStorage('bd_record_distance', String(Math.round(game.recordDistance)));
           playYuiVoice('record');
         }
       } else {
@@ -5895,6 +6397,7 @@
     }
     game.totalScore = game.duel.playerScore;
     var currentDifficulty = getDuelDifficultyName();
+    if (currentDifficulty !== previousDifficulty && bgmEnabled) badmintonGameAudio.sync('difficulty-ramp');
     if (pointWinner === 'player' && currentDifficulty !== previousDifficulty) {
       showAssistHint(_i18n('toast.difficulty', '难度 {{difficulty}}', { difficulty: currentDifficulty }));
       speakDuelDifficultyRampLine(currentDifficulty);
@@ -6034,7 +6537,7 @@
       var newRecord = !isPracticeMode() && previousDistance > game.recordDistance;
       if (newRecord) {
         game.recordDistance = previousDistance;
-        localStorage.setItem('bd_record_distance', String(Math.round(game.recordDistance)));
+        writeBadmintonStorage('bd_record_distance', String(Math.round(game.recordDistance)));
         playYuiVoice('record');
       }
       var eventKind = newRecord ? 'new_record' : 'shot_result';
@@ -6090,7 +6593,7 @@
       } else {
         game.state = 'game_over';
         game.ball = null;
-        localStorage.setItem('bd_last_final_streak', String(game.bestStreak));
+        writeBadmintonStorage('bd_last_final_streak', String(game.bestStreak));
         sendGameEvent({
           kind: 'game_over', result: 'missed', streak: game.streak, final_streak: game.bestStreak, best_streak: game.bestStreak, made_count: game.madeCount,
           distance: previousDistance, final_distance: previousDistance, shot_type: shotType,
@@ -6278,9 +6781,10 @@
         b.prevCourtY = getShuttleCourtY(b, false);
         b.prevZ = getShuttleCourtZ(b, false);
         stepBallPhysics(b, subDt);
+        updateShuttleNetCrossing(b);
+        if (!b.hitNet && maybeYuiReturnIncomingShuttle(b)) break;
         checkShuttleLanding(b);
         if (!b.hitNet) {
-          if (maybeYuiReturnIncomingShuttle(b)) break;
           if (maybePlayerReceiveIncomingShuttle(b)) break;
         }
         updateNetPhysics(subDt);
@@ -7307,8 +7811,9 @@
     }
     netContactEffects.length = activeCount;
     if (!netContactEffects.length) return;
+    var lightweight = shouldUseLightweightNetContactEffects();
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation = lightweight ? 'source-over' : 'lighter';
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (var i = 0; i < netContactEffects.length; i++) {
@@ -7320,25 +7825,29 @@
       var x = clamp(effect.x, BADMINTON.netX - 34, BADMINTON.netX + 34);
       var y = clamp(effect.y - lift, NET_TOP - 18, NET_BOTTOM + 24);
 
-      ctx.shadowColor = 'rgba(255,244,190,' + (0.26 * alpha).toFixed(3) + ')';
-      ctx.shadowBlur = 7 + 8 * alpha;
-      ctx.strokeStyle = 'rgba(255,245,204,' + (0.22 * alpha).toFixed(3) + ')';
-      ctx.lineWidth = 5.8 * alpha;
-      ctx.beginPath();
-      ctx.moveTo(x - 3, y - spread * 0.55);
-      ctx.quadraticCurveTo(x + effect.direction * (5 + spread * 0.08), y, x - 2, y + spread * 0.55);
-      ctx.stroke();
+      if (!lightweight) {
+        ctx.shadowColor = 'rgba(255,244,190,' + (0.26 * alpha).toFixed(3) + ')';
+        ctx.shadowBlur = 7 + 8 * alpha;
+        ctx.strokeStyle = 'rgba(255,245,204,' + (0.22 * alpha).toFixed(3) + ')';
+        ctx.lineWidth = 5.8 * alpha;
+        ctx.beginPath();
+        ctx.moveTo(x - 3, y - spread * 0.55);
+        ctx.quadraticCurveTo(x + effect.direction * (5 + spread * 0.08), y, x - 2, y + spread * 0.55);
+        ctx.stroke();
+      }
 
-      ctx.shadowBlur = 3 + 6 * alpha;
-      ctx.strokeStyle = 'rgba(236,255,248,' + (0.46 * alpha).toFixed(3) + ')';
-      ctx.lineWidth = Math.max(0.65, 1.45 * alpha);
+      ctx.shadowBlur = lightweight ? 0 : 3 + 6 * alpha;
+      ctx.strokeStyle = 'rgba(236,255,248,' + ((lightweight ? 0.38 : 0.46) * alpha).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(0.55, (lightweight ? 1.05 : 1.45) * alpha);
       ctx.beginPath();
       ctx.moveTo(x, y - spread);
       ctx.quadraticCurveTo(x + effect.direction * (4 + spread * 0.10), y, x, y + spread);
       ctx.stroke();
 
-      ctx.fillStyle = 'rgba(255,236,170,' + (0.42 * alpha).toFixed(3) + ')';
-      for (var spark = 0; spark < 4; spark++) {
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,236,170,' + ((lightweight ? 0.30 : 0.42) * alpha).toFixed(3) + ')';
+      var sparkCount = lightweight ? 2 : 4;
+      for (var spark = 0; spark < sparkCount; spark++) {
         var sparkPhase = spark * 1.7 + age * 2.6;
         var sparkX = x + effect.direction * (6 + spark * 4 + age * 18) + Math.sin(sparkPhase) * 3;
         var sparkY = y + (spark - 1.5) * 9 - age * (8 + spark * 2);
@@ -8426,28 +8935,52 @@
     inkCtx.clearRect(0, 0, BASE_W, BASE_H);
 
     var pulse = 0.5;
-    var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 24 * inkScale, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.34 * inkScale);
-    centralInk.addColorStop(0, 'rgba(0,0,0,.96)');
-    centralInk.addColorStop(0.44, 'rgba(1,4,9,.92)');
-    centralInk.addColorStop(0.72, 'rgba(4,12,19,.62)');
+    var centralInk = inkCtx.createRadialGradient(BASE_W * 0.50, BASE_H * 0.48, 12 * inkScale, BASE_W * 0.50, BASE_H * 0.48, BASE_W * 0.39 * inkScale);
+    centralInk.addColorStop(0, 'rgba(0,0,0,1)');
+    centralInk.addColorStop(0.30, 'rgba(0,0,0,.99)');
+    centralInk.addColorStop(0.58, 'rgba(0,2,7,.90)');
+    centralInk.addColorStop(0.82, 'rgba(3,9,15,.48)');
     centralInk.addColorStop(1, 'rgba(0,0,0,0)');
     inkCtx.globalAlpha = 1;
     inkCtx.fillStyle = centralInk;
     inkCtx.fillRect(0, 0, BASE_W, BASE_H);
 
+    function drawKartInkSplat(cx, cy, rx, ry, rot, alpha) {
+      inkCtx.save();
+      inkCtx.translate(cx, cy);
+      inkCtx.rotate(rot);
+      inkCtx.globalAlpha = Math.min(1, alpha);
+      inkCtx.fillStyle = 'rgba(0,0,0,.97)';
+      inkCtx.shadowColor = 'rgba(0,0,0,.58)';
+      inkCtx.shadowBlur = 18;
+      inkCtx.beginPath();
+      inkCtx.moveTo(rx * 0.92, -ry * 0.12);
+      inkCtx.bezierCurveTo(rx * 0.78, -ry * 0.70, rx * 0.18, -ry * 0.96, -rx * 0.26, -ry * 0.78);
+      inkCtx.bezierCurveTo(-rx * 0.84, -ry * 0.58, -rx * 1.02, -ry * 0.05, -rx * 0.78, ry * 0.36);
+      inkCtx.bezierCurveTo(-rx * 0.42, ry * 0.90, rx * 0.26, ry * 0.84, rx * 0.72, ry * 0.48);
+      inkCtx.bezierCurveTo(rx * 1.06, ry * 0.20, rx * 1.02, ry * 0.05, rx * 0.92, -ry * 0.12);
+      inkCtx.closePath();
+      inkCtx.fill();
+      inkCtx.restore();
+    }
+
     function drawCenterInkBlob(cx, cy, rx, ry, rot, alpha) {
       inkCtx.save();
       inkCtx.translate(cx, cy);
       inkCtx.rotate(rot);
-      inkCtx.globalAlpha = Math.min(0.94, alpha);
-      inkCtx.fillStyle = 'rgba(0,2,6,.9)';
-      inkCtx.shadowColor = 'rgba(0,0,0,.42)';
-      inkCtx.shadowBlur = 22;
+      inkCtx.globalAlpha = Math.min(0.98, alpha);
+      inkCtx.fillStyle = 'rgba(0,0,0,.96)';
+      inkCtx.shadowColor = 'rgba(0,0,0,.58)';
+      inkCtx.shadowBlur = 18;
       inkCtx.beginPath();
       inkCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
       inkCtx.fill();
       inkCtx.restore();
     }
+
+    drawKartInkSplat(BASE_W * 0.50, BASE_H * 0.49, BASE_W * 0.24 * inkScale, BASE_H * 0.18 * inkScale, -0.04, 0.98);
+    drawKartInkSplat(BASE_W * 0.45, BASE_H * 0.46, BASE_W * 0.13 * inkScale, BASE_H * 0.11 * inkScale, 0.22, 0.88);
+    drawKartInkSplat(BASE_W * 0.57, BASE_H * 0.52, BASE_W * 0.12 * inkScale, BASE_H * 0.10 * inkScale, -0.24, 0.84);
 
     var centerSplashes = [
       [BASE_W * 0.50, BASE_H * 0.47, 154, 116, -0.06, 0.98],
@@ -8517,18 +9050,18 @@
     var t = Number.isFinite(now) ? now : getBadmintonFrameNow();
     var ink = getYuiInkState(t);
     if (!ink.active || ink.alpha <= 0) return;
-    var inkCanvas = ensureYuiInkOverlayCache();
-    if (!inkCanvas) return;
+    var inkOverlay = isYuiInkOverlayImageReady() ? yuiInkOverlayImage : ensureYuiInkOverlayCache();
+    if (!inkOverlay) return;
     var pulse = 0.5 + Math.sin(t / 180) * 0.5;
     var scale = 1 + pulse * 0.012;
     var drawW = BASE_W * scale;
     var drawH = BASE_H * scale;
     aimingCtx.save();
-    aimingCtx.globalAlpha = Math.min(0.34, ink.alpha * 0.38);
-    aimingCtx.fillStyle = 'rgba(1,5,10,.46)';
+    aimingCtx.globalAlpha = Math.min(0.42, ink.alpha * 0.46);
+    aimingCtx.fillStyle = 'rgba(0,0,0,.78)';
     aimingCtx.fillRect(0, 0, BASE_W, BASE_H);
-    aimingCtx.globalAlpha = Math.min(0.96, ink.alpha * 1.04);
-    aimingCtx.drawImage(inkCanvas, (BASE_W - drawW) / 2, (BASE_H - drawH) / 2, drawW, drawH);
+    aimingCtx.globalAlpha = Math.min(1, ink.alpha * 1.12);
+    aimingCtx.drawImage(inkOverlay, (BASE_W - drawW) / 2, (BASE_H - drawH) / 2, drawW, drawH);
     drawYuiInkArcRings(ink, t);
     aimingCtx.restore();
   }
@@ -8538,6 +9071,8 @@
     var contact = getRacketContactPoint('player');
     var yui = getYuiShotOrigin();
     if (!ball || !contact || !yui) return;
+    var canReturnNow = canPlayerReturnIncomingShuttle();
+    if (!canReturnNow) return;
     var dx = yui.x - contact.x;
     var dy = yui.y - contact.y;
     var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -8555,11 +9090,10 @@
     var controlY = ball.y + uy * 2 + ny * 24;
     var endX = ball.x + ux * 38 + nx * 7;
     var endY = ball.y + uy * 38 + ny * 7;
-    var canReturnNow = canPlayerReturnIncomingShuttle();
-    var cueAlpha = canReturnNow ? 1 : 0.46;
+    var cueAlpha = 1;
 
     aimingCtx.save();
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,236,168,.075)' : 'rgba(114,216,255,.055)';
+    aimingCtx.strokeStyle = 'rgba(255,236,168,.075)';
     aimingCtx.lineWidth = 5.8 + pulse * 0.8;
     aimingCtx.lineCap = 'round';
     aimingCtx.globalAlpha = cueAlpha;
@@ -8568,7 +9102,7 @@
     aimingCtx.quadraticCurveTo(controlX, controlY, endX, endY);
     aimingCtx.stroke();
 
-    aimingCtx.strokeStyle = canReturnNow ? 'rgba(255,210,96,.30)' : 'rgba(114,216,255,.25)';
+    aimingCtx.strokeStyle = 'rgba(255,210,96,.30)';
     aimingCtx.lineWidth = 1.5 + pulse * 0.35;
     aimingCtx.beginPath();
     aimingCtx.moveTo(startX, startY);
@@ -8709,6 +9243,8 @@
     });
   }
   function loop(ts) {
+    if (badmintonGameDisposed) return;
+    badmintonFrameRequestId = 0;
     badmintonFrameNow = ts || performance.now();
     var dt = game.lastTs ? Math.min(0.033, (ts - game.lastTs) / 1000) : 0.016;
     game.lastTs = ts;
@@ -8737,13 +9273,17 @@
     scheduleBadmintonNextFrame();
   }
   function scheduleBadmintonNextFrame() {
+    if (badmintonGameDisposed) return;
     if (document.hidden) {
-      setTimeout(function () {
-        requestAnimationFrame(loop);
+      if (badmintonHiddenFrameTimer) clearTimeout(badmintonHiddenFrameTimer);
+      badmintonHiddenFrameTimer = setTimeout(function () {
+        badmintonHiddenFrameTimer = 0;
+        if (badmintonGameDisposed) return;
+        badmintonFrameRequestId = requestAnimationFrame(loop);
       }, BADMINTON_HIDDEN_FRAME_DELAY_MS);
       return;
     }
-    requestAnimationFrame(loop);
+    badmintonFrameRequestId = requestAnimationFrame(loop);
   }
 
   function getRouteLanlanName() {
@@ -8751,10 +9291,11 @@
     return name === 'badminton_demo' ? '' : name;
   }
   function startRoute() {
+    if (badmintonGameDisposed) return Promise.resolve({ ok: false, reason: 'disposed' });
     var localLeaderboard = loadLocalLeaderboard();
     var routeLanlanName = getRouteLanlanName();
     var routeSessionId = sessionId;
-    var routeStartPromise = post('/route/start', Object.assign({
+    routeStartPromise = post('/route/start', Object.assign({
       session_id: sessionId, lanlan_name: routeLanlanName, source: 'badminton_demo',
       game_type: 'badminton', game_theme: 'badminton', mode: currentMode, i18n_language: getRequestLanguage(),
       gameStarted: true, game_started: true,
@@ -8766,7 +9307,9 @@
       theme: currentThemeKey,
       last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
     }, _badmintonGameMemoryPolicyPayload()), 22000).then(function (res) {
-      if (sessionId !== routeSessionId || endedRoute || game.state === 'game_over') return res;
+      if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over') {
+        return res;
+      }
       if (!res || !res.ok) {
         routeActive = false;
         return res;
@@ -8776,6 +9319,7 @@
         applyRouteIdentity(res.state);
         applyPreGameContext(res.state);
       }
+      if (badmintonGameDisposed) return res;
       heartbeatTimer = setInterval(function () {
         var pageVisible = !document.hidden;
         post('/route/heartbeat', Object.assign({
@@ -8824,22 +9368,30 @@
     }).catch(function () {
       routeActive = false;
       return { ok: false, reason: 'request_failed' };
+    }).finally(function () {
+      if (routeStartPromise && sessionId === routeSessionId) routeStartPromise = null;
     });
     return routeStartPromise;
   }
   function startRouteAfterCharacterReady() {
     return loadBadmintonCharacter().finally(function () { return startRoute(); });
   }
-  function endRoute(useBeacon) {
-    if (endedRoute && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return;
-    endedRoute = true;
-    routeActive = false;
-    clearInterval(heartbeatTimer);
-    clearInterval(drainTimer);
-    var routeEndSessionId = sessionId;
+  function endRoute(useBeacon, options) {
+    var force = options && options.force;
+    var detached = options && options.detached;
+    if (!detached && endedRoute && !force && !(useBeacon && routeEndFetchPending && !routeEndBeaconDelivered)) return routeEndPromise || Promise.resolve({ ok: true, skipped: true });
+    if (!detached) endedRoute = true;
+    if (!detached) routeActive = false;
+    if (!detached) {
+      clearInterval(heartbeatTimer);
+      clearInterval(drainTimer);
+      heartbeatTimer = 0;
+      drainTimer = 0;
+    }
+    var routeEndSessionId = (options && options.sessionId) || sessionId;
     var roundCompleted = game.state === 'game_over';
     var payloadObj = {
-      session_id: sessionId, lanlan_name: getRouteLanlanName(),
+      session_id: routeEndSessionId, lanlan_name: getRouteLanlanName(),
       reason: roundCompleted ? 'badminton_game_over' : 'badminton_abandoned',
       mode: currentMode,
       gameStarted: true,
@@ -8898,25 +9450,99 @@
     if (useBeacon && navigator.sendBeacon) {
       try {
         if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) {
-          routeEndBeaconDelivered = true;
-          routeEndFetchPending = false;
-          routeEndPromise = Promise.resolve({ ok: true, beacon: true });
-          return;
+          if (!detached) {
+            routeEndBeaconDelivered = true;
+            routeEndFetchPending = false;
+            routeEndPromise = Promise.resolve({ ok: true, beacon: true });
+          }
+          return Promise.resolve({ ok: true, beacon: true });
         }
       } catch (_) {}
     }
-    routeEndFetchPending = true;
-    routeEndPromise = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).then(function (res) {
-      routeEndFetchPending = false;
+    if (!detached) routeEndFetchPending = true;
+    var routeEndRequest = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).then(function (res) {
+      if (!detached) routeEndFetchPending = false;
       return res.json().catch(function () { return { ok: res.ok }; });
     }).then(function (res) {
-      if (res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);
+      if (!detached && res && res.state && sessionId === routeEndSessionId) applyRouteIdentity(res.state);
       return res;
     }).catch(function (err) {
-      routeEndFetchPending = false;
+      if (!detached) routeEndFetchPending = false;
+      if (!detached && !badmintonGameDisposed && sessionId === routeEndSessionId) endedRoute = false;
       throw err;
     });
+    if (detached) return routeEndRequest;
+    routeEndPromise = routeEndRequest;
     return routeEndPromise;
+  }
+
+  function disposeBadmintonGame(reason) {
+    if (badmintonGameDisposed) return;
+    var pendingRouteStart = routeStartPromise;
+    badmintonGameDisposed = true;
+    try {
+      var routeEndAfterStart = pendingRouteStart ? Promise.resolve(pendingRouteStart).catch(function () { return null; }).then(function (res) {
+        if (res && res.ok) return endRoute(true, { force: true });
+        return endRoute(true);
+      }) : endRoute(true);
+      Promise.resolve(routeEndAfterStart).catch(function () {});
+    } catch (_) {}
+    if (badmintonFrameRequestId) {
+      cancelAnimationFrame(badmintonFrameRequestId);
+      badmintonFrameRequestId = 0;
+    }
+    if (badmintonHiddenFrameTimer) {
+      clearTimeout(badmintonHiddenFrameTimer);
+      badmintonHiddenFrameTimer = 0;
+    }
+    if (badmintonResizeFrame) {
+      cancelAnimationFrame(badmintonResizeFrame);
+      badmintonResizeFrame = 0;
+    }
+    if (playerVrmPoseFrame) {
+      cancelAnimationFrame(playerVrmPoseFrame);
+      playerVrmPoseFrame = 0;
+    }
+    clearTimeout(resultTimer);
+    clearTimeout(nekoControlTimer);
+    clearTimeout(assistToastTimer);
+    clearTimeout(bubbleTimer);
+    clearTimeout(playerActionTimer);
+    clearTimeout(yuiActionTimer);
+    clearTimeout(game.duel.timer);
+    clearTimeout(voiceArbiter.timer);
+    clearInterval(heartbeatTimer);
+    clearInterval(drainTimer);
+    clearInterval(bgmTimer);
+    clearInterval(badmintonLoadingTimer);
+    resultTimer = 0;
+    nekoControlTimer = 0;
+    assistToastTimer = 0;
+    bubbleTimer = 0;
+    playerActionTimer = 0;
+    yuiActionTimer = 0;
+    game.duel.timer = 0;
+    voiceArbiter.timer = 0;
+    heartbeatTimer = 0;
+    drainTimer = 0;
+    bgmTimer = 0;
+    badmintonLoadingTimer = 0;
+    stopBgm();
+    try { badmintonGameAudio.destroy(); } catch (_) {}
+    try {
+      if (window.badmintonVrmManager && typeof window.badmintonVrmManager.destroy === 'function') window.badmintonVrmManager.destroy();
+    } catch (_) {}
+    try {
+      if (window.badmintonPlayerVrmManager && typeof window.badmintonPlayerVrmManager.destroy === 'function') window.badmintonPlayerVrmManager.destroy();
+    } catch (_) {}
+    try {
+      if (window.live2dManager && typeof window.live2dManager.destroy === 'function') window.live2dManager.destroy();
+    } catch (_) {}
+    while (badmintonEventCleanupFns.length) {
+      var cleanup = badmintonEventCleanupFns.pop();
+      try { cleanup(); } catch (_) {}
+    }
+    window.__badmintonDisposedReason = reason || '';
   }
 
   function cycleTheme() {
@@ -9042,6 +9668,7 @@
       shooter: 'neko',
       direction: -1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: 'player',
       returnDeadlineAt: performance.now() + 2400,
@@ -9089,6 +9716,7 @@
       shooter: 'player',
       direction: 1,
       crossedNet: true,
+      legalNetClearance: true,
       resolved: false,
       awaitingReturnBy: '',
       hitNet: false,
@@ -9162,6 +9790,7 @@
           incomingReturnInReach: canPlayerReturnIncomingShuttle(),
           positionTransitioning: isPositionTransitioning,
           playerCourt: Object.assign({}, game.playerCourt),
+          playerMoveLockRemainingMs: Math.max(0, Math.round((game.playerMoveLockedUntil || 0) - performance.now())),
           courtServiceLines: getCourtServiceLinePositions(BADMINTON),
           playerServeX: PLAYER_START_X,
           playerFootY: getPlayerFootY(),
@@ -9237,6 +9866,8 @@
             trail: getShuttleTrailPoints(game.ball),
             awaitingReturnBy: game.ball.awaitingReturnBy || '',
             crossedNet: !!game.ball.crossedNet,
+            legalNetClearance: game.ball.legalNetClearance === true,
+            netCarryToTargetSide: game.ball.netCarryToTargetSide === true,
             hitNet: !!game.ball.hitNet
           } : null,
           difficulty: getDuelDifficultyName(),
@@ -9371,21 +10002,21 @@
     setYuiAction('charging', 0);
     setPlayerAction('charging', 0);
   }
-  canvas.addEventListener('mousemove', handleBadmintonPointerMove);
-  canvas.addEventListener('pointermove', handleBadmintonPointerMove);
-  canvas.addEventListener('mousedown', handleBadmintonPointerDown);
-  window.addEventListener('mousemove', function (ev) {
+  addBadmintonEventListener(canvas, 'mousemove', handleBadmintonPointerMove);
+  addBadmintonEventListener(canvas, 'pointermove', handleBadmintonPointerMove);
+  addBadmintonEventListener(canvas, 'mousedown', handleBadmintonPointerDown);
+  addBadmintonEventListener(window, 'mousemove', function (ev) {
     handleBadmintonPointerMove(ev);
   }, true);
-  window.addEventListener('pointermove', function (ev) {
+  addBadmintonEventListener(window, 'pointermove', function (ev) {
     handleBadmintonPointerMove(ev);
   }, true);
-  window.addEventListener('mousedown', function (ev) {
+  addBadmintonEventListener(window, 'mousedown', function (ev) {
     handleBadmintonPointerDown(ev);
     if (ev && ev.__badmintonPointerDownHandled) return;
     returnIncomingPlayerShuttle();
   }, true);
-  window.addEventListener('mouseup', function () {
+  addBadmintonEventListener(window, 'mouseup', function () {
     if (isBadmintonLoadingActive()) return;
     if (game.charging && returnIncomingPlayerShuttle()) return;
     if (game.charging && canPlayerControlShot()) shoot();
@@ -9396,7 +10027,7 @@
       setPlayerAction('', 0);
     }
   });
-  window.addEventListener('keydown', function (ev) {
+  addBadmintonEventListener(window, 'keydown', function (ev) {
     if (isBadmintonLoadingActive()) {
       if (ev.key === ' ' || ev.code === 'Space') ev.preventDefault();
       return;
@@ -9428,26 +10059,26 @@
     }
   });
   if (bgmVolumeInput) {
-    bgmVolumeInput.addEventListener('input', function () {
+    addBadmintonEventListener(bgmVolumeInput, 'input', function () {
       badmintonGameAudio.setBgmVolume(clamp(Number(bgmVolumeInput.value) / 100, 0, 1));
       setTextIfChanged(bgmVolumeValue, bgmVolumeInput.value + '%');
     });
   }
   if (sfxVolumeInput) {
-    sfxVolumeInput.addEventListener('input', function () {
+    addBadmintonEventListener(sfxVolumeInput, 'input', function () {
       badmintonGameAudio.setSfxVolume(clamp(Number(sfxVolumeInput.value) / 100, 0, 1));
       setTextIfChanged(sfxVolumeValue, sfxVolumeInput.value + '%');
     });
   }
-  if (themeButton) themeButton.addEventListener('click', cycleTheme);
-  if (badmintonExitButton) badmintonExitButton.addEventListener('click', closeBadmintonWindow);
-  if (statsButton) statsButton.addEventListener('click', showStatsPanel);
-  if (closeStatsButton) closeStatsButton.addEventListener('click', function () {
+  if (themeButton) addBadmintonEventListener(themeButton, 'click', cycleTheme);
+  if (badmintonExitButton) addBadmintonEventListener(badmintonExitButton, 'click', closeBadmintonWindow);
+  if (statsButton) addBadmintonEventListener(statsButton, 'click', showStatsPanel);
+  if (closeStatsButton) addBadmintonEventListener(closeStatsButton, 'click', function () {
     statsPanel.classList.remove('show');
     statsPanel.setAttribute('aria-hidden', 'true');
   });
   if (debugPanel) {
-    debugPanel.addEventListener('click', function (ev) {
+    addBadmintonEventListener(debugPanel, 'click', function (ev) {
       var btn = ev.target && ev.target.closest ? ev.target.closest('button') : null;
       if (!btn) return;
       var action = btn.dataset.debugAction;
@@ -9465,36 +10096,45 @@
     });
   }
   if (debugPowerInput) {
-    debugPowerInput.addEventListener('input', function () {
+    addBadmintonEventListener(debugPowerInput, 'input', function () {
       game.power = clamp(Number(debugPowerInput.value) || 0, 0, 100);
       setTextIfChanged(debugPowerValue, String(Math.round(game.power)));
       updateDebugReadout();
     });
   }
-  if (debugGuideInput) debugGuideInput.addEventListener('change', function () { assists.guide = !!debugGuideInput.checked; writeJson('bd_assists', assists); updateHud(); });
-  if (debugSweetInput) debugSweetInput.addEventListener('change', function () { assists.sweet = !!debugSweetInput.checked; writeJson('bd_assists', assists); updateHud(); });
-  if (debugMarkersInput) debugMarkersInput.addEventListener('change', function () { distanceMarkersEnabled = !!debugMarkersInput.checked; writeJson(DISTANCE_MARKERS_STORAGE_KEY, distanceMarkersEnabled); invalidateBadmintonCourtCache(); updateHud(); });
-  leaderboardButton.addEventListener('click', function () {
+  if (debugGuideInput) addBadmintonEventListener(debugGuideInput, 'change', function () { assists.guide = !!debugGuideInput.checked; writeJson('bd_assists', assists); updateHud(); });
+  if (debugSweetInput) addBadmintonEventListener(debugSweetInput, 'change', function () { assists.sweet = !!debugSweetInput.checked; writeJson('bd_assists', assists); updateHud(); });
+  if (debugMarkersInput) addBadmintonEventListener(debugMarkersInput, 'change', function () { distanceMarkersEnabled = !!debugMarkersInput.checked; writeJson(DISTANCE_MARKERS_STORAGE_KEY, distanceMarkersEnabled); invalidateBadmintonCourtCache(); updateHud(); });
+  addBadmintonEventListener(leaderboardButton, 'click', function () {
     showLeaderboard('global');
   });
-  closeLeaderboardButton.addEventListener('click', hideLeaderboard);
-  leaderboardTabs.addEventListener('click', function (ev) {
+  addBadmintonEventListener(closeLeaderboardButton, 'click', hideLeaderboard);
+  addBadmintonEventListener(leaderboardTabs, 'click', function (ev) {
     var tab = ev.target && ev.target.closest ? ev.target.closest('.lb-tab') : null;
     if (!tab) return;
     showLeaderboard(tab.dataset.tab || 'global');
   });
-  restartButton.addEventListener('click', resetGame);
+  addBadmintonEventListener(restartButton, 'click', resetGame);
   if (badmintonStartButton) {
-    badmintonStartButton.addEventListener('click', function () {
+    addBadmintonEventListener(badmintonStartButton, 'click', function () {
       startBadmintonFromStartScreen();
     });
   }
-  window.addEventListener('resize', scheduleBadmintonResize);
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'pointerdown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'keydown', activateBadmintonStartMenuAudio, true));
+  badmintonStartMenuAudioListenerCleanups.push(addBadmintonEventListener(window, 'touchstart', activateBadmintonStartMenuAudio, true));
+  addBadmintonEventListener(window, 'resize', scheduleBadmintonResize);
   window.addEventListener('beforeunload', function () {
-    endRoute(true);
+    disposeBadmintonGame('beforeunload');
   });
-  window.addEventListener('localechange', function () {
+  window.addEventListener('pagehide', function () {
+    disposeBadmintonGame('pagehide');
+  });
+  addBadmintonEventListener(window, 'localechange', function () {
     invalidateBadmintonCourtCache();
+    generatedQuickLinesRequestSeq++;
+    generatedQuickLines = {};
+    if (routeActive) loadGeneratedQuickLines();
     applyStaticI18n();
     updateHud();
     updateThemeButton();
@@ -9518,7 +10158,7 @@
   if (lastFinalStreak >= 15) applyNekoControl({ expression: 'anticipate', intensity: 'medium' }, {});
   updateTutorial(_i18n('tutorial.aim', '上下移动鼠标调整挥拍角度'));
   checkSeasonalEasterEggs();
-  requestAnimationFrame(loop);
+  badmintonFrameRequestId = requestAnimationFrame(loop);
   afterInitialPaint(function () {
     var characterReady = loadBadmintonCharacter();
     var playerAvatarReady = initPlayerAvatar();

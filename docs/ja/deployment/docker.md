@@ -24,24 +24,17 @@ version: '3.8'
 
 services:
   neko-main:
-    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    # Image version is selectable via env vars (latest = newest release)
+    image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
     container_name: neko
     restart: unless-stopped
     ports:
-      - "48911:80"
-    environment:
-      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
-      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
-      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
-      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
-      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
+      - "48911:80"    # HTTP
+      - "48912:443"   # HTTPS
     volumes:
       - ./N.E.K.O:/root/Documents/N.E.K.O
       - ./logs:/app/logs
+      - ./ssl:/root/ssl
     networks:
       - neko-network
 
@@ -49,6 +42,8 @@ networks:
   neko-network:
     driver: bridge
 ```
+
+設定は上で作成した `.env` ファイルから供給されます（`cp env.template .env`）。`entrypoint.sh` が起動時に `NEKO_*` 変数を読み込みます。完全な一覧は [環境変数](#環境変数) を参照してください。
 
 ## 環境変数
 
@@ -81,6 +76,7 @@ Docker コンテナにはリバースプロキシとして Nginx が含まれて
 |-------|----------------|---------|
 | `./N.E.K.O` | `/root/Documents/N.E.K.O` | 設定、キャラクター、メモリ |
 | `./logs` | `/app/logs` | アプリケーションログ |
+| `./ssl` | `/root/ssl` | SSL 証明書 |
 
 ## プロバイダークイックスタート
 

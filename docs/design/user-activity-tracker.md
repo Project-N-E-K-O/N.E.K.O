@@ -34,7 +34,7 @@ combines:
 * **Rule-derived signals** (state, propensity, reasons, dwell, idle,
   unfinished_thread, etc.) — pure heuristic, no LLM. Window titles,
   foreground process, CPU, voice RMS, conversation timestamps go in,
-  one of nine states comes out.
+  one of ten states comes out.
 * **Emotion-tier LLM enrichment** (activity_scores, activity_guess,
   open_threads) — advisory only, cached, fail-silent. Lets the
   proactive AI see soft cross-state scores and a one-sentence
@@ -75,6 +75,7 @@ for all fields.
 | `gaming` | Game window in foreground (subcategory='game') | `restricted_screen_only` *or* `open` (casual intensity) | Intensity / genre refines further (see "Game intensity & genre" below) |
 | `focused_work` | Work window + ≥ 90s dwell + recent input | `restricted_screen_only` | Same as gaming |
 | `casual_browsing` | Entertainment window + ≥ 30s dwell | `open` | Encourage external material |
+| `focused_video` | Video/live entertainment window + ≥ 120s *continuous* dwell | `restricted_screen_only` | Immersed in watching — keep screen snark (`witty` tone), drop music/meme/web. Switching to a non-video window resets the dwell, so it doesn't trip on a quick clip |
 | `chatting` | Communication app in foreground | `open` | Allow externals, careful with screen comments |
 | `voice_engaged` | Voice mode + RMS active in last 8s | `open` | Match voice flow; short replies; careful introducing externals |
 | `idle` | At computer but no clear category | `open` | Continuation > reminisce > externals |
@@ -145,16 +146,17 @@ silence; the existing 2-followup hard cap prevents harassment.
 ## Tone modifier (style hint, orthogonal to propensity)
 
 `ActivitySnapshot.tone` is a single-axis style hint that controls *how*
-the AI delivers its message. Six tones, derived in `derive_tone()`:
+the AI delivers its message. Seven tones, derived in `derive_tone()`:
 
 | Tone | When | Prompt hint (zh) |
 |---|---|---|
 | `terse` | competitive games / rhythm | "短句优先，不延展话题，避免动作描写" |
 | `hushed` | immersive horror | "轻声细语，配合氛围克制说话" |
 | `mellow` | immersive RPG / story | "慢节奏放松陪伴，不丢专业术语进来" |
-| `playful` | casual gaming / casual_browsing | "闲适带点小俏皮，可以开玩笑" |
+| `playful` | casual gaming / idle | "闲适带点小俏皮，可以开玩笑" |
+| `witty` | casual_browsing / focused_video | snarky running commentary + "没梗就 [PASS]" quality bar |
 | `warm` | voice / chatting / stale_returning | "自然对话，回应感强" |
-| `concise` | focused_work / idle / default | "不啰嗦，专业克制" |
+| `concise` | focused_work / default | "不啰嗦，专业克制" |
 
 Rendered by `format_activity_state_section` as one extra line:
 
@@ -449,6 +451,7 @@ Tunables live at the top of `main_logic/activity/state_machine.py`:
 | `FOCUSED_WORK_MIN_DWELL_SECONDS` | 90 | Dwell on work window before `focused_work` fires |
 | `FOCUSED_WORK_RECENT_INPUT_SECONDS` | 300 | "Recent input" window for focused-work |
 | `CASUAL_BROWSING_MIN_DWELL_SECONDS` | 30 | Dwell on entertainment before `casual_browsing` fires |
+| `FOCUSED_VIDEO_MIN_DWELL_SECONDS` | 120 | Continuous dwell on a video/live window before `focused_video` fires (resets on window switch) |
 | `WINDOW_SWITCH_TRANSITION_THRESHOLD` | 5 | Window switches in lookback for `transitioning` |
 | `WINDOW_HISTORY_LOOKBACK_SECONDS` | 300 | Switch-rate window |
 | `TRANSITION_RECENT_WINDOW_SECONDS` | 30 | `transitioned_recently` flag duration |

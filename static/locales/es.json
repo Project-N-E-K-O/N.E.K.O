@@ -769,12 +769,14 @@
         "reactWindowLoadFailed": "No se pudieron cargar recursos de la ventana de chat",
         "reactWindowAriaLabel": "Ventana de chat de Neko",
         "focusIndicator": "Concentrada",
+        "focusThinking": "Pensando",
         "reactWindowInputHint": "Presione Enter para enviar, Shift + Enter para una nueva línea",
         "messageListAriaLabel": "mensajes de chat",
         "composerToolsAriaLabel": "Herramientas del compositor",
         "pendingImagesAriaLabel": "Imágenes pendientes",
         "pendingImageAlt": "Imagen {{index}}",
         "removePendingImage": "Quitar imagen",
+        "closeMemeAriaLabel": "Cerrar imagen",
         "emojiButtonAriaLabel": "emojis",
         "toolIconsAriaLabel": "Iconos de herramientas",
         "toolLollipop": "Chupete",
@@ -942,15 +944,15 @@
         "freeVersionHint": "(No es necesario para la versión gratuita)",
         "coreApiPlaceholder": "Por favor ingrese su clave API",
         "coreApiProvider": "API principal (chat de voz, solo omnimodal)",
-        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto/Voz personalizada)",
+        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto)",
         "saveSettings": "Guardar configuración",
-        "closeSettings": "Cerca",
+        "closeSettings": "Cerrar",
         "newbieRecommendTitle": "Recomendación de novato",
         "newbieRecommend": "Si aún no tiene una clave API, puede seleccionar \"Versión gratuita\" en las Opciones avanzadas a continuación para comenzar a usarla sin registrar ninguna cuenta.",
         "advancedOptions": "Opciones avanzadas (opcional)",
         "providerDescription": "Descripción del proveedor de API:",
         "coreApiDesc": "API principal: maneja la funcionalidad de conversación",
-        "assistApiDesc": "API de asistencia: maneja la administración de memoria, voz personalizada, chat de texto y modo Agente",
+        "assistApiDesc": "API de asistencia: maneja la administración de memoria, chat de texto y modo Agente",
         "providerFeatures": "Características del proveedor:",
         "aliFeature": "Alibaba: cuota gratuita disponible, funciones más completas",
         "glmFeature": "GLM: Los límites de tarifas son extremadamente estrictos. El modelo de audio/vídeo ha sido descontinuado y no se puede utilizar como API principal.",
@@ -959,26 +961,27 @@
         "siliconFeature": "SiliconFlow: tiene cuota gratuita, buen valor, funciones limitadas, solo para Assist API",
         "geminiFeature": "Géminis: Excelente inteligencia y valor.",
         "configSuggestion": "Sugerencias de configuración:",
-        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (no se admiten voz personalizada ni modo Agente)",
+        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestion": "API principal: maneja la funcionalidad de conversación, elige según el presupuesto y las necesidades",
-        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria, voz personalizada y modo Agente, solo Alibaba admite voz personalizada",
+        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria y modo Agente",
         "coreApiTitle": "Core API maneja la funcionalidad de chat de voz:",
-        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web, pero no admite voz personalizada ni modo Agente",
+        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web",
         "aliCore": "Alibaba: cuota gratuita disponible, funciones completas",
         "glmCore": "GLM: El modelo ha sido descontinuado temporalmente, no disponible",
         "stepCore": "StepFun: Completamente gratis, alto nivel de inteligencia, pero los límites de velocidad son demasiado estrictos, no recomendado",
         "openaiCore": "OpenAI: el nivel de inteligencia más alto, pero caro",
         "geminiCore": "Géminis: Excelente inteligencia y valor.",
-        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto, modo Agente y voz personalizada:",
-        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, pero no se admite voz personalizada",
-        "aliAssist": "Alibaba: opción recomendada, admite voz personalizada y modo Agente",
+        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto y modo Agente:",
+        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, el modo Agente cuenta con una cuota gratuita",
+        "aliAssist": "Alibaba: opción recomendada, funciones más completas, admite el modo Agente",
         "glmAssist": "GLM: administración de memoria gratuita, pero los límites de concurrencia/RPM son extremadamente estrictos y no se recomiendan",
         "stepAssist": "StepFun: Barato, pero los límites de concurrencia/RPM son extremadamente estrictos, no recomendados",
         "siliconAssist": "SiliconFlow: buen valor, admite el modo Agente",
         "openaiAssist": "OpenAI: fuerte capacidad de gestión de memoria",
         "geminiAssist": "Géminis: Excelente inteligencia y valor.",
         "kimiAssist": "Kimi: apoya el contexto y la visión a largo plazo",
-        "assistApiNote": "Nota: Solo Alibaba admite la funcionalidad de voz personalizada. No se recomiendan GLM y StepFun.",
+        "kimiCodeAssist": "Kimi Code: compatible con Anthropic Messages, útil para código y texto largo",
+        "assistApiNote": "Nota: no se recomiendan GLM y StepFun.",
         "assistApiKeyQwen": "Clave API de asistencia - Alibaba",
         "assistApiKeyOpenai": "Clave API de asistencia: OpenAI",
         "assistApiKeyGlm": "Clave API de asistencia: GLM",
@@ -986,6 +989,7 @@
         "assistApiKeySilicon": "Clave API de asistencia: SiliconFlow",
         "assistApiKeyGemini": "Clave API de asistencia: Géminis",
         "assistApiKeyKimi": "Clave API de asistencia: Kimi",
+        "assistApiKeyKimiCode": "Clave API de asistencia: Kimi Code",
         "assistApiKeyHint": "(Solo se requiere cuando Assist API es {{provider}})",
         "assistApiKeyPlaceholder": "Autocompletar desde el Libro de claves cuando está vacío",
         "providerNames": {
@@ -995,6 +999,7 @@
             "step": "paso divertido",
             "silicon": "flujo de silicio",
             "gemini": "Géminis",
+            "kimi_code": "Moonshot Kimi Code",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
@@ -1016,6 +1021,7 @@
             "silicon": "SiliconFlow (buen valor, recomendado)",
             "gemini": "Géminis (Google, Alta Inteligencia)",
             "kimi": "Kimi (Moonshot, contexto largo)",
+            "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "búsqueda profunda",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
@@ -1064,6 +1070,7 @@
             "silicon": "flujo de silicio",
             "gemini": "Géminis (Google)",
             "kimi": "Disparo a la luna (Kimi)",
+            "kimi_code": "Moonshot Kimi Code",
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
@@ -1076,18 +1083,18 @@
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
         "pleaseEnterApiKey": "Por favor ingrese su clave API",
-        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. No se admiten voz personalizada ni modo Agente",
-        "qwenRecommendation": "Cuando Alibaba es la API principal, se recomienda seleccionar también Alibaba como API de asistencia para obtener la mejor experiencia de voz personalizada.",
-        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu). Se recomienda seleccionar Alibaba como API de asistencia para soporte de voz personalizado.",
-        "openaiRecommendation": "Cuando OpenAI es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "stepRecommendation": "Cuando StepFun es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "geminiRecommendation": "Cuando Gemini es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y la voz personalizada:",
+        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. El modo Agente cuenta con una cuota gratuita",
+        "qwenRecommendation": "Cuando Alibaba es la API principal, también se recomienda Alibaba como API de asistencia por sus funciones más completas.",
+        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu).",
+        "openaiRecommendation": "Cuando OpenAI es la API principal, el precio es relativamente alto.",
+        "stepRecommendation": "Cuando StepFun es la API principal, el precio es económico pero el nivel de inteligencia es moderado.",
+        "geminiRecommendation": "Cuando Gemini es la API principal, ofrece una excelente relación calidad-precio.",
+        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y el modo Agente:",
         "currentSuggestion": "Sugerencia actual:",
         "configSuggestionFull": "Sugerencias de configuración:",
-        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (no se admite voz personalizada ni modo Agente)",
+        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestionFull": "Maneja la funcionalidad de conversación (elija según el presupuesto y las necesidades)",
-        "assistApiSuggestionFull": "Maneja la administración de memoria, chat de texto y voz personalizada (solo Alibaba admite voz personalizada)",
+        "assistApiSuggestionFull": "Maneja la administración de memoria, el chat de texto y el modo Agente",
         "assistApiKeyRequiredHint": "Debe completar la API en el cuadro de entrada correspondiente antes de poder seleccionar su proveedor.",
         "mcpRouterToken": "Token de enrutador MCP",
         "mcpRouterTokenDesc": "Descripción del token del enrutador MCP:",
@@ -1367,6 +1374,7 @@
         "vrmAnimation": {
             "title": "Vista previa de la animación VRM:",
             "selectAnimation": "Animación",
+            "addAnimation": "Agregar animación",
             "noAnimations": "No se encontraron archivos de animación",
             "loading": "Cargando lista de animaciones...",
             "animationListLoaded": "Lista de animaciones cargada correctamente.",
@@ -1968,7 +1976,7 @@
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",
         "addField": "Agregar campo",
-        "aiAssist": "Asistente de IA",
+        "aiAssist": "Asistente gatuno",
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
@@ -2536,6 +2544,8 @@
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",
             "avatarReactionBubble": "Burbuja de expresión",
+            "focusCognition": "Modo concentración",
+            "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "proactiveChat": "Chat proactivo",
@@ -3244,7 +3254,7 @@
             },
             "step5": {
                 "title": "🔧 Proveedor de API auxiliar",
-                "desc": "La API auxiliar maneja la administración de memoria y la voz personalizada.\n\n• Gratis: completamente gratis, sin soporte de voz personalizado\n• Alibaba: recomendado, admite voz personalizada\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: Solo Alibaba admite voz personalizada."
+                "desc": "La API auxiliar maneja la administración de memoria, el chat de texto y el modo Agente.\n\n• Gratis: completamente gratis, sin necesidad de clave API\n• Alibaba: recomendado, funciones más completas\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: para usar la voz personalizada (clonación de voz) solo necesitas guardar la clave del proveedor correspondiente en el Libro de claves, sin cambiar la API principal o auxiliar."
             },
             "step6": {
                 "title": "🔑 Clave API auxiliar",
@@ -4278,10 +4288,7 @@
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
-             "shooter": "Desafío de golpe",
-             "duel": "Duelo con Yui",
-             "timed": "Contrarreloj",
-             "horse": "HORSE"
+             "duel": "Duelo contra Yui"
          },
          "hud": {
              "score": "Puntos {{score}}",
@@ -4294,16 +4301,11 @@
              "practice": "Práctica libre",
              "yourTurn": "Tu turno",
              "nekoTurn": "Golpe de Neko",
-             "horseLetters": "Tú {{player}} / Neko {{neko}}",
-             "horseChallenge": "Replica {{distance}} {{angle}}°",
-             "horseSet": "Propón un golpe",
              "unlimitedAttempts": "Ilimitado",
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
              "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
-             "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "act.",
              "off": "desact."
@@ -4316,8 +4318,6 @@
              "rating": "Valoración de control: {{rating}}",
              "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
              "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
-             "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
              "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
              "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
              "attemptsSummary": "Resumen de golpes: {{summary}}",
@@ -4334,7 +4334,6 @@
              "title": "Clasificación",
              "global": "Global",
              "local": "Local",
-            "shooter": "Golpe",
              "duel": "Duelo",
              "empty": "Aún no hay registros",
              "totalPlayers": "Jugadores {{count}}",
@@ -4342,11 +4341,8 @@
              "recent": "Últimas {{count}} partidas",
              "loading": "Cargando...",
              "mode": {
-                 "timed": "Tiempo",
-                 "horse": "HORSE",
-                 "spectator": "Espectador",
-                "shooter": "Golpe",
-                 "duel": "Duelo"
+                 "duel": "Duelo",
+                 "spectator": "Espectador"
              }
          },
          "debug": {
@@ -4367,8 +4363,7 @@
                  "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
                  "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
                  "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4515,64 +4510,6 @@
                      "Levanta la cara de la raqueta."
                  ]
              },
-             "shooter": {
-                 "shot_missed": [
-                     "Reinicia el control.",
-                     "Firme. Yo te sigo."
-                 ],
-                 "game_over": [
-                     "Ese control a?n falta.",
-                     "No me hagas correr en vano."
-                 ],
-                 "long_aim": [
-                     "R?pido, se me endurece la mano.",
-                     "?A?n eliges ?ngulo?"
-                 ],
-                 "close_to_record": [
-                     "El r?cord est? cerca.",
-                     "No tiembles en este golpe."
-                 ],
-                 "new_record": [
-                     "Vale, nuevo r?cord.",
-                     "La coordinaci?n estuvo decente."
-                 ],
-                 "streak_5": [
-                     "Cinco seguidos. No flotes.",
-                     "Este ritmo est? estable."
-                 ],
-                 "streak_10": [
-                     "?Diez seguidos? No presumas.",
-                     "Tienes la mano bastante firme."
-                 ],
-                 "streak_15": [
-                     "?Quince? No te agrandes.",
-                     "Este s? lo sostuviste."
-                 ],
-                 "streak_20": [
-                     "?Veinte? ?A?n seguimos?",
-                     "Esta ronda se puso loca."
-                 ],
-                 "line_in": [
-                     "Vale, fue preciso.",
-                     "Controlaste bien la raqueta."
-                 ],
-                 "net_touch": [
-                     "La rozaste por encima.",
-                     "El ?ngulo arriesgado funcion?."
-                 ],
-                 "zone_in": [
-                     "No sonr?as. Fue suerte.",
-                     "Elegiste bien la ca?da."
-                 ],
-                 "out": [
-                     "Un poco menos de fuerza.",
-                     "Te apuraste en esa."
-                 ],
-                 "net": [
-                     "?A d?nde me llevas?",
-                     "Levanta la cara de la raqueta."
-                 ]
-             },
              "duel": {
                  "shot_missed": [
                      "Todavía hay oportunidad.",
@@ -4689,10 +4626,6 @@
                  "lastBehind": "Anota este y ganas.",
                  "playerAhead": "No lo haces mal...",
                  "playerBehind": "Aprieta un poco más."
-             },
-             "horse": {
-                 "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                 "playerMiss": "Tú también sumas {{letters}}."
              },
              "mindGame": [
                  "Te tiembla la mano.",

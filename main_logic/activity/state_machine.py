@@ -102,6 +102,18 @@ FOCUSED_WORK_RECENT_INPUT_SECONDS = 5 * 60
 # fast enough to react to genuine browsing.
 CASUAL_BROWSING_MIN_DWELL_SECONDS = 30.0
 
+# focused_video: how long a video/live entertainment window must hold the
+# foreground *continuously* before we treat the user as immersed (and cut
+# music/meme/web externals while keeping screen snark). The dwell is
+# ``now - _current_window_started_at``, which resets to zero whenever the
+# foreground window changes category/subcategory/canonical — so switching
+# to a work/chat window and back restarts the clock. 120s (2 min) is well
+# above casual_browsing's 30s so "just opened a clip" stays on the open
+# side; only sustained watching crosses into focused_video. Same video
+# site moving to the next video does NOT reset (update_window ignores
+# title), but flipping to a non-video window does.
+FOCUSED_VIDEO_MIN_DWELL_SECONDS = 120.0
+
 # transitioning: # of distinct window observations in the lookback that
 # signals the user is rapidly task-switching. The lookback is
 # ``WINDOW_HISTORY_LOOKBACK_SECONDS``. Tuned for "5 windows in 5 min" —
@@ -400,6 +412,9 @@ class ActivityStateMachine:
         )
         self._casual_browsing_min_dwell_seconds = prefs.thresholds.get(
             'casual_browsing_min_dwell_seconds', CASUAL_BROWSING_MIN_DWELL_SECONDS,
+        )
+        self._focused_video_min_dwell_seconds = prefs.thresholds.get(
+            'focused_video_min_dwell_seconds', FOCUSED_VIDEO_MIN_DWELL_SECONDS,
         )
         # Count-shaped thresholds need integer semantics — bare ``int(...)``
         # would silently truncate ``0.9`` → ``0`` or ``1.7`` → ``1``,
@@ -865,9 +880,19 @@ class ActivityStateMachine:
             if dwell >= self._focused_work_min_dwell_seconds and (recent_input or recent_system_active):
                 return 'focused_work'
 
-        # 6. casual_browsing — entertainment dominates with reasonable dwell.
+        # 6. focused_video / casual_browsing — entertainment dominates with
+        # reasonable dwell. A video/live window held continuously past the
+        # (higher) focused_video threshold means the user is immersed in
+        # watching — keep screen snark but cut external sources. Anything
+        # below that, or non-video entertainment (social/music/etc), stays
+        # casual_browsing once it clears the smaller casual dwell bar.
         if win is not None and win.category == 'entertainment':
             dwell = now - self._current_window_started_at
+            if (
+                win.subcategory in ('video', 'live')
+                and dwell >= self._focused_video_min_dwell_seconds
+            ):
+                return 'focused_video'
             if dwell >= self._casual_browsing_min_dwell_seconds:
                 return 'casual_browsing'
 
@@ -939,6 +964,9 @@ class ActivityStateMachine:
         elif state == 'casual_browsing':
             name = (win.canonical if win and win.canonical else None) or '?'
             reasons.append(('state_casual_browsing', {'app': name}))
+        elif state == 'focused_video':
+            name = (win.canonical if win and win.canonical else None) or '?'
+            reasons.append(('state_focused_video', {'app': name}))
         elif state == 'chatting':
             name = (win.canonical if win and win.canonical else None) or '?'
             reasons.append(('state_chatting', {'app': name}))

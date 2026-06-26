@@ -237,11 +237,84 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
     assert "await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');" in start_round_block
     assert "async waitForTutorialTeardownSettled(reason = '')" in source
     assert "if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {" in placement_block
-    assert "deferRevealPrepared: Number(round) === 1" in prelude_block
+    assert "deferRevealPrepared: true" in prelude_block
     assert "const deferRevealPrepared = options && options.deferRevealPrepared === true;" in ensure_visible_block
     assert "if (!deferRevealPrepared) {" in ensure_visible_block
     assert "deferRevealPrepared" in render_active_block
     assert "preservePreparingOpacity: deferRevealPrepared" in render_active_block
+
+
+def test_tutorial_live2d_preparing_hides_model_side_controls():
+    repo_root = Path(__file__).resolve().parents[2]
+    css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
+    app_ui_source = (repo_root / "static/app-ui.js").read_text(encoding="utf-8")
+    live2d_buttons_source = (repo_root / "static/live2d-ui-buttons.js").read_text(encoding="utf-8")
+    manager_source = _read_manager()
+    reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
+
+    assert "body.yui-guide-live2d-preparing #live2d-floating-buttons" in css_source
+    assert "body.yui-guide-live2d-preparing #live2d-lock-icon" in css_source
+    assert "body.yui-guide-live2d-preparing #live2d-return-button-container" in css_source
+
+    assert "hideYuiGuideLive2DPreparingControls()" in app_ui_source
+    restore_controls_block = app_ui_source.split("function restoreYuiGuideLive2DPreparingControls()", 1)[1].split(
+        "function restoreLive2DDisplaySurface",
+        1,
+    )[0]
+    assert "'live2d-floating-buttons'" in restore_controls_block
+    assert "'live2d-lock-icon'" in restore_controls_block
+    assert "'live2d-return-button-container'" not in restore_controls_block
+    assert "if (!preserveYuiGuidePreparing && floatingButtons) {" in app_ui_source
+    assert "if (!preserveYuiGuidePreparing && lockIcon) {" in app_ui_source
+
+    assert "function isYuiGuideLive2DPreparing()" in live2d_buttons_source
+    assert "if (isYuiGuideLive2DPreparing()) {" in live2d_buttons_source
+    assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer)" in live2d_buttons_source
+    assert "buttonsContainer.style.setProperty('display', 'flex', 'important');" in live2d_buttons_source
+    protection_timer_block = live2d_buttons_source.split(
+        "this.tutorialProtectionTimer = setInterval(() => {",
+        1,
+    )[1].split("}, 300);", 1)[0]
+    assert "if (isYuiGuideLive2DPreparing()) {" in protection_timer_block
+    assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);" in protection_timer_block
+    assert protection_timer_block.index(
+        "if (isYuiGuideLive2DPreparing()) {"
+    ) < protection_timer_block.index("const style = window.getComputedStyle(buttonsContainer);")
+
+    assert "hideTutorialLive2dPreparingControls()" in manager_source
+    assert "fadeOutCurrentModel: () => this.fadeOutCurrentTutorialSourceModel()" in manager_source
+    assert "async fadeOutCurrentTutorialSourceModel()" in manager_source
+    assert "const fadeOutMs = 900;" in manager_source
+    assert "opacity 900ms ease-in-out" in manager_source
+    assert "'live2d-floating-buttons'," in manager_source
+    clear_prepare_block = manager_source.split("clearTutorialLive2dPreparingStyles() {", 1)[1].split(
+        "restoreTutorialLive2dDisplayState",
+        1,
+    )[0]
+    display_restore_block = clear_prepare_block.split("element.style.removeProperty('display');", 1)[0]
+    assert "id === 'live2d-floating-buttons'" in display_restore_block
+    assert "id === 'live2d-lock-icon'" in display_restore_block
+    assert "id === 'live2d-return-button-container'" not in display_restore_block
+    assert "if (preparing === true) {" in manager_source
+
+    assert "this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;" in reload_controller_source
+    assert "await Promise.resolve(this.fadeOutCurrentModel({" in reload_controller_source
+
+
+def test_tutorial_live2d_preparing_does_not_use_intro_loading_mask():
+    repo_root = Path(__file__).resolve().parents[2]
+    css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
+    manager_source = _read_manager()
+
+    assert "YUI_GUIDE_LIVE2D_LOADING_MASK" not in manager_source
+    assert "showTutorialLive2dPreparingMask" not in manager_source
+    assert "hideTutorialLive2dPreparingMask" not in manager_source
+    assert "cat_model_change_slow_" not in manager_source
+    assert "yui-guide-live2d-loading" not in manager_source
+
+    assert "#yui-guide-live2d-loading-mask" not in css_source
+    assert "body.yui-guide-live2d-loading" not in css_source
+    assert "cat_model_change_slow_" not in css_source
 
 
 def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():

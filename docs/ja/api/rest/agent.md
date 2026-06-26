@@ -16,7 +16,7 @@
 {
   "agent_enabled": false,
   "computer_use_enabled": false,
-  "mcp_enabled": false,
+  "user_plugin_enabled": false,
   "browser_use_enabled": false
 }
 ```
@@ -32,7 +32,7 @@
   "lanlan_name": "character_name",
   "flags": {
     "agent_enabled": true,
-    "mcp_enabled": true
+    "user_plugin_enabled": true
   }
 }
 ```

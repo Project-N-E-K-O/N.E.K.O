@@ -114,6 +114,16 @@ body.yui-guide-live2d-preparing #mmd-canvas {
   pointer-events: none !important;
 }
 
+body.yui-guide-live2d-preparing #live2d-floating-buttons,
+body.yui-guide-live2d-preparing #live2d-lock-icon,
+body.yui-guide-live2d-preparing #live2d-return-button-container {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  transition: none !important;
+  pointer-events: none !important;
+}
+
 body.yui-guide-return-petal-fade #live2d-container,
 body.yui-guide-return-petal-fade #live2d-canvas,
 body.yui-guide-return-petal-fade #vrm-container,
