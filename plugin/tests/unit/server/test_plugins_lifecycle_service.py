@@ -458,9 +458,11 @@ async def test_start_plugin_uses_default_startup_timeout_when_runtime_timeout_om
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_literal", ["0", "300.1"])
 async def test_start_plugin_rejects_invalid_runtime_startup_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    timeout_literal: str,
 ) -> None:
     config_path = tmp_path / "invalid_timeout_adapter" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,7 +478,7 @@ async def test_start_plugin_rejects_invalid_runtime_startup_timeout(
                 "[plugin_runtime]",
                 "enabled = true",
                 "auto_start = false",
-                "timeout = 0",
+                f"timeout = {timeout_literal}",
             ]
         ),
         encoding="utf-8",
@@ -529,6 +531,91 @@ async def test_start_plugin_rejects_invalid_runtime_startup_timeout(
 
         assert exc_info.value.code == "INVALID_PLUGIN_CONFIG"
         assert "timeout" in exc_info.value.message
+        assert _RecordingHost.instances == []
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_rejects_invalid_default_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "invalid_default_timeout_adapter" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'invalid_default_timeout_adapter'",
+                "name = 'Invalid Default Timeout Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _RecordingHost(_FakeProcessHost):
+        instances: list["_RecordingHost"] = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            _RecordingHost.instances.append(self)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["invalid_default_timeout_adapter"] = {
+                "id": "invalid_default_timeout_adapter",
+                "name": "Invalid Default Timeout Adapter",
+                "type": "adapter",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(module, "PLUGIN_STARTUP_TIMEOUT", 300.1, raising=False)
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin(
+                "invalid_default_timeout_adapter",
+                refresh_registry=False,
+            )
+
+        assert exc_info.value.code == "INVALID_PLUGIN_CONFIG"
+        assert exc_info.value.details["error_type"] == "InvalidStartupTimeout"
+        assert "PLUGIN_STARTUP_TIMEOUT" in exc_info.value.message
         assert _RecordingHost.instances == []
     finally:
         with module.state.acquire_plugins_write_lock():

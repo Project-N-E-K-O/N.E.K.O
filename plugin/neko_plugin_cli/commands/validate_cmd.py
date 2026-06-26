@@ -18,6 +18,7 @@ from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+_PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
 def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
@@ -458,6 +459,8 @@ def _check_runtime_table(value: object, issues: list[tuple[str, str]]) -> None:
             issues.append(("error", "[plugin_runtime].timeout must be finite"))
         elif timeout <= 0:
             issues.append(("error", "[plugin_runtime].timeout must be > 0"))
+        elif timeout > _PLUGIN_RUNTIME_TIMEOUT_MAX:
+            issues.append(("error", "[plugin_runtime].timeout must be <= 300"))
     startup_failure = value.get("startup_failure")
     if startup_failure is not None:
         _check_enum(startup_failure, "[plugin_runtime].startup_failure", {"warn", "fail", "ignore"}, issues)

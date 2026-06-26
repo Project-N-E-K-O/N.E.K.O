@@ -128,7 +128,7 @@ timeout = 10
 startup_failure = "warn"
 ```
 
-- `timeout` - Positive number of seconds to wait for startup readiness. Omit it to use the system default.
+- `timeout` - Number of seconds to wait for startup readiness (`0 < timeout <= 300`). Omit it to use the system default.
 - `startup_failure` - What to do if `lifecycle.startup` raises after the process is alive: `warn` keeps the plugin running and marks startup as degraded, `fail` aborts startup, and `ignore` only logs the error.
 - `enabled` — Set to `false` to temporarily disable without deleting files
 - `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 from plugin._types.models import PluginType
 
+_PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
+
 
 class PluginAuthorSchema(BaseModel):
     """插件作者信息 Schema"""
@@ -144,10 +146,10 @@ class PluginRuntimeSchema(BaseModel):
         if value is None:
             return value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("plugin_runtime.timeout must be a positive number")
+            raise ValueError("plugin_runtime.timeout must be a number in range 0 < timeout <= 300")
         timeout = float(value)
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("plugin_runtime.timeout must be a positive number")
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > _PLUGIN_RUNTIME_TIMEOUT_MAX:
+            raise ValueError("plugin_runtime.timeout must be a number in range 0 < timeout <= 300")
         return timeout
 
     @field_validator("startup_failure", mode="before")

@@ -55,6 +55,7 @@ from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
 
 
@@ -401,20 +402,29 @@ def _emit_lifecycle_event(
     emit_lifecycle_event(event)
 
 
-def _normalize_runtime_timeout(raw_value: object, *, plugin_id: str) -> float:
+def _normalize_runtime_timeout(
+    raw_value: object,
+    *,
+    plugin_id: str,
+    setting_label: str = "[plugin_runtime].timeout",
+) -> float:
+    message = (
+        f"Plugin '{plugin_id}' {setting_label} must be a number "
+        f"in range 0 < timeout <= {_PLUGIN_STARTUP_TIMEOUT_MAX:g}"
+    )
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
         raise _to_domain_error(
             code="INVALID_PLUGIN_CONFIG",
-            message=f"Plugin '{plugin_id}' [plugin_runtime].timeout must be a positive number",
+            message=message,
             status_code=400,
             plugin_id=plugin_id,
             error_type="InvalidStartupTimeout",
         )
     timeout = float(raw_value)
-    if not math.isfinite(timeout) or timeout <= 0:
+    if not math.isfinite(timeout) or timeout <= 0 or timeout > _PLUGIN_STARTUP_TIMEOUT_MAX:
         raise _to_domain_error(
             code="INVALID_PLUGIN_CONFIG",
-            message=f"Plugin '{plugin_id}' [plugin_runtime].timeout must be a positive number",
+            message=message,
             status_code=400,
             plugin_id=plugin_id,
             error_type="InvalidStartupTimeout",
@@ -666,7 +676,11 @@ class PluginLifecycleService:
             runtime_obj = conf.get("plugin_runtime")
             enabled_value = True
             auto_start_value = True
-            startup_timeout_value: float | None = PLUGIN_STARTUP_TIMEOUT
+            startup_timeout_value: float | None = _normalize_runtime_timeout(
+                PLUGIN_STARTUP_TIMEOUT,
+                plugin_id=current_plugin_id,
+                setting_label="PLUGIN_STARTUP_TIMEOUT",
+            )
             startup_failure_policy = "warn"
             if isinstance(runtime_obj, Mapping):
                 runtime_cfg = _normalize_mapping(runtime_obj, context=f"plugin_config[{current_plugin_id}].plugin_runtime")
