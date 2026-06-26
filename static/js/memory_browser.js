@@ -508,7 +508,6 @@
     async function resetSelectedTutorial() {
         const selection = resolveSelectedTutorialReset();
         if (selection.type === 'home-day') {
-            await resetHomeTutorialPromptState('memory_browser_home_day_reset');
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
                 await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
                     source: 'memory_browser_reset_select',
@@ -522,6 +521,7 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            await resetHomeTutorialPromptState('memory_browser_home_day_reset');
             return;
         }
         if (selection.type === 'home-all') {

@@ -891,14 +891,14 @@ def test_home_tutorial_reset_also_resets_day1_icebreaker_state():
         "if (selection.type === 'home-all'",
         1,
     )[0]
-    prompt_reset_helper = memory_browser_source.split("async function resetHomeTutorialPromptState(reason)", 1)[1].split(
+    prompt_reset_helper = memory_browser_source.split("async function resetHomeTutorialPromptState(", 1)[1].split(
         "async function resetSelectedTutorial()",
         1,
     )[0]
     assert "resetHomeTutorialPromptState('memory_browser_home_day_reset')" in home_day_block
     assert "resetHomeTutorialPromptState('memory_browser_home_all_reset')" in home_all_block
-    assert "window.universalTutorialManager.resetHomeTutorialPromptState(reason)" in prompt_reset_helper
-    assert "resetHomeTutorialPromptStateViaApi(reason)" in prompt_reset_helper
+    assert "window.universalTutorialManager.resetHomeTutorialPromptState(" in prompt_reset_helper
+    assert "resetHomeTutorialPromptStateViaApi(" in prompt_reset_helper
     assert "'/api/tutorial-prompt/reset'" in memory_browser_source
 
 

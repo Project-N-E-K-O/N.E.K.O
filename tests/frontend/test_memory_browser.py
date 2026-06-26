@@ -459,6 +459,45 @@ def test_memory_browser_home_day_reset_also_resets_prompt_backend_without_manage
 
 
 @pytest.mark.frontend
+def test_memory_browser_home_day_reset_uses_manager_after_avatar_day_reset(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector(".tutorial-cascader-trigger", timeout=10000)
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialResetCalls = [];
+            window.AvatarFloatingGuideReset = Object.assign({}, window.AvatarFloatingGuideReset || {}, {
+                resetAvatarFloatingGuideDay: async (day, options) => {
+                    window.__tutorialResetCalls.push({ type: 'avatar-day', day, options });
+                }
+            });
+            window.universalTutorialManager = Object.assign({}, window.universalTutorialManager || {}, {
+                resetHomeTutorialPromptState: async (reason) => {
+                    window.__tutorialResetCalls.push({ type: 'prompt', reason });
+                }
+            });
+        }
+        """
+    )
+
+    mock_page.locator(".tutorial-cascader-trigger").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-page='home']").click()
+    mock_page.locator(".tutorial-cascader-option[data-tutorial-day='1']").click()
+    mock_page.locator("#tutorial-reset-btn").click()
+
+    mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
+    assert mock_page.evaluate("window.__tutorialResetCalls") == [
+        {"type": "avatar-day", "day": 1, "options": {"source": "memory_browser_reset_select"}},
+        {"type": "prompt", "reason": "memory_browser_home_day_reset"},
+    ]
+
+
+@pytest.mark.frontend
 def test_memory_browser_tutorial_cascader_localizes_home_day_labels_for_english(
     mock_page: Page,
     running_server: str,
