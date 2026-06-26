@@ -763,6 +763,109 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_does_not_map_startup_business_timeout_to_start_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "business_timeout_adapter" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'business_timeout_adapter'",
+                "name = 'Business Timeout Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+                "startup_failure = 'fail'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _BusinessTimeoutHost(_FakeProcessHost):
+        instances: list["_BusinessTimeoutHost"] = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            _BusinessTimeoutHost.instances.append(self)
+
+        async def start(
+            self,
+            message_target_queue: object,
+            startup_timeout: float | None = None,
+            startup_failure: str = "warn",
+        ) -> None:
+            self.startup_timeout = startup_timeout
+            self.startup_failure = startup_failure
+            self.started = True
+            raise PluginLifecycleError(self.plugin_id, "startup", "database timeout while connecting")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["business_timeout_adapter"] = {
+                "id": "business_timeout_adapter",
+                "name": "Business Timeout Adapter",
+                "type": "adapter",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _BusinessTimeoutHost)
+        monkeypatch.setattr(
+            module,
+            "_import_plugin_module",
+            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+        )
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin("business_timeout_adapter", refresh_registry=False)
+
+        assert exc_info.value.code == "PLUGIN_START_FAILED"
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.details["error_type"] == "PluginLifecycleError"
+        assert "database timeout while connecting" in exc_info.value.message
+        assert _BusinessTimeoutHost.instances[0].stopped is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_cleans_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
