@@ -153,7 +153,7 @@ Delete an installed PNGTuber package.
 { "folder": "My_Avatar" }
 ```
 
-The identifier may also be passed as `url` or `name`; a `model.json` URL such as `/user_pngtuber/My_Avatar/model.json` is resolved back to its folder. The target is confined to the PNGTuber directory.
+The identifier is resolved as a **folder slug** (precedence `folder` → `url` → `name`): a `model.json` URL such as `/user_pngtuber/My_Avatar/model.json` is resolved back to its folder. Prefer the `folder` slug (or the `url`) from `GET /models` — `name` is the human-readable display name and may differ from the slug, so passing `name` only works when it equals the folder. The target is confined to the PNGTuber directory.
 
 **Response**
 

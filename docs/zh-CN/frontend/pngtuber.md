@@ -153,7 +153,7 @@ PNGTuber 模型是一个包含 `model.json` 文件的文件夹，其 `model_type
 { "folder": "My_Avatar" }
 ```
 
-标识也可以用 `url` 或 `name` 传入；像 `/user_pngtuber/My_Avatar/model.json` 这样的 `model.json` URL 会被解析回其文件夹。目标会被限制在 PNGTuber 目录内。
+标识按**文件夹 slug** 解析（优先级 `folder` → `url` → `name`）：像 `/user_pngtuber/My_Avatar/model.json` 这样的 `model.json` URL 会被解析回其文件夹。建议用 `GET /models` 返回的 `folder` slug（或 `url`）——`name` 是给人看的显示名，可能与 slug 不一致，只有当它恰好等于文件夹名时按 `name` 删才生效。目标会被限制在 PNGTuber 目录内。
 
 **Response**
 

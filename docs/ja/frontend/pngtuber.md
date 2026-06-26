@@ -153,7 +153,7 @@ PNGTuber パッケージを multipart のファイルリストとしてアップ
 { "folder": "My_Avatar" }
 ```
 
-識別子は `url` や `name` で渡すこともできます。`/user_pngtuber/My_Avatar/model.json` のような `model.json` の URL は、そのフォルダに解決されます。対象は PNGTuber ディレクトリ内に限定されます。
+識別子は**フォルダ slug** として解決されます（優先順位 `folder` → `url` → `name`）。`/user_pngtuber/My_Avatar/model.json` のような `model.json` の URL は、そのフォルダに解決されます。`GET /models` が返す `folder` slug（または `url`）の使用を推奨します——`name` は表示用の名前で slug と異なる場合があり、`name` での削除はそれがフォルダ名と一致するときのみ機能します。対象は PNGTuber ディレクトリ内に限定されます。
 
 **Response**
 
