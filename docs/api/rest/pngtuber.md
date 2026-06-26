@@ -107,6 +107,8 @@ Delete a PNGTuber model package and all of its files.
 { "folder": "<folder>" }
 ```
 
-The model is identified by `folder`, falling back to `url` or `name`. A `url` pointing at `.../<folder>/model.json` is resolved down to its folder. The resolved path must stay inside the PNGTuber directory.
+The target is resolved by **folder slug**: the handler reads `folder`, falling back to `url`, then `name`. Whichever value is supplied is treated as a folder slug (a `url` pointing at `.../<folder>/model.json` is resolved down to its `<folder>`), never matched against the human-readable display name.
+
+Prefer deleting by the `folder` slug returned from `GET /models`, or by the model.json `url`. Avoid relying on `name`: `GET /models` returns `name` as the display name and `folder` as the on-disk slug, and the two can differ — passing the display `name` only works when it happens to equal the folder slug, so use it as a last-resort fallback that may be ambiguous. The resolved path must stay inside the PNGTuber directory.
 
 **Response:** `{ "success": true, "message": "..." }`. Missing identifier or out-of-bounds path returns `400`; a non-existent model returns `404`.

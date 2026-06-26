@@ -9,7 +9,7 @@ All mutating endpoints (`/route/start`, `/route/end`, `/context`, `/choice`, `/s
 :::
 
 ::: info
-`lanlan_name` identifies the active character. When omitted, the backend falls back to the currently selected character (`当前猫娘`). If no character can be resolved, the call returns `{ "ok": false, "reason": "missing_lanlan_name" }`.
+`lanlan_name` identifies the active character and is **required** on the mutating POST endpoints. `/route/start`, `/route/end`, and `/speak` resolve it from the body and otherwise fall back to the currently selected character (`当前猫娘`); if no character can be resolved they return `{ "ok": false, "reason": "missing_lanlan_name" }`. `/context` is stricter: it requires a non-empty `lanlan_name` in the body (no fallback) and returns `{ "ok": false, "reason": "missing_lanlan_name" }` when it is missing or empty.
 :::
 
 ## Route lifecycle
@@ -67,7 +67,14 @@ Finalize the active icebreaker route.
 If `session_id` is supplied but does not match the active route's session (e.g. a second tab opened a newer session), the call is rejected without ending the route:
 
 ```json
-{ "ok": false, "reason": "session_id_mismatch", "handled": false, "method": "route_end", "state": <route state> }
+{
+  "ok": false,
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "route_end",
+  "state": "<route state>"
+}
 ```
 :::
 
@@ -117,7 +124,33 @@ Append a line of onboarding context (user or assistant) to the project session h
 }
 ```
 
-A duplicate append returns the same envelope with `"deduped": true`. If no route is active, the call returns `{ "ok": false, "reason": "route_not_active", ... }`.
+A duplicate append returns the same envelope with `"deduped": true`.
+
+If no route is active, the call returns:
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_session_history"
+}
+```
+
+If a route is active but the supplied `session_id` does not match it (a stale or superseded session), the append is skipped:
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_session_history",
+  "state": "<route state>"
+}
+```
 
 ### `POST /api/icebreaker/choice`
 
@@ -176,4 +209,36 @@ Speak a fixed onboarding line through the project TTS pipeline (and mirror it in
 }
 ```
 
-If no route is active, the call returns `{ "ok": false, "reason": "route_not_active", "audio_sent": false, ... }`.
+If no route is active, the call returns:
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_tts",
+  "audio_sent": false
+}
+```
+
+If a route is active but the supplied `session_id` does not match it (a stale or superseded session), the line is not spoken:
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_tts",
+  "state": "<route state>",
+  "audio_sent": false,
+  "audio_committed": false,
+  "voice_source": {
+    "provider": "project_tts",
+    "method": "project_tts",
+    "skipped": "stale_session"
+  }
+}
+```

@@ -9,7 +9,7 @@
 :::
 
 ::: info
-`lanlan_name` 标识当前角色。省略时后端回退到当前选中的角色（`当前猫娘`）。若无法解析出角色，则返回 `{ "ok": false, "reason": "missing_lanlan_name" }`。
+`lanlan_name` 标识当前角色，在写操作 POST 端点上为**必填**。`/route/start`、`/route/end`、`/speak` 会先从 Body 解析，解析不到时回退到当前选中的角色（`当前猫娘`）；若仍无法解析出角色，则返回 `{ "ok": false, "reason": "missing_lanlan_name" }`。`/context` 更严格：它要求 Body 中必须带非空 `lanlan_name`（不回退），缺失或为空时返回 `{ "ok": false, "reason": "missing_lanlan_name" }`。
 :::
 
 ## Route 生命周期
@@ -67,7 +67,14 @@
 若传入了 `session_id` 但与当前激活 route 的 session 不一致（例如第二个标签页开启了更新的 session），则拒绝该请求且不结束 route：
 
 ```json
-{ "ok": false, "reason": "session_id_mismatch", "handled": false, "method": "route_end", "state": <route 状态> }
+{
+  "ok": false,
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "route_end",
+  "state": "<route 状态>"
+}
 ```
 :::
 
@@ -117,7 +124,33 @@
 }
 ```
 
-重复追加会返回相同结构并带 `"deduped": true`。若无激活 route，则返回 `{ "ok": false, "reason": "route_not_active", ... }`。
+重复追加会返回相同结构并带 `"deduped": true`。
+
+若无激活 route，则返回：
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_session_history"
+}
+```
+
+若存在激活 route 但传入的 `session_id` 与之不匹配（陈旧或被顶替的 session），则跳过本次追加：
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_session_history",
+  "state": "<route 状态>"
+}
+```
 
 ### `POST /api/icebreaker/choice`
 
@@ -176,4 +209,36 @@
 }
 ```
 
-若无激活 route，则返回 `{ "ok": false, "reason": "route_not_active", "audio_sent": false, ... }`。
+若无激活 route，则返回：
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_tts",
+  "audio_sent": false
+}
+```
+
+若存在激活 route 但传入的 `session_id` 与之不匹配（陈旧或被顶替的 session），则不会播报台词：
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_tts",
+  "state": "<route 状态>",
+  "audio_sent": false,
+  "audio_committed": false,
+  "voice_source": {
+    "provider": "project_tts",
+    "method": "project_tts",
+    "skipped": "stale_session"
+  }
+}
+```

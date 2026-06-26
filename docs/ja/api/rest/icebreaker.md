@@ -9,7 +9,7 @@
 :::
 
 ::: info
-`lanlan_name` は対象のキャラクターを識別します。省略した場合、バックエンドは現在選択中のキャラクター（`当前猫娘`）にフォールバックします。キャラクターを解決できない場合は `{ "ok": false, "reason": "missing_lanlan_name" }` を返します。
+`lanlan_name` は対象のキャラクターを識別し、書き込み系 POST エンドポイントでは**必須**です。`/route/start`、`/route/end`、`/speak` はまず Body から解決し、解決できない場合は現在選択中のキャラクター（`当前猫娘`）にフォールバックします。それでもキャラクターを解決できない場合は `{ "ok": false, "reason": "missing_lanlan_name" }` を返します。`/context` はより厳格で、Body に空でない `lanlan_name` が必須（フォールバックなし）であり、未指定または空の場合は `{ "ok": false, "reason": "missing_lanlan_name" }` を返します。
 :::
 
 ## ルートのライフサイクル
@@ -67,7 +67,14 @@
 `session_id` が指定されていても有効なルートのセッションと一致しない場合（例: 2 つ目のタブが新しいセッションを開始した場合）、ルートを終了せずにリクエストを拒否します:
 
 ```json
-{ "ok": false, "reason": "session_id_mismatch", "handled": false, "method": "route_end", "state": <ルート状態> }
+{
+  "ok": false,
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "route_end",
+  "state": "<ルート状態>"
+}
 ```
 :::
 
@@ -117,7 +124,33 @@
 }
 ```
 
-重複した追記は同じ構造に `"deduped": true` を付けて返します。有効なルートがない場合は `{ "ok": false, "reason": "route_not_active", ... }` を返します。
+重複した追記は同じ構造に `"deduped": true` を付けて返します。
+
+有効なルートがない場合は次を返します:
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_session_history"
+}
+```
+
+有効なルートはあるが指定された `session_id` が一致しない場合（古い、または置き換えられたセッション）、追記はスキップされます:
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_session_history",
+  "state": "<ルート状態>"
+}
+```
 
 ### `POST /api/icebreaker/choice`
 
@@ -176,4 +209,36 @@
 }
 ```
 
-有効なルートがない場合は `{ "ok": false, "reason": "route_not_active", "audio_sent": false, ... }` を返します。
+有効なルートがない場合は次を返します:
+
+```json
+{
+  "ok": false,
+  "reason": "route_not_active",
+  "lanlan_name": "character_name",
+  "source": "new_user_icebreaker",
+  "method": "project_tts",
+  "audio_sent": false
+}
+```
+
+有効なルートはあるが指定された `session_id` が一致しない場合（古い、または置き換えられたセッション）、台詞は発話されません:
+
+```json
+{
+  "ok": true,
+  "skipped": "stale_session",
+  "reason": "session_id_mismatch",
+  "handled": false,
+  "lanlan_name": "character_name",
+  "method": "project_tts",
+  "state": "<ルート状態>",
+  "audio_sent": false,
+  "audio_committed": false,
+  "voice_source": {
+    "provider": "project_tts",
+    "method": "project_tts",
+    "skipped": "stale_session"
+  }
+}
+```
