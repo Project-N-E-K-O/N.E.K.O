@@ -697,10 +697,12 @@ def _plugin_process_runner(
     uplink_endpoint: str,
     stop_event: Any | None = None,
     extension_configs: list | None = None,
+    startup_options: dict[str, object] | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
     process_stop_event = stop_event
+    startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
     
     # 初始化：探测项目根目录、配置 logger
     project_root = _find_project_root(config_path)
@@ -1125,6 +1127,17 @@ def _plugin_process_runner(
                 logger.exception(error_msg)
 
         _send_startup_result(startup_error)
+        if startup_error is not None and startup_failure_policy == "fail":
+            logger.info("[Plugin Process] Startup failed with policy='fail'; skipping auto-start work")
+            try:
+                ctx.close()
+            except Exception as e:
+                logger.debug("[Plugin Process] Context close failed after startup failure: {}", e)
+            try:
+                child_transport.close()
+            except Exception:
+                pass
+            return
 
         # 定时任务：timer auto_start interval
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
@@ -1765,6 +1778,7 @@ class PluginHost:
         self.transport = HostTransport()
 
         self._process_stop_event: Any = multiprocessing.Event()
+        self._startup_options: dict[str, object] = {"startup_failure": "warn"}
 
         # Shared response notification primitives must be initialized before
         # forking, otherwise each child creates its own Manager proxies.
@@ -1793,6 +1807,7 @@ class PluginHost:
                 self.transport.uplink_endpoint,
                 self._process_stop_event,
                 extension_configs,
+                self._startup_options,
             ),
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,
@@ -1822,6 +1837,7 @@ class PluginHost:
         await self.comm_manager.start(message_target_queue=message_target_queue)
         should_wait_for_startup = startup_timeout is not None and startup_timeout > 0
         startup_failure_policy = str(startup_failure or "warn").strip().lower()
+        self._startup_options["startup_failure"] = startup_failure_policy
 
         if self.process.is_alive():
             self.logger.debug(
