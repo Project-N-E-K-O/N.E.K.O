@@ -498,9 +498,17 @@
         return response.json();
     }
 
+    async function resetHomeTutorialPromptState(reason) {
+        if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
+            return window.universalTutorialManager.resetHomeTutorialPromptState(reason);
+        }
+        return resetHomeTutorialPromptStateViaApi(reason);
+    }
+
     async function resetSelectedTutorial() {
         const selection = resolveSelectedTutorialReset();
         if (selection.type === 'home-day') {
+            await resetHomeTutorialPromptState('memory_browser_home_day_reset');
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
                 await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
                     source: 'memory_browser_reset_select',
@@ -526,11 +534,7 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
-            if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
-                await window.universalTutorialManager.resetHomeTutorialPromptState('memory_browser_home_all_reset');
-            } else {
-                await resetHomeTutorialPromptStateViaApi('memory_browser_home_all_reset');
-            }
+            await resetHomeTutorialPromptState('memory_browser_home_all_reset');
             alert(getTutorialHomeAllResetSuccessMessage());
             return;
         }
