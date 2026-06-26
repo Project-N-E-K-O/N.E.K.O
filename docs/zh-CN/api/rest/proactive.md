@@ -96,5 +96,5 @@
 `applied` 是保存后从磁盘回读的结果。值或类型未通过校验的字段会列在 `rejected` 数组中。若请求体包含 `proactiveVisionEnabled`，该字段会被拒绝并通过 `rejected_user_owned` 上报。
 
 ::: info
-`proactiveVisionEnabled` 是用户专有字段（隐私模式开关的反面，涉及屏幕内容采集）。任何 API 写入路径都不得修改它——必须由用户在 UI 中设置。在此处发送该字段会让它出现在 `rejected_user_owned` 中而不被应用。
+`proactiveVisionEnabled` 是用户专有字段（隐私模式开关的反面，涉及屏幕内容采集）。**主动搭话**这组端点不会修改它——会通过 `rejected_user_owned` 上报；它由主 conversation-settings 保存路径（UI 中的隐私模式开关）设置，是用户本人的选择。在此处发送该字段会让它出现在 `rejected_user_owned` 中而不被应用。
 :::

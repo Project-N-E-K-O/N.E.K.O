@@ -309,4 +309,12 @@ B レイヤーのテキスト出力: A レイヤーのセリフを TTS を呼ば
 
 リーダーボードにスコアを送信します。
 
+**Body:**
+
+```json
+{ "lanlan_name": "character_name", "session_id": "round-id", "mode": "..." }
+```
+
+スコアはリクエストボディではなく、その `lanlan_name` / `session_id` / `mode` に対してサーバー側で記録されたセッション合計（対局中に予約）から取得されます——したがって、実際に進行中のバドミントンセッションのみが送信できます。不明/期限切れのセッションは `{ "ok": false, "reason": "invalid_session" }`、不正なボディは `invalid_body` を返します。
+
 **Response:** `{ "ok": true, "rank": <number>, "total_players": <number>, "is_personal_best": <bool> }`、または `{ "ok": false, "reason": "..." }`（例: `invalid_session`、`invalid_body`、または非対応のゲームタイプ）。

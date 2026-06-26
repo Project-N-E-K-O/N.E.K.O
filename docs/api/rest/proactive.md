@@ -96,5 +96,5 @@ Partially update proactive-chat fields. The body accepts only writable proactive
 `applied` is read back from disk after saving. Fields whose value/type fail validation are listed in a `rejected` array. If the body includes `proactiveVisionEnabled`, that field is refused and reported under `rejected_user_owned`.
 
 ::: info
-`proactiveVisionEnabled` is a user-owned field (the inverse of the privacy-mode switch, which governs screen-content capture). No API write path may change it — it must be set by the user in the UI. Sending it here returns it under `rejected_user_owned` instead of applying it.
+`proactiveVisionEnabled` is a user-owned field (the inverse of the privacy-mode switch, which governs screen-content capture). The **proactive-chat** endpoints never change it — they report it under `rejected_user_owned`; it is set through the main conversation-settings save path (the privacy-mode toggle in the UI), which is the user's own choice. Sending it here returns it under `rejected_user_owned` instead of applying it.
 :::

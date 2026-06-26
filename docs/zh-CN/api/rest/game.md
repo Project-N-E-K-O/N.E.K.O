@@ -309,4 +309,12 @@ B 层文字输出：把 A 层台词镜像进普通聊天显示，**不** 调用 
 
 向排行榜提交一个分数。
 
+**Body:**
+
+```json
+{ "lanlan_name": "character_name", "session_id": "round-id", "mode": "..." }
+```
+
+分数取自服务端记录的该 `lanlan_name` / `session_id` / `mode` 的**会话总分**（对局过程中预留），而非请求体——因此只有真实、进行中的羽毛球对局才能提交。会话不存在/已过期返回 `{ "ok": false, "reason": "invalid_session" }`；请求体格式错误返回 `invalid_body`。
+
 **Response:** `{ "ok": true, "rank": <number>, "total_players": <number>, "is_personal_best": <bool> }`；或 `{ "ok": false, "reason": "..." }`（如 `invalid_session`、`invalid_body`，或不支持的游戏类型）。

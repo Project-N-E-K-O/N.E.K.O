@@ -309,4 +309,12 @@ For unsupported game types, the same shape is returned with empty `top` and zero
 
 Submit a score to the leaderboard.
 
+**Body:**
+
+```json
+{ "lanlan_name": "character_name", "session_id": "round-id", "mode": "..." }
+```
+
+The score is taken from the **server-recorded session totals** for that `lanlan_name` / `session_id` / `mode` (reserved during play), not from the request body — so only a real, in-progress badminton session can submit. An unknown/expired session returns `{ "ok": false, "reason": "invalid_session" }`; a malformed body returns `invalid_body`.
+
 **Response:** `{ "ok": true, "rank": <number>, "total_players": <number>, "is_personal_best": <bool> }`, or `{ "ok": false, "reason": "..." }` (e.g. `invalid_session`, `invalid_body`, or an unsupported game type).

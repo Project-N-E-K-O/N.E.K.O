@@ -96,5 +96,5 @@
 `applied` は保存後にディスクから読み戻した結果です。値または型の検証に失敗したフィールドは `rejected` 配列に列挙されます。ボディに `proactiveVisionEnabled` が含まれる場合、そのフィールドは拒否され `rejected_user_owned` で報告されます。
 
 ::: info
-`proactiveVisionEnabled` はユーザー所有のフィールドです（プライバシーモードのスイッチの裏返しで、画面内容の取得に関わります）。いかなる API の書き込み経路もこれを変更できません。ユーザーが UI で設定する必要があります。ここで送信すると、適用されずに `rejected_user_owned` に含まれて返されます。
+`proactiveVisionEnabled` はユーザー所有のフィールドです（プライバシーモードのスイッチの裏返しで、画面内容の取得に関わります）。**プロアクティブチャット**のエンドポイントはこれを変更せず、`rejected_user_owned` で報告します。設定はメインの conversation-settings 保存経路（UI のプライバシーモードのスイッチ）で行われ、ユーザー自身の選択です。ここで送信すると、適用されずに `rejected_user_owned` に含まれて返されます。
 :::
