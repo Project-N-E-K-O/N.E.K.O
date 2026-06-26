@@ -433,7 +433,9 @@ def _normalize_runtime_timeout(
 
 
 def _normalize_startup_failure_policy(raw_value: object, *, plugin_id: str) -> str:
-    policy = str(raw_value or "warn").strip().lower()
+    if raw_value is None:
+        return "warn"
+    policy = str(raw_value).strip().lower()
     if policy in {"warn", "fail", "ignore"}:
         return policy
     raise _to_domain_error(

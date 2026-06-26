@@ -217,6 +217,22 @@ def test_parse_single_plugin_config_warns_on_noncanonical_fields(
 
 
 @pytest.mark.plugin_unit
+def test_normalize_startup_failure_policy_defaults_none_to_warn() -> None:
+    assert module._normalize_startup_failure_policy(None, plugin_id="demo") == "warn"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("raw_value", ["", False, 0])
+def test_normalize_startup_failure_policy_rejects_falsy_non_default_values(raw_value: object) -> None:
+    with pytest.raises(ServerDomainError) as exc_info:
+        module._normalize_startup_failure_policy(raw_value, plugin_id="demo")
+
+    assert exc_info.value.code == "INVALID_PLUGIN_CONFIG"
+    assert exc_info.value.details["error_type"] == "InvalidStartupFailurePolicy"
+    assert "startup_failure" in exc_info.value.message
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_start_plugin_refreshes_registry_before_loading(
     monkeypatch: pytest.MonkeyPatch,
