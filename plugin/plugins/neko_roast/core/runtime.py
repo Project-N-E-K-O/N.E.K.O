@@ -185,6 +185,11 @@ class RoastRuntime:
         self.audit.record("instructions_injected", output, detail={"source": "neko_roast"})
         return output
 
+    async def sync_live_instructions(self, *, force: bool = False) -> str:
+        if self.config.live_enabled:
+            return await self.inject_instructions(force=force)
+        return await self.restore_instructions()
+
     async def sync_developer_mode(self, *, announce: bool = False) -> str:
         if self.config.developer_tools_enabled:
             result = await self.inject_developer_instructions()
@@ -290,6 +295,8 @@ class RoastRuntime:
             data = self.config.to_dict()
             data.update(clean)
             self._activate_config(RoastConfig.from_mapping(data))
+            if "live_enabled" in clean:
+                await self.sync_live_instructions(force=True)
             if "developer_tools_enabled" in clean:
                 await self.sync_developer_mode(announce=False)
             await self._persist_config_best_effort(clean)
@@ -338,6 +345,7 @@ class RoastRuntime:
         self.live_events.reset()
         if mark_disabled:
             self.config.live_enabled = False
+            await self.restore_instructions()
         self.live_connection_state = "disconnected"
         self.safety_guard.set_connected(False)
 
@@ -2228,6 +2236,7 @@ class RoastRuntime:
                 return self.live_connection_snapshot()
         self.config.live_enabled = True  # 内存即时生效（gate/safety 共享同一 config 对象），避免配置写竞争拖垮连接
         started = await self._start_live_listener(target_room_id)
+        await self.sync_live_instructions()
         self.audit.record(
             "live_connected" if started else "live_connect_failed",
             "danmaku listener started" if started else "failed to start danmaku listener",

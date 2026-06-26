@@ -61,7 +61,7 @@ class NekoRoastPlugin(NekoPluginBase):
             timeout=30.0,
         )
         self._sync_developer_entries()
-        await self.runtime.inject_instructions()
+        await self.runtime.sync_live_instructions()
         await self.runtime.sync_developer_mode(announce=False)
         return Ok({"status": "ready"})
 
@@ -82,7 +82,7 @@ class NekoRoastPlugin(NekoPluginBase):
         runtime = self.runtime
         await runtime.reload_config()
         self._sync_developer_entries()
-        await runtime.inject_instructions(force=True)
+        await runtime.sync_live_instructions(force=True)
         await runtime.sync_developer_mode(announce=False)
         return Ok({"status": "reloaded"})
 

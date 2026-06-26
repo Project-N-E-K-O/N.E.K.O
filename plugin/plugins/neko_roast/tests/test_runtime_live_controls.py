@@ -105,6 +105,29 @@ def test_dashboard_actions_include_clear_viewer_profiles(runtime: RoastRuntime) 
 
 
 @pytest.mark.asyncio
+async def test_sync_live_instructions_does_not_push_when_live_disabled(runtime: RoastRuntime) -> None:
+    runtime.config.live_enabled = False
+
+    result = await runtime.sync_live_instructions()
+
+    assert result == "not_injected"
+    assert runtime.instructions_injected is False
+    assert runtime.plugin.pushed_messages == []
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_injects_live_instructions_after_listener_starts(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+
+    snapshot = await runtime.connect_live_room()
+
+    assert snapshot["connected"] is True
+    assert runtime.instructions_injected is True
+    assert len(runtime.plugin.pushed_messages) == 1
+    assert runtime.plugin.pushed_messages[0]["metadata"]["description"] == "Neko Roast behavior instructions"
+
+
+@pytest.mark.asyncio
 async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: RoastRuntime) -> None:
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
     await runtime.viewer_store.mark_roasted("1001", "first roast")
@@ -182,6 +205,8 @@ async def test_connect_live_room_rolls_back_live_enabled_when_start_fails(runtim
     assert snapshot["connected"] is False
     assert runtime.config.live_enabled is False
     assert runtime.safety_guard.connected is False
+    assert runtime.instructions_injected is False
+    assert runtime.plugin.pushed_messages == []
 
 
 @pytest.mark.asyncio

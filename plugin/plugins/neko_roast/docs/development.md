@@ -517,10 +517,10 @@ danmaku_core on_event(cmd, 富模型)
 
 任何需要让猫猫回应的功能都必须通过 `NekoDispatcher`。不要在模块里直接调用 `plugin.push_message()`。
 
-插件启动和配置变化时会通过 `NekoDispatcher.push_context_instructions()` 注入一段 `ai_behavior="read"` 的轻量上下文，告诉猫猫这是直播间弹幕/头像锐评场景，以及锐评要自然、短句、适合 TTS 播放。这段上下文只用于让 LLM 理解插件语境，不写观众档案，不进入直播总结，也不代表一次锐评已经发生。
+插件启动和配置变化时只在 `live_enabled=true` 后通过 `NekoDispatcher.push_context_instructions()` 注入一段 `ai_behavior="read"` 的轻量上下文，告诉猫猫这是直播间弹幕/头像锐评场景，以及锐评要自然、短句、适合 TTS 播放。未开启直播插件时必须保持 `not_injected` 或执行恢复，不得向主猫注入直播语境，避免影响 Warthunder 等其他插件发言。这段上下文只用于让 LLM 理解插件语境，不写观众档案，不进入直播总结，也不代表一次锐评已经发生。
 如果 `developer_tools_enabled=true`，插件会在直播语境之后通过 `NekoDispatcher.push_developer_instructions()` 叠加开发者调试语境。手动从面板开启开发者模式时，额外通过 `respond` 播报一次进入调试状态；插件启动或配置重载时只静默注入，不自动播报。
 关闭开发者模式时，插件会发送开发者调试恢复语境，只退出调试态，不关闭直播锐评语境，也不清空沙盒记录。
-插件停止时会通过 `NekoDispatcher.push_context_restore()` 再发送一段 `ai_behavior="read"` 的恢复上下文，提醒猫猫停止把后续普通对话理解成直播间弹幕、头像锐评事件或观众互动事件。xTLM 的做法是连接后注入常驻玩法语境，本插件在此基础上额外补了关闭恢复，避免关闭后仍残留直播锐评状态。
+插件停止、断开直播间或关闭 `live_enabled` 时会通过 `NekoDispatcher.push_context_restore()` 再发送一段 `ai_behavior="read"` 的恢复上下文，提醒猫猫停止把后续普通对话理解成直播间弹幕、头像锐评事件或观众互动事件。xTLM 的做法是连接后注入常驻玩法语境，本插件在此基础上额外补了关闭恢复，避免关闭后仍残留直播锐评状态。
 
 锐评指令的**文本构造**集中在 `avatar_roast.build_request()`：它产出完整的 `InteractionRequest.prompt_text`，包含观众昵称/UID/弹幕、头像可见性与 META，以及给猫猫的锐评规则。规则编码了**自适应焦点**——昵称与头像哪个更有料就主打哪个，两者都有料就抓反差/呼应，都平淡就转弹幕/进场时机/直播节奏，避免硬尬夸；并强制“看不到的头像绝不脑补、避免与最近几条锐评重样、一句话适合 TTS”。独播（`solo_stream`）下，如果首次出场事件带有当前弹幕，首评应优先接住这句话，头像/昵称只作为出场印象点缀，避免变成纯头像或纯 ID 锐评；同播（`co_stream`）低打断。`build_request()` 只构造请求、不触发 NEKO。
 
