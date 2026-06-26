@@ -822,7 +822,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
   });
 
-  it('renders a close button on the meme overlay and hides the overlay when clicked', () => {
+  it('renders the meme overlay close button after the image loads and hides the overlay when clicked', async () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
     const meme = parseChatMessage({
       id: 'meme-closeme', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
@@ -831,12 +831,16 @@ describe('App', () => {
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
     );
+    const img = container.querySelector('.compact-meme-overlay img');
+    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
+    expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
+
+    fireEvent.load(img as Element);
+    await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
     const closeButton = container.querySelector('.compact-meme-overlay-close');
-    expect(closeButton).not.toBeNull();
     // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
     // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
     expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
 
     fireEvent.click(closeButton as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
@@ -860,9 +864,11 @@ describe('App', () => {
 
       const img = container.querySelector('.compact-meme-overlay img');
       expect(img).not.toBeNull();
+      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
       fireEvent.load(img as Element);
       expect(geometryRefreshes.length).toBe(0);
       await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
+      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
       geometryRefreshes.length = 0;
 
       fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
@@ -882,6 +888,9 @@ describe('App', () => {
     const { container, rerender } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[memeA]} />,
     );
+    const memeAImage = container.querySelector('.compact-meme-overlay img');
+    fireEvent.load(memeAImage as Element);
+    expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
     fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
 

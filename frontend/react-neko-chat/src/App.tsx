@@ -1745,6 +1745,7 @@ function CompactChatApp({
   // 用户手动叉掉的表情包 id（会话级，不持久化）：overlay 的 meme id 命中即隐藏。下一张新 meme 是不同
   // id，自然重新显示；刷新后状态重置（与 compactCaptionState 等紧凑挂件一致，均为 ephemeral state）。
   const [dismissedMemeId, setDismissedMemeId] = useState<string | null>(null);
+  const [loadedMemeOverlayKey, setLoadedMemeOverlayKey] = useState<string | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
@@ -2540,6 +2541,11 @@ function CompactChatApp({
   const compactMemeGeometryKey = compactMemeOverlay
     ? `${compactMemeOverlay.id}:${compactMemeOverlayVisible ? 'visible' : 'hidden'}`
     : 'none';
+  const compactMemeOverlayLoadKey = compactMemeOverlay
+    ? `${compactMemeOverlay.id}:${compactMemeOverlay.url}`
+    : null;
+  const compactMemeOverlayImageSettled = compactMemeOverlayLoadKey !== null
+    && loadedMemeOverlayKey === compactMemeOverlayLoadKey;
   const lastCompactMemeGeometryKeyRef = useRef<string | null>(null);
   const compactMemeGeometryFrameRef = useRef<number | null>(null);
   const requestCompactMemeGeometryRefresh = useCallback(() => {
@@ -2556,6 +2562,15 @@ function CompactChatApp({
       requestCompactMemeGeometryRefresh();
     });
   }, [requestCompactMemeGeometryRefresh]);
+  const markCompactMemeOverlayImageSettled = useCallback(() => {
+    if (compactMemeOverlayLoadKey === null) return;
+    setLoadedMemeOverlayKey(compactMemeOverlayLoadKey);
+    scheduleCompactMemeGeometryRefresh();
+  }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
+  const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
+    if (!node?.complete || node.naturalWidth <= 0) return;
+    markCompactMemeOverlayImageSettled();
+  }, [markCompactMemeOverlayImageSettled]);
 
   useEffect(() => () => {
     if (typeof window === 'undefined') return;
@@ -7126,43 +7141,46 @@ function CompactChatApp({
           alt={compactMemeOverlay.alt}
           loading="eager"
           decoding="async"
-          onLoad={scheduleCompactMemeGeometryRefresh}
-          onError={scheduleCompactMemeGeometryRefresh}
+          ref={handleCompactMemeOverlayImageRef}
+          onLoad={markCompactMemeOverlayImageSettled}
+          onError={markCompactMemeOverlayImageSettled}
         />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
             ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
             只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
             漏了它，Electron pass-through 窗口会把按钮当穿透区、点击穿到桌面（普通浏览器窗口测不出，对齐音乐条）。 */}
-        <button
-          type="button"
-          className="compact-meme-overlay-close"
-          data-compact-hit-region="true"
-          data-compact-hit-region-id="meme:close"
-          data-compact-hit-region-kind="meme-close"
-          aria-label={closeMemeButtonAriaLabel}
-          title={closeMemeButtonAriaLabel}
-          onClick={(event) => {
-            event.stopPropagation();
-            setDismissedMemeId(compactMemeOverlay.id);
-          }}
-        >
-          <svg
-            className="compact-meme-overlay-close-icon"
-            viewBox="0 0 16 16"
-            aria-hidden="true"
-            focusable="false"
+        {compactMemeOverlayImageSettled ? (
+          <button
+            type="button"
+            className="compact-meme-overlay-close"
+            data-compact-hit-region="true"
+            data-compact-hit-region-id="meme:close"
+            data-compact-hit-region-kind="meme-close"
+            aria-label={closeMemeButtonAriaLabel}
+            title={closeMemeButtonAriaLabel}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDismissedMemeId(compactMemeOverlay.id);
+            }}
           >
-            <path
-              d="M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+            <svg
+              className="compact-meme-overlay-close-icon"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        ) : null}
       </div>
     </div>
   ) : null;
