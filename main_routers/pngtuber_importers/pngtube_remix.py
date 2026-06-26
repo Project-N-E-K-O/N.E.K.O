@@ -233,6 +233,16 @@ def _json_safe_vec(value, default=(0.0, 0.0)) -> list[float]:
     return [round(x, 3), round(y, 3)]
 
 
+def _layer_role(layer: dict) -> str:
+    state = layer.get("state") or {}
+    name = str(layer.get("name") or "").lower()
+    if bool(state.get("effective_should_talk", state.get("should_talk", False))) or "mouth" in name:
+        return "mouth"
+    if bool(state.get("effective_should_blink", state.get("should_blink", False))) or "eye" in name:
+        return "eye"
+    return "layer"
+
+
 def _positive_int(value, default: int = 1) -> int:
     try:
         parsed = int(value)
@@ -450,6 +460,7 @@ def _export_layer_assets(package_dir: Path, layers: list[dict], bounds: tuple[in
         exported.append({
             "image": rel_path,
             "name": layer.get("name") or "",
+            "role": _layer_role(layer),
             "sprite_id": layer.get("sprite_id"),
             "parent_id": layer.get("parent_id"),
             "sprite_type": layer.get("sprite_type"),
@@ -552,6 +563,8 @@ def _metadata(remix_data: dict, remix_file: Path, package_dir: Path, warnings: l
     return {
         "adapter_version": 1,
         "runtime": "layered_canvas",
+        "format": "pngtube_remix_pngremix",
+        "format_version": 1,
         "source_format": "pngtube_remix_pngremix",
         "source_file": remix_file.name,
         "warnings": warnings,

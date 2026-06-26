@@ -5009,6 +5009,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         return `${text.slice(0, 18)}...${text.slice(-24)}`;
     }
 
+    function inferPNGTuberLayerRole(layer) {
+        if (!layer || typeof layer !== 'object') return 'unknown';
+        const explicitRole = String(layer.role || '').trim();
+        if (explicitRole) return explicitRole;
+        const state = layer.state && typeof layer.state === 'object' ? layer.state : {};
+        const states = Array.isArray(layer.states) ? layer.states : [];
+        const roleStates = [state].concat(states.filter((item) => item && typeof item === 'object'));
+        const hasTalkState = roleStates.some((item) => !!(item.effective_should_talk ?? item.should_talk));
+        if (hasTalkState) return 'mouth';
+        const hasBlinkState = roleStates.some((item) => !!(item.effective_should_blink ?? item.should_blink));
+        if (hasBlinkState) return 'eye';
+        const name = String(layer.name || layer.label || '').toLowerCase();
+        if (name.includes('mouth')) return 'mouth';
+        if (name.includes('eye')) return 'eye';
+        return 'layer';
+    }
+
     function getPNGTuberDiagnosticsSnapshot(metadata = null, layerAssetCheck = null) {
         const debugState = typeof window.getPNGTuberDebugState === 'function'
             ? window.getPNGTuberDebugState()
@@ -5023,7 +5040,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             missingSamples: [],
         };
         const roles = layers.reduce((acc, layer) => {
-            const role = String(layer && layer.role || 'unknown').trim() || 'unknown';
+            const role = inferPNGTuberLayerRole(layer);
             acc[role] = (acc[role] || 0) + 1;
             return acc;
         }, {});
@@ -5047,7 +5064,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : '');
         return {
             ...debugState,
-            metadataFormat: metadata && metadata.format ? String(metadata.format) : '',
+            metadataFormat: metadata && (metadata.format || metadata.source_format || metadata.source_type)
+                ? String(metadata.format || metadata.source_format || metadata.source_type)
+                : '',
             metadataRuntime: metadata && metadata.runtime ? String(metadata.runtime) : '',
             metadataError: lastPNGTuberDiagnosticsMetadataError,
             canvas: canvas.width && canvas.height ? `${canvas.width} x ${canvas.height}` : '',
