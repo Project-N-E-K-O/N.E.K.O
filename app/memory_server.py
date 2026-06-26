@@ -16,7 +16,8 @@
 import sys
 import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _repo_root not in sys.path:
+# Force project root to sys.path[0] — see agent_server.py top for rationale.
+if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
 # Wire DI bindings explicitly — direct script invocation
@@ -4171,12 +4172,16 @@ async def get_recent_history(lanlan_name: str):
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
-        if i.type == 'system':
-            result += i.content + "\n"
+        if isinstance(i.content, str):
+            content = i.content
         else:
-            texts = [j['text'] for j in i.content if j['type']=='text']
-            joined = "\n".join(texts)
-            result += f"{name_mapping[i.type]} | {joined}\n"
+            texts = [j['text'] for j in i.content if isinstance(j, dict) and j.get('type') == 'text']
+            content = "\n".join(texts)
+        if i.type == 'system':
+            result += content + "\n"
+        else:
+            speaker = name_mapping.get(i.type, i.type)
+            result += f"{speaker} | {content}\n"
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")

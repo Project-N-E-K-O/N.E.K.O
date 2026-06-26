@@ -651,7 +651,7 @@ class TopicHookPool:
             if current_material.get("status") != "pending":
                 return
             if self._daily_quota_reached(name):
-                logger.info("[%s] topic material trigger waiting: daily quota reached", name)
+                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             if self._topic_was_recently_used(name, current_material):
@@ -673,12 +673,12 @@ class TopicHookPool:
             # prepare a deeper online lead off the user hot path. A later gate
             # close just keeps the prepared material pending for the next retry.
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             delivery_material = deepcopy(current_material)

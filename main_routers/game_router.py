@@ -51,14 +51,8 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from config.prompts.prompts_badminton import get_badminton_quick_lines_fallback
-from config.prompts.prompts_game import (
-    PREGAME_CONTEXT_INPUT_WATERMARK,
-    get_badminton_pregame_context_formatter_labels,
-    get_badminton_pregame_context_prompt,
-    get_badminton_quick_lines_prompt,
-    get_badminton_quick_lines_user_prompt,
-    get_badminton_system_prompt,
+from config.prompts.prompts_minigame_common import PREGAME_CONTEXT_INPUT_WATERMARK
+from config.prompts.prompts_soccer import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -68,7 +62,15 @@ from config.prompts.prompts_game import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from config.prompts.prompts_game_route import (
+from config.prompts.prompts_badminton import (
+    get_badminton_pregame_context_formatter_labels,
+    get_badminton_pregame_context_prompt,
+    get_badminton_quick_lines_fallback,
+    get_badminton_quick_lines_prompt,
+    get_badminton_quick_lines_user_prompt,
+    get_badminton_system_prompt,
+)
+from config.prompts.prompts_minigame_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
@@ -632,7 +634,7 @@ def _strip_json_fence(text: str) -> str:
 
 
 def _soccer_random_default_difficulty() -> str:
-    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_game initialDifficulty 对齐；
+    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_soccer initialDifficulty 对齐；
     # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
     return "lv2"
 

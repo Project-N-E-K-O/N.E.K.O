@@ -119,14 +119,10 @@ jobs:
         run: |
           python -c "
           import json, os
+          # 本地化角色种子在 config/characters/<locale>.json（已入库的目录，PR #1282），
+          # 不需在此生成；只补 git 不跟踪的运行时文件，让构建有可读的基准配置。
           configs = {
             'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ru.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
             'config/core_config.json': {},
             'config/user_preferences.json': [],
           }
@@ -236,12 +232,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/api_providers.json=config/api_providers.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.json=config/characters.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ru.json=config/characters.ru.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
+          # 本地化角色种子在 config/characters/<locale>.json（PR #1282 后），ConfigManager.
+          # _get_localized_characters_source 按 locale 读该目录；打整个目录，别再引用已不存在的
+          # 根级 config/characters.<locale>.json（旧路径，会静默丢失全部本地化种子）。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/characters=config/characters"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
           # changelog/.md 与 survey/.json 是纯数据文件，--include-package=config 只编 .py
@@ -271,6 +265,9 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
+          # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
+          # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"

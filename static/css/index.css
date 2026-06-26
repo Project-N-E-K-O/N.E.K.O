@@ -514,6 +514,18 @@ body.neko-game-active [id$="-lock-icon"] {
     pointer-events: none !important;
 }
 
+/* 锁图标的 pointer-events 兜底。
+   整页以 html,body{pointer-events:none} 作点击穿透底，锁图标本应自行 opt-in auto。
+   锁创建时（avatar-ui-buttons / live2d-ui-buttons 等）设的是 inline pointer-events:auto，
+   但 showLive2d / restoreYuiGuideLive2DPreparingControls 等「恢复」函数会对它
+   removeProperty('pointer-events') 来清掉 !important 残留，连带把那份 auto 也抹掉，
+   于是锁掉回继承的 none、永久点不动（直到一次 goodbye→return 重新设上 auto）。
+   这条兜底把锁的静止态钉成可点；拖拽屏蔽（body.neko-model-dragging …!important）、
+   游戏态隐藏、教程 preparing 隐藏（均用 !important none）仍能正常压住它。 */
+[id$="-lock-icon"] {
+    pointer-events: auto;
+}
+
 /* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有
    DOM/ID/事件协议与拖拽逻辑。 */
 .neko-idle-return-button-container {

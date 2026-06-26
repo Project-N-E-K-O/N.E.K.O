@@ -3692,6 +3692,13 @@ class LLMSessionManager:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 走 magic-command 等绕过 stream_text 的 text 输入时，主动搭话暂存的屏幕
+        # 截图也不再是"下一条回复的背景"——这些路径不经 stream_text 消费它，残留
+        # 会被注进后续不相关消息。一并清掉（与 _pending_images 同为"用户做了别的
+        # 动作 → 失效待发视觉上下文"的对偶 choke point，Codex P2）。
+        clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+        if callable(clear_shot):
+            clear_shot(None)
 
     async def _publish_openclaw_magic_command(self, command: str) -> None:
         try:
@@ -3717,7 +3724,14 @@ class LLMSessionManager:
                 "details": {"command": command},
             }))
 
-    async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
+    async def handle_input_transcript(
+        self,
+        transcript: str,
+        *,
+        is_voice_source: bool = True,
+        source: str | None = None,
+        metadata: dict | None = None,
+    ):
         """Sync transcript text into queues/cache and push it to the frontend.
 
         ``is_voice_source`` defaults to True for the realtime-client
@@ -3837,6 +3851,11 @@ class LLMSessionManager:
 
         # 推送到同步消息队列
         user_message = {"input_type": "transcript", "data": record_transcript_text}
+        source_value = str(source or "").strip()
+        if source_value:
+            user_message["source"] = source_value
+        if isinstance(metadata, dict) and metadata:
+            user_message["metadata"] = metadata
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
         self.sync_message_queue.put({"type": "user", "data": user_message})
@@ -7031,6 +7050,7 @@ class LLMSessionManager:
         expected_speech_id: str | None = None,
         action_note: str | None = None,
         source_tag: str | None = None,
+        vision_screenshot_b64: str | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -7051,6 +7071,19 @@ class LLMSessionManager:
         now" the AI isn't clueless — remembering only what it said but not what
         it did. Construction logic in
         ``config.prompts.prompts_proactive.build_proactive_action_note``.
+
+        vision_screenshot_b64: optional; the screen this proactive round obtained
+        when a vision model was available (the caller passes it whenever a
+        screenshot was captured, regardless of which channel the talk landed on).
+        Staged onto the session (NOT committed into history as an image) only on a
+        genuine commit, so the user's NEXT text reply folds it in as leading
+        visual context — the conversation model otherwise sees only the proactive
+        text and can't tell what was on screen. Passing None clears any previously
+        staged screenshot, so a new proactive round always discards the prior
+        cache (and may fill a fresh one). The session enforces a 2-min TTL on the
+        staged screenshot at injection time. Staging happens inside the sid-guard
+        below, so a user takeover (sid change → early return) never stages a
+        screenshot for an undelivered turn.
 
         Returns True when genuinely persisted, False when skipped due to a sid
         change. The caller uses this to short-circuit downstream side effects
@@ -7093,7 +7126,15 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
-                # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
+                # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
+                # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
+                # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
+                # 时完全不知道刚才评论的屏幕长什么样。新一轮主动搭话产生即覆盖/清掉
+                # 旧缓存（没拿到截图的轮次传 None 清），session 侧再用 2 分钟 TTL
+                # 兜底过期。set_* 在 sid 校验之后，用户接管（sid 变→早 return）时
+                # 绝不会为未投递的轮次暂存截图。
+                if hasattr(self.session, "set_proactive_screenshot"):
+                    self.session.set_proactive_screenshot(vision_screenshot_b64)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
@@ -9418,6 +9459,7 @@ class LLMSessionManager:
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
                     memory_text = self._clean_frontend_memory_text(message.get("memory_text"))
+                    message_source = str(message.get("source") or "").strip()
                     record_data = memory_text or data
                     # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
@@ -9553,8 +9595,21 @@ class LLMSessionManager:
                     _focus_thinking = await self._focus_inline_decision(record_data)
                     input_transcript_callback = None
                     if memory_text:
-                        async def input_transcript_callback(_transcript: str, *, _memory_text: str = memory_text) -> None:
-                            await self.handle_input_transcript(_memory_text, is_voice_source=False)
+                        transcript_metadata = {"source": message_source} if message_source else None
+
+                        async def input_transcript_callback(
+                            _transcript: str,
+                            *,
+                            _memory_text: str = memory_text,
+                            _message_source: str = message_source,
+                            _transcript_metadata: dict | None = transcript_metadata,
+                        ) -> None:
+                            await self.handle_input_transcript(
+                                _memory_text,
+                                is_voice_source=False,
+                                source=_message_source,
+                                metadata=_transcript_metadata,
+                            )
 
                     stream_text_kwargs = {
                         "system_prefix": _agent_cb_ctx or None,
@@ -9760,6 +9815,9 @@ class LLMSessionManager:
                                 "has_image": True,
                                 "mime_type": "image/jpeg",
                             }
+                            message_source = str(message.get("source") or "").strip()
+                            if message_source:
+                                image_message["source"] = message_source
                             if message.get("request_id"):
                                 image_message["request_id"] = message.get("request_id")
                             self.sync_message_queue.put({

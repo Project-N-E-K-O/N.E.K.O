@@ -629,8 +629,19 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-preview-min-height: 360px;" in anchor_block
+    assert "--compact-export-preview-max-height: 78vh;" in anchor_block
+    assert "--compact-export-preview-region-height: min(" in anchor_block
+    assert "max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height))" in anchor_block
+    assert "var(--compact-export-preview-max-height)" in anchor_block
+    assert "max-height: var(--compact-export-preview-max-height);" in anchor_block
+    assert "\n  max-height: 78vh;" not in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "--compact-export-preview-max-height: min(" in desktop_history_block
+    assert "calc(var(--compact-export-surface-width) * 1.46)" in desktop_history_block
+    assert "calc(var(--compact-desktop-workarea-height, 900px) * 0.78)" in desktop_history_block
+    assert "max-height: var(--compact-export-preview-max-height);" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
@@ -1801,6 +1812,10 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
 
     assert "height: calc(var(--compact-export-history-region-height)" in scroll_block
     assert "max-height: calc(var(--compact-export-history-region-height)" in scroll_block
+    assert "height: var(--compact-export-preview-region-height);" in preview_block
+    assert "max-height: var(--compact-export-preview-region-height);" in preview_block
+    assert "height: var(--compact-export-history-region-height);" not in preview_block
+    assert "max-height: var(--compact-export-history-region-height);" not in preview_block
     assert "max-height: inherit;" in panel_block
 
 

@@ -1030,6 +1030,15 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── activity_guess 自适应退避门控 ──────────────────────────────────────
+# 活动心跳 (main_logic/activity/tracker.py:_activity_guess_loop) 通过 emotion-tier
+# LLM 把"用户在干嘛"叙述出来，只喂 proactive 搭话 prompt。这组旋钮约束「活动没
+# 实质变化时」它多久刷一次——用户在两个 app 间来回切窗口曾让它每 ~40s 烧一次
+# (静默, 无业务日志) 无限持续。详见 main_logic/activity/activity_guess_gate.py。
+ACTIVITY_GUESS_BACKOFF_BASE_SECONDS = 30.0   # 两次调用之间的硬地板 + 首次重述间隔
+ACTIVITY_GUESS_BACKOFF_CAP_SECONDS = 600.0   # 活动稳定后重述间隔的封顶
+ACTIVITY_GUESS_SIG_CACHE_SIZE = 8            # 退避记忆的「不同活动签名」条数
+
 # ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
 # 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
 # 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
@@ -1388,6 +1397,22 @@ DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
   路径，宁可多等也不能误截正常回复。
 - 政策：LLM_OUTPUT_BUDGET lint 要求每个 client 构造都带 timeout；本常量是
   主对话流式路径的统一来源。"""
+
+FOCUS_THINKING_EXTRA_TOKENS = 800
+"""凝神（focus / thinking-on）轮次额外放宽的 max_completion_tokens。
+- 背景：thinking 模型（Qwen enable_thinking / GLM·Kimi·Doubao thinking.type /
+  OpenRouter reasoning.effort）的 reasoning token 与正式回复共享同一个
+  max_completion_tokens 预算池（见 docs/design/llm-prompt-budget.md §0），
+  凝神轮一开思考就会从回复额度里扣，把正式回复挤短。
+- 作用：仅在 thinking_on 的那一轮，把 API 端 max_completion_tokens 临时
+  抬高本值，给推理链单独留头寸，不动 Python-side 长度 guard（回复可见
+  长度仍按 max_response_length 收口）。
+- 路由：作为 per-call override 经 _focus_stream_overrides → astream →
+  ChatOpenAI._params 透传，不改 self.llm 实例属性（与 extra_body 同一条
+  per-call 路径，并发安全、下一轮自动复位）。
+- 适用面：Claude 凝神保持 thinking-off（config/providers.py），本加值对其
+  天然 no-op；Gemini thinking_budget 是独立字段（800），本余量也足够覆盖。
+- 取值：扁平 800，不按 provider 分叉——只在真正开思考的轮次生效。"""
 
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
@@ -2445,6 +2470,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_BASE_SECONDS',
+    'ACTIVITY_GUESS_BACKOFF_CAP_SECONDS',
+    'ACTIVITY_GUESS_SIG_CACHE_SIZE',
     'PERSONA_RENDER_MAX_TOKENS',
     'REFLECTION_RENDER_MAX_TOKENS',
     'PERSONA_RENDER_ENCODING',
@@ -2466,6 +2494,7 @@ __all__ = [
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
+    'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',

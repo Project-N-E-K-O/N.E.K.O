@@ -6,6 +6,13 @@
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
+    let memoryDissolveInProgress = false;
+    let memoryParticleCanvas = null;
+    let memoryParticleContext = null;
+    let memoryParticleFrame = 0;
+    let memoryParticles = [];
+    let memoryParticleCanvasResizeBound = false;
+    let memoryDissolveRunId = 0;
     let storageLocationState = {
         bootstrap: null,
         blockingReason: '',
@@ -1022,6 +1029,290 @@
         return String(c);
     }
 
+    function ensureMemoryParticleCanvas() {
+        if (!memoryParticleCanvas) {
+            memoryParticleCanvas = document.createElement('canvas');
+            memoryParticleCanvas.id = 'memory-particle-canvas';
+            memoryParticleCanvas.className = 'memory-particle-canvas';
+            memoryParticleCanvas.setAttribute('aria-hidden', 'true');
+            document.body.appendChild(memoryParticleCanvas);
+            memoryParticleContext = memoryParticleCanvas.getContext('2d');
+        }
+        ensureMemoryParticleResizeListener();
+        resizeMemoryParticleCanvas();
+        return memoryParticleCanvas;
+    }
+
+    function ensureMemoryParticleResizeListener() {
+        if (memoryParticleCanvasResizeBound) return;
+        window.addEventListener('resize', resizeMemoryParticleCanvas);
+        memoryParticleCanvasResizeBound = true;
+    }
+
+    function resizeMemoryParticleCanvas() {
+        if (!memoryParticleCanvas || !memoryParticleContext) return;
+        const dpr = window.devicePixelRatio || 1;
+        memoryParticleCanvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+        memoryParticleCanvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+        memoryParticleCanvas.style.width = window.innerWidth + 'px';
+        memoryParticleCanvas.style.height = window.innerHeight + 'px';
+        memoryParticleContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function teardownMemoryParticleCanvas() {
+        if (memoryParticleCanvasResizeBound) {
+            window.removeEventListener('resize', resizeMemoryParticleCanvas);
+            memoryParticleCanvasResizeBound = false;
+        }
+        cancelAnimationFrame(memoryParticleFrame);
+        memoryParticleFrame = 0;
+        memoryParticles = [];
+        memoryDissolveInProgress = false;
+        memoryDissolveRunId++;
+        if (memoryParticleContext) {
+            memoryParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        }
+        if (memoryParticleCanvas && memoryParticleCanvas.parentNode) {
+            memoryParticleCanvas.parentNode.removeChild(memoryParticleCanvas);
+        }
+        memoryParticleCanvas = null;
+        memoryParticleContext = null;
+        setChatActionButtonsEnabled(true);
+    }
+
+    function randomBetween(min, max) {
+        return min + Math.random() * (max - min);
+    }
+
+    function createMemoryParticle(x, y, color, delay) {
+        const angle = randomBetween(-Math.PI * 0.92, -Math.PI * 0.08);
+        const speed = randomBetween(0.8, 4.2);
+        memoryParticles.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed + randomBetween(-0.65, 0.65),
+            vy: Math.sin(angle) * speed - randomBetween(0.2, 1.2),
+            rotation: randomBetween(0, Math.PI),
+            spin: randomBetween(-0.16, 0.16),
+            size: randomBetween(2.2, 5.8),
+            life: 0,
+            maxLife: randomBetween(48, 86),
+            delay: delay || 0,
+            color,
+            alpha: 1
+        });
+    }
+
+    function roundedRectPath(context, x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        context.beginPath();
+        context.moveTo(x + r, y);
+        context.arcTo(x + width, y, x + width, y + height, r);
+        context.arcTo(x + width, y + height, x, y + height, r);
+        context.arcTo(x, y + height, x, y, r);
+        context.arcTo(x, y, x + width, y, r);
+        context.closePath();
+    }
+
+    function wrapParticleText(context, text, x, y, maxWidth, lineHeight) {
+        const chars = Array.from(String(text || ''));
+        let line = '';
+        let cursorY = y;
+        for (const char of chars) {
+            const testLine = line + char;
+            if (line && context.measureText(testLine).width > maxWidth) {
+                context.fillText(line, x, cursorY);
+                line = char;
+                cursorY += lineHeight;
+            } else {
+                line = testLine;
+            }
+        }
+        if (line) {
+            context.fillText(line, x, cursorY);
+        }
+    }
+
+    function sampleMemoryElementParticles(element, role, delay) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+
+        const offscreen = document.createElement('canvas');
+        const scale = 0.7;
+        offscreen.width = Math.max(1, Math.ceil(rect.width * scale));
+        offscreen.height = Math.max(1, Math.ceil(rect.height * scale));
+        const off = offscreen.getContext('2d');
+        if (!off) return;
+        off.scale(scale, scale);
+
+        const computed = window.getComputedStyle(element);
+        const foreground = computed.color || '#40c5f1';
+        const isBubble = element.classList.contains('chat-bubble');
+        const isDelete = element.classList.contains('delete-btn');
+        const palette = role === 'ai'
+            ? ['#40c5f1', '#96e8ff', '#f0f9ff', '#ffffff']
+            : ['#40c5f1', '#e3f4ff', '#ffffff', '#b3e5fc'];
+
+        if (isBubble || isDelete) {
+            roundedRectPath(off, 1, 1, rect.width - 2, rect.height - 2, isDelete ? 999 : 20);
+            off.fillStyle = computed.backgroundColor || (isDelete ? '#ff5252' : '#f0f9ff');
+            off.fill();
+            off.strokeStyle = isDelete ? 'rgba(255,255,255,0.2)' : '#e3f4ff';
+            off.lineWidth = isDelete ? 0 : 2;
+            if (!isDelete) off.stroke();
+        }
+
+        off.fillStyle = foreground;
+        off.font = `${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`;
+        off.textBaseline = 'top';
+        const startX = isBubble ? 18 : 0;
+        const startY = isBubble ? 12 : 0;
+        const maxWidth = Math.max(40, rect.width - (isBubble ? 36 : 0));
+        const lineHeight = parseFloat(computed.lineHeight) || parseFloat(computed.fontSize) * 1.55;
+        wrapParticleText(off, element.textContent || '', startX, startY, maxWidth, lineHeight);
+
+        const image = off.getImageData(0, 0, offscreen.width, offscreen.height);
+        const step = isBubble ? 5 : 4;
+        for (let y = 0; y < image.height; y += step) {
+            for (let x = 0; x < image.width; x += step) {
+                const alpha = image.data[(y * image.width + x) * 4 + 3];
+                if (alpha > 16 && Math.random() > 0.46) {
+                    const color = isDelete
+                        ? (Math.random() > 0.42 ? '#ff8a8a' : '#ffffff')
+                        : palette[Math.floor(Math.random() * palette.length)];
+                    createMemoryParticle(rect.left + x / scale, rect.top + y / scale, color, delay + randomBetween(0, 12));
+                }
+            }
+        }
+    }
+
+    function addMemoryItemParticles(item, sequence) {
+        ensureMemoryParticleCanvas();
+        const delay = (sequence || 0) * 7;
+        const role = item.getAttribute('data-role') || '';
+        item.querySelectorAll('.chat-speaker, .chat-bubble, .chat-time, .delete-btn').forEach(node => {
+            sampleMemoryElementParticles(node, role, delay);
+        });
+
+        const rect = item.getBoundingClientRect();
+        if (rect.width > 0) {
+            for (let i = 0; i < 28; i++) {
+                createMemoryParticle(
+                    randomBetween(rect.left + rect.width * 0.08, rect.right - rect.width * 0.1),
+                    rect.top + randomBetween(0, 4),
+                    i % 2 ? '#b3e5fc' : '#40c5f1',
+                    delay + randomBetween(0, 16)
+                );
+            }
+        }
+    }
+
+    function animateMemoryParticles() {
+        if (!memoryParticleContext) return;
+        memoryParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        memoryParticles = memoryParticles.filter(particle => {
+            if (particle.delay > 0) {
+                particle.delay -= 1;
+                return true;
+            }
+
+            particle.life += 1;
+            const progress = particle.life / particle.maxLife;
+            particle.vy += 0.018;
+            particle.vx *= 0.992;
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+            particle.rotation += particle.spin;
+            particle.alpha = Math.max(0, 1 - progress);
+
+            memoryParticleContext.save();
+            memoryParticleContext.globalAlpha = particle.alpha;
+            memoryParticleContext.translate(particle.x, particle.y);
+            memoryParticleContext.rotate(particle.rotation);
+            memoryParticleContext.fillStyle = particle.color;
+            memoryParticleContext.shadowColor = 'rgba(64, 197, 241, 0.38)';
+            memoryParticleContext.shadowBlur = 9 * particle.alpha;
+            memoryParticleContext.fillRect(-particle.size / 2, -particle.size / 2, particle.size, particle.size);
+            memoryParticleContext.restore();
+
+            return particle.life < particle.maxLife;
+        });
+
+        if (memoryParticles.length) {
+            memoryParticleFrame = requestAnimationFrame(animateMemoryParticles);
+        } else {
+            cancelAnimationFrame(memoryParticleFrame);
+            memoryParticleFrame = 0;
+        }
+    }
+
+    function startMemoryParticles() {
+        if (!memoryParticleFrame) {
+            memoryParticleFrame = requestAnimationFrame(animateMemoryParticles);
+        }
+    }
+
+    function collapseMemoryItem(item) {
+        const height = item.offsetHeight;
+        item.style.height = height + 'px';
+        item.classList.add('is-collapsing');
+        requestAnimationFrame(() => {
+            item.style.height = '0px';
+        });
+    }
+
+    function setChatActionButtonsEnabled(enabled) {
+        const clearBtn = document.getElementById('clear-memory-btn');
+        if (clearBtn) clearBtn.disabled = !enabled;
+        document.querySelectorAll('#memory-chat-edit .delete-btn').forEach(btn => {
+            btn.disabled = !enabled;
+        });
+    }
+
+    function dissolveChatItems(items, onComplete) {
+        const targets = (items || []).filter(Boolean);
+        if (!targets.length) {
+            if (typeof onComplete === 'function') onComplete();
+            return;
+        }
+        const reduceMotion = window.matchMedia
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const maxStaggeredItems = 6;
+        const maxParticleItems = 40;
+
+        if (reduceMotion || targets.length > maxParticleItems) {
+            if (typeof onComplete === 'function') onComplete();
+            return;
+        }
+
+        memoryDissolveInProgress = true;
+        const dissolveRunId = ++memoryDissolveRunId;
+        setChatActionButtonsEnabled(false);
+        memoryParticles = [];
+        cancelAnimationFrame(memoryParticleFrame);
+        memoryParticleFrame = 0;
+
+        targets.forEach((item, sequence) => {
+            window.setTimeout(() => {
+                if (dissolveRunId !== memoryDissolveRunId) return;
+                addMemoryItemParticles(item, sequence);
+                item.classList.add('is-dissolving');
+                startMemoryParticles();
+                window.setTimeout(() => {
+                    if (dissolveRunId !== memoryDissolveRunId) return;
+                    collapseMemoryItem(item);
+                }, 620);
+            }, Math.min(sequence, maxStaggeredItems) * 145);
+        });
+
+        window.setTimeout(() => {
+            if (dissolveRunId !== memoryDissolveRunId) return;
+            if (typeof onComplete === 'function') onComplete();
+            memoryDissolveInProgress = false;
+            setChatActionButtonsEnabled(true);
+        }, 1120 + Math.min(targets.length, maxStaggeredItems) * 145);
+    }
+
     async function loadMemoryFileList() {
         const ul = document.getElementById('memory-file-list');
         ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.loading') : '加载中...'}</li>`;
@@ -1086,6 +1377,8 @@
         chatData.forEach((msg, i) => {
             const container = document.createElement('div');
             container.className = 'chat-item';
+            container.setAttribute('data-chat-index', String(i));
+            container.setAttribute('data-role', msg.role || '');
 
             if (msg.role === 'system') {
                 let text = msg.text;
@@ -1223,8 +1516,11 @@
     }
 
     function deleteChat(idx) {
+        if (memoryDissolveInProgress) return;
+        const item = document.querySelector(`#memory-chat-edit .chat-item[data-chat-index="${idx}"]`);
+        if (!item || idx < 0 || idx >= chatData.length) return;
         chatData.splice(idx, 1);
-        renderChatEdit();
+        dissolveChatItems([item], renderChatEdit);
     }
     // 新增：AI输入框内容变更时，自动拼接时间戳
     function updateAIContent(idx, value) {
@@ -1418,10 +1714,20 @@
         }
     };
     document.getElementById('clear-memory-btn').onclick = function () {
+        if (memoryDissolveInProgress) return;
+        const itemsToDissolve = Array.from(
+            document.querySelectorAll('#memory-chat-edit .chat-item[data-role="human"], #memory-chat-edit .chat-item[data-role="ai"]')
+        );
+        if (!itemsToDissolve.length) {
+            showSaveStatus(window.t ? window.t('memory.clearedChatKeptMemo') : '已清空对话记录，备忘录已保留（未保存）', false);
+            return;
+        }
         // 只清空对话轮次（用户 / AI）；system＝先前对话的备忘录，一律保留
         chatData = chatData.filter(msg => msg && msg.role !== 'human' && msg.role !== 'ai');
-        renderChatEdit();
-        showSaveStatus(window.t ? window.t('memory.clearedChatKeptMemo') : '已清空对话记录，备忘录已保留（未保存）', false);
+        dissolveChatItems(itemsToDissolve, function () {
+            renderChatEdit();
+            showSaveStatus(window.t ? window.t('memory.clearedChatKeptMemo') : '已清空对话记录，备忘录已保留（未保存）', false);
+        });
     };
     function showSaveStatus(msg, success) {
         const el = document.getElementById('save-status');
@@ -1433,6 +1739,7 @@
     }
     function closeMemoryBrowser() {
         teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
         if (window.opener) {
             // 如果是通过 window.open() 打开的，直接关闭
             window.close();
@@ -1459,8 +1766,14 @@
     }
     // 将函数暴露到全局作用域，供 HTML onclick 调用
     window.closeMemoryBrowser = closeMemoryBrowser;
-    window.addEventListener('pagehide', teardownMemoryChatPanelHeightSync);
-    window.addEventListener('beforeunload', teardownMemoryChatPanelHeightSync);
+    window.addEventListener('pagehide', function () {
+        teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
+    });
+    window.addEventListener('beforeunload', function () {
+        teardownMemoryChatPanelHeightSync();
+        teardownMemoryParticleCanvas();
+    });
     // 页面加载时隐藏保存按钮
     document.addEventListener('DOMContentLoaded', async function () {
         initMemoryChatPanelHeightSync();
