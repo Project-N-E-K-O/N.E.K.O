@@ -489,6 +489,8 @@ class UniversalTutorialManager {
     }
 
     dispatchStartupGreetingRelease(reason, detail = {}) {
+        // 放行启动问候即代表新手教程这一程不会再占屏（夭折未启动，或已结束），结束 pending 窗口。
+        this.setHomeTutorialPending(false);
         const releaseDetail = Object.assign({
             released: true,
             page: this.currentPage,
@@ -507,6 +509,8 @@ class UniversalTutorialManager {
     }
 
     clearStartupGreetingRelease(reason = 'tutorial-started') {
+        // 教程已进入运行态（isTutorialRunning/isInTutorial 已置），由运行锁接管占屏，结束 pending 窗口。
+        this.setHomeTutorialPending(false);
         try {
             const detail = window.__NEKO_STARTUP_GREETING_RELEASED__;
             if (detail && detail.released === true) {
@@ -523,6 +527,16 @@ class UniversalTutorialManager {
         } catch (error) {
             console.warn('[Tutorial] 启动问候放行状态清理失败:', error);
         }
+    }
+
+    setHomeTutorialPending(pending) {
+        // 新手教程「即将运行但尚未上锁」窗口的标志。冷启动加载 Live2D 模型与首句演出期间，
+        // isTutorialRunning / window.isInTutorial 都还没置上、后端 tutorial-prompt 仍是 observing，
+        // 选人格门控（character_personality_onboarding.js 的 isHomeTutorialInteractionLocked）靠这个旗子
+        // 提前知道教程马上要占屏，避免「上锁前的长 await 链超过选人格 15s 超时 → 选人格与新手教程并发弹出」。
+        // 仅由 dispatchStartupGreetingRelease（教程不启动/已结束）与 clearStartupGreetingRelease（教程已上锁接管）
+        // 这对 choke point 收口清除，凡是不启动的出口都必经前者，天然 deadlock-safe。
+        window.isNekoHomeTutorialPending = pending === true;
     }
 
     loadAvatarFloatingGuideState() {
@@ -3023,6 +3037,9 @@ class UniversalTutorialManager {
         const hasSeen = localStorage.getItem(storageKey);
 
         if (!hasSeen && this.currentPage === 'home') {
+            // 新手教程即将启动：先置 pending，让选人格门控在「模型加载/首句演出尚未上锁」这段窗口里
+            // 也把教程视作占屏，避免选人格抢在新手教程之前弹出（上锁前的长 await 链可能超过选人格 15s 超时）。
+            this.setHomeTutorialPending(true);
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
                     console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
@@ -3032,6 +3049,9 @@ class UniversalTutorialManager {
                 this.startTutorialWhenI18nReady(1500);
             });
         } else if (this.currentPage === 'home') {
+            // 老用户每日教程不置 pending：这里多数天根本没 round（要到 maybeStartAvatarFloatingGuideAutoRound
+            // 之后才知道），且老用户 onboarding 早已完成、选人格不会再 pending，无收益却会在无 round 日白挡门控。
+            // 首启并发的 bug 只发生在上面的新用户 Day1 分支。
             this.waitForFloatingButtons().then((found) => {
                 if (!found) {
                     this.dispatchStartupGreetingRelease('floating-buttons-not-found');
@@ -3627,6 +3647,8 @@ window.universalTutorialManager = null;
 window.__universalTutorialManagerResizeRetryBound = false;
 
 function dispatchStartupGreetingReleaseWithoutManager(reason, detail = {}) {
+    // 无管理器路径（如移动端禁用教程）同样代表新手教程不会占屏，清除 pending 兜底，避免选人格被永久挡住。
+    window.isNekoHomeTutorialPending = false;
     const releaseDetail = Object.assign({
         released: true,
         page: 'unknown',
