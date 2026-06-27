@@ -1,6 +1,6 @@
 # TTS Client
 
-**File:** `main_logic/tts_client.py` (~2300 lines)
+**Module:** `main_logic/tts_client/` (Python package, ~5900 lines total across `__init__.py`, `_infra.py`, `_registry_meta.py`, `_telemetry.py`, and the `workers/` subpackage of per-provider worker modules). The factory function `get_tts_worker` is defined in `main_logic/tts_client/__init__.py`.
 
 The TTS client handles text-to-speech synthesis across multiple providers with a unified queue-based interface.
 

@@ -48,6 +48,7 @@ import tempfile
 import wave
 import zlib
 import socket
+import inspect
 from dataclasses import dataclass
 from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import aiohttp
 import httpx
+import websockets
 # dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
 # （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
@@ -4535,6 +4537,170 @@ async def get_voice_preview(
                     'error': f'MiMo 预览生成失败: {str(e)}',
                 }, status_code=500)
 
+        # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本
+        # base64，通过 vLLM-Omni WebSocket 合成预览句（对偶 MiMo 的克隆试听；避免落到
+        # 下方 CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
+        if provider == 'vllm_omni':
+            import numpy as np
+            import soxr
+
+            clone_sample_b64 = str((voice_data or {}).get('clone_sample_b64') or '').strip()
+            if not clone_sample_b64:
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 克隆音色缺少参考样本，无法试听: {voice_id}',
+                    'code': 'VLLM_OMNI_VOICE_SAMPLE_MISSING',
+                }, status_code=400)
+            # 构建 data: URI：复用 worker 的 _build_vllm_omni_clone_data_uri，
+            # 与 dispatch 路径同一封装（含 MIME 默认值 audio/wav 与空 b64 保护），
+            # 避免预览/dispatch 两处独立维护拼接逻辑时悄悄产生行为差异。
+            from main_logic.tts_client.workers.vllm_omni import _build_vllm_omni_clone_data_uri
+            from main_logic.tts_client._infra import _resample_audio
+            clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
+            ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
+            # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
+            # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
+            # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
+            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            if not base_url:
+                base_url = str(
+                    (preview_core_config or {}).get('ttsModelUrl')
+                    or (preview_core_config or {}).get('TTS_MODEL_URL')
+                    or ''
+                ).strip()
+            if not base_url:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'vLLM-Omni 服务地址未配置，请先在 TTS 设置中填写端点 URL',
+                    'code': 'VLLM_OMNI_URL_MISSING',
+                }, status_code=400)
+            # model：从 preview_core_config 的 ttsModelId 或默认 Qwen3-TTS
+            model = str((preview_core_config or {}).get('ttsModelId') or '').strip() or 'Qwen3-TTS'
+            # URL 规整复用 worker 的 _vllm_omni_normalize_ws_endpoint（http→ws / 补 /v1 /
+            # 幂等 endpoint 拼接）——避免 preview 复制粘贴时漏掉协议转换导致用户配 http://
+            # 端点必失败（dual to vllm_omni_tts_worker 的 URL 规整）。
+            from main_logic.tts_client import _vllm_omni_normalize_ws_endpoint
+            ws_endpoint = _vllm_omni_normalize_ws_endpoint(base_url)
+            # API key 鉴权（对齐 worker 的 _connect_and_config 双路径：WS handshake
+            # Authorization header + session.config.api_key）。有认证的 vLLM 端点克隆
+            # 预览也需要传 key，否则 401 失败（C6 fix）。
+            vllm_api_key = str((preview_core_config or {}).get('ttsModelApiKey') or '').strip()
+            ws_kwargs = {"max_size": None, "open_timeout": 10, "close_timeout": 5}
+            if vllm_api_key:
+                # 兼容旧版本 websockets：用 inspect 探测参数名，避免 try/except TypeError
+                # 过宽吞掉 WS 通信中的合法 TypeError，也避免 await connect() + async with ws:
+                # 导致 websockets 16.0 的 connect.__aenter__ 再次 await self 重连（C6-1 fix）。
+                # NOTE: preview 用 inspect 探测参数名，worker 仍用 try/except TypeError。
+                # 两条路径策略不同是因为 preview 是短连接（async with 自动管理），
+                # worker 是长连接（手动管理）。worker 的 try/except TypeError 在
+                # connect() 阶段执行，send/recv 在块外，吞没风险较低。
+                try:
+                    _ws_sig = inspect.signature(websockets.connect)
+                    _header_key = "additional_headers" if "additional_headers" in _ws_sig.parameters else "extra_headers"
+                except (ValueError, TypeError):
+                    _header_key = "additional_headers"  # 新版本优先
+                ws_kwargs[_header_key] = [
+                    ("Authorization", f"Bearer {vllm_api_key}"),
+                ]
+            try:
+                # 整体超时 30s：vLLM-Omni 预览无服务端超时，若服务端接受连接但不发
+                # session.done（半开/挂起），async for 会永久阻塞占用 worker。open_timeout/
+                # close_timeout 与 worker 的 _connect_and_config 对齐。
+                async with asyncio.timeout(30):
+                    async with websockets.connect(ws_endpoint, **ws_kwargs) as ws:
+                        # 发送 session.config
+                        config_msg = {
+                            "type": "session.config",
+                            "model": model,
+                            "voice": "default",
+                            "response_format": "pcm",
+                            "speed": 1.0,
+                            "stream_audio": True,
+                            "split_granularity": "sentence",
+                            "ref_audio": clone_data_uri,
+                        }
+                        if ref_text:
+                            config_msg["ref_text"] = ref_text
+                        # session 层鉴权（部分自建服务端从 config 读 api_key）
+                        if vllm_api_key:
+                            config_msg["api_key"] = vllm_api_key
+                        await ws.send(json.dumps(config_msg))
+                        # 发送预览文本
+                        await ws.send(json.dumps({"type": "input.text", "text": text}))
+                        await ws.send(json.dumps({"type": "input.done"}))
+                        # 接收 PCM 二进制帧（24kHz/16bit/mono）和 JSON 事件
+                        pcm_chunks: list[bytes] = []
+                        # 流式重采样器：维护 chunk 边界滤波器状态，避免无状态 soxr.resample()
+                        # 在每个分片边界重置导致杂音（与 worker 路径的 ResampleStream 一致）。
+                        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+                        async for message in ws:
+                            if isinstance(message, bytes):
+                                if len(message) < 2:
+                                    continue
+                                audio_array = np.frombuffer(message, dtype=np.int16)
+                                pcm_chunks.append(_resample_audio(audio_array, 24000, 48000, resampler))
+                            else:
+                                try:
+                                    event = json.loads(message)
+                                except json.JSONDecodeError:
+                                    continue
+                                event_type = event.get("type", "")
+                                if event_type == "session.done":
+                                    break
+                                elif event_type == "error":
+                                    error_msg = event.get("message", event.get("error", str(event)))
+                                    logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览服务端错误: {error_msg}")
+                                    return JSONResponse({
+                                        'success': False,
+                                        'error': f'vLLM-Omni 预览生成失败: {error_msg}',
+                                        'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                                    }, status_code=502)
+                # 空帧守卫：vLLM-Omni 在显式送入 response_format: pcm 时，返回的是
+                # 裸 PCM 流（本身不含 44 字节 WAV 头，由下面 _build_wav_payload 补头）。
+                # 若 session.done 后没收到任何 PCM 帧（服务端合成失败却没发 error 事件，
+                # 或帧长 < 2 被全部跳过），_build_wav_payload([]) 只会产出一个仅含 44 字节
+                # WAV 头的空文件。直接以 success:True 回前端会让用户点试听毫无声音、无任何
+                # 错误提示（哑弹）。正常路径下 error 事件已能拦住多数失败，此处是额外兜底。
+                if not pcm_chunks:
+                    logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览未返回任何音频帧")
+                    return JSONResponse({
+                        'success': False,
+                        'error': 'vLLM-Omni 预览未返回任何音频帧',
+                        'code': 'VLLM_OMNI_VOICE_PREVIEW_NO_AUDIO',
+                    }, status_code=502)
+                # 封装 WAV（给裸 PCM 补 44 字节头）
+                audio_data = _build_wav_payload(pcm_chunks, 1, 2, 48000)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"vLLM-Omni 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览超时（30秒）")
+                return JSONResponse({
+                    'success': False,
+                    'error': 'vLLM-Omni 预览生成失败: 服务端响应超时（30秒）',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_TIMEOUT',
+                }, status_code=504)
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览 WebSocket 连接关闭: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: WebSocket 连接异常',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except (OSError, ConnectionError) as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览连接失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: 连接失败',
+                    'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'vLLM-Omni 预览生成失败: {str(e)}',
+                }, status_code=500)
+
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
@@ -5125,6 +5291,7 @@ async def voice_clone(
     prefix: str = Form(...),
     ref_language: str = Form(default="ch"),
     provider: str = Form(default="cosyvoice"),
+    ref_text: str = Form(default=""),
 ):
     """
     Voice cloning endpoint.
@@ -5134,7 +5301,9 @@ async def voice_clone(
         prefix: voice prefix name
         ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
                       Note: this is the language of the reference audio, not the target voice
-        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, vllm_omni
+        ref_text: transcript of the reference audio (vLLM-Omni inline clone only; must
+                  correspond strictly to the audio content)
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
@@ -5153,6 +5322,22 @@ async def voice_clone(
     ref_language = ref_language.lower().strip() if ref_language else 'ch'
     if ref_language not in valid_languages:
         ref_language = 'ch'
+
+    # vLLM-Omni 克隆必填 ref_text：vLLM-Omni 服务端要求 ref_audio 与 ref_text 严格对应，
+    # 缺失 ref_text 会导致合成失败（服务端 ValueError）。前端 voice_clone.js 也做了
+    # 同步校验（L1484-1491），后端补上防止绕过前端直接调 API。
+    vllm_ref_text = ref_text.strip() if ref_text else ''
+    if provider == 'vllm_omni':
+        if not vllm_ref_text:
+            return JSONResponse(
+                {'error': 'vLLM-Omni 克隆必须填写参考音频原文（ref_text）', 'provider': provider},
+                status_code=400,
+            )
+        if len(vllm_ref_text) > 100:
+            return JSONResponse(
+                {'error': 'vLLM-Omni 参考音频原文过长，请控制在 100 字以内', 'provider': provider},
+                status_code=400,
+            )
 
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
@@ -5313,6 +5498,16 @@ async def voice_clone(
         storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = 'MiMo'
 
+    elif provider == 'vllm_omni':
+        # vLLM-Omni 是本地 self-hosted 服务，没有 API key、也没有远端音色注册接口。克隆走
+        # 「内联参考音频」范式（对偶 MiMo）：参考音频 base64 + ref_text 整段落进 voice_storage
+        # 的 voice_meta，每次合成时内联进 session.config 的 ref_audio/ref_text。桶名固定
+        # __VLLM_OMNI__（无 key 后缀，因本地服务无 key 可分桶）。base_url 取当前配置的
+        # ttsModelUrl（与 _vllm_omni_resolve 同源），仅存档备查，dispatch 仍按当前配置重解析。
+        base_url = (core_config.get('ttsModelUrl') or core_config.get('TTS_MODEL_URL') or '').strip()
+        storage_key = '__VLLM_OMNI__'
+        provider_label = 'vLLM-Omni'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -5321,6 +5516,26 @@ async def voice_clone(
         existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
     else:
         existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if existing:
+        voice_id_ex, voice_data_ex = existing
+        # vLLM-Omni：同音频 + 同语言但不同 ref_text 视为不同音色（转录修正场景），
+        # 不命中去重，允许用户用修正后的 ref_text 重新注册。
+        if provider == 'vllm_omni':
+            existing_ref_text = str((voice_data_ex or {}).get('clone_ref_text') or '').strip()
+            if existing_ref_text != vllm_ref_text:
+                # 清理旧条目：否则 find_voice_by_audio_md5 按插入顺序总是先返回
+                # 最旧的匹配条目，旧 voice 永远占位，新注册无限重复创建；
+                # 旧 voice 也仍出现在音色列表中，用户可能选到错误音色。
+                try:
+                    _config_manager.delete_voice_for_current_api(voice_id_ex)
+                    logger.info(
+                        f"vLLM-Omni 克隆音色 {voice_id_ex} ref_text 变更"
+                        f"（旧: {existing_ref_text!r} → 新: {vllm_ref_text!r}），已删除旧条目")
+                except Exception:
+                    logger.warning(
+                        "vLLM-Omni 旧条目 %s 删除失败，可能导致下次去重仍命中旧条目",
+                        voice_id_ex, exc_info=True)
+                existing = None
     if existing:
         voice_id, voice_data = existing
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -5429,6 +5644,35 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
+        elif provider == 'vllm_omni':
+            # vLLM-Omni 内联克隆（对偶 MiMo）：无远端注册接口，参考音频 base64 + ref_text 整段
+            # 落进 voice_storage 的 voice_meta，dispatch 时读出来内联进 session.config 的
+            # ref_audio/ref_text。vLLM-Omni 无远端校验接口（不像 MiMo 有 validate_sample），
+            # 参考音频运行时才用，所以这里跳过校验直接落库。
+            sample_bytes = normalized_buffer.getvalue()
+            # voice_id 维度与去重键一致：含 ref_language 避免同音频换语言覆盖，含
+            # ref_text hash 避免同音频不同转录命中旧 voice（转录修正场景）。
+            # 无 key 后缀（本地服务无 key），桶 __VLLM_OMNI__ 是全局唯一分区。
+            ref_text_hash = hashlib.md5(vllm_ref_text.encode('utf-8')).hexdigest()[:8]
+            voice_id = f'vllm-omni-clone-{ref_language}-{audio_md5[:12]}-{ref_text_hash}'
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'vllm_omni',
+                'source': 'clone',
+                # 克隆身份：参考音频 base64（对偶 MiMo 的 clone_sample_b64），dispatch/preview
+                # 读它内联进 session.config 的 ref_audio。存进 voice_meta 即随 voice_storage 云同步。
+                'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
+                'clone_sample_mime': 'audio/wav',
+                # 参考音频原文：vLLM-Omni 克隆要求 ref_text 与音频严格对应，作 session.config.ref_text。
+                'clone_ref_text': vllm_ref_text,
+                # base_url 存进 voice_meta（对偶 mimo_base_url）；dispatch 仍按当前配置重解析。
+                'vllm_omni_base_url': base_url or '',
+                'created_at': datetime.now().isoformat()
+            }
+
         else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = get_cosyvoice_clone_model(provider)
@@ -5492,7 +5736,7 @@ async def voice_clone(
         # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
         # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
         # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
-        if provider == 'mimo':
+        if provider in ('mimo', 'vllm_omni'):
             return JSONResponse({
                 'error': f'{provider_label}音色保存失败: {str(save_error)}',
                 'code': 'TTS_VOICE_SAVE_FAILED',

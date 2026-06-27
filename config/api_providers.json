@@ -79,12 +79,12 @@
       "name": "阿里百炼（推荐）",
       "description": "推荐选择，支持Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.7-plus-2026-05-26",
-      "summary_model": "qwen3.7-plus-2026-05-26",
-      "correction_model": "qwen3.7-plus",
+      "conversation_model": "qwen3.7-plus",
+      "summary_model": "qwen3.7-plus",
+      "correction_model": "qwen3.7-plus-2026-05-26",
       "emotion_model": "qwen3.6-flash",
-      "vision_model": "qwen3.7-plus-2026-05-26",
-      "agent_model": "qwen3.7-plus"
+      "vision_model": "qwen3.7-plus",
+      "agent_model": "qwen3.7-plus-2026-05-26"
     },
     "qwen_intl": {
       "key": "qwen_intl",

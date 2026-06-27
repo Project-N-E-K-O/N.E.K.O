@@ -1556,6 +1556,12 @@
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "mimoApiRequired": "이 기능은 MiMo 모델이 필요합니다. API 키 설정 페이지에서 MiMo API 키를 저장하세요",
         "mimoDirectLinkUnsupported": "MiMo는 직접 링크 복제를 지원하지 않습니다. 로컬 파일 업로드를 사용하세요",
+        "vllmOmniNotice": "로컬 vLLM-Omni 서비스 — API 키 불필요; 로컬 서비스 URL이 설정되어 있는지 확인하세요",
+        "vllmRefTextLabel": "참조 오디오 전사(vLLM-Omni 클론 필수, 오디오 내용과 정확히 일치해야 함)",
+        "vllmRefTextHint": "참조 오디오에서 말하는 내용을 그대로 입력하세요. 텍스트가 오디오와 맞지 않으면 클론 품질이 저하됩니다",
+        "vllmRefTextPlaceholder": "예: 앞으로 저보다 더 잘할 수 있기를 바랍니다",
+        "vllmRefTextRequired": "참조 오디오 전사를 입력하세요(vLLM-Omni 클론 필수)",
+        "vllmRefTextTooLong": "참조 오디오 전사가 너무 깁니다. 100자 이내로 입력하세요",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1563,7 +1569,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (샤오미)"
+            "mimo": "MiMo (샤오미)",
+            "vllm_omni": "vLLM-Omni(로컬 클론)"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",

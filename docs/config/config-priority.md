@@ -10,7 +10,7 @@ N.E.K.O. resolves configuration values through a layered priority system. Higher
 │     (set in shell or .env)      │
 ├─────────────────────────────────┤
 │  2. User Config Files           │  core_config.json
-│     (~/Documents/N.E.K.O/)      │  user_preferences.json
+│     (platform app-data/N.E.K.O/)│  user_preferences.json
 ├─────────────────────────────────┤
 │  3. API Provider Config         │  config/api_providers.json
 │     (project directory)         │
@@ -20,14 +20,15 @@ N.E.K.O. resolves configuration values through a layered priority system. Higher
 └─────────────────────────────────┘  Lowest priority
 ```
 
+The user config files live in the platform app-data directory: `%LOCALAPPDATA%/N.E.K.O/` on Windows, `~/Library/Application Support/N.E.K.O/` on macOS, and `~/.local/share/N.E.K.O/` on Linux. `~/Documents/N.E.K.O/` is now only a legacy fallback.
+
 ## Example resolution
 
 For the summary model:
 
-1. Check `NEKO_SUMMARY_MODEL` environment variable
-2. Check `core_config.json` for a custom summary model URL/name
-3. Check the selected assist provider's `summary_model` in `api_providers.json`
-4. Fall back to `DEFAULT_SUMMARY_MODEL = "qwen-plus"` in `config/__init__.py`
+1. Check `core_config.json` for a custom summary model URL/name
+2. Check the selected assist provider's `summary_model` in `api_providers.json`
+3. Fall back to `DEFAULT_SUMMARY_MODEL = "qwen-plus"` in `config/__init__.py`
 
 ## When to use each layer
 

@@ -1556,6 +1556,12 @@
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
+        "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
+        "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
+        "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
+        "vllmRefTextPlaceholder": "p.ej. Espero que en el futuro puedas hacerlo aún mejor que yo",
+        "vllmRefTextRequired": "Introduzca la transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni)",
+        "vllmRefTextTooLong": "La transcripción del audio de referencia es demasiado larga; manténgala dentro de 100 caracteres",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1563,7 +1569,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "vllm_omni": "vLLM-Omni (Clon local)"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",

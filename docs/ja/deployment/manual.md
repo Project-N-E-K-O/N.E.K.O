@@ -57,13 +57,13 @@ uv run python launcher.py
 
 ```bash
 # ターミナル 1 -- メモリサーバー（必須）
-uv run python memory_server.py
+uv run python app/memory_server.py
 
 # ターミナル 2 -- メインサーバー（必須）
-uv run python main_server.py
+uv run python app/main_server.py
 
 # ターミナル 3 -- エージェントサーバー（オプション）
-uv run python agent_server.py
+uv run python app/agent_server.py
 ```
 
 補足:
@@ -79,7 +79,7 @@ codesign --force --sign - steamworks/libsteam_api.dylib
 codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
-- その後、`uv run python launcher.py` または `uv run python main_server.py` を再実行してください。
+- その後、`uv run python launcher.py` または `uv run python app/main_server.py` を再実行してください。
 
 ## 設定
 
@@ -93,7 +93,7 @@ codesign --force --sign - steamworks/SteamworksPy.dylib
 ```bash
 export NEKO_CORE_API_KEY="sk-your-key"
 export NEKO_CORE_API="qwen"
-uv run python main_server.py
+uv run python app/main_server.py
 ```
 
 ## 代替手段: pip install
@@ -104,8 +104,8 @@ uv よりも pip を使用したい場合：
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python memory_server.py
-python main_server.py
+python app/memory_server.py
+python app/main_server.py
 ```
 
 ## 確認

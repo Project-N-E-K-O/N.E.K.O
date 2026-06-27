@@ -1556,6 +1556,12 @@
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，请在 API 密钥设置页中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暂不支持直链克隆，请改用本地文件上传",
+        "vllmOmniNotice": "本地 vLLM-Omni 服务，无需 API Key，请确保已配置本地服务地址",
+        "vllmRefTextLabel": "参考音频原文（vLLM-Omni 克隆必填，须与音频内容严格对应）",
+        "vllmRefTextHint": "逐字输入参考音频里说的话，文本与音频不符会导致克隆音质下降",
+        "vllmRefTextPlaceholder": "例如：希望你以后能够做的比我还好呦",
+        "vllmRefTextRequired": "请填写参考音频原文（vLLM-Omni 克隆必填）",
+        "vllmRefTextTooLong": "vLLM-Omni 参考音频原文过长，请控制在 100 字以内",
         "providerLabel": "语音克隆服务商",
         "provider": {
             "cosyvoice": "阿里百炼 CosyVoice",
@@ -1563,7 +1569,8 @@
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo（小米）"
+            "mimo": "MiMo（小米）",
+            "vllm_omni": "vLLM-Omni（本地克隆）"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",

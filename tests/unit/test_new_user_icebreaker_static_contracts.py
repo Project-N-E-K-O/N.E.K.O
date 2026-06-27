@@ -15,6 +15,7 @@ APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
 APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
 APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
+APP_INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
@@ -374,7 +375,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
         "function speakViaProjectTts",
         1,
     )[0]
-    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {"
+    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function () {"
     assert context_then in append_message_block
     assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
     assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
@@ -388,7 +389,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
 def test_icebreaker_context_append_requires_successful_json_payload():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     append_context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
-        "function finalizeIcebreakerAssistantSubtitle(text)",
+        "function getIcebreakerMessageText(message)",
         1,
     )[0]
 
@@ -410,36 +411,49 @@ def test_icebreaker_context_append_requires_successful_json_payload():
     assert "return true;" not in append_context_block
 
 
-def test_icebreaker_assistant_messages_finalize_subtitle_translation_like_normal_chat():
+def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    subtitle_runtime = SUBTITLE_PATH.read_text(encoding="utf-8")
+    interpage_runtime = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
 
-    assert "function finalizeIcebreakerAssistantSubtitle(text)" in runtime
-    subtitle_block = runtime.split("function finalizeIcebreakerAssistantSubtitle(text)", 1)[1].split(
+    assert "function syncIcebreakerAssistantCompactCaption(role, message)" in runtime
+    assert "function waitForIcebreakerChatHostMounted(host)" in runtime
+    sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
         "function appendChatMessage(role, text, meta)",
         1,
     )[0]
-    assert "window.subtitleBridge" in subtitle_block
-    assert "bridge.beginTurn({ latch: false })" in subtitle_block
-    assert "bridge.beginTurn()" not in subtitle_block
-    assert "bridge.finalizeTurnWithTranslation(line)" in subtitle_block
-    assert "console.warn('[NewUserIcebreaker] subtitle translation failed:'" in subtitle_block
-    begin_turn_block = subtitle_runtime.split("function beginSubtitleTurn(", 1)[1].split(
-        "function onAssistantTurnStart()",
-        1,
-    )[0]
-    assert "options && options.latch === false" in begin_turn_block
-    assert "turnBoundaryLatched = !skipLatch;" in begin_turn_block
-
-    sync_block = runtime.split("function syncIcebreakerAssistantSubtitle(role, contextOk, text)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
-        1,
-    )[0]
-    assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
+    assert "if (role !== 'assistant') return;" in sync_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-start'" in sync_block
+    assert "window.dispatchEvent(new CustomEvent('neko-compact-caption-update'" in sync_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable'" not in sync_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in sync_block
+    assert "segmentId: turnId + ':icebreaker'" in sync_block
+    assert "source: SOURCE" in sync_block
     assert "openSubtitleTranslationForIcebreakerAssistantMessage()" not in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
+    assert "subtitleBridge" not in sync_block
+    assert "finalizeTurnWithTranslation" not in sync_block
+
+    assert "function syncIcebreakerAssistantCompactCaption(message)" in interpage_runtime
+    assert "function waitForIcebreakerChatHostMounted(host)" in interpage_runtime
+    interpage_compact_block = interpage_runtime.split(
+        "function syncIcebreakerAssistantCompactCaption(message)", 1
+    )[1].split("function isIcebreakerBridgeAction", 1)[0]
+    assert "if (!isStandaloneChatPage() || !message || message.role !== 'assistant') return;" in interpage_compact_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-start'" in interpage_compact_block
+    assert "window.dispatchEvent(new CustomEvent('neko-compact-caption-update'" in interpage_compact_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable'" not in interpage_compact_block
+    assert "window.dispatchEvent(new CustomEvent('neko-assistant-turn-end'" not in interpage_compact_block
+    assert "return Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
+    assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
+    assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
+    assert interpage_runtime.index("return Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
+        "return waitForIcebreakerChatHostMounted(host).then(function () {"
+    ) < interpage_runtime.index(
+        "syncIcebreakerAssistantCompactCaption(action.message);"
+    )
+    assert "icebreaker_assistant_subtitle" not in runtime
+    assert "icebreaker_assistant_subtitle" not in interpage_runtime
 
 
 def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_panel():
@@ -457,24 +471,28 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setSubtitleEnabled(true" not in start_block
     assert "setTranslateEnabled(true" not in start_block
 
-    sync_block = runtime.split("function syncIcebreakerAssistantSubtitle(role, contextOk, text)", 1)[1].split(
+    sync_block = runtime.split("function syncIcebreakerAssistantCompactCaption(role, message)", 1)[1].split(
         "function appendChatMessage(role, text, meta)",
         1,
     )[0]
-    assert "if (role !== 'assistant' || contextOk !== true) return;" in sync_block
+    assert "if (role !== 'assistant') return;" in sync_block
     assert "setSubtitleEnabled(true" not in sync_block
     assert "setTranslateEnabled(true" not in sync_block
-    assert "finalizeIcebreakerAssistantSubtitle(text);" in sync_block
+    assert "subtitleBridge" not in sync_block
+    assert "finalizeTurnWithTranslation" not in sync_block
 
     append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "return appendLlmContext(role, messageText, meta || {}).then(function (contextOk) {" in append_message_block
+    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
     assert "return host.appendMessage(message);" in append_message_block
-    assert "syncIcebreakerAssistantSubtitle(role, contextOk, messageText);" in append_message_block
-    assert append_message_block.index("return host.appendMessage(message);") < append_message_block.rindex(
-        "syncIcebreakerAssistantSubtitle(role, contextOk, messageText);"
+    assert "return waitForIcebreakerChatHostMounted(chatHost).then(function () {" in append_message_block
+    assert "syncIcebreakerAssistantCompactCaption(role, message);" in append_message_block
+    assert append_message_block.index("return host.appendMessage(message);") < append_message_block.index(
+        "return waitForIcebreakerChatHostMounted(chatHost).then(function () {"
+    ) < append_message_block.rindex(
+        "syncIcebreakerAssistantCompactCaption(role, message);"
     )
 
 
