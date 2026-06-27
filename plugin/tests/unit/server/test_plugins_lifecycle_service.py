@@ -386,6 +386,81 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_rejects_entry_directory_mismatch_before_creating_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "repo_file_manager" / "plugin.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'file_manager'",
+                "name = 'File Manager'",
+                "type = 'plugin'",
+                "entry = 'plugins.file_manager:FileManagerPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    host_created = False
+
+    class _UnexpectedHost(_FakeProcessHost):
+        def __init__(self, *args, **kwargs) -> None:
+            nonlocal host_created
+            host_created = True
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": kwargs["base_config"],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(module, "PluginProcessHost", _UnexpectedHost)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["file_manager"] = {
+                "id": "file_manager",
+                "config_path": str(config_path),
+                "runtime_enabled": True,
+                "runtime_auto_start": False,
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin("file_manager", refresh_registry=False)
+
+        assert exc_info.value.code == "PLUGIN_ENTRY_DIRECTORY_MISMATCH"
+        assert exc_info.value.status_code == 400
+        assert "repo_file_manager" in exc_info.value.message
+        assert host_created is False
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_uses_default_startup_timeout_when_runtime_timeout_omitted(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from plugin.core.dependency import _topological_sort_plugins
+from plugin.core.entry_points import describe_plugin_entry_directory_mismatch
 from plugin.core.host import _import_plugin_module
 from plugin.core.registry import (
     PluginContext,
@@ -352,7 +353,22 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                 )
                 continue
 
-            records.append(_build_discovery_record_from_context(ctx))
+            try:
+                records.append(_build_discovery_record_from_context(ctx))
+            except Exception as exc:
+                logger.warning(
+                    "plugin discovery payload failed for {}: err_type={}, err={}",
+                    config_path,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                failures.append(
+                    PluginDiscoveryFailure(
+                        plugin_id=ctx.pid or config_path.parent.name or None,
+                        config_path=config_path,
+                        error=str(exc),
+                    )
+                )
 
     return PluginDiscoverySnapshot(
         records=records,
@@ -429,31 +445,46 @@ def _build_discovery_payload(
                     logger,
                     plugin_id,
                 )
-                try:
-                    module_path, class_name = ctx.entry.split(":", 1)
-                    module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
-                    cls_obj = getattr(module_obj, class_name)
-                    entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
-                except (ImportError, ModuleNotFoundError) as exc:
-                    error_type = type(exc).__name__
-                    error_message = str(exc)
-                    error_phase = "import_module"
+                entry_mismatch = describe_plugin_entry_directory_mismatch(
+                    ctx.entry,
+                    config_path=ctx.toml_path,
+                )
+                if entry_mismatch:
+                    error_type = "PluginEntryDirectoryMismatch"
+                    error_message = entry_mismatch
+                    error_phase = "entry_validation"
                     entries_preview = _extract_entries_preview(
                         plugin_id,
                         cls=type("FailedPluginStub", (), {}),
                         conf=ctx.conf,
                         pdata=ctx.pdata,
                     )
-                except AttributeError as exc:
-                    error_type = "AttributeError"
-                    error_message = f"Class not found for entry '{ctx.entry}': {exc}"
-                    error_phase = "import_class"
-                    entries_preview = _extract_entries_preview(
-                        plugin_id,
-                        cls=type("FailedPluginStub", (), {}),
-                        conf=ctx.conf,
-                        pdata=ctx.pdata,
-                    )
+                else:
+                    try:
+                        module_path, class_name = ctx.entry.split(":", 1)
+                        module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
+                        cls_obj = getattr(module_obj, class_name)
+                        entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
+                    except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
+                        error_type = type(exc).__name__
+                        error_message = str(exc)
+                        error_phase = "import_module"
+                        entries_preview = _extract_entries_preview(
+                            plugin_id,
+                            cls=type("FailedPluginStub", (), {}),
+                            conf=ctx.conf,
+                            pdata=ctx.pdata,
+                        )
+                    except AttributeError as exc:
+                        error_type = "AttributeError"
+                        error_message = f"Class not found for entry '{ctx.entry}': {exc}"
+                        error_phase = "import_class"
+                        entries_preview = _extract_entries_preview(
+                            plugin_id,
+                            cls=type("FailedPluginStub", (), {}),
+                            conf=ctx.conf,
+                            pdata=ctx.pdata,
+                        )
 
     plugin_meta = _build_plugin_meta(
         plugin_id,
