@@ -4093,7 +4093,7 @@ def test_study_knowledge_retrieval_eval_static_cases_meet_quality_gate() -> None
     payload = json.loads(cases_path.read_text(encoding="utf-8"))
     cases = payload.get("cases")
     assert isinstance(cases, list)
-    assert 80 <= len(cases) <= 100
+    assert 80 <= len(cases) <= 130
 
     report = evaluate_knowledge_retrieval_queries(topics=topics, cases=cases)
     summary = report["summary"]

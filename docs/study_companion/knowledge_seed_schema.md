@@ -143,6 +143,21 @@ Math canonical template:
   practice generation
 - extends: cross-topic methods, higher-stage generalizations, modeling tasks
 
+Math relation coverage rule:
+
+- every Math topic should keep at least 1 `prerequisite` edge unless it is a
+  deliberate root concept
+- every Math topic should have 1-3 `procedure_step` edges for solving,
+  proof, modeling, or review workflows
+- every Math topic should have 1-3 `confusable` edges for diagnosis and
+  misconception repair
+- every Math topic should have 1-3 `application` edges for practice planning,
+  transfer, or cross-subject use
+- `extends` and `co_occurs` are optional and should be used only when they
+  clarify a learning path or review cluster
+- small batches are preferred: add relation edges to a focused set of topics,
+  run the validator, then continue with the next gap cluster
+
 Math is the canonical subject template. When adding or expanding any other
 subject, migrate its topics and relationships to the Math field and edge
 format above: keep the same required topic fields, use object edges instead of

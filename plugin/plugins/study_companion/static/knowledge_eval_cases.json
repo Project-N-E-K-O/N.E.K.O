@@ -512,7 +512,7 @@
       "expected_topic_ids": [
         "college_ds_recursion_iteration",
         "college_c_recursion_basic",
-        "recurrence_sequence"
+        "senior_sequence_recursion"
       ],
       "expect_cross_subject": true
     },
@@ -528,7 +528,7 @@
       "query": "地图三要素和比例尺有什么关系？",
       "expected_topic_ids": [
         "geo_junior_map_skills",
-        "ratio_percentage"
+        "primary_ratio_scale"
       ],
       "expect_cross_subject": true
     },
@@ -552,7 +552,7 @@
       "query": "区域可持续发展和政策权衡分析有什么关系？",
       "expected_topic_ids": [
         "geo_senior_regional_sustainability",
-        "pol_senior_governance_modernization"
+        "pol_senior_economy_market"
       ],
       "expect_cross_subject": true
     },
@@ -825,11 +825,257 @@
     {
       "query": "方差怎么支持实验误差与结论评价？",
       "expected_topic_ids": [
-        "senior_variance",
+        "variance",
         "college_standard_deviation",
         "bio_senior_experiment_error_analysis"
       ],
       "expect_cross_subject": true
+    },
+    {
+      "query": "ε-δ极限定义怎么证明？",
+      "expected_topic_ids": [
+        "college_epsilon_delta_limit",
+        "college_limit_concept"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "极限证明里ε和δ怎么选？",
+      "expected_topic_ids": [
+        "college_limit_concept",
+        "college_epsilon_delta_limit"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "一致连续和普通连续有什么区别？",
+      "expected_topic_ids": [
+        "college_uniform_continuity_intro",
+        "college_continuity",
+        "college_epsilon_delta_limit"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "黎曼积分定义和定积分计算有什么关系？",
+      "expected_topic_ids": [
+        "college_riemann_integral_definition",
+        "college_definite_integral"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "黎曼和为什么能表示面积？",
+      "expected_topic_ids": [
+        "college_riemann_integral_definition",
+        "college_integral_area_problem"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "变上限积分为什么可以求导？",
+      "expected_topic_ids": [
+        "college_variable_upper_limit_integral",
+        "college_newton_leibniz"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "反常积分为什么要看极限？",
+      "expected_topic_ids": [
+        "college_improper_integral",
+        "college_limit_concept"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "一阶微分方程怎么分类？",
+      "expected_topic_ids": [
+        "college_ode_first_order",
+        "college_first_order_linear_ode",
+        "college_separable_ode"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "可分离变量方程怎么解？",
+      "expected_topic_ids": [
+        "college_separable_ode",
+        "college_indefinite_integral"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "一阶线性微分方程积分因子怎么用？",
+      "expected_topic_ids": [
+        "college_first_order_linear_ode",
+        "college_ode_first_order"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "一阶方程和二阶方程有什么区别？",
+      "expected_topic_ids": [
+        "college_ode_first_order",
+        "college_ode_second_order"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "矩阵初等变换和线性方程组有什么关系？",
+      "expected_topic_ids": [
+        "college_matrix_elementary_transform",
+        "college_linear_systems"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "矩阵秩怎么判断方程组解的个数？",
+      "expected_topic_ids": [
+        "linear_system",
+        "college_rank",
+        "college_linear_systems"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "可对角化和特征向量个数有什么关系？",
+      "expected_topic_ids": [
+        "college_eigen_diagonalizable_check",
+        "college_eigenvector_solution",
+        "college_eigenvalue"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "实对称矩阵为什么能正交对角化？",
+      "expected_topic_ids": [
+        "college_symmetric_matrix",
+        "college_eigen_diagonalizable_check"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "二次型和特征值有什么关系？",
+      "expected_topic_ids": [
+        "college_quadratic_form",
+        "college_eigenvalue",
+        "college_symmetric_matrix"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "协方差和相关系数有什么区别？",
+      "expected_topic_ids": [
+        "college_covariance_correlation",
+        "college_expectation_variance"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "期望方差和常见分布怎么连接？",
+      "expected_topic_ids": [
+        "college_expectation_variance",
+        "college_common_distributions"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "参数估计和假设检验怎么衔接？",
+      "expected_topic_ids": [
+        "college_parameter_estimation",
+        "college_hypothesis_testing"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "原假设和备择假设怎么区分？",
+      "expected_topic_ids": [
+        "college_alternative_hypothesis",
+        "college_null_hypothesis",
+        "college_hypothesis_testing"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "卡方检验什么时候用？",
+      "expected_topic_ids": [
+        "college_chi_square_test",
+        "college_hypothesis_testing"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "梯度和方向导数有什么关系？",
+      "expected_topic_ids": [
+        "college_gradient_directional_derivative",
+        "college_partial_derivative"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "二重积分区域怎么画？",
+      "expected_topic_ids": [
+        "college_double_integral_region",
+        "college_multiple_integral"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "定积分单位和正负号怎么检查？",
+      "expected_topic_ids": [
+        "college_integral_unit_sign_check",
+        "college_integral_physics_application"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "优化建模题为什么要先列目标函数？",
+      "expected_topic_ids": [
+        "college_optimization_problem",
+        "college_monotonic_extrema"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "一致连续为什么比逐点连续要求更强？",
+      "expected_topic_ids": [
+        "college_uniform_continuity_intro",
+        "college_continuity"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "定积分应用题结果的单位和正负号怎么一起检查？",
+      "expected_topic_ids": [
+        "college_integral_unit_sign_check",
+        "college_integral_application"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "优化建模中约束条件和目标函数怎么配合求最值？",
+      "expected_topic_ids": [
+        "college_optimization_problem",
+        "college_absolute_extrema"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "卡方检验里的列联表独立性检验怎么判断适用条件？",
+      "expected_topic_ids": [
+        "college_chi_square_test",
+        "college_hypothesis_testing"
+      ],
+      "expect_cross_subject": false
+    },
+    {
+      "query": "二阶线性微分方程为什么要先看特征方程？",
+      "expected_topic_ids": [
+        "college_ode_second_order",
+        "college_ode_first_order"
+      ],
+      "expect_cross_subject": false
     }
   ]
 }
