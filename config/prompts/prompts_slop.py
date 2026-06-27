@@ -751,7 +751,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_008',
             "name": 'a shiver ran down the spine',
-            "find": r"\ba\s+(?:shiver|chill|shudder|tingle)\s+(?:ran|raced|crawled|went|slid|shot|trickled)\s+(?:down|up)\s+(his|her|their|my|your)\s+(?:spine|back)\b",
+            "find": r"\b[Aa]\s+(?:shiver|chill|shudder|tingle)\s+(?:ran|raced|crawled|went|slid|shot|trickled)\s+(?:down|up)\s+(his|her|their|my|your)\s+(?:spine|back)\b",
             "replace": [
                 r"a chill moved through \1 body",
                 r"\1 back prickled",
@@ -789,7 +789,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_010',
             "name": 'a flicker of X crossed face',
-            "find": r"\ba\s+flicker\s+of\s+(\w+)\s+(?:crossed|passed\s+(?:over|across)|flashed\s+(?:across|over)|danced\s+across)\s+(?:his|her|their|my|your)\s+(?:face|features|eyes|expression)\b",
+            "find": r"\b[Aa]\s+flicker\s+of\s+(\w+(?: \w+){0,2})\s+(?:crossed|passed\s+(?:over|across)|flashed\s+(?:across|over)|danced\s+across)\s+(?:his|her|their|my|your)\s+(?:face|features|eyes|expression)\b",
             "replace": [
                 r"\1 showed for a second, then was gone",
                 r"\1 surfaced briefly",
@@ -808,7 +808,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_011',
             "name": 'sent a shiver/jolt through',
-            "find": r"\bsent\s+a\s+(?:shiver|jolt|thrill|spark|tremor|pang|frisson)\s+(?:of\s+\w+\s+)?(?:through|down)\s+(him|her|them|me|you)\b",
+            "find": r"\bsent\s+a\s+(?:shiver|jolt|thrill|spark|tremor|pang|frisson)\s+(?:of\s+\w+(?: \w+){0,2}\s+)?(?:through|down)\s+(him|her|them|me|you)\b",
             "replace": [
                 r"moved through \1 all at once",
                 r"caught \1 off guard",
@@ -846,7 +846,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_013',
             "name": 'sound echoed through the room',
-            "find": r"\b(?:the\s+|her\s+|his\s+|their\s+|my\s+|your\s+)?(scream|screams|cry|cries|shout|shouts|laughter|voice|voices|words|sound|sounds|gunshot|shot|shots|bang|crack|footsteps|silence|sob|sobs|wail|moan|whisper|whispers|growl|roar|boom|note|notes|melody|music|thunder|knock|clang|clatter)\s+echoed\s+(?:through(?:out)?|across|around|off)\s+the\s+(?:\w+\s+){0,2}\w+\b",
+            "find": r"\b(?:[Tt]he\s+|[Hh]er\s+|[Hh]is\s+|[Tt]heir\s+|[Mm]y\s+|[Yy]our\s+)?(scream|screams|cry|cries|shout|shouts|laughter|voice|voices|words|sound|sounds|gunshot|shot|shots|bang|crack|footsteps|silence|sob|sobs|wail|moan|whisper|whispers|growl|roar|boom|note|notes|melody|music|thunder|knock|clang|clatter)\s+echoed\s+(?:through(?:out)?|across|around|off)\s+the\s+(?:\w+\s+){0,2}\w+\b",
             "replace": [
                 r"the \1 carried through the space",
                 r"the \1 filled the room",
@@ -865,7 +865,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_014',
             "name": "couldn't help but / can't help but",
-            "find": r"\b(he|she|they|I|you)\s+(?:could\s*n['’]?t|can\s*not|can['’]?t)\s+help\s+but\s+(\w+)\b",
+            "find": r"\b(he|she|they|I|you)\s+(?:could\s*n['’]?t|had\s*n['’]?t)\s+help\s+but\s+(\w+)\b",
             "replace": [
                 r"\1 had to \2",
                 r"\1 could not keep from having to \2",
@@ -884,7 +884,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_015',
             "name": 'the air crackled/was thick with tension',
-            "find": r"\bthe\s+air\s+(?:crackled|hummed|buzzed|was\s+thick|grew\s+thick|hung\s+heavy|was\s+charged|crackling)\s+with\s+(tension|anticipation|electricity|menace|unease|expectation|hostility|longing|grief|magic|dread|danger)\b",
+            "find": r"\b[Tt]he\s+air\s+(?:crackled|hummed|buzzed|was\s+thick|grew\s+thick|hung\s+heavy|was\s+charged|crackling)\s+with\s+(tension|anticipation|electricity|menace|unease|expectation|hostility|longing|grief|magic|dread|danger)(?:\s+between\s+(?:them|us))?\b",
             "replace": [
                 r"the \1 in the room was hard to miss",
                 r"you could feel the \1 settle over everything",
@@ -903,7 +903,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_016',
             "name": 'a single tear (rolled/slid down)',
-            "find": r"\ba\s+single\s+tear\s+(?:rolled|slid|slipped|tracked|traced|ran|streaked)\s+down\s+(his|her|their|my|your)\s+(?:cheek|face)\b",
+            "find": r"\b[Aa]\s+single\s+tear\s+(?:rolled|slid|slipped|tracked|traced|ran|streaked)\s+down\s+(his|her|their|my|your)\s+(?:cheek|face)\b",
             "replace": [
                 r"one tear escaped down \1 cheek",
                 r"a tear broke loose and fell from \1 eyes",
@@ -960,7 +960,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_019',
             "name": 'vice-like / iron grip',
-            "find": r"\b(?:a|an|his|her|their|my|your)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b",
+            "find": r"\b(?:[Aa]|[Aa]n|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Yy]our)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b",
             "replace": [
                 "a grip that wouldn't give",
                 'a hold hard enough to bruise',
@@ -979,7 +979,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_020',
             "name": 'a low growl/purr',
-            "find": r"\b(?:a\s+)?low\s+(growl|purr|rumble|chuckle)\s+(?:escaped|rose|built|rumbled|sounded|came)\s+(?:from\s+|in\s+|deep\s+in\s+)?(his|her|their|my|your)\s+(?:throat|chest)\b",
+            "find": r"\b(?:[Aa]\s+)?low\s+(growl|purr|rumble|chuckle)\s+(?:escaped|rose|built|rumbled|sounded|came)\s+(?:from\s+|in\s+|deep\s+in\s+)?(his|her|their|my|your)\s+(?:throat|chest)\b",
             "replace": [
                 r"a \1 started low in \2 chest",
                 r"\2 chest gave a quiet \1",
@@ -998,7 +998,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_021',
             "name": 'a lump formed in the throat',
-            "find": r"\ba\s+lump\s+(?:formed|rose|grew|swelled|caught|lodged)\s+in\s+(his|her|their|my|your)\s+throat\b",
+            "find": r"\b[Aa]\s+lump\s+(?:formed|rose|grew|swelled|caught|lodged)\s+in\s+(his|her|their|my|your)\s+throat\b",
             "replace": [
                 r"\1 throat went tight",
                 r"something thickened in \1 throat",
@@ -1036,7 +1036,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_023',
             "name": 'a beat of/moment of silence',
-            "find": r"\b(?:a\s+)?(?:beat|moment)\s+of\s+silence\s+(?:passed|hung|stretched|fell|followed|settled)\b",
+            "find": r"\b(?:[Aa]\s+)?(?:beat|moment)\s+of\s+silence\s+(?:passed|hung|stretched|fell|followed|settled)(?:\s+between\s+(?:them|us|the\s+two\s+of\s+them))?(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 'the quiet held for a moment',
                 'neither of them spoke',
@@ -1055,7 +1055,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_024',
             "name": 'X washed over (someone)',
-            "find": r"\ba\s+(?:wave|surge|rush|flood|tide)\s+of\s+(\w+)\s+(?:washed|swept|crashed|rolled|flooded|surged)\s+over\s+(him|her|them|me|you)\b",
+            "find": r"\b[Aa]\s+(?:wave|surge|rush|flood|tide)\s+of\s+(\w+(?: \w+){0,2})\s+(?:washed|swept|crashed|rolled|flooded|surged)\s+over\s+(him|her|them|me|you)\b",
             "replace": [
                 r"\1 swept over \2 all at once",
                 r"\1 hit \2 hard",
@@ -1112,7 +1112,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_027',
             "name": 'time seemed to slow/stand still',
-            "find": r"\btime\s+(?:seemed\s+to\s+|appeared\s+to\s+)(?:slow(?:\s+(?:down|to\s+a\s+crawl))?|stand\s+still|stop|freeze|stretch)\b|\btime\s+(?:stood\s+still|slowed\s+to\s+a\s+crawl)\b",
+            "find": r"\btime\s+(?:seemed\s+to\s+|appeared\s+to\s+)(?:slow(?:\s+(?:down|to\s+a\s+crawl))?|stand\s+still|stop|freeze|stretch)(?:\s+(?:around|between)\s+(?:them|us))?(?=\s*[.,;:!?]|\s*$)|\btime\s+(?:stood\s+still|slowed\s+to\s+a\s+crawl)(?:\s+(?:around|between)\s+(?:them|us))?(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 'the moment dragged out long',
                 'everything slowed to a crawl',
@@ -1131,7 +1131,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_028',
             "name": 'a smile tugged/played at the corner of lips',
-            "find": r"\ba\s+(?:smile|smirk|grin)\s+(?:tugged|played|pulled|quirked|ghosted|teased|tugging|pulling)\s+(?:at|upon)\s+(?:the\s+(?:corner|edge)s?\s+of\s+)?(his|her|their|my|your)\s+(?:lips|mouth)\b",
+            "find": r"\b[Aa]\s+(?:smile|smirk|grin)\s+(?:tugged|played|pulled|quirked|ghosted|teased|tugging|pulling)\s+(?:at|upon)\s+(?:the\s+(?:corner|edge)s?\s+of\s+)?(his|her|their|my|your)\s+(?:lips|mouth)\b",
             "replace": [
                 r"\1 mouth threatened a smile",
                 r"the start of a smile touched \1 lips",
@@ -1150,7 +1150,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_029',
             "name": '(eyes) darkened with desire/emotion',
-            "find": r"\b(his|her|their|my|your)\s+(?:eyes|gaze)\s+(?:darkened|clouded|softened|hardened)\s+with\s+(\w+)\b",
+            "find": r"\b(his|her|their|my|your)\s+(?:eyes|gaze)\s+(?:darkened|clouded|softened|hardened)\s+with\s+(\w+(?: \w+){0,2})\b",
             "replace": [
                 r"\2 changed \1 eyes",
                 r"\1 gaze shifted with \2",
@@ -1190,7 +1190,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_001',
             "name": 'heart pounding like an alarm bell (心臓が早鐘を打つ)',
-            "find": '心臓が早鐘を打(?:った|つ|ち始めた|ちはじめた)',
+            "find": '心臓が早鐘を打った',
             "replace": [
                 '鼓動が一気に速まった',
                 '胸がどきりと跳ねた',
@@ -1228,7 +1228,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_003',
             "name": 'drawing/catching breath (息を呑む)',
-            "find": '(?:思わず|小さく|ふと|はっと)?息を(?:呑|の)(?:む|んだ|んでしまう|んでしまった)',
+            "find": '(?:思わず|小さく|ふと|はっと)?息を(?:呑|の)んだ',
             "replace": [
                 '言葉を失った',
                 '一瞬、呼吸が止まった',
@@ -1247,7 +1247,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_004',
             "name": 'cheeks reddening/flushing (頬を赤らめる/染める)',
-            "find": '(?:そっと|ぽっと|かあっと|わずかに|ほんのり)?頬を(?:赤ら|染)め(?:た|る|ている)',
+            "find": '(?:そっと|ぽっと|かあっと|わずかに|ほんのり)?頬を(?:赤ら|染)めた',
             "replace": [
                 '顔がじわりと熱くなった',
                 'ほんのり顔が火照った',
@@ -1285,7 +1285,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_006',
             "name": 'eyes flying wide open (目を見開く)',
-            "find": '(?:はっと|ぱっと|思わず|大きく)?目を見開(?:いた|く)',
+            "find": '(?:はっと|ぱっと|思わず|大きく)?目を見開いた',
             "replace": [
                 '目を丸くした',
                 'ぱちりと目を瞬かせた',
@@ -1304,7 +1304,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_007',
             "name": 'a sigh escaping (吐息が漏れる)',
-            "find": '(?:小さな|熱い|甘い|かすかな)?吐息が漏れ(?:た|る|ている)',
+            "find": '(?:小さな|熱い|甘い|かすかな)?吐息が漏れた',
             "replace": [
                 'ため息がこぼれた',
                 '細く息を吐いた',
@@ -1323,7 +1323,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_008',
             "name": 'letting out a breath/sigh (吐息をつく)',
-            "find": '(?:小さく|そっと|ふっと|深く)?吐息をつ(?:いた|く)',
+            "find": '(?:小さく|そっと|ふっと|深く)?吐息をついた',
             "replace": [
                 '息をついた',
                 'ため息をこぼした',
@@ -1342,7 +1342,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_009',
             "name": 'chill running down the spine (背筋に寒気が走る)',
-            "find": '背筋に(?:寒気|震え|冷たいもの|ぞくりとしたもの)が走(?:る|った)',
+            "find": '背筋に(?:寒気|震え|冷たいもの|ぞくりとしたもの)が走った',
             "replace": [
                 'ぞくりと背中が冷えた',
                 '首筋が冷たくなった',
@@ -1361,7 +1361,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_010',
             "name": 'smiling softly (柔らかく微笑む)',
-            "find": '(?:柔|やわ)らかく微笑(?:んだ|む)',
+            "find": '(?:柔|やわ)らかく微笑んだ',
             "replace": [
                 'ふわりと笑った',
                 '穏やかに笑った',
@@ -1380,7 +1380,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_011',
             "name": 'lowering the voice (声を潜める)',
-            "find": '(?:そっと|ぐっと|ふと)?声を潜め(?:た|る|ている)',
+            "find": '(?:そっと|ぐっと|ふと)?声を潜めた',
             "replace": [
                 '声を落とした',
                 'ささやくように話した',
@@ -1399,7 +1399,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_012',
             "name": 'voice trembling (声を震わせる)',
-            "find": '声を震わせ(?:た|る|ている)',
+            "find": '声を震わせた',
             "replace": [
                 '震える声で言った',
                 '声を詰まらせた',
@@ -1418,7 +1418,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_013',
             "name": 'biting the lower lip (下唇を噛む)',
-            "find": '(?:きゅっと|ぐっと|そっと)?下唇を噛(?:んだ|む|みしめた)',
+            "find": '(?:きゅっと|ぐっと|そっと)?下唇を噛んだ',
             "replace": [
                 '唇を引き結んだ',
                 'くちびるを噛みしめた',
@@ -1456,7 +1456,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_015',
             "name": 'ending up doing X despite oneself (思わず……てしまう)',
-            "find": r"思わず([^、。「」\n]{1,16}?)て(?:しまう|しまった)",
+            "find": r"思わず([^、。「」\n]{1,16}?)てしまった",
             "replace": [
                 r"ついつい\1てしまった",
                 r"気づけば\1ていた",
@@ -1475,7 +1475,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_016',
             "name": 'the air growing tense (空気が張り詰める)',
-            "find": '空気が(?:ぴんと張り詰め|ぴんと張りつめ|張り詰め|張りつめ|ぴんと張っ)(?:た|る|ている)',
+            "find": '空気が(?:ぴんと張り詰め|ぴんと張りつめ|張り詰め|張りつめ|ぴんと張っ)た',
             "replace": [
                 '場の空気がこわばった',
                 'ぴりっとした緊張が走った',
@@ -1494,7 +1494,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_017',
             "name": 'the air freezing over (空気が凍りつく)',
-            "find": '空気が凍りつ(?:いた|く)',
+            "find": '空気が凍りついた',
             "replace": [
                 '場が凍りついた',
                 'あたりがしんと静まり返った',
@@ -1532,7 +1532,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_019',
             "name": 'a dangerous smile (危険な笑み)',
-            "find": '危険な笑(?:み|顔)を(?:浮かべ|見せ)(?:る|た|ている)',
+            "find": '危険な笑(?:み|顔)を(?:浮かべ|見せ)た',
             "replace": [
                 'ぞっとするような笑みを浮かべた',
                 '底の見えない笑みを見せた',
@@ -1589,7 +1589,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'JA_022',
             "name": 'heart skipping a beat (胸が高鳴る)',
-            "find": '(?:胸|心)が高鳴(?:った|る)',
+            "find": '(?:胸|心)が高鳴った',
             "replace": [
                 '胸がときめいた',
                 '鼓動が弾んだ',
@@ -1610,7 +1610,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_001',
             "name": '심장이 미친 듯이/쿵쾅 뛰다 (heart pounding)',
-            "find": r"심장이\s*(?:미친\s*듯이|쿵쾅(?:쿵쾅)?|세차게|요동치며)\s*뛰(?:었|고\s*있|기\s*시작했|)다",
+            "find": r"심장이\s*(?:미친\s*듯이|쿵쾅(?:쿵쾅)?|세차게|요동치)\s*뛰(?:었|기\s*시작했|)다",
             "replace": [
                 '맥박이 빨라졌다',
                 '가슴이 두근거렸다',
@@ -1629,7 +1629,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_002',
             "name": '숨을 삼키다/들이켜다 (catch/draw breath)',
-            "find": r"숨을\s*(?:꿀꺽\s*)?(?:삼켰|삼키|들이켰|들이켜|들이마셨|멈췄|죽였)(?:다|었다|었어|어)",
+            "find": r"숨을\s*(?:꿀꺽\s*)?(?:삼켰|들이켰|들이마셨|멈췄|죽였)(?:다|었다|었어|어)",
             "replace": [
                 '숨이 잠깐 막혔다',
                 '호흡이 멎는 듯했다',
@@ -1667,7 +1667,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_004',
             "name": '눈을 가늘게 뜨다 (narrow eyes)',
-            "find": r"눈을\s*가늘게\s*(?:뜨(?:며|고|었다|면서|는다)|떴다)",
+            "find": r"눈을\s*가늘게\s*(?:뜨(?:었다|는다)|떴다)",
             "replace": [
                 '눈매를 좁혔다',
                 '실눈을 떴다',
@@ -1686,7 +1686,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_005',
             "name": '눈을 크게 뜨다 (eyes widen)',
-            "find": r"눈을\s*(?:동그랗게|휘둥그렇게|크게)\s*(?:크게\s*)?(?:떴|뜨)(?:다|며|고|었다)",
+            "find": r"눈을\s*(?:동그랗게|휘둥그렇게|크게)\s*(?:크게\s*)?(?:떴|뜨)(?:다|었다)",
             "replace": [
                 '눈이 휘둥그레졌다',
                 '눈동자가 커졌다',
@@ -1705,7 +1705,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_006',
             "name": '입꼬리가 올라가다/씰룩 (corner of mouth lifts)',
-            "find": r"입꼬리(?:가|를)\s*(?:씰룩\s*|슬며시\s*|살짝\s*)?(?:올라갔|올렸|올라가|치켜올렸|끌어올렸)(?:다|어|며|고)",
+            "find": r"입꼬리(?:가|를)\s*(?:씰룩\s*|슬며시\s*|살짝\s*)?(?:올라갔|올렸|치켜올렸|끌어올렸)(?:다|어)",
             "replace": [
                 '입가에 옅은 미소가 걸렸다',
                 '한쪽 입꼬리가 비스듬히 올라갔다',
@@ -1724,7 +1724,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_007',
             "name": '등골에 소름/전율이 돋다·흐르다 (chill down spine)',
-            "find": r"등(?:골|줄기|허리)에\s*(?:서늘한\s*)?(?:소름|전율|한기|오싹함)이\s*(?:쫙\s*|쭈뼛\s*)?(?:돋았|돋|흘렀|흘러내렸|일었|쭈뼛\s*섰)(?:다|어)",
+            "find": r"등(?:골|줄기|허리)에\s*(?:서늘한\s*)?(?:소름|전율|한기|오싹함)이\s*(?:쫙\s*|쭈뼛\s*)?(?:돋았|흘렀|흘러내렸|일었|쭈뼛\s*섰)(?:다|어)",
             "replace": [
                 '등줄기가 서늘해졌다',
                 '온몸에 소름이 돋았다',
@@ -1743,7 +1743,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_008',
             "name": '부드럽게 미소 짓다 (smile softly)',
-            "find": r"(?:부드럽게|온화하게|따스하게|나긋하게)\s*미소(?:를)?\s*(?:지었|지으|짓는다|띠었|머금었)(?:다|며|고|어)",
+            "find": r"(?:부드럽게|온화하게|따스하게|나긋하게)\s*미소(?:를)?\s*(?:지었|짓는다|띠었|머금었)(?:다|어)",
             "replace": [
                 '옅게 웃어 보였다',
                 '은은한 미소를 띠었다',
@@ -1762,7 +1762,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_009',
             "name": "목소리를 낮추다 (lower one's voice)",
-            "find": r"목소리를\s*(?:한껏\s*|잔뜩\s*|지그시\s*)?(?:낮췄|낮추|깔)(?:다|며|고|면서|었다)",
+            "find": r"목소리를\s*(?:한껏\s*|잔뜩\s*|지그시\s*)?(?:낮췄|깔았)(?:다|어)",
             "replace": [
                 '목소리가 한 톤 가라앉았다',
                 '낮게 속삭이듯 말했다',
@@ -1781,7 +1781,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_010',
             "name": '아랫입술을 깨물다 (bite lower lip)',
-            "find": r"아(?:랫|랫쪽\s*)?입술을\s*(?:지그시\s*|살짝\s*|꾹\s*)?(?:깨물었|깨물|깨무|물었)(?:다|어)",
+            "find": r"아(?:랫|랫쪽\s*)?입술을\s*(?:지그시\s*|살짝\s*|꾹\s*)?(?:깨물었|물었)(?:다|어)",
             "replace": [
                 '입술을 지그시 깨물었다',
                 '입술 끝을 살짝 물었다',
@@ -1800,7 +1800,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_011',
             "name": '공기가 얼어붙다/팽팽해지다 (air freezes/tightens)',
-            "find": r"(?:공기|분위기|침묵|정적)이?\s*(?:순간\s*|일순\s*)?(?:얼어붙었|팽팽해졌|싸늘해졌|무거워졌|얼어붙|팽팽하게\s*당겨졌)(?:다|어)",
+            "find": r"(?:공기|분위기|침묵|정적)이?\s*(?:순간\s*|일순\s*)?(?:얼어붙었|팽팽해졌|싸늘해졌|무거워졌|팽팽하게\s*당겨졌)(?:다|어)",
             "replace": [
                 '분위기가 일순 무거워졌다',
                 '방 안 공기가 가라앉았다',
@@ -1876,7 +1876,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_015',
             "name": '고개를 갸웃하다 (tilt head quizzically)',
-            "find": r"고개를\s*(?:살짝\s*|갸우뚱\s*)?갸(?:웃|우뚱)(?:거렸|했|하|였)(?:다|으며|고|어)",
+            "find": r"고개를\s*(?:살짝\s*|갸우뚱\s*)?갸(?:웃|우뚱)(?:거렸|했|였)(?:다|어)",
             "replace": [
                 '고개를 모로 기울였다',
                 '의아한 듯 고개를 기울였다',
@@ -1895,7 +1895,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_016',
             "name": '손끝이 떨리다 (fingertips tremble)',
-            "find": r"손(?:끝|가락|길)이\s*(?:미세하게\s*|가늘게\s*|살짝\s*)?떨(?:렸|려|리)(?:다|어|왔다|고\s*있었다)",
+            "find": r"손(?:끝|가락|길)이\s*(?:미세하게\s*|가늘게\s*|살짝\s*)?떨(?:렸|려)(?:다|어|왔다)",
             "replace": [
                 '손끝이 가늘게 떨려 왔다',
                 '손가락에 힘이 들어가지 않았다',
@@ -1914,7 +1914,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_017',
             "name": '가슴이 철렁/내려앉다 (heart drops)',
-            "find": r"가슴이\s*(?:철렁\s*|덜컥\s*|쿵\s*)?(?:내려앉았|철렁했|덜컥했|내려앉)(?:다|어)",
+            "find": r"가슴이\s*(?:철렁\s*|덜컥\s*|쿵\s*)?(?:내려앉았|철렁했|덜컥했)(?:다|어)",
             "replace": [
                 '가슴이 철렁 내려앉았다',
                 '명치가 덜컥 막혔다',
@@ -1941,14 +1941,14 @@ SLOP_RULES: dict[str, list[dict]] = {
                 r"\1 ушло в пятки",
                 r"\1 застучало где-то в горле",
                 r"\1 заходилось",
-                r"стук \1 отдавался в висках",
                 r"\1 рвалось наружу",
                 r"\1 сжалось и тут же зачастило",
                 r"\1 трепыхалось",
                 r"\1 колотилось так, что было слышно",
                 r"\1 будто сорвалось с места",
                 r"\1 заполошно билось",
-                r"в груди гулко толкнулось \1",
+                r"\1 гулко бухало",
+                r"\1 зашлось частым стуком",
             ],
         },
         {
@@ -1978,15 +1978,15 @@ SLOP_RULES: dict[str, list[dict]] = {
                 r"\1 загорелись",
                 r"\1 покраснели",
                 r"\1 предательски потеплели",
-                r"румянец тронул \1",
                 r"\1 порозовели",
-                r"краска бросилась в \1",
-                r"\1 залила краска",
-                r"жар прилил к \1",
                 r"\1 стали пунцовыми",
-                r"румянец выступил на \1",
+                r"\1 залила краска",
                 r"\1 окрасил стыд",
-                r"по \1 разлился жар",
+                r"\1 предательски заалели",
+                r"\1 вспыхнули румянцем",
+                r"\1 заполыхали",
+                r"\1 тут же запылали",
+                r"\1 вспыхнули жаром",
             ],
         },
         {
@@ -2031,7 +2031,6 @@ SLOP_RULES: dict[str, list[dict]] = {
             "id": 'RU_006',
             "name": 'chill ran down spine',
             "find": r"\bпо\s+(спине|телу)\s+(?:пробежал[аи]?)\s+(?:холодок|мурашки|дрожь)\b",
-            "flags": re.IGNORECASE,
             "replace": [
                 r"по \1 прошёл холод",
                 r"по \1 прокатилась дрожь",
@@ -2107,8 +2106,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'RU_010',
             "name": 'air thickened with tension',
-            "find": r"\b([Вв]оздух)\s+(?:сгустился|накалился|зазвенел\s+от\s+напряжения|словно\s+загустел)\b",
-            "flags": re.IGNORECASE,
+            "find": r"\b([Вв]оздух)\s+(?:сгустился|накалился|зазвенел\s+от\s+напряжения|загустел)\b",
             "replace": [
                 r"\1 будто загустел",
                 r"\1 словно сгустился",
@@ -2127,21 +2125,20 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'RU_011',
             "name": 'time stood still',
-            "find": r"\bсловно\s+(?:само\s+)?(время)\s+(?:замерло|остановилось|застыло)\b",
-            "flags": re.IGNORECASE,
+            "find": r"(^|[.!?…]\s)(?:Словно|Будто)\s+(?:само\s+)?время\s+(?:замерло|остановилось|застыло)\b",
             "replace": [
-                r"\1 будто остановилось",
-                r"\1 точно споткнулось",
-                r"\1 словно замерло",
-                r"\1 как будто застыло",
-                r"\1 словно зависло",
-                r"\1 будто остановило свой ход",
-                r"\1 будто увязло",
-                r"\1 точно замерло на месте",
-                r"\1 как будто притормозило",
-                r"\1 словно потекло вспять",
-                r"\1 будто потекло еле-еле",
-                r"\1 точно остановилось",
+                r"\1Время будто остановилось",
+                r"\1Время точно споткнулось",
+                r"\1Время словно замерло",
+                r"\1Время как будто застыло",
+                r"\1Время словно зависло",
+                r"\1Время будто остановило свой ход",
+                r"\1Время будто увязло",
+                r"\1Время точно замерло на месте",
+                r"\1Время как будто притормозило",
+                r"\1Время словно потекло вспять",
+                r"\1Время будто потекло еле-еле",
+                r"\1Время точно остановилось",
             ],
         },
         {
@@ -2186,7 +2183,6 @@ SLOP_RULES: dict[str, list[dict]] = {
             "id": 'RU_014',
             "name": 'goosebumps ran over skin',
             "find": r"\b([Мм]урашки)\s+(?:побежали|пробежали|пошли)\s+по\s+(?:кож[еи]|тел[уе]|спине)\b",
-            "flags": re.IGNORECASE,
             "replace": [
                 r"\1 рассыпались по коже",
                 r"\1 прошлись по рукам",
@@ -2205,8 +2201,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'RU_015',
             "name": 'spark flashed in eyes',
-            "find": r"\bв\s+(?:её|его)\s+глазах\s+(?:вспыхнул|мелькнул|загорелся|зажёгся)\s+(огонёк|искра|искорка|интерес|огонёк\s+интереса)\b",
-            "flags": re.IGNORECASE,
+            "find": r"\bв\s+(?:её|его)\s+глазах\s+(?:вспыхнул|мелькнул|загорелся|зажёгся)\s+(огонёк|интерес|огонёк\s+интереса)\b",
             "replace": [
                 r"во взгляде мелькнул \1",
                 r"в глазах зажёгся \1",
