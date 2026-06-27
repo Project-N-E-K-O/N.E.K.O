@@ -827,7 +827,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_012',
             "name": 'voice dripping with X',
-            "find": r"\b(his|her|their|my|your)\s+voice\s+(?:dripping|laced|thick|heavy|laden|dripped)\s+with\s+(\w+)\b",
+            "find": r"\b(his|her|their|my|your)\s+voice\s+(?:dripping|laced|thick|heavy|laden|dripped)\s+with\s+(\w+(?: \w+){0,2})\b",
             "replace": [
                 r"\2 ran clear through \1 voice",
                 r"you could hear the \2 in \1 voice",
@@ -1017,7 +1017,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_022',
             "name": "letting out a breath one didn't know was held",
-            "find": r"\b(?:let(?:ting)?|released?|releasing)\s+(?:out\s+)?a\s+breath\s+(?:(?:he|she|they|I|you)\s+)?(?:did\s*n['’]?t|had\s*n['’]?t)\s+(?:know|realiz(?:e|ed)|notice[d]?)\s+(?:(?:he|she|they|I|you)\s+)?(?:was|had\s+been|were)\s+holding\b",
+            "find": r"\b(?:let|released)\s+(?:out\s+)?a\s+breath\s+(?:(?:he|she|they|I|you)\s+)?(?:did\s*n['’]?t|had\s*n['’]?t)\s+(?:know|realiz(?:e|ed)|notice[d]?)\s+(?:(?:he|she|they|I|you)\s+)?(?:was|had\s+been|were)\s+holding\b",
             "replace": [
                 'let out a breath at last',
                 'finally breathed again',
@@ -1781,7 +1781,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'KO_010',
             "name": '아랫입술을 깨물다 (bite lower lip)',
-            "find": r"아(?:랫|랫쪽\s*)?입술을\s*(?:지그시\s*|살짝\s*|꾹\s*)?(?:깨물었|깨물|깨무|물었)(?:다|어|며|고)",
+            "find": r"아(?:랫|랫쪽\s*)?입술을\s*(?:지그시\s*|살짝\s*|꾹\s*)?(?:깨물었|깨물|깨무|물었)(?:다|어)",
             "replace": [
                 '입술을 지그시 깨물었다',
                 '입술 끝을 살짝 물었다',
@@ -2417,9 +2417,9 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ES_010',
             "name": 'como si … (apertura de símil tópico)',
-            "find": r"\b[Cc]omo si (el mundo|el tiempo|todo) (?:se )?(?:detuviera|se detuviese|hubiera dejado de existir|desapareciera|se desvaneciera|se paralizara|dejara de girar)\b",
+            "find": r"\bComo si (el mundo|el tiempo|todo) (?:se )?(?:detuviera|se detuviese|hubiera dejado de existir|desapareciera|se desvaneciera|se paralizara|dejara de girar)\b",
             "replace": [
-                r"y \1 se quedó en pausa",
+                r"\1 se quedó en pausa",
                 r"por un instante \1 dejó de importar",
                 r"\1 se redujo a ese momento",
                 'nada más existía',
@@ -2494,6 +2494,7 @@ SLOP_RULES: dict[str, list[dict]] = {
             "id": 'ES_014',
             "name": 'se le formó un nudo en la garganta',
             "find": r"\b(?:se le )?(?:form[oó]|hizo|apret[oó]|atravesaba|cerr[oó]) un nudo en la garganta\b",
+            "flags": re.IGNORECASE,
             "replace": [
                 'se le cerró la garganta',
                 'no le salía la voz',
@@ -2750,7 +2751,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_012',
             "name": 'sem conseguir evitar / sem poder evitar',
-            "find": r"\bsem\s+(?:conseguir|poder)\s+(?:se\s+)?(?:evitar|conter|impedir)\b",
+            "find": r"\bsem\s+(?:conseguir|poder)\s+(?:se\s+)?(?:evitar|conter|impedir)\b(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 'antes que desse tempo de pensar',
                 'e sem nem tentar segurar',
@@ -2822,19 +2823,19 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'PT_016',
             "name": 'como se o tempo tivesse parado',
-            "find": r"\bcomo\s+se\s+o\s+tempo\s+(?:tivesse\s+parado|parasse|congelasse|tivesse\s+congelado|tivesse\s+se\s+detido|se\s+detivesse)\b",
+            "find": r"\bComo\s+se\s+o\s+tempo\s+(?:tivesse\s+parado|parasse|congelasse|tivesse\s+congelado|tivesse\s+se\s+detido|se\s+detivesse)\b",
             "replace": [
-                'e o resto do mundo ficou em pausa',
-                'e por um segundo nada mais andava',
-                'e tudo à volta perdeu a pressa',
+                'o resto do mundo ficou em pausa',
+                'por um segundo nada mais andava',
+                'tudo à volta perdeu a pressa',
                 'como se só aquele instante existisse',
-                'e o relógio pareceu desistir',
-                'e o momento se esticou sem fim',
-                'e nada mais teve pressa de acontecer',
+                'o relógio pareceu desistir',
+                'o momento se esticou sem fim',
+                'nada mais teve pressa de acontecer',
                 'como se tudo coubesse num segundo eterno',
-                'e o mundo esqueceu de continuar',
-                'e tudo ficou suspenso ali',
-                'e aquele instante recusou-se a passar',
+                'o mundo esqueceu de continuar',
+                'tudo ficou suspenso ali',
+                'aquele instante recusou-se a passar',
             ],
         },
     ],
