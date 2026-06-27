@@ -63,6 +63,20 @@ def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():
     assert "el.style.display = restoreDisplay;" not in restore_block
 
 
+def test_interpage_hide_records_css_fallback_floating_button_display_as_flex():
+    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    hide_block = _source_slice_between(
+        source,
+        "document.querySelectorAll(\n                '#live2d-floating-buttons",
+        "el.style.display = 'none';",
+        "interpage floating button hide snapshot block",
+    )
+
+    assert "var isFloatingButtons = !!(el.id && /-floating-buttons$/.test(el.id));" in hide_block
+    assert "isFloatingButtons && !el.style.display && computedDisplay === 'none'" in hide_block
+    assert "? 'flex'" in hide_block
+
+
 def test_css_fallback_keeps_visible_floating_button_containers_as_flex():
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
