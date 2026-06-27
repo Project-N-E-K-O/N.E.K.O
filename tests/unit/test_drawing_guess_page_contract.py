@@ -145,9 +145,9 @@ def test_drawing_guess_static_route_contract():
     assert ".dg-color-chip" in html
     assert ".dg-tool-menu[data-brush-kind=\"bucket\"] .dg-brush-size-control" in html
     assert ".dg-size-preview" in html
-    assert "left: -154px;" in html
-    assert "right: -10px;" in html
-    assert "height: 28px;" in html
+    assert "left: -220px;" in html
+    assert "right: -32px;" in html
+    assert "height: 48px;" in html
     assert ".dg-tool-popover.is-open .dg-tool-menu" in html
     assert ".dg-tool-popover.is-open::after" in html
     assert "pointer-events: auto;" in html
@@ -161,8 +161,13 @@ def test_drawing_guess_static_route_contract():
     assert 'id="live2d-canvas"' in html
     assert 'id="vrm-container"' in html
     assert 'id="vrm-canvas"' in html
-    assert 'id="model-fallback-container" class="dg-model-fallback" aria-hidden="true" hidden' in html
+    assert 'id="mmd-container"' in html
+    assert 'id="mmd-canvas"' in html
+    assert 'id="pngtuber-container"' in html
+    assert 'class="dg-model-renderer dg-pngtuber-renderer hidden"' in html
+    assert 'id="model-fallback-container" class="dg-model-fallback hidden" aria-hidden="true" hidden' in html
     assert ".dg-model-loading[hidden]" in html
+    assert ".dg-pngtuber-renderer" in html
     assert "dg-model-loading-spin" in html
     assert "padding: 0;" in html
     assert "inset: 0;" in html
@@ -213,10 +218,24 @@ def test_drawing_guess_static_route_contract():
     assert "function applyLive2DMood" in script
     assert "function initModelSlotForCurrentCharacter" in script
     assert "['loading', els.modelLoading]" in script
+    assert "['mmd', els.mmdContainer]" in script
+    assert "['pngtuber', els.pngtuberContainer]" in script
     assert "showModelLayer('loading');" in script
     assert "function loadLive2DSlot" in script
+    assert "function loadVRMSlot" in script
+    assert "function loadMMDSlot" in script
+    assert "function loadPNGTuberSlot" in script
     assert "fetchCharacterAvatarConfig" in script
     assert "current_live2d_model?catgirl_name=" in script
+    assert "/static/pngtuber-core.js" in html
+    assert "/static/vrm-init.js" in html
+    assert "/static/mmd-init.js" in html
+    assert '"@moeru/three-mmd"' in html
+    assert "window.__DRAWING_GUESS_AVATAR_SLOT__ = true;" in html
+    assert "window._cardExportPage = true;" in html
+    assert "state.vrmManager.animation.startLipSync(analyser);" in script
+    assert "state.mmdManager.animationModule.startLipSync(analyser);" in script
+    assert "state.pngtuberManager.setSpeaking(true);" in script
     assert "ROUTE_API + '/route/start'" in script
     assert "ROUTE_API + '/route/heartbeat'" in script
     assert "ROUTE_API + '/route/end'" in script

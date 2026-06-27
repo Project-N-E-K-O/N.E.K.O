@@ -17,6 +17,8 @@
         lanlanName: queryLanlan,
         sessionId: querySession
       };
+      window._cardExportPage = true;
+      window.__DRAWING_GUESS_AVATAR_SLOT__ = true;
     })();
   </script>
   <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
@@ -297,10 +299,10 @@
     .dg-tool-popover::after {
       content: "";
       position: absolute;
-      left: -154px;
-      right: -10px;
-      top: 100%;
-      height: 28px;
+      left: -220px;
+      right: -32px;
+      top: calc(100% - 2px);
+      height: 48px;
       pointer-events: none;
     }
 
@@ -614,6 +616,10 @@
       overflow: hidden;
     }
 
+    .dg-canvas-stage.is-user-canvas {
+      background: #fffdfa;
+    }
+
     .dg-size-preview {
       position: absolute;
       inset: 0;
@@ -661,6 +667,10 @@
     .dg-summary {
       width: 100%;
       height: 100%;
+    }
+
+    .dg-user-canvas {
+      background: #fffdfa;
     }
 
     .dg-draw-pick {
@@ -951,7 +961,7 @@
       position: relative;
       z-index: 1;
       display: block;
-      background: rgba(255, 255, 255, 0.92);
+      background: #fffdfa;
       touch-action: none;
       object-fit: fill;
     }
@@ -1375,6 +1385,27 @@
       max-height: 100%;
       display: block;
       pointer-events: none;
+    }
+
+    .dg-model-stage[data-model-kind="vrm"] #vrm-container,
+    .dg-model-stage[data-model-kind="mmd"] #mmd-container,
+    .dg-model-stage[data-model-kind="pngtuber"] #pngtuber-container {
+      transform: translate(var(--dg-model-offset-x, 0), var(--dg-model-offset-y, 0)) scale(var(--dg-model-scale, 1));
+      transform-origin: center center;
+      transition: transform 160ms ease;
+    }
+
+    .dg-pngtuber-renderer {
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .dg-pngtuber-renderer .pngtuber-image,
+    .dg-pngtuber-renderer .pngtuber-layered-canvas {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      pointer-events: none !important;
     }
 
     .dg-model-fallback {
@@ -2044,13 +2075,17 @@
           <div id="model-loading" class="dg-model-loading" aria-live="polite">
             <span data-i18n="drawingGuess.modelStates.loading">模型加载中</span>
           </div>
-          <div id="live2d-container" class="dg-model-renderer" hidden>
+          <div id="live2d-container" class="dg-model-renderer hidden" hidden>
             <canvas id="live2d-canvas"></canvas>
           </div>
-          <div id="vrm-container" class="dg-model-renderer" hidden>
+          <div id="vrm-container" class="dg-model-renderer hidden" hidden>
             <canvas id="vrm-canvas"></canvas>
           </div>
-          <div id="model-fallback-container" class="dg-model-fallback" aria-hidden="true" hidden>
+          <div id="mmd-container" class="dg-model-renderer hidden" hidden>
+            <canvas id="mmd-canvas"></canvas>
+          </div>
+          <div id="pngtuber-container" class="dg-model-renderer dg-pngtuber-renderer hidden" hidden></div>
+          <div id="model-fallback-container" class="dg-model-fallback hidden" aria-hidden="true" hidden>
             <img src="/static/assets/neko-idle/cat-idle-cat1.gif" alt="">
           </div>
           <div class="dg-model-controls" aria-label="Model position controls" data-i18n-aria="drawingGuess.modelControls.group">
@@ -2477,6 +2512,27 @@
   <script src="/static/live2d-emotion.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-interaction.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d-model.js?v={{ static_asset_version }}"></script>
+  <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/static/libs/three.module.js",
+      "three/addons/": "/static/libs/three/addons/",
+      "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+      "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+      "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
+      "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v={{ static_asset_version }}",
+      "ammojs-typed": "/static/libs/ammojs-typed.module.js"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    window.THREE = THREE;
+    window.dispatchEvent(new CustomEvent('three-ready'));
+  </script>
+  <script src="/static/vrm-init.js?v={{ static_asset_version }}"></script>
+  <script src="/static/mmd-init.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/games/drawing_guess/drawing-guess.js?v={{ static_asset_version }}"></script>
 </body>
 </html>

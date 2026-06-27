@@ -1025,36 +1025,6 @@ def _direct_word_hint(word: DrawingGuessWord, locale: str) -> str:
     return get_drawing_guess_direct_hint_template(locale).format(answer=label)
 
 
-def _next_safe_word_hint(
-    session: dict[str, Any],
-    word: DrawingGuessWord,
-    locale: str,
-) -> tuple[str, list[str], int, bool]:
-    options = _safe_word_hint_options(word, locale)
-    previous = [
-        str(hint)
-        for hint in (session.get("safe_hint_history") or [])
-        if str(hint).strip()
-    ]
-    previous_for_prompt = previous[-4:]
-    hint_count = int(session.get("hint_count") or 0)
-    direct_hint = len(set(previous)) >= len(options)
-    if direct_hint:
-        hint = _direct_word_hint(word, locale)
-    else:
-        hint = options[0]
-        for candidate in options:
-            if candidate not in previous:
-                hint = candidate
-                break
-        previous = [*previous, hint][-len(options):]
-    session["hint_count"] = hint_count + 1
-    session["safe_hint_history"] = previous[-len(options):]
-    if direct_hint:
-        session["direct_hint_count"] = int(session.get("direct_hint_count") or 0) + 1
-    return hint, previous_for_prompt, hint_count + 1, direct_hint
-
-
 def _is_ai_retry_hint(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
@@ -1611,14 +1581,14 @@ def _drawing_guess_scene_premise(event: str) -> str:
         "ai_drawing_ready": "You have just finished your drawing. The user does not know the answer yet.",
         "user_guess_correct": "The user guessed your drawing correctly. Congratulate them, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
         "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
-        "hint_request": "The user wants a hint. If public_details.safe_hint is present, it is the only hint you may use. If public_details.direct_hint is present, the softer hints are exhausted and you may guide the user toward public_details.answer_label.",
+        "hint_request": "The user wants help while guessing your drawing. You know your own hidden answer; make a fresh in-character clue from that answer, but do not expose the exact answer unless public_details.allow_answer_reveal is true.",
         "user_guess_timeout": "The user's guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
         "ai_guess_correct": "The character is making a visual guess from the user's drawing and that guess happens to be correct. The user was the drawer, not the guesser. Speak from what the character can see now, not as if the hidden answer was known beforehand.",
         "ai_guess_wrong": "The character guessed the user's drawing wrong. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character without making it feel like a failure.",
         "ai_guess_final_miss": "The character used all guess attempts and missed the user's drawing. The user was the drawer, not the guesser. The round is ending; comment on the user's drawing itself in-character without making it feel like a failure.",
         "summary_evaluation": "The round has reached the settlement page. Give a fresh in-character evaluation of the user's drawing itself. This is not a chat reply, not a guess line, and must not copy earlier game chat.",
         "drawing_chat": "The user is drawing and chatting with you.",
-        "guessing_chat": "The user is in their guessing turn and is chatting with you; this may be ordinary conversation, not an answer.",
+        "guessing_chat": "The user is in their guessing turn and is chatting with you. You know your own hidden answer; if the user naturally asks for help, a nudge, or another clue, answer with a fresh indirect clue from that answer without requiring a fixed keyword. If it is ordinary conversation, chat normally.",
         "word_picking_chat": "The user already guessed your drawing and is now privately choosing their own drawing card. You may know and discuss your own revealed answer, but you must not know or mention the user's card options.",
         "guess_feedback_chat": "The user is chatting after you guessed their drawing.",
         "summary_chat": "The round is over, and the user is still chatting with you.",
@@ -1695,6 +1665,7 @@ def _drawing_guess_chat_public_details(session: dict[str, Any], locale: str, eve
         answer = _word_public(_WORD_BY_ID[ai_word_id], locale)
         if phase == "user_guessing":
             details["character_knows_own_hidden_answer"] = True
+            details["character_private_answer_label"] = answer["label"]
             details["allow_character_drawing_answer_reveal"] = False
         else:
             details["character_drawing_answer_label"] = answer["label"]
@@ -2359,8 +2330,16 @@ def _build_drawing_guess_chat_prompts(
         lanlan_prompt=lanlan_prompt,
         character_profile_prompt=character_profile_prompt,
         locale=locale,
-        extra_rules="- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n",
+        extra_rules=(
+            "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
+            "- If public_details.character_private_answer_label is present, the character knows it as the answer to their own drawing.\n"
+            "- Do not directly reveal character_private_answer_label unless public_details.allow_character_drawing_answer_reveal is true.\n"
+            "- If the user asks for help, a hint, another clue, or says they are stuck, infer that naturally and generate a fresh indirect clue from character_private_answer_label; do not require any fixed keyword.\n"
+            "- Do not use a fixed hint template. Vary the clue wording according to the character setting and the conversation.\n"
+            "- If the user is only chatting, respond as a companion and do not force the conversation back to guessing.\n"
+        ),
     )
+    public_details = _drawing_guess_chat_public_details(session, locale, event)
     user_payload = {
         "task": "free_in_character_reply",
         "event": event,
@@ -2371,10 +2350,10 @@ def _build_drawing_guess_chat_prompts(
         "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
         "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
         "recent_game_chat": _recent_game_chat_payload(session),
-        "public_details": _drawing_guess_chat_public_details(session, locale, event),
+        "public_details": public_details,
         "user_text": _truncate_text(user_text, GAME_CHAT_MAX_TEXT_CHARS),
         "safety": {
-            "do_not_reveal_hidden_answers": True,
+            "do_not_reveal_hidden_answers": not bool(public_details.get("allow_character_drawing_answer_reveal")),
             "do_not_mention_candidate_lists": True,
             "do_not_reveal_or_infer_user_card_options": True,
             "one_line_only": True,
@@ -2466,9 +2445,9 @@ def _build_drawing_guess_game_line_prompts(
         locale=locale,
         extra_rules=(
             "- Only reveal an answer if public_details.allow_answer_reveal is true.\n"
-            "- If public_details.safe_hint is present, it is the only new factual hint you may use.\n"
-            "- If public_details.previous_safe_hints is present, do not repeat those hints; say the current safe_hint in fresh character wording.\n"
-            "- If public_details.direct_hint is present, use direct_hint or answer_label naturally as the hint; do not mention policy, rules, or that you are allowed to reveal anything.\n"
+            "- If public_details.character_private_answer_label is present, use it as private knowledge of the character's own drawing answer.\n"
+            "- For hint_request, generate a fresh indirect clue from character_private_answer_label in the character's own style; do not use a fixed template or say that a keyword triggered a hint.\n"
+            "- If public_details.allow_answer_reveal is false, do not directly say the exact answer label or obvious aliases; if it is true, you may guide the user directly and naturally.\n"
             "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
             "- For user_guess_correct and user_guess_timeout, keep the turn transition clear: the character's drawing turn has ended, the next drawing belongs to the user, and the character will guess.\n"
             "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
@@ -2621,7 +2600,8 @@ def _build_game_input_intent_prompts(
         "{\"intent\":\"guess|hint|chat\",\"guess_text\":\"\",\"confidence\":0.0}.\n"
         "Use natural-language intent, not only keywords.\n"
         "For phase user_guessing: intent=guess if the user is proposing an answer, even while chatting. "
-        "intent=hint if they ask for a hint. intent=chat for reactions, jokes, encouragement, or unrelated talk.\n"
+        "intent=hint if they ask for a hint, another clue, a nudge, say they are stuck, or ask what the drawing is without proposing an answer. "
+        "intent=chat for reactions, jokes, encouragement, or unrelated talk.\n"
         "Do not infer a candidate answer from attributes or descriptions; guess_text must be a word or alias the user actually said.\n"
         "For phase ai_guess_feedback: prefer intent=chat. Use intent=hint only when the user clearly gives a new clue, "
         "correction, answer, or explicitly asks the character to try again. Casual teasing, reactions to the previous guess, "
@@ -3446,26 +3426,30 @@ async def _handle_drawing_guess_input_payload_locked(
 
     if _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
         _append_game_chat(session, "user", text, kind="hint_request")
-        hint, previous_hints, hint_count, direct_hint = _next_safe_word_hint(session, word, locale)
+        hint_count = int(session.get("hint_count") or 0) + 1
+        session["hint_count"] = hint_count
+        hint_levels = max(1, len(_safe_word_hint_options(word, locale)))
+        direct_hint = hint_count > hint_levels
+        fallback_hint = _direct_word_hint(word, locale) if direct_hint else random.choice(_safe_word_hint_options(word, locale))
+        if direct_hint:
+            session["direct_hint_count"] = int(session.get("direct_hint_count") or 0) + 1
         hint_details = {
-            "previous_safe_hints": previous_hints,
-            "safe_hint_number": hint_count,
+            "character_private_answer_label": _word_public(word, locale)["label"],
+            "hint_number": hint_count,
+            "indirect_hint_levels": hint_levels,
             "safe_hints_exhausted": direct_hint,
+            "generate_hint_from_answer": True,
+            "do_not_use_fixed_hint_template": True,
+            "allow_answer_reveal": direct_hint,
         }
         if direct_hint:
-            hint_details.update({
-                "direct_hint": hint,
-                "answer_label": _word_public(word, locale)["label"],
-                "allow_answer_reveal": True,
-            })
-        else:
-            hint_details["safe_hint"] = hint
+            hint_details["answer_label"] = _word_public(word, locale)["label"]
         line, line_source = await _generate_persona_game_line(
             session=session,
             locale=locale,
             lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
             event="hint_request",
-            fallback=hint,
+            fallback=fallback_hint,
             details=hint_details,
         )
         _append_game_chat(session, "assistant", line, kind="hint")

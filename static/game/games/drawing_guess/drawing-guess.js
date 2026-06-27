@@ -41,6 +41,13 @@
     speechAudioReconnectTimer: null,
     speechAudioPingTimer: null,
     speechAudioManualClose: false,
+    lipSyncActive: false,
+    lipSyncAnalyser: null,
+    lipSyncDriver: '',
+    lipSyncFrame: null,
+    lipSyncRetryTimer: null,
+    lipSyncRetryDeadline: 0,
+    lipSyncMouthOpen: 0,
     voiceRouteActive: false,
     voiceRouteStatusNotified: false,
     lastExternalInputRequestId: '',
@@ -95,7 +102,11 @@
     sideResize: null,
     modelFitBase: null,
     live2dMood: '',
+    live2dMouthParameterId: '',
     live2dManager: null,
+    vrmManager: null,
+    mmdManager: null,
+    pngtuberManager: null,
     recentNekoMessages: [],
     roundNumber: 0,
     currentRoundSummarySaved: false,
@@ -135,6 +146,9 @@
       live2dCanvas: $('live2d-canvas'),
       vrmContainer: $('vrm-container'),
       vrmCanvas: $('vrm-canvas'),
+      mmdContainer: $('mmd-container'),
+      mmdCanvas: $('mmd-canvas'),
+      pngtuberContainer: $('pngtuber-container'),
       modelLoading: $('model-loading'),
       modelFallback: $('model-fallback-container'),
       modelResetControl: $('model-reset-control'),
@@ -301,6 +315,8 @@
     }
     if (state.modelKind === 'live2d') {
       fitLive2DModelToSlot();
+    } else if (state.modelKind === 'vrm' || state.modelKind === 'mmd') {
+      resizeActiveModelRenderer();
     }
   }
 
@@ -363,9 +379,7 @@
       els.sideResizer.setAttribute('aria-valuenow', String(Math.round(normalized * 100)));
     }
     if (!state.sideResize) {
-      requestAnimationFrame(function () {
-        if (state.modelKind === 'live2d') fitLive2DModelToSlot();
-      });
+      resizeActiveModelRenderer();
     }
     if (shouldSave) {
       try { localStorage.setItem(sideSplitStorageKey(), String(normalized)); } catch (_) {}
@@ -493,14 +507,22 @@
     [
       ['live2d', els.live2dContainer],
       ['vrm', els.vrmContainer],
+      ['mmd', els.mmdContainer],
+      ['pngtuber', els.pngtuberContainer],
       ['loading', els.modelLoading],
       ['fallback', els.modelFallback]
     ].forEach(function (pair) {
       var node = pair[1];
       if (!node) return;
-      node.hidden = pair[0] !== normalized;
+      var shouldHide = pair[0] !== normalized;
+      node.hidden = shouldHide;
+      node.classList.toggle('hidden', shouldHide);
+      node.style.display = shouldHide ? 'none' : '';
     });
     setModelKind(normalized);
+    if (normalized === 'vrm' || normalized === 'mmd' || normalized === 'pngtuber') {
+      applyEmbeddedModelSlotStyles(normalized);
+    }
   }
 
   function setModelMood(mood, options) {
@@ -512,6 +534,7 @@
     state.modelMood = normalized;
     if (els.modelStage) els.modelStage.dataset.modelMood = normalized;
     applyLive2DMood(normalized);
+    applyPNGTuberMood(normalized);
   }
 
   function pulseModelMood(mood, durationMs) {
@@ -541,6 +564,84 @@
     if (state.live2dMood === emotion) return;
     state.live2dMood = emotion;
     Promise.resolve(manager.setEmotion(emotion)).catch(function () {});
+  }
+
+  function applyEmbeddedModelSlotStyles(kind) {
+    var container = null;
+    var canvas = null;
+    if (kind === 'vrm') {
+      container = els.vrmContainer;
+      canvas = els.vrmCanvas;
+    } else if (kind === 'mmd') {
+      container = els.mmdContainer;
+      canvas = els.mmdCanvas;
+    } else if (kind === 'pngtuber') {
+      container = els.pngtuberContainer;
+    }
+    if (!container) return;
+    container.hidden = false;
+    container.classList.remove('hidden');
+    container.style.display = '';
+    container.style.position = 'absolute';
+    container.style.inset = '0';
+    container.style.top = '0';
+    container.style.left = '0';
+    container.style.right = '0';
+    container.style.bottom = '0';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.visibility = 'visible';
+    container.style.opacity = '1';
+    container.style.setProperty('pointer-events', 'none', 'important');
+    container.style.zIndex = '';
+    if (canvas && canvas.style) {
+      canvas.style.setProperty('pointer-events', 'none', 'important');
+      canvas.style.maxWidth = '100%';
+      canvas.style.maxHeight = '100%';
+    }
+  }
+
+  function resizeActiveModelRenderer() {
+    requestAnimationFrame(function () {
+      if (state.modelKind === 'live2d') {
+        fitLive2DModelToSlot();
+        return;
+      }
+      if (state.modelKind === 'vrm') {
+        applyEmbeddedModelSlotStyles('vrm');
+        if (state.vrmManager && typeof state.vrmManager.onWindowResize === 'function') {
+          state.vrmManager.onWindowResize();
+        }
+        return;
+      }
+      if (state.modelKind === 'mmd') {
+        applyEmbeddedModelSlotStyles('mmd');
+        if (state.mmdManager && typeof state.mmdManager.onWindowResize === 'function') {
+          state.mmdManager.onWindowResize();
+        }
+        return;
+      }
+      if (state.modelKind === 'pngtuber') {
+        applyEmbeddedModelSlotStyles('pngtuber');
+      }
+    });
+  }
+
+  function applyPNGTuberMood(mood) {
+    if (state.modelKind !== 'pngtuber') return;
+    var manager = state.pngtuberManager;
+    if (!manager || typeof manager.setState !== 'function') return;
+    var stateMap = {
+      idle: 'idle',
+      drawing: 'idle',
+      thinking: 'idle',
+      guessing: 'idle',
+      talking: 'talking',
+      happy: 'happy'
+    };
+    try {
+      manager.setState(stateMap[mood] || 'idle');
+    } catch (_) {}
   }
 
   function setPhase(phase) {
@@ -1033,11 +1134,199 @@
     }
   }
 
+  function currentLive2DSlotModel() {
+    var manager = state.live2dManager;
+    if (!manager) return null;
+    try {
+      if (typeof manager.getCurrentModel === 'function') return manager.getCurrentModel();
+    } catch (_) {}
+    return manager.currentModel || null;
+  }
+
+  function currentSpeechAnalyser() {
+    var appState = window.appState || null;
+    return (appState && appState.globalAnalyser) || window.globalAnalyser || null;
+  }
+
+  function live2DModelHasParameter(coreModel, parameterId) {
+    if (!coreModel || !parameterId) return false;
+    try {
+      if (typeof coreModel.getParameterIndex === 'function') {
+        return Number(coreModel.getParameterIndex(parameterId)) >= 0;
+      }
+    } catch (_) {}
+    try {
+      if (typeof coreModel.getParameterCount === 'function' && typeof coreModel.getParameterId === 'function') {
+        var count = Number(coreModel.getParameterCount()) || 0;
+        for (var i = 0; i < count; i += 1) {
+          if (coreModel.getParameterId(i) === parameterId) return true;
+        }
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  function resolveLive2DMouthParameterId(coreModel) {
+    if (state.live2dMouthParameterId && live2DModelHasParameter(coreModel, state.live2dMouthParameterId)) {
+      return state.live2dMouthParameterId;
+    }
+    var ids = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamO'];
+    for (var i = 0; i < ids.length; i += 1) {
+      if (live2DModelHasParameter(coreModel, ids[i])) {
+        state.live2dMouthParameterId = ids[i];
+        return ids[i];
+      }
+    }
+    state.live2dMouthParameterId = '';
+    return '';
+  }
+
+  function setLive2DSlotMouth(value) {
+    var model = currentLive2DSlotModel();
+    var coreModel = model && model.internalModel && model.internalModel.coreModel;
+    if (!coreModel || typeof coreModel.setParameterValueById !== 'function') return false;
+    var mouthValue = Math.max(0, Math.min(1, Number(value) || 0));
+    var parameterId = resolveLive2DMouthParameterId(coreModel);
+    if (!parameterId) return false;
+    try {
+      coreModel.setParameterValueById(parameterId, mouthValue);
+      return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function stopDrawingGuessLipSync() {
+    clearTimeout(state.lipSyncRetryTimer);
+    state.lipSyncRetryTimer = null;
+    state.lipSyncRetryDeadline = 0;
+    if (state.lipSyncDriver === 'vrm' && state.vrmManager && state.vrmManager.animation &&
+        typeof state.vrmManager.animation.stopLipSync === 'function') {
+      try { state.vrmManager.animation.stopLipSync(); } catch (_) {}
+    }
+    if (state.lipSyncDriver === 'mmd' && state.mmdManager && state.mmdManager.animationModule &&
+        typeof state.mmdManager.animationModule.stopLipSync === 'function') {
+      try { state.mmdManager.animationModule.stopLipSync(); } catch (_) {}
+    }
+    if (state.lipSyncDriver === 'pngtuber' && state.pngtuberManager &&
+        typeof state.pngtuberManager.setSpeaking === 'function') {
+      try { state.pngtuberManager.setSpeaking(false); } catch (_) {}
+    }
+    if (state.lipSyncFrame) {
+      cancelAnimationFrame(state.lipSyncFrame);
+      state.lipSyncFrame = null;
+    }
+    state.lipSyncActive = false;
+    state.lipSyncAnalyser = null;
+    state.lipSyncDriver = '';
+    state.lipSyncMouthOpen = 0;
+    setLive2DSlotMouth(0);
+  }
+
+  function startDrawingGuessLipSync() {
+    var analyser = currentSpeechAnalyser();
+    var kind = state.modelKind;
+    if (state.routeEnding || !state.routeActive) return false;
+    if (state.lipSyncActive && state.lipSyncAnalyser === analyser && state.lipSyncDriver === kind) return true;
+    if (kind === 'vrm') {
+      if (!analyser || !state.vrmManager || !state.vrmManager.currentModel || !state.vrmManager.animation ||
+          typeof state.vrmManager.animation.startLipSync !== 'function') return false;
+      if (state.lipSyncActive) stopDrawingGuessLipSync();
+      state.vrmManager.animation.startLipSync(analyser);
+      state.lipSyncActive = true;
+      state.lipSyncAnalyser = analyser;
+      state.lipSyncDriver = 'vrm';
+      return true;
+    }
+    if (kind === 'mmd') {
+      if (!analyser || !state.mmdManager || !state.mmdManager.currentModel || !state.mmdManager.animationModule ||
+          typeof state.mmdManager.animationModule.startLipSync !== 'function') return false;
+      if (state.lipSyncActive) stopDrawingGuessLipSync();
+      state.mmdManager.animationModule.startLipSync(analyser);
+      state.lipSyncActive = true;
+      state.lipSyncAnalyser = analyser;
+      state.lipSyncDriver = 'mmd';
+      return true;
+    }
+    if (kind === 'pngtuber') {
+      if (!state.pngtuberManager || typeof state.pngtuberManager.setSpeaking !== 'function') return false;
+      if (state.lipSyncActive) stopDrawingGuessLipSync();
+      state.pngtuberManager.setSpeaking(true);
+      state.lipSyncActive = true;
+      state.lipSyncAnalyser = analyser || null;
+      state.lipSyncDriver = 'pngtuber';
+      return true;
+    }
+    if (kind !== 'live2d' || !analyser || !currentLive2DSlotModel()) return false;
+    if (state.lipSyncActive) stopDrawingGuessLipSync();
+    if (state.lipSyncFrame) {
+      cancelAnimationFrame(state.lipSyncFrame);
+      state.lipSyncFrame = null;
+    }
+    var dataArray = new Uint8Array(analyser.fftSize || analyser.frequencyBinCount || 2048);
+    state.lipSyncActive = true;
+    state.lipSyncAnalyser = analyser;
+    state.lipSyncDriver = 'live2d';
+    state.lipSyncMouthOpen = 0;
+
+    function animate() {
+      if (!state.lipSyncActive || state.lipSyncAnalyser !== analyser) return;
+      if (state.modelKind !== 'live2d' || !currentLive2DSlotModel()) {
+        stopDrawingGuessLipSync();
+        return;
+      }
+      try {
+        analyser.getByteTimeDomainData(dataArray);
+      } catch (_) {
+        stopDrawingGuessLipSync();
+        return;
+      }
+      var sum = 0;
+      for (var i = 0; i < dataArray.length; i += 1) {
+        var sample = (dataArray[i] - 128) / 128;
+        sum += sample * sample;
+      }
+      var target = Math.min(1, Math.sqrt(sum / Math.max(1, dataArray.length)) * 10);
+      state.lipSyncMouthOpen = state.lipSyncMouthOpen * 0.55 + target * 0.45;
+      setLive2DSlotMouth(state.lipSyncMouthOpen);
+      state.lipSyncFrame = requestAnimationFrame(animate);
+    }
+
+    animate();
+    return true;
+  }
+
+  function scheduleDrawingGuessLipSyncStart() {
+    clearTimeout(state.lipSyncRetryTimer);
+    state.lipSyncRetryTimer = null;
+    if (state.routeEnding || !state.routeActive) return;
+    if (startDrawingGuessLipSync()) return;
+    state.lipSyncRetryDeadline = Date.now() + 5000;
+    function retry() {
+      state.lipSyncRetryTimer = null;
+      if (startDrawingGuessLipSync()) return;
+      if (Date.now() < state.lipSyncRetryDeadline) {
+        state.lipSyncRetryTimer = setTimeout(retry, 120);
+      }
+    }
+    state.lipSyncRetryTimer = setTimeout(retry, 120);
+  }
+
+  function handleSpeechPlaybackState(event) {
+    var detail = (event && event.detail) || {};
+    if (detail.active) {
+      scheduleDrawingGuessLipSyncStart();
+      return;
+    }
+    stopDrawingGuessLipSync();
+  }
+
   function handleSpeechAudioSocketMessage(event) {
     if (event && event.data instanceof Blob) {
       if (typeof window.enqueueIncomingAudioBlob === 'function') {
         window.enqueueIncomingAudioBlob(event.data);
       }
+      scheduleDrawingGuessLipSyncStart();
       return;
     }
     var response = null;
@@ -1125,6 +1414,7 @@
   function clearNekoVoiceQueue() {
     state.nekoVoiceQueue = [];
     state.nekoVoiceInFlight = false;
+    stopDrawingGuessLipSync();
   }
 
   function flushNekoVoiceQueue() {
@@ -1397,6 +1687,7 @@
   function hideAllStageViews() {
     clearAiDrawingPlaceholderHint(false);
     hideSizePreview();
+    if (els.canvasStage) els.canvasStage.classList.remove('is-user-canvas');
     els.placeholder.classList.add('dg-hidden');
     els.drawPick.classList.add('dg-hidden');
     els.aiDrawing.classList.add('dg-hidden');
@@ -1659,6 +1950,7 @@
 
   function showCanvas() {
     hideAllStageViews();
+    if (els.canvasStage) els.canvasStage.classList.add('is-user-canvas');
     els.canvas.classList.remove('dg-hidden');
   }
 
@@ -2479,6 +2771,10 @@
     return text;
   }
 
+  function cleanStringConfigValue(value) {
+    return typeof value === 'string' ? cleanConfigValue(value) : '';
+  }
+
   function getReservedAvatar(character) {
     if (!character || typeof character !== 'object') return {};
     var reserved = character._reserved && typeof character._reserved === 'object' ? character._reserved : {};
@@ -2490,28 +2786,58 @@
     var live2d = avatar.live2d && typeof avatar.live2d === 'object' ? avatar.live2d : {};
     var vrm = avatar.vrm && typeof avatar.vrm === 'object' ? avatar.vrm : {};
     var mmd = avatar.mmd && typeof avatar.mmd === 'object' ? avatar.mmd : {};
+    var pngtuberAvatar = avatar.pngtuber && typeof avatar.pngtuber === 'object' ? avatar.pngtuber : {};
+    var pngtuberTop = character && character.pngtuber && typeof character.pngtuber === 'object' ? character.pngtuber : {};
+    var pngtuberConfig = Object.assign({}, pngtuberTop, pngtuberAvatar);
     var modelType = cleanConfigValue(character && character.model_type) || cleanConfigValue(avatar.model_type) || 'live2d';
     var live3dSubType = cleanConfigValue(character && character.live3d_sub_type) || cleanConfigValue(avatar.live3d_sub_type);
-    var vrmPath = cleanConfigValue(character && character.vrm) || cleanConfigValue(vrm.model_path);
-    var mmdPath = cleanConfigValue(character && character.mmd) || cleanConfigValue(mmd.model_path);
-    var live2dPath = cleanConfigValue(character && character.live2d) || cleanConfigValue(live2d.model_path);
-    var effectiveKind = modelType.toLowerCase();
+    var modelPath = cleanStringConfigValue(character && character.model_path);
+    var vrmPath = cleanStringConfigValue(character && character.vrm) || cleanStringConfigValue(vrm.model_path);
+    var mmdPath = cleanStringConfigValue(character && character.mmd) || cleanStringConfigValue(mmd.model_path);
+    var live2dPath = cleanStringConfigValue(character && character.live2d) || cleanStringConfigValue(live2d.model_path);
+    var pngtuberPath = cleanStringConfigValue(pngtuberConfig.idle_image)
+      || cleanStringConfigValue(character && character.pngtuber_idle_image)
+      || cleanStringConfigValue(character && character.pngtuber)
+      || modelPath;
+    var modelTypeLower = modelType.toLowerCase();
+    var live3dSubTypeLower = live3dSubType.toLowerCase();
+    if (!vrmPath && (modelTypeLower === 'vrm' || (modelTypeLower === 'live3d' && live3dSubTypeLower === 'vrm'))) {
+      vrmPath = modelPath;
+    }
+    if (!mmdPath && (modelTypeLower === 'mmd' || (modelTypeLower === 'live3d' && live3dSubTypeLower === 'mmd'))) {
+      mmdPath = modelPath;
+    }
+    if (!live2dPath && modelTypeLower === 'live2d') {
+      live2dPath = modelPath;
+    }
+    if (!pngtuberConfig.idle_image && pngtuberPath) {
+      pngtuberConfig.idle_image = pngtuberPath;
+    }
+    if (!pngtuberConfig.talking_image) {
+      var talkingPath = cleanStringConfigValue(character && character.pngtuber_talking_image);
+      if (talkingPath) pngtuberConfig.talking_image = talkingPath;
+    }
+    var effectiveKind = modelTypeLower;
     if (effectiveKind === 'live3d') {
-      if (live3dSubType.toLowerCase() === 'mmd') {
+      if (live3dSubTypeLower === 'mmd') {
         effectiveKind = 'mmd';
-      } else if (live3dSubType.toLowerCase() === 'vrm' || vrmPath) {
+      } else if (live3dSubTypeLower === 'vrm' || vrmPath) {
         effectiveKind = 'vrm';
       }
     } else if (!effectiveKind || effectiveKind === 'default') {
-      effectiveKind = vrmPath ? 'vrm' : 'live2d';
+      effectiveKind = pngtuberPath ? 'pngtuber' : (vrmPath ? 'vrm' : 'live2d');
+    } else if (effectiveKind === 'png' || effectiveKind === 'png-tuber') {
+      effectiveKind = 'pngtuber';
     }
     return {
       modelType: modelType,
       live3dSubType: live3dSubType,
       effectiveKind: effectiveKind,
+      modelPath: modelPath,
       live2dPath: live2dPath,
       vrmPath: vrmPath,
       mmdPath: mmdPath,
+      pngtuberConfig: pngtuberConfig,
       lighting: character && character.lighting,
       vrmIdleAnimation: character && character.idleAnimation,
       vrmIdleAnimations: character && character.idleAnimations
@@ -2520,11 +2846,27 @@
 
   function syncLanlanAvatarConfig(config) {
     window.lanlan_config = window.lanlan_config || {};
-    window.lanlan_config.model_type = config.modelType || '';
-    window.lanlan_config.live3d_sub_type = config.live3dSubType || '';
+    if (config.effectiveKind === 'vrm' || config.effectiveKind === 'mmd') {
+      window.lanlan_config.model_type = 'live3d';
+      window.lanlan_config.live3d_sub_type = config.effectiveKind;
+    } else if (config.effectiveKind === 'pngtuber') {
+      window.lanlan_config.model_type = 'pngtuber';
+      window.lanlan_config.live3d_sub_type = '';
+    } else {
+      window.lanlan_config.model_type = config.modelType || '';
+      window.lanlan_config.live3d_sub_type = config.live3dSubType || '';
+    }
+    if (config.modelPath) window.lanlan_config.model_path = config.modelPath;
     if (config.vrmPath) {
       window.lanlan_config.vrm = config.vrmPath;
       window.vrmModel = config.vrmPath;
+    }
+    if (config.mmdPath) {
+      window.lanlan_config.mmd = config.mmdPath;
+      window.mmdModel = config.mmdPath;
+    }
+    if (config.pngtuberConfig && Object.keys(config.pngtuberConfig).length > 0) {
+      window.lanlan_config.pngtuber = Object.assign({}, config.pngtuberConfig);
     }
     if (config.lighting) window.lanlan_config.lighting = config.lighting;
     if (config.vrmIdleAnimation) window.lanlan_config.vrmIdleAnimation = config.vrmIdleAnimation;
@@ -2542,6 +2884,161 @@
       return normalizeAvatarConfig(character || null);
     }).catch(function () {
       return normalizeAvatarConfig(null);
+    });
+  }
+
+  function waitForModelRuntime(predicate, readyEvent, failedEvent, timeoutMs, label) {
+    if (predicate()) return Promise.resolve(true);
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = null;
+      function cleanup() {
+        if (timer) clearTimeout(timer);
+        if (readyEvent) window.removeEventListener(readyEvent, onReady);
+        if (failedEvent) window.removeEventListener(failedEvent, onFailed);
+      }
+      function finish(ok, error) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (ok) resolve(true);
+        else reject(error || new Error((label || 'model runtime') + '_unavailable'));
+      }
+      function onReady() {
+        if (predicate()) finish(true);
+      }
+      function onFailed(event) {
+        var failed = event && event.detail && event.detail.failedModules;
+        finish(false, new Error((label || 'model runtime') + '_failed' + (failed ? ':' + failed.join(',') : '')));
+      }
+      if (readyEvent) window.addEventListener(readyEvent, onReady);
+      if (failedEvent) window.addEventListener(failedEvent, onFailed);
+      timer = setTimeout(function () {
+        finish(predicate(), new Error((label || 'model runtime') + '_timeout'));
+      }, timeoutMs || 10000);
+    });
+  }
+
+  function cleanupPNGTuberSlotControls() {
+    Array.prototype.slice.call(document.querySelectorAll('#pngtuber-floating-buttons, #pngtuber-lock-icon, #pngtuber-return-button-container'))
+      .forEach(function (node) {
+        if (node && node.parentNode) node.parentNode.removeChild(node);
+      });
+  }
+
+  function suppressSlotManagerChrome(manager) {
+    if (!manager) return;
+    manager.setupFloatingButtons = function () {};
+    manager.setupHTMLLockIcon = function () {};
+  }
+
+  function loadVRMSlot(config) {
+    var modelPath = cleanConfigValue(config && config.vrmPath) || '/static/vrm/sister1.0.vrm';
+    return waitForModelRuntime(function () {
+      return window.vrmModuleLoaded && typeof window.VRMManager === 'function';
+    }, 'vrm-modules-ready', 'vrm-modules-failed', 10000, 'vrm_runtime').then(function () {
+      var manager = state.vrmManager || window.vrmManager || new window.VRMManager();
+      state.vrmManager = manager;
+      window.vrmManager = manager;
+      suppressSlotManagerChrome(manager);
+      showModelLayer('vrm');
+      setModelLoadState('loading');
+      applyEmbeddedModelSlotStyles('vrm');
+      var modelUrl = typeof window.convertVRMModelPath === 'function' ? window.convertVRMModelPath(modelPath) : modelPath;
+      return Promise.resolve(manager.initThreeJS('vrm-canvas', 'vrm-container', config && config.lighting ? config.lighting : null))
+        .then(function (ok) {
+          if (ok === false) throw new Error('vrm_scene_init_failed');
+          suppressSlotManagerChrome(manager);
+          applyEmbeddedModelSlotStyles('vrm');
+          return manager.loadModel(modelUrl, {
+            canvasId: 'vrm-canvas',
+            containerId: 'vrm-container'
+          });
+        })
+        .then(function () {
+          showModelLayer('vrm');
+          setModelLoadState('ready');
+          installModelResizeHandler();
+          resizeActiveModelRenderer();
+          return true;
+        });
+    });
+  }
+
+  function loadMMDSlot(config) {
+    var modelPath = cleanConfigValue(config && config.mmdPath) || '/static/mmd/Miku/Miku.pmx';
+    return waitForModelRuntime(function () {
+      return window.mmdModuleLoaded && typeof window.MMDManager === 'function';
+    }, 'mmd-modules-ready', 'mmd-modules-failed', 10000, 'mmd_runtime').then(function () {
+      var manager = state.mmdManager || window.mmdManager || new window.MMDManager();
+      state.mmdManager = manager;
+      window.mmdManager = manager;
+      suppressSlotManagerChrome(manager);
+      showModelLayer('mmd');
+      setModelLoadState('loading');
+      applyEmbeddedModelSlotStyles('mmd');
+      var fetchPaths = typeof window.fetchMMDConfig === 'function'
+        ? Promise.resolve(window.fetchMMDConfig()).catch(function () { return false; })
+        : Promise.resolve(false);
+      return fetchPaths.then(function () {
+        var resolvedPath = typeof window._mmdConvertPath === 'function' ? window._mmdConvertPath(modelPath) : modelPath;
+        var initPromise = manager.core && manager.core.renderer
+          ? Promise.resolve(true)
+          : Promise.resolve(manager.init('mmd-canvas', 'mmd-container'));
+        return initPromise.then(function () {
+          suppressSlotManagerChrome(manager);
+          applyEmbeddedModelSlotStyles('mmd');
+          return manager.loadModel(resolvedPath, {});
+        });
+      }).then(function () {
+        showModelLayer('mmd');
+        setModelLoadState('ready');
+        installModelResizeHandler();
+        resizeActiveModelRenderer();
+        return true;
+      });
+    });
+  }
+
+  function loadPNGTuberSlot(config) {
+    var pngtuberConfig = Object.assign({}, (config && config.pngtuberConfig) || {});
+    if (!pngtuberConfig.idle_image && config && config.modelPath) {
+      pngtuberConfig.idle_image = config.modelPath;
+    }
+    if (!pngtuberConfig.idle_image) {
+      return Promise.reject(new Error('pngtuber_idle_image_missing'));
+    }
+    return waitForModelRuntime(function () {
+      return typeof window.PNGTuberManager === 'function';
+    }, null, null, 10000, 'pngtuber_runtime').then(function () {
+      var manager = state.pngtuberManager || new window.PNGTuberManager('pngtuber-container');
+      state.pngtuberManager = manager;
+      window.pngtuberManager = manager;
+      suppressSlotManagerChrome(manager);
+      showModelLayer('pngtuber');
+      setModelLoadState('loading');
+      applyEmbeddedModelSlotStyles('pngtuber');
+      return Promise.resolve(manager.load(pngtuberConfig)).then(function () {
+        manager.detachSpeechListeners && manager.detachSpeechListeners();
+        manager.detachDragListeners && manager.detachDragListeners();
+        manager.detachLayeredHotkeys && manager.detachLayeredHotkeys();
+        manager.detachLayeredPlayEvent && manager.detachLayeredPlayEvent();
+        manager.cleanupFloatingButtons && manager.cleanupFloatingButtons();
+        cleanupPNGTuberSlotControls();
+        manager.setSpeaking && manager.setSpeaking(false);
+        manager.setState && manager.setState('idle');
+        manager.show && manager.show();
+        manager.clearLayeredTimers && manager.clearLayeredTimers();
+        if (manager.isLayeredActive && manager.isLayeredActive() && manager.drawLayeredState) {
+          manager.drawLayeredState('idle');
+        }
+        applyEmbeddedModelSlotStyles('pngtuber');
+        showModelLayer('pngtuber');
+        setModelLoadState('ready');
+        installModelResizeHandler();
+        applyPNGTuberMood(state.modelMood);
+        return true;
+      });
     });
   }
 
@@ -2615,8 +3112,7 @@
   function installModelResizeHandler() {
     if (state.modelResizeHandler) return;
     state.modelResizeHandler = function () {
-      if (state.modelKind !== 'live2d') return;
-      requestAnimationFrame(fitLive2DModelToSlot);
+      resizeActiveModelRenderer();
     };
     window.addEventListener('resize', state.modelResizeHandler);
   }
@@ -2645,6 +3141,7 @@
         var manager = state.live2dManager || new window.Live2DManager();
         state.live2dManager = manager;
         state.modelFitBase = null;
+        state.live2dMouthParameterId = '';
         ensureLive2DSlotMethods(manager);
         if (els.live2dContainer) els.live2dContainer.hidden = false;
         setModelLoadState('loading');
@@ -2690,6 +3187,27 @@
       if (config.effectiveKind === 'live2d') {
         return loadLive2DSlot(name).catch(function (err) {
           console.warn('[drawing_guess] Live2D slot fallback:', err && err.message ? err.message : err);
+          showConfiguredFallback(config);
+          return false;
+        });
+      }
+      if (config.effectiveKind === 'vrm') {
+        return loadVRMSlot(config).catch(function (err) {
+          console.warn('[drawing_guess] VRM slot fallback:', err && err.message ? err.message : err);
+          showConfiguredFallback(config);
+          return false;
+        });
+      }
+      if (config.effectiveKind === 'mmd') {
+        return loadMMDSlot(config).catch(function (err) {
+          console.warn('[drawing_guess] MMD slot fallback:', err && err.message ? err.message : err);
+          showConfiguredFallback(config);
+          return false;
+        });
+      }
+      if (config.effectiveKind === 'pngtuber') {
+        return loadPNGTuberSlot(config).catch(function (err) {
+          console.warn('[drawing_guess] PNGTuber slot fallback:', err && err.message ? err.message : err);
           showConfiguredFallback(config);
           return false;
         });
@@ -3248,6 +3766,10 @@
     }
   }
 
+  function activeStrokeSize() {
+    return Number(state.brushMode === 'eraser' ? (els.eraserSize.value || 13) : (els.brushSize.value || 7));
+  }
+
   function drawStrokePoint(point) {
     var radius = Math.max(0.5, activeStrokeSize() / 2);
     els.ctx.save();
@@ -3296,6 +3818,8 @@
     event.preventDefault();
     state.isDrawing = false;
     els.ctx.globalCompositeOperation = 'source-over';
+    els.ctx.beginPath();
+    try { els.canvas.releasePointerCapture(event.pointerId); } catch (_) {}
     pushHistory();
     updateCanvasCursorPreview(event);
   }
@@ -3351,21 +3875,36 @@
 
   function bindToolPopoverEvents() {
     document.querySelectorAll('.dg-tool-popover').forEach(function (popover) {
+      var closeTimer = null;
+      function cancelClose() {
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+      function closeSoon() {
+        clearTimeout(closeTimer);
+        closeTimer = setTimeout(function () {
+          closeTimer = null;
+          popover.classList.remove('is-open');
+        }, 180);
+      }
       popover.addEventListener('pointerenter', function () {
+        cancelClose();
         openToolPopover(popover);
       });
       popover.addEventListener('pointerleave', function () {
-        popover.classList.remove('is-open');
+        closeSoon();
       });
       popover.addEventListener('focusin', function () {
+        cancelClose();
         openToolPopover(popover);
       });
       popover.addEventListener('focusout', function (event) {
         if (event.relatedTarget && popover.contains(event.relatedTarget)) return;
-        popover.classList.remove('is-open');
+        closeSoon();
       });
       popover.addEventListener('keydown', function (event) {
         if (event.key !== 'Escape') return;
+        cancelClose();
         popover.classList.remove('is-open');
         var toolButton = popover.querySelector('.dg-tool');
         if (toolButton) toolButton.focus();
@@ -3550,6 +4089,7 @@
         applySideSplitRatio(state.sideSplitRatio, false);
       });
     });
+    window.addEventListener('neko-speech-playback-state', handleSpeechPlaybackState);
   }
 
   function init() {
