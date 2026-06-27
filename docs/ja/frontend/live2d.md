@@ -24,7 +24,7 @@ N.E.K.O. は Pixi.js 経由の Cubism SDK を使用して Live2D モデルをレ
 }
 ```
 
-感情はバックエンド（`/api/analyze_emotion`）で検出され、WebSocket 経由でフロントエンドに送信されます。
+感情はバックエンドの感情分析エンドポイント（`POST /api/emotion/analysis`、`main_routers/system_router.py` で定義）によって検出されます。フロントエンドはアシスタントのテキストをこのエンドポイントに送信し、返された感情をモデルに適用します。バックエンドは同時に、同期メッセージキュー経由でモニターシステムに `emotion` 更新をプッシュします。
 
 ## UI コンポーネント
 

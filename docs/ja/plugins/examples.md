@@ -184,7 +184,7 @@ class NotesPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.store = PluginStore(ctx)
+        # self.store は NekoPluginBase が既に構築済みなので、そのまま利用できます。
 
     @plugin_entry(
         id="save_note",

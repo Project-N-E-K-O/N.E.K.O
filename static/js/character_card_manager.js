@@ -17,6 +17,16 @@ const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'mmd_idle_animations',
 ];
 
+let charaCardParticleCanvas = null;
+let charaCardParticleContext = null;
+let charaCardParticleFrame = 0;
+let charaCardParticles = [];
+let charaCardParticleResizeBound = false;
+let charaCardParticleResizeHandler = null;
+let charaCardDissolveRunId = 0;
+const CHARA_CARD_DISSOLVE_PARTICLE_LIMIT = 144;
+const CHARA_CARD_DISSOLVE_DURATION = 680;
+
 function _safeArray(value) {
     return ReservedFieldsUtils._safeArray(value);
 }
@@ -4441,6 +4451,207 @@ function renderCharaCardsView() {
     document.getElementById('chara-view-list-btn')?.classList.toggle('active', charaCardsViewMode === 'list');
 }
 
+function _ensureCharaCardParticleCanvas() {
+    if (charaCardParticleCanvas) return;
+    charaCardParticleCanvas = document.createElement('canvas');
+    charaCardParticleCanvas.id = 'chara-card-particle-canvas';
+    charaCardParticleCanvas.className = 'chara-card-particle-canvas';
+    charaCardParticleCanvas.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(charaCardParticleCanvas);
+    charaCardParticleContext = charaCardParticleCanvas.getContext('2d');
+
+    if (!charaCardParticleResizeBound) {
+        charaCardParticleResizeHandler = function () {
+            if (!charaCardParticleCanvas || !charaCardParticleContext) return;
+            const dpr = window.devicePixelRatio || 1;
+            charaCardParticleCanvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+            charaCardParticleCanvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+            charaCardParticleCanvas.style.width = `${window.innerWidth}px`;
+            charaCardParticleCanvas.style.height = `${window.innerHeight}px`;
+            charaCardParticleContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+        window.addEventListener('resize', charaCardParticleResizeHandler);
+        charaCardParticleResizeBound = true;
+        charaCardParticleResizeHandler();
+    }
+}
+
+function _teardownCharaCardParticleCanvas() {
+    if (!charaCardParticleCanvas) return;
+    if (charaCardParticleResizeBound && charaCardParticleResizeHandler) {
+        window.removeEventListener('resize', charaCardParticleResizeHandler);
+    }
+    window.cancelAnimationFrame(charaCardParticleFrame);
+    charaCardParticleFrame = 0;
+    if (charaCardParticleContext) {
+        charaCardParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+    if (charaCardParticleCanvas.parentNode) {
+        charaCardParticleCanvas.parentNode.removeChild(charaCardParticleCanvas);
+    }
+    charaCardParticleCanvas = null;
+    charaCardParticleContext = null;
+    charaCardParticles = [];
+    charaCardParticleResizeBound = false;
+    charaCardParticleResizeHandler = null;
+}
+
+function _randomBetween(min, max) {
+    return min + Math.random() * (max - min);
+}
+
+function _createCharaCardParticle(x, y, color, delay) {
+    const angle = _randomBetween(-Math.PI * 0.9, -Math.PI * 0.1);
+    const speed = _randomBetween(1, 3.8);
+    charaCardParticles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed + _randomBetween(-0.4, 0.4),
+        vy: Math.sin(angle) * speed - _randomBetween(0.2, 1.2),
+        rotation: _randomBetween(0, Math.PI),
+        spin: _randomBetween(-0.18, 0.18),
+        size: _randomBetween(2.8, 6.4),
+        life: 0,
+        maxLife: _randomBetween(42, 76),
+        delay: delay || 0,
+        color,
+        alpha: 1,
+    });
+}
+
+function _spawnCharaCardParticles(target) {
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const palette = ['#40c5f1', '#7fd9ff', '#ffffff', '#ff9eb5', '#ff6f8b', '#e3f4ff'];
+    const particleCount = Math.min(CHARA_CARD_DISSOLVE_PARTICLE_LIMIT, Math.max(18, Math.floor(rect.width * rect.height / 180)));
+
+    for (let i = 0; i < particleCount; i++) {
+        _createCharaCardParticle(
+            _randomBetween(rect.left + rect.width * 0.07, rect.right - rect.width * 0.07),
+            _randomBetween(rect.top + rect.height * 0.05, rect.bottom - rect.height * 0.05),
+            palette[Math.floor(Math.random() * palette.length)],
+            _randomBetween(0, 22)
+        );
+    }
+}
+
+function _animateCharaCardParticles() {
+    if (!charaCardParticleContext) return;
+    charaCardParticleContext.clearRect(0, 0, window.innerWidth, window.innerHeight);
+
+    charaCardParticles = charaCardParticles.filter(particle => {
+        if (particle.delay > 0) {
+            particle.delay -= 1;
+            return true;
+        }
+
+        particle.life += 1;
+        const progress = particle.life / particle.maxLife;
+        particle.vy += 0.018;
+        particle.vx *= 0.992;
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+        particle.rotation += particle.spin;
+        particle.alpha = Math.max(0, 1 - progress);
+
+        charaCardParticleContext.save();
+        charaCardParticleContext.globalAlpha = particle.alpha;
+        charaCardParticleContext.translate(particle.x, particle.y);
+        charaCardParticleContext.rotate(particle.rotation);
+        charaCardParticleContext.fillStyle = particle.color;
+        charaCardParticleContext.shadowColor = 'rgba(64, 197, 241, 0.35)';
+        charaCardParticleContext.shadowBlur = 7 * particle.alpha;
+        charaCardParticleContext.fillRect(-particle.size / 2, -particle.size / 2, particle.size, particle.size);
+        charaCardParticleContext.restore();
+
+        return particle.life < particle.maxLife;
+    });
+
+    if (charaCardParticles.length) {
+        charaCardParticleFrame = requestAnimationFrame(_animateCharaCardParticles);
+    } else {
+        cancelAnimationFrame(charaCardParticleFrame);
+        charaCardParticleFrame = 0;
+        _teardownCharaCardParticleCanvas();
+    }
+}
+
+function _startCharaCardParticles() {
+    if (!charaCardParticleCanvas) _ensureCharaCardParticleCanvas();
+    if (!charaCardParticleFrame) {
+        charaCardParticleFrame = requestAnimationFrame(_animateCharaCardParticles);
+    }
+}
+
+function _wait(duration) {
+    return new Promise(resolve => window.setTimeout(resolve, duration));
+}
+
+async function _dissolveCharaCardElement(target) {
+    if (!(target && target.classList)) {
+        return;
+    }
+    const runId = ++charaCardDissolveRunId;
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    target.style.pointerEvents = 'none';
+
+    if (reduceMotion) {
+        target.style.opacity = '0';
+        target.style.visibility = 'hidden';
+        return;
+    }
+
+    target.classList.add('is-dissolving');
+    _ensureCharaCardParticleCanvas();
+    _spawnCharaCardParticles(target);
+    _startCharaCardParticles();
+
+    await _wait(CHARA_CARD_DISSOLVE_DURATION);
+    if (runId !== charaCardDissolveRunId) {
+        target.classList.remove('is-dissolving');
+        target.style.opacity = '0';
+        target.style.visibility = 'hidden';
+        target.style.pointerEvents = 'none';
+        return;
+    }
+    target.classList.remove('is-dissolving');
+    target.style.opacity = '0';
+    target.style.visibility = 'hidden';
+    target.style.pointerEvents = '';
+}
+
+async function _deleteCharaCardWithParticle(name, targetCardElement, triggerButton) {
+    try {
+        const deleted = await workshopDeleteCatgirl(name, { skipReload: true });
+        if (!deleted) {
+            if (triggerButton) triggerButton.disabled = false;
+            return false;
+        }
+
+        if (targetCardElement) {
+            await _dissolveCharaCardElement(targetCardElement);
+        }
+
+        try {
+            await loadCharacterCards();
+        } catch (error) {
+            console.error('刷新角色卡列表失败:', error);
+            if (targetCardElement && targetCardElement.parentNode) {
+                targetCardElement.parentNode.removeChild(targetCardElement);
+            } else if (triggerButton) {
+                triggerButton.disabled = false;
+            }
+        }
+        return true;
+    } catch (error) {
+        console.error('删除角色卡粒子消散流程失败:', error);
+        if (triggerButton) triggerButton.disabled = false;
+        return false;
+    }
+}
+
 // 卡片视图渲染
 function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
     const grid = document.createElement('div');
@@ -4544,9 +4755,12 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span>' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            workshopDeleteCatgirl(name);
+            if (deleteBtn.disabled) return;
+            deleteBtn.disabled = true;
+            const deleted = await _deleteCharaCardWithParticle(name, item, deleteBtn);
+            if (!deleted) deleteBtn.disabled = false;
         };
         actionsRow.appendChild(deleteBtn);
 
@@ -4644,9 +4858,12 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
         deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
             + '<span class="list-action-label">' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
-        deleteBtn.onclick = function (e) {
+        deleteBtn.onclick = async function (e) {
             e.stopPropagation();
-            workshopDeleteCatgirl(name);
+            if (deleteBtn.disabled) return;
+            deleteBtn.disabled = true;
+            const deleted = await _deleteCharaCardWithParticle(name, item, deleteBtn);
+            if (!deleted) deleteBtn.disabled = false;
         };
         actions.appendChild(deleteBtn);
 
@@ -7079,7 +7296,8 @@ async function workshopSwitchCatgirl(name) {
 
 // 删除猫娘
 // 返回值约定：成功删除返回 true；任何早退/失败/用户取消都返回 false——给调用方据此决定是否关面板
-async function workshopDeleteCatgirl(name) {
+async function workshopDeleteCatgirl(name, options = {}) {
+    const shouldReload = options && options.skipReload ? false : true;
     // 先做语音态预检并拿到权威当前角色名，避免别窗口切换后本地缓存失效
     const guard = await ensureCanModifyCardsOutsideVoiceMode();
     if (!guard.ok) {
@@ -7146,8 +7364,10 @@ async function workshopDeleteCatgirl(name) {
             await showAlertDialog(msg, { type: 'error' });
             return false;
         }
-        // 重新加载角色卡列表
-        await loadCharacterCards();
+        if (shouldReload) {
+            // 重新加载角色卡列表
+            await loadCharacterCards();
+        }
         return true;
     } catch (error) {
         console.error('删除猫娘失败:', error);

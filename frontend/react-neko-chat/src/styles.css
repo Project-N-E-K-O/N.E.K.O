@@ -4437,6 +4437,78 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg) scale(0.56);
 }
 
+/* Used when the default arc would overflow the visible screen/work area. */
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
+  --compact-tool-wheel-selection-angle: -125deg;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transition: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(calc(var(--compact-tool-wheel-orbit-radius) * 0.2)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-50deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(50deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-230deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(230deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  opacity: 1;
+  pointer-events: auto;
+  transition: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
 .compact-input-tool-fan .composer-tool-btn img {
   width: 26px;
   height: 26px;
@@ -5221,59 +5293,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
   }
 
-  /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] {
-    --compact-tool-wheel-selection-angle: -125deg;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    opacity: 1;
-    pointer-events: auto;
-    transition: none;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    pointer-events: none;
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-170deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(170deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle))) scale(1.04);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-110deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(110deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.98);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
-    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(calc(-80deg + var(--compact-tool-wheel-drag-angle))) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(calc(80deg + var(--compact-tool-wheel-drag-counter-angle))) scale(0.86);
-  }
-
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
 }
 
 /* ===================================================================

@@ -171,8 +171,9 @@ async def on_shutdown(self, **_):
     if self.session:
         await self.session.close()
 
-    # Flush pending data
-    await self.store.flush()
+    # No need to flush self.store: each set() commits synchronously.
+    # If you opened the store yourself, close it here (optional):
+    # await self.store.close()
 
     # Cancel timers (handled automatically, but log it)
     self.logger.info("Plugin shutting down gracefully")

@@ -944,6 +944,11 @@ type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 type AvatarInteractionToolId = AvatarToolId;
 type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
 type CompactInputToolWheelLayout = 'default' | 'viewport-fit';
+
+function getCompactToolWheelVisualDirectionMultiplier(layout: CompactInputToolWheelLayout): 1 | -1 {
+  return layout === 'viewport-fit' ? -1 : 1;
+}
+
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
 };
@@ -1745,6 +1750,7 @@ function CompactChatApp({
   // 用户手动叉掉的表情包 id（会话级，不持久化）：overlay 的 meme id 命中即隐藏。下一张新 meme 是不同
   // id，自然重新显示；刷新后状态重置（与 compactCaptionState 等紧凑挂件一致，均为 ephemeral state）。
   const [dismissedMemeId, setDismissedMemeId] = useState<string | null>(null);
+  const [loadedMemeOverlayKey, setLoadedMemeOverlayKey] = useState<string | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
@@ -2531,6 +2537,79 @@ function CompactChatApp({
     }
     return null;
   }, [messages, isCompactSurface]);
+  const compactMemeOverlayVisible = !!(
+    isCompactSurface
+    && !compactExportHistoryMounted
+    && compactMemeOverlay
+    && compactMemeOverlay.id !== dismissedMemeId
+  );
+  const compactMemeGeometryKey = compactMemeOverlay
+    ? `${compactMemeOverlay.id}:${compactMemeOverlayVisible ? 'visible' : 'hidden'}`
+    : 'none';
+  const compactMemeOverlayLoadKey = compactMemeOverlay
+    ? `${compactMemeOverlay.id}:${compactMemeOverlay.url}`
+    : null;
+  const compactMemeOverlayImageSettled = compactMemeOverlayLoadKey !== null
+    && loadedMemeOverlayKey === compactMemeOverlayLoadKey;
+  const lastCompactMemeGeometryKeyRef = useRef<string | null>(null);
+  const compactMemeGeometryFrameRef = useRef<number | null>(null);
+  const requestCompactMemeGeometryRefresh = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+  }, []);
+  const scheduleCompactMemeGeometryRefresh = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current !== null) return;
+    const raf = window.requestAnimationFrame
+      || ((callback: FrameRequestCallback) => window.setTimeout(() => callback(window.performance.now()), 16));
+    compactMemeGeometryFrameRef.current = raf(() => {
+      compactMemeGeometryFrameRef.current = null;
+      requestCompactMemeGeometryRefresh();
+    });
+  }, [requestCompactMemeGeometryRefresh]);
+  const markCompactMemeOverlayImageSettled = useCallback(() => {
+    if (compactMemeOverlayLoadKey === null) return;
+    setLoadedMemeOverlayKey(compactMemeOverlayLoadKey);
+    scheduleCompactMemeGeometryRefresh();
+  }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
+  const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
+    if (!node?.complete) return;
+    markCompactMemeOverlayImageSettled();
+  }, [markCompactMemeOverlayImageSettled]);
+
+  useLayoutEffect(() => {
+    setLoadedMemeOverlayKey(current => {
+      if (!compactMemeOverlayVisible || compactMemeOverlayLoadKey === null) {
+        return current === null ? current : null;
+      }
+      return current === compactMemeOverlayLoadKey ? current : null;
+    });
+  }, [compactMemeOverlayLoadKey, compactMemeOverlayVisible]);
+
+  useEffect(() => () => {
+    if (typeof window === 'undefined') return;
+    if (compactMemeGeometryFrameRef.current === null) return;
+    const cancel = window.cancelAnimationFrame || window.clearTimeout;
+    cancel(compactMemeGeometryFrameRef.current);
+    compactMemeGeometryFrameRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      lastCompactMemeGeometryKeyRef.current = null;
+      return undefined;
+    }
+    const previousKey = lastCompactMemeGeometryKeyRef.current;
+    lastCompactMemeGeometryKeyRef.current = compactMemeGeometryKey;
+    if (previousKey === compactMemeGeometryKey) return undefined;
+    if (previousKey === null && compactMemeGeometryKey === 'none') return undefined;
+    scheduleCompactMemeGeometryRefresh();
+    return undefined;
+  }, [
+    compactMemeGeometryKey,
+    isCompactSurface,
+    scheduleCompactMemeGeometryRefresh,
+  ]);
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
@@ -4018,16 +4097,38 @@ function CompactChatApp({
   }, []);
 
   const resolveCompactInputToolWheelLayout = useCallback((): CompactInputToolWheelLayout => {
-    if (!window.matchMedia?.('(max-width: 820px)').matches) return 'default';
+    const desktopLayout = (window as typeof window & {
+      __nekoDesktopCompactLayout?: {
+        windowBounds?: { x?: number; y?: number; width?: number; height?: number } | null;
+        workArea?: { x?: number; y?: number; width?: number; height?: number } | null;
+      } | null;
+    }).__nekoDesktopCompactLayout;
+    const windowX = Number(desktopLayout?.windowBounds?.x);
+    const windowY = Number(desktopLayout?.windowBounds?.y);
+    const workAreaX = Number(desktopLayout?.workArea?.x);
+    const workAreaY = Number(desktopLayout?.workArea?.y);
+    const workAreaWidth = Number(desktopLayout?.workArea?.width);
+    const workAreaHeight = Number(desktopLayout?.workArea?.height);
+    const hasDesktopWorkArea = isDesktopCompactSurfaceLayoutActive()
+      && Number.isFinite(windowX)
+      && Number.isFinite(windowY)
+      && Number.isFinite(workAreaX)
+      && Number.isFinite(workAreaY)
+      && Number.isFinite(workAreaWidth)
+      && workAreaWidth > 0
+      && Number.isFinite(workAreaHeight)
+      && workAreaHeight > 0;
+    const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches === true;
+    if (!isMobileViewport && !hasDesktopWorkArea) return 'default';
     const fanElement = compactInputToolFanRef.current;
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
 
     const visualViewport = window.visualViewport;
-    const viewportLeft = visualViewport?.offsetLeft ?? 0;
-    const viewportTop = visualViewport?.offsetTop ?? 0;
-    const viewportWidth = visualViewport?.width ?? window.innerWidth;
-    const viewportHeight = visualViewport?.height ?? window.innerHeight;
+    const viewportLeft = hasDesktopWorkArea ? workAreaX - windowX : (visualViewport?.offsetLeft ?? 0);
+    const viewportTop = hasDesktopWorkArea ? workAreaY - windowY : (visualViewport?.offsetTop ?? 0);
+    const viewportWidth = hasDesktopWorkArea ? workAreaWidth : (visualViewport?.width ?? window.innerWidth);
+    const viewportHeight = hasDesktopWorkArea ? workAreaHeight : (visualViewport?.height ?? window.innerHeight);
     if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
       return 'default';
     }
@@ -4043,22 +4144,46 @@ function CompactChatApp({
     const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
     const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
     const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
-    const minX = viewportLeft + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const minY = viewportTop + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const maxX = viewportLeft + viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const maxY = viewportTop + viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const viewportMargin = hasDesktopWorkArea ? 0 : COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const minX = viewportLeft + viewportMargin;
+    const minY = viewportTop + viewportMargin;
+    const maxX = viewportLeft + viewportWidth - viewportMargin;
+    const maxY = viewportTop + viewportHeight - viewportMargin;
 
-    const wheelLayoutFitsViewport = (slots: ReadonlyArray<{ angleDeg: number; scale: number }>) => slots.every(({ angleDeg, scale }) => {
+    let prefersViewportFitFromBottomGap = false;
+    if (hasDesktopWorkArea) {
+      const workAreaBottom = workAreaY + workAreaHeight;
+      const wheelCenterScreenY = windowY + centerY;
+      const bottomGap = workAreaBottom - wheelCenterScreenY;
+      const bottomFlipThreshold = Math.max(
+        COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS,
+        orbitRadius + (buttonSize / 2),
+      );
+      prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
+    }
+
+    const wheelLayoutFitsViewport = (
+      slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
+      options?: { axis?: 'both' | 'horizontal' },
+    ) => slots.every(({ angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      return itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX
+      const fitsHorizontally = itemCenterX - halfSize >= minX
+        && itemCenterX + halfSize <= maxX;
+      if (options?.axis === 'horizontal') return fitsHorizontally;
+      return fitsHorizontally
         && itemCenterY - halfSize >= minY
         && itemCenterY + halfSize <= maxY;
     });
 
+    if (
+      prefersViewportFitFromBottomGap
+      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+    ) {
+      return 'viewport-fit';
+    }
     if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
     if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
     return 'default';
@@ -4171,15 +4296,27 @@ function CompactChatApp({
 
     syncCompactInputToolWheelLayout();
     const frameId = window.requestAnimationFrame(syncCompactInputToolWheelLayout);
+    let desktopLayoutFrameId = 0;
+    const syncAfterDesktopCompactLayoutChange = () => {
+      syncCompactInputToolWheelLayout();
+      if (desktopLayoutFrameId) window.cancelAnimationFrame(desktopLayoutFrameId);
+      desktopLayoutFrameId = window.requestAnimationFrame(() => {
+        desktopLayoutFrameId = 0;
+        syncCompactInputToolWheelLayout();
+      });
+    };
     window.addEventListener('resize', syncCompactInputToolWheelLayout);
     window.addEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+    window.addEventListener('neko:desktop-compact-layout-change', syncAfterDesktopCompactLayoutChange);
     window.visualViewport?.addEventListener('resize', syncCompactInputToolWheelLayout);
     window.visualViewport?.addEventListener('scroll', syncCompactInputToolWheelLayout);
 
     return () => {
       window.cancelAnimationFrame(frameId);
+      if (desktopLayoutFrameId) window.cancelAnimationFrame(desktopLayoutFrameId);
       window.removeEventListener('resize', syncCompactInputToolWheelLayout);
       window.removeEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+      window.removeEventListener('neko:desktop-compact-layout-change', syncAfterDesktopCompactLayoutChange);
       window.visualViewport?.removeEventListener('resize', syncCompactInputToolWheelLayout);
       window.visualViewport?.removeEventListener('scroll', syncCompactInputToolWheelLayout);
     };
@@ -4522,9 +4659,11 @@ function CompactChatApp({
     event.preventDefault();
     event.stopPropagation();
 
-    const direction: 1 | -1 = normalizedDelta > 0 ? 1 : -1;
+    const visualDirectionMultiplier = getCompactToolWheelVisualDirectionMultiplier(compactInputToolWheelLayout);
+    const direction: 1 | -1 = normalizedDelta * visualDirectionMultiplier > 0 ? 1 : -1;
     rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
   }, [
+    compactInputToolWheelLayout,
     getCompactInputToolWheelNormalizedDelta,
     recordCompactInputToolWheelPointerPosition,
     rotateCompactInputToolWheelSteps,
@@ -4998,17 +5137,19 @@ function CompactChatApp({
           ? COMPACT_TOOL_WHEEL_VIEWPORT_DRAG_ANGLE_STEP_DEG
           : COMPACT_TOOL_WHEEL_DEFAULT_DRAG_ANGLE_STEP_DEG
       ) * (Math.PI / 180);
+      const visualDirectionMultiplier = getCompactToolWheelVisualDirectionMultiplier(compactInputToolWheelLayout);
       const angleDelta = normalizeCompactToolWheelAngleDelta(dragPoint.angle - pointerState.angle);
       const totalDelta = pointerState.angleRemainder + angleDelta;
-      const totalOffsetRatio = totalDelta / angleStepRad;
-      const stepCount = getCompactToolWheelDetentStepCount(totalOffsetRatio);
+      const visualOffsetRatio = totalDelta / angleStepRad;
+      const logicalOffsetRatio = visualOffsetRatio * visualDirectionMultiplier;
+      const stepCount = getCompactToolWheelDetentStepCount(logicalOffsetRatio);
       pointerState.x = dragPoint.x;
       pointerState.y = dragPoint.y;
       pointerState.angle = dragPoint.angle;
       if (stepCount <= 0) {
         pointerState.angleRemainder = totalDelta;
         const dragOffsetRatio = clamp(
-          getCompactToolWheelDetentDisplayRatio(totalOffsetRatio),
+          getCompactToolWheelDetentDisplayRatio(visualOffsetRatio),
           -0.98,
           0.98,
         );
@@ -5018,11 +5159,11 @@ function CompactChatApp({
       }
 
       input.preventDefault?.();
-      const direction: 1 | -1 = totalDelta > 0 ? 1 : -1;
+      const direction: 1 | -1 = logicalOffsetRatio > 0 ? 1 : -1;
       rotateCompactInputToolWheelSteps(direction, stepCount);
       const chargeState = recordCompactInputToolWheelCharge(direction, stepCount);
       pointerState.angleRemainder = totalDelta - (
-        direction * stepCount * angleStepRad
+        direction * visualDirectionMultiplier * stepCount * angleStepRad
       );
       const remainingOffsetRatio = pointerState.angleRemainder / angleStepRad;
       const dragOffsetRatio = clamp(
@@ -5044,15 +5185,17 @@ function CompactChatApp({
     const useVerticalDelta = Math.abs(deltaY) >= Math.abs(deltaX);
     const primaryDelta = useVerticalDelta ? deltaY : deltaX;
     const directionalDelta = useVerticalDelta ? primaryDelta : -primaryDelta;
-    const directionalOffsetRatio = directionalDelta / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
-    const stepCount = getCompactToolWheelDetentStepCount(directionalOffsetRatio);
+    const visualDirectionMultiplier = getCompactToolWheelVisualDirectionMultiplier(compactInputToolWheelLayout);
+    const visualOffsetRatio = directionalDelta / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
+    const logicalOffsetRatio = visualOffsetRatio * visualDirectionMultiplier;
+    const stepCount = getCompactToolWheelDetentStepCount(logicalOffsetRatio);
     if (stepCount <= 0) {
       pointerState.angle = dragPoint.angle;
       if (dragPoint.angle !== null) {
         pointerState.angleRemainder = 0;
       }
       const dragOffsetRatio = clamp(
-        getCompactToolWheelDetentDisplayRatio(directionalOffsetRatio),
+        getCompactToolWheelDetentDisplayRatio(visualOffsetRatio),
         -0.98,
         0.98,
       );
@@ -5062,10 +5205,10 @@ function CompactChatApp({
     }
 
     input.preventDefault?.();
-    const direction: 1 | -1 = directionalDelta > 0 ? 1 : -1;
+    const direction: 1 | -1 = logicalOffsetRatio > 0 ? 1 : -1;
     rotateCompactInputToolWheelSteps(direction, stepCount);
     const chargeState = recordCompactInputToolWheelCharge(direction, stepCount);
-    const consumedDelta = direction * stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
+    const consumedDelta = direction * visualDirectionMultiplier * stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
     const remainingDelta = directionalDelta - consumedDelta;
     if (useVerticalDelta) {
       pointerState.x = dragPoint.x;
@@ -6170,6 +6313,9 @@ function CompactChatApp({
       : compactInputToolWheelChargeRatio >= COMPACT_INPUT_TOOL_WHEEL_CHARGE_RATTLE_WEAK_RATIO
         ? 'weak'
         : 'none';
+  const compactInputToolWheelVisualChargeDirection = compactInputToolWheelChargeDirection === null
+    ? null
+    : compactInputToolWheelChargeDirection * getCompactToolWheelVisualDirectionMultiplier(compactInputToolWheelLayout) as 1 | -1;
   const compactInputToolWheelChargeStyle = {
     '--compact-tool-wheel-charge-first-angle': `${compactInputToolWheelChargeFirstLapAngle}deg`,
     '--compact-tool-wheel-charge-second-angle': `${compactInputToolWheelChargeSecondLapAngle}deg`,
@@ -6393,7 +6539,7 @@ function CompactChatApp({
       data-compact-tool-wheel-drag-active={compactInputToolWheelDragActive ? 'true' : 'false'}
       data-compact-tool-wheel-charge-active={compactInputToolWheelChargeRatio > 0 ? 'true' : 'false'}
       data-compact-tool-wheel-charge-rattle={compactInputToolWheelChargeRattleLevel}
-      data-compact-tool-wheel-charge-direction={compactInputToolWheelChargeDirection === 1 ? 'forward' : compactInputToolWheelChargeDirection === -1 ? 'backward' : 'none'}
+      data-compact-tool-wheel-charge-direction={compactInputToolWheelVisualChargeDirection === 1 ? 'forward' : compactInputToolWheelVisualChargeDirection === -1 ? 'backward' : 'none'}
       data-compact-tool-wheel-charge-release-active={compactInputToolWheelChargeReleaseActive ? 'true' : 'false'}
       data-compact-tool-wheel-charge-release-offset={compactInputToolWheelChargeReleaseVisualStepOffset}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
@@ -7055,10 +7201,7 @@ function CompactChatApp({
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
-  const compactMemeOverlayNode = isCompactSurface
-    && !compactExportHistoryMounted
-    && compactMemeOverlay
-    && compactMemeOverlay.id !== dismissedMemeId ? (
+  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -7074,41 +7217,51 @@ function CompactChatApp({
             收益（实测 lazy/eager 行为一致，图都会立刻加载），eager 语义更直接、也省掉一层
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
-        <img src={compactMemeOverlay.url} alt={compactMemeOverlay.alt} loading="eager" decoding="async" />
+        <img
+          src={compactMemeOverlay.url}
+          alt={compactMemeOverlay.alt}
+          loading="eager"
+          decoding="async"
+          ref={handleCompactMemeOverlayImageRef}
+          onLoad={markCompactMemeOverlayImageSettled}
+          onError={markCompactMemeOverlayImageSettled}
+        />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。
             ⚠️ data-compact-hit-region 必带：overlay 的 data-compact-geometry-hit-scope="children" 让 host
             只把带该标记的子元素登记成 native 可交互区（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
             漏了它，Electron pass-through 窗口会把按钮当穿透区、点击穿到桌面（普通浏览器窗口测不出，对齐音乐条）。 */}
-        <button
-          type="button"
-          className="compact-meme-overlay-close"
-          data-compact-hit-region="true"
-          data-compact-hit-region-id="meme:close"
-          data-compact-hit-region-kind="meme-close"
-          aria-label={closeMemeButtonAriaLabel}
-          title={closeMemeButtonAriaLabel}
-          onClick={(event) => {
-            event.stopPropagation();
-            setDismissedMemeId(compactMemeOverlay.id);
-          }}
-        >
-          <svg
-            className="compact-meme-overlay-close-icon"
-            viewBox="0 0 16 16"
-            aria-hidden="true"
-            focusable="false"
+        {compactMemeOverlayImageSettled ? (
+          <button
+            type="button"
+            className="compact-meme-overlay-close"
+            data-compact-hit-region="true"
+            data-compact-hit-region-id="meme:close"
+            data-compact-hit-region-kind="meme-close"
+            aria-label={closeMemeButtonAriaLabel}
+            title={closeMemeButtonAriaLabel}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDismissedMemeId(compactMemeOverlay.id);
+            }}
           >
-            <path
-              d="M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+            <svg
+              className="compact-meme-overlay-close-icon"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M4.5 4.5 11.5 11.5 M11.5 4.5 4.5 11.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        ) : null}
       </div>
     </div>
   ) : null;
