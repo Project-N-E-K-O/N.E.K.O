@@ -968,6 +968,19 @@ def test_compact_tool_fan_viewport_fit_hidden_slots_stay_on_reversed_arc():
             '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {'
         ),
     )
+    hidden_block = css_block(
+        styles,
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {'
+        ),
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {'
+        ),
+    )
     hidden_forward_block = css_block(
         styles,
         (
@@ -994,12 +1007,29 @@ def test_compact_tool_fan_viewport_fit_hidden_slots_stay_on_reversed_arc():
             '.compact-input-tool-item[data-compact-tool-wheel-slot="-2"],'
         ),
     )
+    extra_hidden_block = css_block(
+        styles,
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {'
+        ),
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {'
+        ),
+    )
 
     assert "transition: none;" in hidden_slots_block
+    assert "rotate(calc(-140deg + var(--compact-tool-wheel-drag-angle)))" in hidden_block
+    assert "rotate(calc(140deg + var(--compact-tool-wheel-drag-counter-angle)))" in hidden_block
     assert "rotate(calc(-50deg + var(--compact-tool-wheel-drag-angle)))" in hidden_forward_block
     assert "rotate(calc(50deg + var(--compact-tool-wheel-drag-counter-angle)))" in hidden_forward_block
     assert "rotate(calc(-230deg + var(--compact-tool-wheel-drag-angle)))" in hidden_backward_block
     assert "rotate(calc(230deg + var(--compact-tool-wheel-drag-counter-angle)))" in hidden_backward_block
+    assert "rotate(calc(-200deg + var(--compact-tool-wheel-drag-angle)))" in extra_hidden_block
+    assert "rotate(calc(200deg + var(--compact-tool-wheel-drag-counter-angle)))" in extra_hidden_block
 
 
 def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
