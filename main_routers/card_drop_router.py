@@ -12,6 +12,8 @@ The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import html
 import json
 import logging
@@ -178,33 +180,55 @@ def _steam_pending_path() -> Path | None:
     return (p.parent / _STEAM_PENDING_FILENAME) if p else None
 
 
-def _mark_steam_pending() -> str | None:
-    """写一次性待回调标记，返回不可猜的 state（NEKO 自存自校，防 login-CSRF）。
+def _pkce_pair() -> tuple[str, str]:
+    """生成 PKCE（RFC 7636，S256）的 (code_verifier, code_challenge)。
 
-    无法持久化（无路径 / 写失败）时返回 None —— state 没落盘就发不出可被本地校验的回调，
-    调用方应直接中止登录入口，别把用户带进必失败的 Steam 授权流程。
+    verifier 留本地（落盘 pending），challenge = base64url(sha256(verifier)) 无 padding，
+    拼进 authorize URL 发给云端。云端把 challenge 与一次性 code 同库，回调换 token 时本端再
+    出示 verifier，云端校验匹配 —— 把短码绑定到「发起登录的这台 NEKO」。verifier 用
+    token_urlsafe(32)（43 字符高熵，满足 RFC 的 43..128 unreserved 约束）。
+    """
+    verifier = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def _mark_steam_pending() -> tuple[str, str] | None:
+    """写一次性待回调标记，返回 (state, code_challenge)。
+
+    state：不可猜 CSRF token（NEKO 自存自校，防 login-CSRF）。code_challenge：PKCE S256
+    挑战，拼进 authorize URL；配对的 code_verifier 落盘 pending、回调时换 token 才出示。
+    无法持久化（无路径 / 写失败）时返回 None —— 没落盘就发不出可被本地校验的回调，调用方应
+    直接中止登录入口，别把用户带进必失败的 Steam 授权流程。
     """
     state = secrets.token_urlsafe(24)
+    verifier, challenge = _pkce_pair()
     p = _steam_pending_path()
     if not p:
         return None
     try:
-        p.write_text(json.dumps({"ts": time.time(), "state": state}), encoding="utf-8")
+        p.write_text(
+            json.dumps({"ts": time.time(), "state": state, "code_verifier": verifier}),
+            encoding="utf-8",
+        )
     except OSError as exc:
         logger.debug("card_drop: mark steam pending failed: %s", exc)
         return None
-    return state
+    return state, challenge
 
 
-def _consume_steam_pending(state: str) -> bool:
-    """消费一次性标记：存在、未过期、且 state 与发起登录时一致才放行（防 login-CSRF + 重放）。
+def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
+    """消费一次性标记：存在、未过期、state 与发起登录时一致才放行（防 login-CSRF + 重放）。
 
-    只在「标记损坏 / 过期 / state 匹配成功」时删标记；state 不匹配时**保留**到 TTL，避免攻击者
-    用错误 state 的回调把合法登录标记删掉（DoS）。匹配成功但删除失败 → 返回 False 保「一次性」。
+    返回 (ok, code_verifier)：ok=True 时附带落盘的 PKCE verifier（老标记无该字段 → None，
+    换 token 时不带 verifier，向后兼容）。只在「标记损坏 / 过期 / state 匹配成功」时删标记；
+    state 不匹配时**保留**到 TTL，避免攻击者用错误 state 的回调把合法登录标记删掉（DoS）。
+    匹配成功但删除失败 → 返回 (False, None) 保「一次性」。
     """
     p = _steam_pending_path()
     if not p or not p.exists():
-        return False
+        return False, None
     data: object = {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -219,26 +243,29 @@ def _consume_steam_pending(state: str) -> bool:
 
     if not isinstance(data, dict):
         _drop()
-        return False
+        return False, None
     try:
         ts = float(data.get("ts", 0) or 0)
     except (TypeError, ValueError):
         ts = 0.0
     stored_state = data.get("state") or ""
+    stored_verifier = data.get("code_verifier")
+    if not isinstance(stored_verifier, str) or not stored_verifier:
+        stored_verifier = None
     if not stored_state or not isinstance(state, str) or not state:
         _drop()
-        return False
+        return False, None
     if not (bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC):
         _drop()  # 过期：清掉
-        return False
+        return False, None
     if not secrets.compare_digest(str(stored_state), state):
-        return False  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
+        return False, None  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
     try:
         p.unlink()
     except OSError as exc:
         logger.debug("card_drop: consume steam pending failed: %s", exc)
-        return False
-    return True
+        return False, None
+    return True, stored_verifier
 
 
 @router.get("/auth-status", summary="社区登录状态")
@@ -324,13 +351,16 @@ def _steam_callback_html(title: str, sub: str) -> HTMLResponse:
 async def steam_login_endpoint(request: Request):
     base = _social_base_url()
     callback = _neko_steam_callback_url(request)
-    state = _mark_steam_pending()
-    if not state:
+    pending = _mark_steam_pending()
+    if not pending:
         # state 没落盘 → 回调无法本地校验，必失败；不如在入口直接报错，别让用户白跑一趟 Steam。
         raise HTTPException(status_code=503, detail="steam_login_state_unavailable")
+    state, code_challenge = pending
+    # PKCE：code_challenge 进 authorize URL，配对的 verifier 已落盘 pending，回调换 token 才出示。
     authorize_url = (
         f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
         f"&state={quote(state, safe='')}"
+        f"&code_challenge={quote(code_challenge, safe='')}"
     )
     return {"authorize_url": authorize_url, "callback": callback}
 
@@ -344,17 +374,23 @@ async def steam_callback_endpoint(
     code: str = Query(..., min_length=1),
     state: str = Query(..., min_length=1),
 ):
-    # 校验 state（与发起登录时一致）+ 一次性窗口，挡 login-CSRF / 重放。
-    if not _consume_steam_pending(state):
+    # 校验 state（与发起登录时一致）+ 一次性窗口，挡 login-CSRF / 重放；同时取回 PKCE verifier。
+    ok, code_verifier = _consume_steam_pending(state)
+    if not ok:
         return _steam_callback_html("登录会话已失效", "请回到 NEKO 重新点一次「Steam 登录」。")
     base = _social_base_url()
     # 用一次性 code 服务端换 token（token 不经浏览器 URL/历史/日志）。
+    # PKCE：带上发起登录时落盘的 code_verifier，云端校验 sha256(verifier)==challenge，把短码
+    # 绑定到「发起登录的这台 NEKO」。老 pending（无 verifier）→ 不带，云端也不强制（向后兼容）。
+    exchange_body: dict = {"code": code}
+    if code_verifier:
+        exchange_body["code_verifier"] = code_verifier
     access_token: str | None = None
     refresh_token: str | None = None
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
             r = await client.post(
-                f"{base}/api/auth/oauth/native/exchange", json={"code": code}
+                f"{base}/api/auth/oauth/native/exchange", json=exchange_body
             )
         if r.status_code == 200:
             d = r.json() or {}
