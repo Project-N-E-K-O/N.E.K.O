@@ -1879,7 +1879,7 @@
                         el.style.visibility = 'hidden';
                         hiddenFloatingButtonEls.push(el);
                     }
-                    el.style.display = restoreDisplay;
+                    el.style.display = isFloatingButtons ? 'flex' : restoreDisplay;
                 }
                 delete el.dataset.nekoPreHideDisplay;
             });
