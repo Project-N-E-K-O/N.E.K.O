@@ -19,6 +19,8 @@ Small base/cap/cache values keep the arithmetic obvious:
 10 → 20 → 40 → 80 (capped). ``cache=3`` makes LRU eviction easy to drive.
 """
 
+import pytest
+
 from main_logic.activity.activity_guess_gate import ActivityGuessGate
 
 
@@ -131,7 +133,6 @@ def test_cap_below_base_is_clamped():
 
 
 def test_rejects_nonpositive_base():
-    import pytest
     with pytest.raises(ValueError):
         ActivityGuessGate(base_seconds=0.0, cap_seconds=600.0, cache_size=8)
 
@@ -211,7 +212,6 @@ def test_multiplier_must_exceed_one():
     anything strictly above 1 is accepted. Asserting both sides locks the ``> 1``
     boundary so a mutation that wrongly tightens the check (e.g. ``< 2.0``,
     rejecting a legitimate 1.5) can't slip through."""
-    import pytest
     for bad in (1.0, 0.5, 0.0, -2.0):
         with pytest.raises(ValueError):
             ActivityGuessGate(
