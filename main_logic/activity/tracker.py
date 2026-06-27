@@ -68,6 +68,7 @@ from utils.activity_config import get_activity_preferences
 from main_logic.activity.activity_guess_gate import ActivityGuessGate
 from config import (
     ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
     ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
     ACTIVITY_GUESS_SIG_CACHE_SIZE,
 )
@@ -277,6 +278,7 @@ class UserActivityTracker:
             base_seconds=ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
             cap_seconds=ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
             cache_size=ACTIVITY_GUESS_SIG_CACHE_SIZE,
+            backoff_multiplier=ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
         )
         self._activity_guess_loop_task: asyncio.Task | None = None
         self._topic_candidate_task: asyncio.Task | None = None
@@ -951,12 +953,14 @@ class UserActivityTracker:
     ) -> None:
         """Inject the predicate that decides whether activity_guess narration has a live consumer.
 
-        ``predicate()`` returns True when narration is currently pointless — the
-        only consumer (proactive Phase 2) will bail at its ``goodbye_silent``
-        guard, so computing the emotion-tier guess just burns an LLM call with
-        nobody to read it. The 20s heartbeat keeps ticking the rule-based
-        break-reminder / context-prompt logic regardless; only the LLM
-        narration step is skipped. Pass None to clear (never suppress).
+        ``predicate()`` returns True when narration currently has no consumer —
+        the sole reader (proactive Phase 2) won't act, so computing the
+        emotion-tier guess just burns an LLM call with nobody to read it. The
+        injector owns the exact conditions (today: the catgirl is in
+        goodbye-silence, OR no client is connected to deliver a proactive turn
+        to); the tracker treats the predicate as opaque. The 20s heartbeat keeps
+        ticking the rule-based break-reminder / context-prompt logic regardless;
+        only the LLM narration step is skipped. Pass None to clear (never suppress).
         """
         self._narration_suppressed_check = predicate
 

@@ -1167,11 +1167,18 @@ class LLMSessionManager:
                 )
         self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
 
-        # activity_guess narration 的「下游消费方」门控：会话 goodbye_silent（猫娘挂机
-        # 静默）时，proactive Phase 2 一进门就 bail，narration 没人读。把 is_goodbye_silent
-        # 注入 tracker，让 20s 心跳在静默期跳过昂贵的 emotion-tier LLM 外呼（规则心跳照跑）。
-        # tracker 跨 session 长存、心跳不随 End Session 取消，否则挂机后会一直空烧 LLM。
-        self._activity_tracker.set_narration_suppressed_check(self.is_goodbye_silent)
+        # activity_guess narration 的「下游消费方」门控：narration 只喂 proactive
+        # Phase 2，Phase 2 在两种情况下都没人读 → 这次昂贵的 emotion-tier 外呼纯属空烧：
+        #   ① goodbye_silent（猫娘挂机静默）—— Phase 2 一进门就 bail；
+        #   ② 没有在线 WebSocket（普通断连 / End Session 后）—— proactive 没法送达。
+        # tracker 跨 session 长存、心跳不随 End Session 取消（break-reminder / 情境弹窗这些
+        # 规则心跳要继续跑），所以必须靠这个门控在「无消费方」时跳过 LLM；否则用户关掉页面
+        # 后整段挂机会一直空烧（cap 只是把间隔退避到 ~900s，不会停）。重连 / 退出静默后
+        # 每签名 cache 还在，narration 在该签名退避间隔走完时恢复（conv_seq 变化或间隔已
+        # 在挂起期间走完则下一 tick 立刻恢复）。
+        self._activity_tracker.set_narration_suppressed_check(
+            self._should_suppress_activity_narration
+        )
 
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时作为一个 conversation turn 发给 dispatcher。activity sink 用末尾
@@ -2192,6 +2199,30 @@ class LLMSessionManager:
             return websocket.client_state == websocket.client_state.CONNECTED
         except Exception:
             return False
+
+    def _should_suppress_activity_narration(self) -> bool:
+        """Whether the activity_guess emotion-tier narration has no live consumer.
+
+        Injected into the tracker as the narration suppressed-check (see where
+        ``set_narration_suppressed_check`` is wired). The narration only feeds
+        proactive Phase 2's state_section, and Phase 2 is a no-op in two cases —
+        paying for the LLM call then is pure idle burn:
+
+          * ``is_goodbye_silent()`` — cat-mode silence; Phase 2 bails at its
+            goodbye guard.
+          * no connected WebSocket — after a plain disconnect / End Session the
+            tracker heartbeat keeps ticking (it outlives the session so the
+            rule-based break-reminder / context-prompt logic still runs), but a
+            proactive turn has no client to reach. Without this, closing the page
+            leaves the loop re-narrating at the backoff cap (~900s) all night.
+
+        Both conditions recover on their own: the per-signature narration cache
+        stays warm across the suppressed window, so reconnecting (or leaving
+        goodbye-silence) resumes narration once that signature's backoff interval
+        elapses — on the next tick if a new turn advanced conv_seq or the interval
+        already passed during the gap, otherwise after the remaining interval.
+        """
+        return self.is_goodbye_silent() or not self._has_connected_websocket()
 
     def _can_preserve_tts_ready_for_session_start(self) -> bool:
         """A live, previously-ready TTS worker will not emit __ready__ again."""
