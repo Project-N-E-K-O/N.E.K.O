@@ -430,7 +430,7 @@ def test_drawing_guess_static_route_contract():
 def test_drawing_guess_locale_cache_version_bumped_for_memory_two_options():
     script = _i18n_script()
 
-    assert "2026-06-23-drawing-guess-memory-two-options-i18n" in script
+    assert "2026-06-27-drawing-guess-vllm-omni-i18n" in script
 
 
 @pytest.mark.unit
