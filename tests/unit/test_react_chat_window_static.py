@@ -952,6 +952,56 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
 
 
+def test_compact_tool_fan_viewport_fit_hidden_slots_stay_on_reversed_arc():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    hidden_slots_block = css_block(
+        styles,
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],'
+        ),
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {'
+        ),
+    )
+    hidden_forward_block = css_block(
+        styles,
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {'
+        ),
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {'
+        ),
+    )
+    hidden_backward_block = css_block(
+        styles,
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {'
+        ),
+        (
+            '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]'
+            '[data-compact-tool-wheel-layout="viewport-fit"] '
+            '.compact-input-tool-item[data-compact-tool-wheel-slot="-2"],'
+        ),
+    )
+
+    assert "transition: none;" in hidden_slots_block
+    assert "rotate(calc(-50deg + var(--compact-tool-wheel-drag-angle)))" in hidden_forward_block
+    assert "rotate(calc(50deg + var(--compact-tool-wheel-drag-counter-angle)))" in hidden_forward_block
+    assert "rotate(calc(-230deg + var(--compact-tool-wheel-drag-angle)))" in hidden_backward_block
+    assert "rotate(calc(230deg + var(--compact-tool-wheel-drag-counter-angle)))" in hidden_backward_block
+
+
 def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
