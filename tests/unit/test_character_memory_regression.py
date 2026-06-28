@@ -102,11 +102,13 @@ def test_character_router_profile_name_validation_maps_dot_error_codes():
     assert "点号" in router_module._validate_profile_name("foo.")
     assert "路径分隔符" in router_module._validate_profile_name("..")
     assert "点号" in router_module._validate_profile_name("N.E.K.O")
+    assert "保留" in router_module._validate_profile_name("api")
 
     assert router_module._validate_existing_character_path_name(".") is not None
     assert router_module._validate_existing_character_path_name("foo.") is not None
     assert router_module._validate_existing_character_path_name("..") is not None
     assert router_module._validate_existing_character_path_name("N.E.K.O") is None
+    assert router_module._validate_existing_character_path_name("api") is None
 
 
 @pytest.mark.unit
