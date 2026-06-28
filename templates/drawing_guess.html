@@ -1087,7 +1087,8 @@
 
     .dg-summary.dg-summary-final .dg-summary-list {
       display: grid;
-      gap: 12px;
+      gap: 18px;
+      padding-bottom: 16px;
     }
 
     .dg-summary-grid {
@@ -1103,11 +1104,27 @@
       margin: 0;
     }
 
+    .dg-summary.dg-summary-final .dg-round-summary {
+      display: block;
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(99, 165, 235, 0.24);
+    }
+
+    .dg-summary.dg-summary-final .dg-round-summary:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
     .dg-summary:not(.dg-summary-final) .dg-round-summary {
       display: grid;
       grid-template-rows: auto auto minmax(0, 1fr);
       gap: 8px;
       height: 100%;
+    }
+
+    .dg-summary.dg-summary-final .dg-summary-grid {
+      height: auto;
+      align-items: stretch;
     }
 
     .dg-round-summary > h4 {
@@ -1132,6 +1149,10 @@
       box-shadow: inset 0 1px rgba(255, 255, 255, 0.7);
     }
 
+    .dg-summary.dg-summary-final .dg-thumb {
+      grid-template-rows: auto auto auto;
+    }
+
     .dg-thumb h4 {
       margin: 0;
       font-size: 14px;
@@ -1148,6 +1169,13 @@
       overflow: hidden;
     }
 
+    .dg-summary.dg-summary-final .dg-thumb-preview {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 4 / 3;
+      min-height: 0;
+    }
+
     .dg-thumb .dg-button {
       min-height: 32px;
     }
@@ -1159,8 +1187,8 @@
     }
 
     .dg-thumb-preview img {
-      max-width: 100%;
-      max-height: 100%;
+      width: 100%;
+      height: 100%;
       object-fit: contain;
       display: block;
     }
@@ -1634,6 +1662,38 @@
       margin: 0 0 12px;
       color: var(--dg-muted);
       line-height: 1.6;
+    }
+
+    .dg-tutorial-guide {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border: 1px solid rgba(112, 194, 255, 0.34);
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(239, 249, 255, 0.95), rgba(248, 252, 255, 0.88));
+    }
+
+    .dg-tutorial-guide h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .dg-tutorial-guide ul {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 18px;
+      color: var(--dg-text);
+      line-height: 1.55;
+    }
+
+    .dg-tutorial-voice {
+      margin: 10px 0 0;
+      padding: 9px 10px;
+      border-radius: 8px;
+      color: var(--dg-text);
+      background: rgba(31, 167, 255, 0.1);
+      font-weight: 700;
     }
 
     .dg-memory {
@@ -2250,6 +2310,15 @@
       <div class="dg-dialog-body">
         <h2 id="tutorial-title" data-i18n="drawingGuess.tutorial.title">开始前</h2>
         <p data-i18n="drawingGuess.tutorial.intro">这一局会各画一次、各猜一次。你可以边画边聊天，画满 5 分钟会自动交给她猜。</p>
+        <div class="dg-tutorial-guide">
+          <h3 data-i18n="drawingGuess.tutorial.quickTitle">简易玩法</h3>
+          <ul>
+            <li data-i18n="drawingGuess.tutorial.quickDraw">轮到你画时，抽一张题目牌，在画布上画完后点“画好了”。</li>
+            <li data-i18n="drawingGuess.tutorial.quickGuess">轮到你猜时，在聊天框里输入猜测，也可以一边聊天一边要提示。</li>
+            <li data-i18n="drawingGuess.tutorial.quickSummary">每轮结算会保留缩略图，最终结算里可以下载画作。</li>
+          </ul>
+          <p class="dg-tutorial-voice" data-i18n="drawingGuess.tutorial.voiceHint">想用语音的话，请先在主页面开启语音；小游戏开始后会自动接管。</p>
+        </div>
         <div class="dg-memory" role="radiogroup" aria-label="Memory options" data-i18n-aria="drawingGuess.tutorial.memoryTitle">
           <label>
             <input type="radio" name="memory-consent" value="none" checked>

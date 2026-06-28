@@ -5224,7 +5224,12 @@
             "intro": "Nesta rodada cada um desenha uma vez e adivinha uma vez. Você pode conversar enquanto desenha; depois de 5 minutos, a tela atual vai automaticamente para ela.",
             "memoryTitle": "Opções de memória",
             "memoryNone": "Não registrar; jogar só desta vez.",
-            "memorySummary": "Registrar um breve resumo do jogo."
+            "memorySummary": "Registrar um breve resumo do jogo.",
+            "quickTitle": "Guia rápido",
+            "quickDraw": "Quando for sua vez de desenhar, escolha uma carta, desenhe na tela e pressione Pronto.",
+            "quickGuess": "Quando for sua vez de adivinhar, digite seu palpite no chat; você também pode conversar e pedir dicas.",
+            "quickSummary": "Cada rodada guarda miniaturas, e o resumo final permite baixar os desenhos.",
+            "voiceHint": "Se quiser usar voz, ative-a primeiro na página principal; este minijogo assumirá a voz depois de começar."
         },
         "actions": {
             "start": "Começar",

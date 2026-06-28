@@ -1042,6 +1042,94 @@ async def test_user_drawing_chat_uses_persona_reply(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_external_voice_user_drawing_with_canvas_runs_live_vision_guess(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-live-voice",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-live-voice"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+    session["ai_guess_attempts"] = 0
+
+    async def fake_vision_guess(**kwargs):
+        assert kwargs["image_data_url"] == "data:image/png;base64,abc"
+        assert kwargs["user_hint"] == "what does it look like now"
+        assert kwargs["session"]["ai_guess_attempts"] == 1
+        return {
+            "word": dgr._WORD_BY_ID["apple"],
+            "confidence": 0.5,
+            "message": "I am going to say apple for now.",
+            "source": "vision_model",
+        }
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", fake_vision_guess)
+
+    result = await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-live-voice",
+        "what does it look like now",
+        route_state={
+            "last_state": {"phase": "user_drawing", "i18n_language": "en"},
+            "last_canvas_image_data_url": "data:image/png;base64,abc",
+        },
+        request_id="voice-live-1",
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "ai_guess"
+    assert result["source"] == "vision_model"
+    assert result["live_preview"] is True
+    assert result["correct"] is False
+    assert result["state"]["phase"] == "user_drawing"
+    assert session["phase"] == "user_drawing"
+    assert session["ai_guess_attempts"] == 0
+    assert session["live_voice_guess_attempts"] == 1
+    assert session["game_chat_history"][-2]["kind"] == "live_voice_hint"
+    assert session["game_chat_history"][-1]["kind"] == "vision_guess"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_drawing_typed_chat_with_canvas_does_not_trigger_live_vision(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-typed-canvas-chat",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-typed-canvas-chat"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+
+    async def fail_vision_guess(**_kwargs):
+        raise AssertionError("typed drawing chat should not trigger live vision")
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "drawing_chat"
+        assert kwargs["user_text"] == "this part is tricky"
+        return "Keep drawing, I am watching."
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", fail_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", fake_persona_line)
+
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-typed-canvas-chat",
+        "i18n_language": "en",
+        "text": "this part is tricky",
+        "input_kind": "user-text",
+        "image_data_url": "data:image/png;base64,abc",
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["message"] == "Keep drawing, I am watching."
+    assert session["phase"] == "user_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_user_guessing_plain_chat_does_not_count_as_guess(monkeypatch):
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",

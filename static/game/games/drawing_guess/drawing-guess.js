@@ -48,6 +48,7 @@
     lipSyncDriver: '',
     lipSyncFrame: null,
     lipSyncRetryTimer: null,
+    lipSyncStopTimer: null,
     lipSyncRetryDeadline: 0,
     lipSyncMouthOpen: 0,
     voiceRouteActive: false,
@@ -445,6 +446,34 @@
     setModelView({ scale: current.scale * step }, true);
   }
 
+  function modelViewTranslateTarget() {
+    if (state.modelKind === 'vrm') return els.vrmContainer;
+    if (state.modelKind === 'mmd') return els.mmdContainer;
+    if (state.modelKind === 'pngtuber') return els.pngtuberContainer;
+    if (state.modelKind === 'fallback' && els.modelFallback) {
+      return els.modelFallback.querySelector('img') || els.modelFallback;
+    }
+    return null;
+  }
+
+  function modelViewDragReferenceSize() {
+    var rect = els.modelStage ? els.modelStage.getBoundingClientRect() : null;
+    var width = Math.max(1, rect && rect.width || 1);
+    var height = Math.max(1, rect && rect.height || 1);
+    if (state.modelKind === 'live2d' && state.modelFitBase) {
+      return {
+        width: Math.max(1, Math.min(width, state.modelFitBase.width || width)),
+        height: Math.max(1, Math.min(height, state.modelFitBase.height || height))
+      };
+    }
+    var target = modelViewTranslateTarget();
+    if (target) {
+      width = Math.max(1, target.offsetWidth || target.clientWidth || width);
+      height = Math.max(1, target.offsetHeight || target.clientHeight || height);
+    }
+    return { width: width, height: height };
+  }
+
   function beginModelDrag(event) {
     if (!els.modelStage || event.button !== 0) return;
     if (event.target && event.target.closest && event.target.closest('.dg-model-controls')) return;
@@ -461,11 +490,9 @@
   function moveModelDrag(event) {
     if (!state.modelDrag || !els.modelStage || state.modelDrag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    var rect = els.modelStage.getBoundingClientRect();
-    var width = Math.max(1, rect.width || 1);
-    var height = Math.max(1, rect.height || 1);
-    var dx = (event.clientX - state.modelDrag.x) / width * 100;
-    var dy = (event.clientY - state.modelDrag.y) / height * 100;
+    var reference = modelViewDragReferenceSize();
+    var dx = (event.clientX - state.modelDrag.x) / reference.width * 100;
+    var dy = (event.clientY - state.modelDrag.y) / reference.height * 100;
     state.modelDrag.x = event.clientX;
     state.modelDrag.y = event.clientY;
     setModelView({
@@ -1201,7 +1228,9 @@
 
   function stopDrawingGuessLipSync() {
     clearTimeout(state.lipSyncRetryTimer);
+    clearTimeout(state.lipSyncStopTimer);
     state.lipSyncRetryTimer = null;
+    state.lipSyncStopTimer = null;
     state.lipSyncRetryDeadline = 0;
     if (state.lipSyncDriver === 'vrm' && state.vrmManager && state.vrmManager.animation &&
         typeof state.vrmManager.animation.stopLipSync === 'function') {
@@ -1315,10 +1344,32 @@
     state.lipSyncRetryTimer = setTimeout(retry, 120);
   }
 
+  function isSpeechPlaybackAudible(detail) {
+    if (!detail || !detail.active) return false;
+    var remaining = Number(detail.remainingSeconds || 0);
+    if (remaining > 0.05) return true;
+    var scheduledEnd = Number(detail.scheduledEndAudioTime || detail.playbackEndAudioTime || 0);
+    var audioTime = Number(detail.audioContextTime || 0);
+    return scheduledEnd > 0 && audioTime > 0 && scheduledEnd - audioTime > 0.05;
+  }
+
+  function armDrawingGuessLipSyncStop(detail) {
+    clearTimeout(state.lipSyncStopTimer);
+    state.lipSyncStopTimer = null;
+    var remaining = Number(detail && detail.remainingSeconds || 0);
+    if (!Number.isFinite(remaining) || remaining <= 0.05) return;
+    var delay = Math.max(140, Math.min(30000, remaining * 1000 + 260));
+    state.lipSyncStopTimer = setTimeout(function () {
+      state.lipSyncStopTimer = null;
+      stopDrawingGuessLipSync();
+    }, delay);
+  }
+
   function handleSpeechPlaybackState(event) {
     var detail = (event && event.detail) || {};
-    if (detail.active) {
+    if (isSpeechPlaybackAudible(detail)) {
       scheduleDrawingGuessLipSyncStart();
+      armDrawingGuessLipSyncStop(detail);
       return;
     }
     stopDrawingGuessLipSync();
@@ -1329,7 +1380,6 @@
       if (typeof window.enqueueIncomingAudioBlob === 'function') {
         window.enqueueIncomingAudioBlob(event.data);
       }
-      scheduleDrawingGuessLipSyncStart();
       return;
     }
     var response = null;
@@ -1677,6 +1727,22 @@
     }, extra || {});
   }
 
+  function pushCanvasContextForRoute(force) {
+    if (!state.routeActive || state.routeEnding) return Promise.resolve(false);
+    var payload = canvasContextPayload(!!force);
+    if (!payload.canvas_image_data_url && !payload.canvas_context_clear) return Promise.resolve(false);
+    var visible = !document.hidden;
+    return post(ROUTE_API + '/route/heartbeat', routePayload(Object.assign({
+      visible: visible,
+      pageVisible: visible,
+      visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
+    }, payload)), 5000).then(function (res) {
+      return !!(res && res.ok !== false);
+    }).catch(function () {
+      return false;
+    });
+  }
+
   function roundPayload(extra) {
     return Object.assign({
       session_id: state.sessionId,
@@ -2004,10 +2070,13 @@
       if (res.state && res.state.phase === 'summary') {
         renderSummary(res);
       } else {
-        setPhase('ai_guess_feedback');
-        setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
-        addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
-        scheduleNextRandomAiGuess();
+        var nextPhase = res.state && res.state.phase ? String(res.state.phase) : 'ai_guess_feedback';
+        setPhase(nextPhase);
+        if (nextPhase === 'ai_guess_feedback') {
+          setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
+          addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
+          scheduleNextRandomAiGuess();
+        }
       }
       return;
     }
@@ -2030,6 +2099,10 @@
         addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
       }
       syncVoiceRouteButton();
+      return;
+    }
+    if (output.type === 'game_canvas_context_request') {
+      pushCanvasContextForRoute(true);
       return;
     }
     if (output.type === 'game_external_input') {
@@ -2146,6 +2219,7 @@
 
   function endRoute(useBeacon, options) {
     options = options || {};
+    var completedRoute = !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary';
     clearNekoVoiceQueue();
     stopSpeechAudioSocket();
     stopRouteDrain();
@@ -2163,9 +2237,9 @@
     updateControls();
     clearInterval(state.heartbeatTimer);
     var payload = JSON.stringify(routePayload({
-      reason: options.finalSummary || state.phase === 'summary' ? 'drawing_guess_game_over' : 'drawing_guess_abandoned',
-      roundCompleted: !!options.finalSummary || state.phase === 'summary',
-      round_completed: !!options.finalSummary || state.phase === 'summary',
+      reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned',
+      roundCompleted: completedRoute,
+      round_completed: completedRoute,
       postgameProactive: false
     }));
     if (useBeacon && navigator.sendBeacon) {
@@ -2244,6 +2318,11 @@
         return '';
       }
     }
+  }
+
+  function persistCurrentUserCanvasSnapshot() {
+    if (!state.hasDrawn) return;
+    state.userPng = captureUserCanvasPng() || state.userPng;
   }
 
   function scheduleNextRandomAiGuess() {
@@ -2480,10 +2559,13 @@
         if (res.state && res.state.phase === 'summary') {
           renderSummary(res);
         } else {
-          setPhase('ai_guess_feedback');
-          setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
-          addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
-          scheduleNextRandomAiGuess();
+          var nextPhase = res.state && res.state.phase ? String(res.state.phase) : 'ai_guess_feedback';
+          setPhase(nextPhase);
+          if (nextPhase === 'ai_guess_feedback') {
+            setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
+            addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
+            scheduleNextRandomAiGuess();
+          }
         }
         return;
       }
@@ -2637,6 +2719,7 @@
     stopThinkingEventMessage();
     stopDrawPickAnimation();
     stopAiGuessSchedule();
+    persistCurrentUserCanvasSnapshot();
     setPhase('summary');
     showSummary();
     var answerLabel = res.answer ? res.answer.label : (state.userDrawAnswer ? state.userDrawAnswer.label : '');
@@ -3988,7 +4071,7 @@
 
   function finishGame() {
     renderFinalSummary();
-    return endRoute(false, { finalSummary: true }).finally(showExitConfirm);
+    showExitConfirm();
   }
 
   function bindEvents() {

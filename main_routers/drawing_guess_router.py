@@ -3040,6 +3040,19 @@ async def _handle_drawing_guess_input_payload_locked(
                 image_data_url=str(data.get("image_data_url") or ""),
                 user_hint=text,
             )
+        if (
+            phase == "user_drawing"
+            and str(data.get("input_kind") or "") == "user-voice"
+            and str(data.get("image_data_url") or "")
+        ):
+            return await _run_drawing_guess_vision_turn(
+                session=session,
+                locale=locale,
+                lanlan_name=lanlan_name,
+                image_data_url=str(data.get("image_data_url") or ""),
+                user_hint=text,
+                live_preview=True,
+            )
         if phase in {"word_picking", "user_drawing", "ai_guess_feedback", "summary"}:
             _append_game_chat(session, "user", text, kind="chat")
             event = "drawing_chat"
@@ -3401,16 +3414,23 @@ async def _run_drawing_guess_vision_turn(
     image_data_url: str,
     user_hint: str,
     settle_on_miss: bool = False,
+    live_preview: bool = False,
 ) -> dict[str, Any]:
     # The raw data URL is intentionally not logged or persisted.
     if user_hint:
-        _append_game_chat(session, "user", user_hint, kind="hint")
+        _append_game_chat(session, "user", user_hint, kind="live_voice_hint" if live_preview else "hint")
     answer = _WORD_BY_ID[str(session["user_word_id"])]
-    attempts = int(session.get("ai_guess_attempts") or 0) + 1
-    session["ai_guess_attempts"] = min(attempts, MAX_AI_GUESS_ATTEMPTS)
+    if live_preview:
+        attempts = int(session.get("live_voice_guess_attempts") or 0) + 1
+        session["live_voice_guess_attempts"] = attempts
+        guess_session = {**session, "ai_guess_attempts": attempts}
+    else:
+        attempts = int(session.get("ai_guess_attempts") or 0) + 1
+        session["ai_guess_attempts"] = min(attempts, MAX_AI_GUESS_ATTEMPTS)
+        guess_session = session
 
     model_guess = await _generate_vision_guess(
-        session=session,
+        session=guess_session,
         locale=locale,
         lanlan_name=lanlan_name,
         image_data_url=image_data_url,
@@ -3418,7 +3438,7 @@ async def _run_drawing_guess_vision_turn(
     )
     if model_guess is None:
         model_guess = await _generate_text_context_guess(
-            session=session,
+            session=guess_session,
             locale=locale,
             lanlan_name=lanlan_name,
             user_hint=user_hint,
@@ -3435,7 +3455,7 @@ async def _run_drawing_guess_vision_turn(
         message = ""
         confidence = 1.0 if correct else 0.2
 
-    round_will_summarize = bool(correct or settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS)
+    round_will_summarize = bool(correct or (not live_preview and (settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS)))
     message_source = source if message else "fallback"
     if round_will_summarize or not message:
         event = "ai_guess_attempt"
@@ -3443,7 +3463,9 @@ async def _run_drawing_guess_vision_turn(
             "guess_label": _word_public(guessed_word, locale)["label"],
             "attempt": attempts,
             "max_attempts": MAX_AI_GUESS_ATTEMPTS,
-            "guess_feedback_pending": True,
+            "guess_feedback_pending": not live_preview,
+            "live_voice_preview": live_preview,
+            "user_is_still_drawing": live_preview,
         }
         if correct:
             line_details.update({
@@ -3469,6 +3491,8 @@ async def _run_drawing_guess_vision_turn(
     if correct:
         session["ai_score"] = 1
         session["phase"] = "summary"
+    elif live_preview:
+        session["phase"] = "user_drawing"
     elif settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS:
         session["phase"] = "summary"
     else:
@@ -3503,7 +3527,7 @@ async def _run_drawing_guess_vision_turn(
         lanlan_name,
         session.get("session_id") or "",
         source,
-        session["ai_guess_attempts"],
+        attempts,
         bool(correct),
     )
     return {
@@ -3512,7 +3536,7 @@ async def _run_drawing_guess_vision_turn(
         "kind": "ai_guess",
         "guess": _word_public(guessed_word, locale),
         "correct": correct,
-        "attempt": session["ai_guess_attempts"],
+        "attempt": attempts if live_preview else session["ai_guess_attempts"],
         "max_attempts": MAX_AI_GUESS_ATTEMPTS,
         "message": message,
         "evaluation": evaluation,
@@ -3520,6 +3544,7 @@ async def _run_drawing_guess_vision_turn(
         "evaluation_source": evaluation_source,
         "confidence": confidence,
         "source": source,
+        "live_preview": live_preview,
         "answer": _word_public(answer, locale) if session["phase"] == "summary" else None,
         "memory": memory_result,
         "can_retry": session["phase"] == "ai_guess_feedback",

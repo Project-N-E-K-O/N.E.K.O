@@ -190,6 +190,10 @@ def test_drawing_guess_static_route_contract():
     assert "function setModelMood" in script
     assert "els.modelState.hidden = !shouldShowModelState;" not in script
     assert "function handleModelWheel" in script
+    assert "function modelViewTranslateTarget" in script
+    assert "function modelViewDragReferenceSize" in script
+    assert "Math.min(width, state.modelFitBase.width || width)" in script
+    assert "target.offsetWidth || target.clientWidth || width" in script
     assert "function beginModelDrag" in script
     assert "function moveModelDrag" in script
     assert "function endModelDrag" in script
@@ -242,15 +246,28 @@ def test_drawing_guess_static_route_contract():
     assert "state.vrmManager.animation.startLipSync(analyser);" in script
     assert "state.mmdManager.animationModule.startLipSync(analyser);" in script
     assert "state.pngtuberManager.setSpeaking(true);" in script
+    assert "lipSyncStopTimer: null" in script
+    assert "function isSpeechPlaybackAudible" in script
+    assert "function armDrawingGuessLipSyncStop" in script
+    assert "if (isSpeechPlaybackAudible(detail))" in script
+    assert "scheduleDrawingGuessLipSyncStart();\n      return;\n    }\n    var response" not in script
     assert "ROUTE_API + '/route/start'" in script
     assert "ROUTE_API + '/route/heartbeat'" in script
     assert "ROUTE_API + '/route/end'" in script
+    assert "function pushCanvasContextForRoute" in script
+    assert "canvasContextPayload(!!force)" in script
+    assert "output.type === 'game_canvas_context_request'" in script
     assert "ROUND_API + '/round/start'" in script
     assert "ROUND_API + '/ai-draw'" in script
     assert "ROUND_API + '/input'" in script
     assert "ROUND_API + '/choose-word'" in script
     assert "ROUND_API + '/timeout'" in script
     assert "ROUND_API + '/vision-guess'" in script
+    assert "var completedRoute = !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary';" in script
+    assert "reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned'" in script
+    assert "roundCompleted: completedRoute" in script
+    assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
+    assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
     assert "function handleVoiceRouteButton" in script
     assert "game_voice_stt_gate" in script
@@ -278,6 +295,13 @@ def test_drawing_guess_static_route_contract():
     assert "els.debugRotateRounds.addEventListener('change'" in script
     assert 'value="saved"' not in html
     assert 'drawingGuess.tutorial.memorySaved' not in html
+    assert "dg-tutorial-guide" in html
+    assert "dg-tutorial-voice" in html
+    assert "drawingGuess.tutorial.quickTitle" in html
+    assert "drawingGuess.tutorial.quickDraw" in html
+    assert "drawingGuess.tutorial.quickGuess" in html
+    assert "drawingGuess.tutorial.quickSummary" in html
+    assert "drawingGuess.tutorial.voiceHint" in html
     assert "function normalizeMemoryConsent" in script
     assert "memory_consent: state.memoryConsent" in script
     assert "gameStarted: state.phase !== 'tutorial'" in script
@@ -396,6 +420,8 @@ def test_drawing_guess_static_route_contract():
     assert "function triggerSupplementGuess" in script
     assert "drawingGuess.messages.userSupplemented" not in script
     assert "function captureUserCanvasPng" in script
+    assert "function persistCurrentUserCanvasSnapshot" in script
+    assert "persistCurrentUserCanvasSnapshot();\n    setPhase('summary');" in script
     assert "state.pendingSupplementImage = state.userPng || ''" in script
     assert "postVisionGuess('', { supplement: true, image_data_url: state.userPng })" in script
     assert "state.pendingSupplementGuess = true" in script
@@ -437,10 +463,20 @@ def test_drawing_guess_static_route_contract():
     assert "drawingGuess.summary.userDrawAnswer" not in script
     assert "function renderFinalSummary" in script
     assert "function finishGame" in script
-    assert "endRoute(false, { finalSummary: true })" in script
+    assert "endRoute(false, { finalSummary: true })" not in script
     assert "els.summary.classList.toggle('dg-summary-final', !!finalSummary);" in script
     assert "dg-summary-list" in script
     assert ".dg-summary.dg-summary-final" in html
+    assert "display: block;" in html
+    assert "padding-bottom: 16px;" in html
+    assert ".dg-summary.dg-summary-final .dg-round-summary" in html
+    assert ".dg-summary.dg-summary-final .dg-summary-grid" in html
+    assert ".dg-summary.dg-summary-final .dg-thumb" in html
+    assert "grid-template-rows: auto auto auto;" in html
+    assert ".dg-summary.dg-summary-final .dg-thumb-preview" in html
+    assert "aspect-ratio: 4 / 3;" in html
+    assert "width: 100%;" in html
+    assert "height: auto;" in html
     assert ".dg-summary:not(.dg-summary-final) .dg-summary-list" in html
     assert "overflow: hidden;" in html
     assert "state.phase !== 'final_summary'" in script
@@ -466,7 +502,7 @@ def test_drawing_guess_static_route_contract():
 def test_drawing_guess_locale_cache_version_bumped_for_memory_two_options():
     script = _i18n_script()
 
-    assert "2026-06-28-drawing-guess-ai-feedback-i18n" in script
+    assert "2026-06-29-drawing-guess-tutorial-voice-i18n" in script
 
 
 @pytest.mark.unit
@@ -484,6 +520,11 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.tools.historyColors",
         "drawingGuess.tutorial.memoryNone",
         "drawingGuess.tutorial.memorySummary",
+        "drawingGuess.tutorial.quickTitle",
+        "drawingGuess.tutorial.quickDraw",
+        "drawingGuess.tutorial.quickGuess",
+        "drawingGuess.tutorial.quickSummary",
+        "drawingGuess.tutorial.voiceHint",
         "drawingGuess.actions.done",
         "drawingGuess.actions.downloadPng",
         "drawingGuess.exitConfirm.title",

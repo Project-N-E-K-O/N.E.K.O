@@ -5224,7 +5224,12 @@
             "intro": "This round has one drawing and one guess for each of us. You can chat while drawing; after 5 minutes, the current canvas is handed to her automatically.",
             "memoryTitle": "Memory options",
             "memoryNone": "Do not record this; only play this time.",
-            "memorySummary": "Record one short game summary."
+            "memorySummary": "Record one short game summary.",
+            "quickTitle": "Quick guide",
+            "quickDraw": "When it is your turn to draw, pick one card, draw it on the canvas, then press Done.",
+            "quickGuess": "When it is your turn to guess, type your guess in chat; you can also chat and ask for hints.",
+            "quickSummary": "Each round keeps thumbnails, and the final summary lets you download the drawings.",
+            "voiceHint": "If you want to use voice, turn it on from the main page first; this mini-game will take it over after it starts."
         },
         "actions": {
             "start": "Start",

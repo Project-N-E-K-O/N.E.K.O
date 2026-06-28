@@ -7877,6 +7877,7 @@ async def _route_external_transcript_to_game(
         mode,
         {"request_id": request_id or ""},
     )
+    mirror_user_to_frontend = kind == "user-voice" and game_type != "drawing_guess"
     if mgr and hasattr(mgr, "mirror_user_input"):
         await mgr.mirror_user_input(
             text,
@@ -7892,7 +7893,7 @@ async def _route_external_transcript_to_game(
                 if kind == "user-voice"
                 else MIRROR_USER_TEXT_INPUT_TYPE
             ),
-            send_to_frontend=kind == "user-voice",
+            send_to_frontend=mirror_user_to_frontend,
         )
     if mgr and hasattr(mgr, "send_user_activity"):
         try:
@@ -8171,6 +8172,23 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
         return True
 
     if input_type in {"screen", "camera"}:
+        if game_type == "drawing_guess":
+            _store_route_canvas_context(state, message, game_type)
+            now = time.time()
+            last_request_at = float(state.get("_last_canvas_context_request_at") or 0)
+            if now - last_request_at >= 0.75:
+                state["_last_canvas_context_request_at"] = now
+                _append_game_output(state, {
+                    "type": "game_canvas_context_request",
+                    "source": "external_media_hijacked_by_game",
+                    "request_id": request_id or "",
+                    "ts": now,
+                    "meta": {
+                        "input_type": input_type,
+                        "game_type": game_type,
+                    },
+                })
+            return True
         if mgr and hasattr(mgr, "send_status"):
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_MEDIA_SKIPPED",

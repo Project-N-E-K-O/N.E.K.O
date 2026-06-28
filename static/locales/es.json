@@ -5224,7 +5224,12 @@
             "intro": "En esta ronda cada persona dibuja una vez y adivina una vez. Puedes chatear mientras dibujas; tras 5 minutos, el lienzo actual se le entrega automáticamente.",
             "memoryTitle": "Opciones de memoria",
             "memoryNone": "No registrar; solo jugar esta vez.",
-            "memorySummary": "Registrar un breve resumen del juego."
+            "memorySummary": "Registrar un breve resumen del juego.",
+            "quickTitle": "Guía rápida",
+            "quickDraw": "Cuando te toque dibujar, elige una carta, dibuja en el lienzo y pulsa Listo.",
+            "quickGuess": "Cuando te toque adivinar, escribe tu respuesta en el chat; también puedes conversar y pedir pistas.",
+            "quickSummary": "Cada ronda conserva miniaturas, y en el resumen final puedes descargar los dibujos.",
+            "voiceHint": "Si quieres usar voz, actívala primero en la página principal; este minijuego la tomará al comenzar."
         },
         "actions": {
             "start": "Empezar",
