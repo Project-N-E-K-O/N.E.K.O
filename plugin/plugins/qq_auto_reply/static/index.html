@@ -139,6 +139,15 @@
                     <span data-i18n="ui.config.show_napcat_window.hint">勾选为前台启动（显示 NapCat 控制台），取消为后台启动。</span>
                 </label>
             </div>
+            <div class="form-group">
+                <label class="field-label" for="cfg-reply-mode">回复模式</label>
+                <select id="cfg-reply-mode" class="input-control">
+                    <option value="text">纯文本</option>
+                    <option value="voice">纯语音</option>
+                    <option value="both">复合发送</option>
+                </select>
+                <div class="field-hint">当前仅保存该配置；语音发送能力后续接入。</div>
+            </div>
             <div class="config-divider"></div>
             <span class="status-title" data-i18n="ui.probability.section">回复概率设置</span>
             <p class="inline-note" data-i18n="ui.probability.summary">这两个概率只影响未来消息的触发行为，取值范围为 0 到 1。</p>
