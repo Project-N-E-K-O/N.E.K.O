@@ -5228,7 +5228,7 @@
             "quickTitle": "Guia rápido",
             "quickDraw": "Quando for sua vez de desenhar, escolha uma carta, desenhe na tela e pressione Pronto.",
             "quickGuess": "Quando for sua vez de adivinhar, digite seu palpite no chat; você também pode conversar e pedir dicas.",
-            "quickSummary": "Cada rodada guarda miniaturas, e o resumo final permite baixar os desenhos.",
+            "quickSummary": "Cada rodada guarda miniaturas, e o resumo final permite salvar os desenhos.",
             "voiceHint": "Se quiser usar voz, ative-a primeiro na página principal; este minijogo assumirá a voz depois de começar."
         },
         "actions": {

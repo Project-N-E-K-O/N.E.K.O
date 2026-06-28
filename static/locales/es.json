@@ -5228,7 +5228,7 @@
             "quickTitle": "Guía rápida",
             "quickDraw": "Cuando te toque dibujar, elige una carta, dibuja en el lienzo y pulsa Listo.",
             "quickGuess": "Cuando te toque adivinar, escribe tu respuesta en el chat; también puedes conversar y pedir pistas.",
-            "quickSummary": "Cada ronda conserva miniaturas, y en el resumen final puedes descargar los dibujos.",
+            "quickSummary": "Cada ronda conserva miniaturas, y en el resumen final puedes guardar los dibujos.",
             "voiceHint": "Si quieres usar voz, actívala primero en la página principal; este minijuego la tomará al comenzar."
         },
         "actions": {

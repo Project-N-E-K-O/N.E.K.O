@@ -5228,7 +5228,7 @@
             "quickTitle": "Quick guide",
             "quickDraw": "When it is your turn to draw, pick one card, draw it on the canvas, then press Done.",
             "quickGuess": "When it is your turn to guess, type your guess in chat; you can also chat and ask for hints.",
-            "quickSummary": "Each round keeps thumbnails, and the final summary lets you download the drawings.",
+            "quickSummary": "Each round keeps thumbnails, and the final summary lets you save the drawings.",
             "voiceHint": "If you want to use voice, turn it on from the main page first; this mini-game will take it over after it starts."
         },
         "actions": {
