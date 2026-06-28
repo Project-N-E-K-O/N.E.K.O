@@ -4220,8 +4220,6 @@
         };
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
             payload.cursor = patch.cursor || null;
-        } else {
-            payload.cursor = yuiGuidePcOverlayCursor;
         }
         var runId = resolveYuiGuidePcOverlayRunIdForSend(
             sendOptions.tutorialRunId,

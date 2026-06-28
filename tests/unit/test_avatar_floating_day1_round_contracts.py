@@ -301,6 +301,7 @@ def test_day6_round_wrap_returns_to_capsule_input_like_day2_wrap():
     assert_scene_order(round_block, EXPECTED_DAY6_SCENES)
     assert "除了之前介绍的功能，这里还有超多好玩的插件呢。" in plugin_side_panel_block
     assert "除了之前介绍的功能，这里还有超多好玩的插件呢'," not in plugin_side_panel_block
+    assert "afterSceneDelayMs: 0" in plugin_side_panel_block
     assert "target: '#agent-task-hud'" in task_hud_block
     assert "cursorAction: 'move'" in task_hud_block
     assert "cursorAction: 'tour'" not in task_hud_block
@@ -605,7 +606,7 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
     assert "function withoutTransientYuiGuideCursorEffect(cursor)" in source
     assert "yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);" in bridge_block
     assert "payload.cursor = patch.cursor || null;" in bridge_block
-    assert "payload.cursor = yuiGuidePcOverlayCursor;" in bridge_block
+    assert "payload.cursor = yuiGuidePcOverlayCursor;" not in bridge_block
 
 
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():

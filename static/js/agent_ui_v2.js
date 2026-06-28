@@ -56,7 +56,8 @@
     };
     const setStatus = (msg) => {
         const { status } = el();
-        status.forEach(s => { if (s) s.textContent = msg || ''; });
+        const text = window.isInTutorial === true ? 'NekoClaw server ready' : (msg || '');
+        status.forEach(s => { if (s) s.textContent = text; });
     };
     const currentLanlanName = () => {
         const fromConfig = window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string'
