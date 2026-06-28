@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -59,20 +60,30 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     universal_source = _read_manager()
     page_source = _read_page_manager()
 
-    for page_key in (
-        "'model_manager'",
-        "'model_manager_live2d'",
-        "'model_manager_vrm'",
-        "'model_manager_mmd'",
-        "'parameter_editor'",
-        "'emotion_manager'",
-        "'chara_manager'",
-        "'settings'",
-        "'voice_clone'",
-        "'steam_workshop'",
-        "'memory_browser'",
-    ):
-        assert page_key in universal_source
+    page_tutorial_page_keys = (
+        "model_manager",
+        "parameter_editor",
+        "emotion_manager",
+        "chara_manager",
+        "settings",
+        "voice_clone",
+        "memory_browser",
+        "steam_workshop",
+    )
+    universal_storage_page_keys = page_tutorial_page_keys + (
+        "model_manager_live2d",
+        "model_manager_vrm",
+        "model_manager_mmd",
+    )
+    for page_key in universal_storage_page_keys:
+        assert f"'{page_key}'" in universal_source
+
+    supported_pages_block = page_source.split("const SUPPORTED_PAGES = Object.freeze([", 1)[1].split(
+        "    ]);",
+        1,
+    )[0]
+    supported_pages = tuple(re.findall(r"'([^']+)'", supported_pages_block))
+    assert supported_pages == page_tutorial_page_keys
 
     fallback_block = universal_source.split("function getTutorialStorageKeysForPageFallback(pageKey) {", 1)[1].split(
         "    if (pageKey === 'home')",
@@ -175,10 +186,13 @@ def test_restored_driver_animation_keyframes_are_namespaced():
     driver_css = _read_driver_css()
     tutorial_styles = _read_tutorial_styles()
     combined = driver_css + "\n" + tutorial_styles
+    animation_declarations = re.findall(r"\banimation(?:-name)?\s*:\s*([^;}]+)", combined)
 
     for obsolete_name in ("fadeIn", "slideIn", "pulse"):
         assert f"@keyframes {obsolete_name}" not in combined
         assert f"animation: {obsolete_name}" not in combined
+        obsolete_keyframe_ref = re.compile(rf"(?<![-\w]){re.escape(obsolete_name)}(?![-\w])")
+        assert all(not obsolete_keyframe_ref.search(declaration) for declaration in animation_declarations)
 
     for keyframe_name in (
         "neko-page-tutorial-fade-in",
