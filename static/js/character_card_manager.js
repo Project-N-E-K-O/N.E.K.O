@@ -3205,7 +3205,7 @@ function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
     return merged;
 }
 
-function syncCharacterCardCache(catgirlName, rawData) {
+function syncCharacterCardCache(catgirlName, rawData, options = {}) {
     if (!catgirlName) return;
     if (!Array.isArray(window.characterCards)) {
         window.characterCards = [];
@@ -3224,7 +3224,9 @@ function syncCharacterCardCache(catgirlName, rawData) {
     globalCharacterCards = window.characterCards || [];
 
     refreshCharacterCardSelectOptions();
-    renderCharaCardsView();
+    if (options.render !== false) {
+        renderCharaCardsView();
+    }
 }
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
@@ -7023,7 +7025,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         }
         const localRawData = buildLocalCatgirlRawData(savedCatgirlName, data, fieldOrder);
         let savedRawDataForCache = localRawData;
-        syncCharacterCardCache(savedCatgirlName, localRawData);
+        syncCharacterCardCache(savedCatgirlName, localRawData, { render: !shouldSelectAfterSave });
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -7123,9 +7125,16 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
+        let selectedAfterSave = !shouldSelectAfterSave;
         if (shouldSelectAfterSave) {
             try {
-                await applyCurrentCatgirlSelection(savedCatgirlName, { showError: true });
+                selectedAfterSave = await applyCurrentCatgirlSelection(savedCatgirlName, { showError: false });
+                if (!selectedAfterSave) {
+                    showMessage(
+                        window.t ? window.t('character.switchFailed') : '切换失败',
+                        'warning'
+                    );
+                }
             } catch (switchError) {
                 console.warn('[角色面板] 新建角色已保存，但自动切换当前角色失败:', switchError);
                 showMessage(
@@ -7135,9 +7144,11 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
-        showMessage(isNew
-            ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
-            : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        if (!shouldSelectAfterSave || selectedAfterSave) {
+            showMessage(isNew
+                ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
+                : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        }
         if (isNew) {
             const catgirlName = savedCatgirlName;
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
