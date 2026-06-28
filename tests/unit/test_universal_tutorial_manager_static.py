@@ -7,6 +7,7 @@ UNIVERSAL_TUTORIAL_MANAGER_PATH = (
 PAGE_TUTORIAL_MANAGER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/page-tutorial-manager.js"
 )
+DRIVER_PATH = Path(__file__).resolve().parents[2] / "static" / "libs/driver.min.js"
 
 
 def _read_manager() -> str:
@@ -15,6 +16,10 @@ def _read_manager() -> str:
 
 def _read_page_manager() -> str:
     return PAGE_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+
+def _read_driver() -> str:
+    return DRIVER_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -54,6 +59,7 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
         "'chara_manager'",
         "'settings'",
         "'voice_clone'",
+        "'steam_workshop'",
         "'memory_browser'",
     ):
         assert page_key in universal_source
@@ -80,6 +86,51 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "getSettingsSteps()" in page_source
     assert "getVoiceCloneSteps()" in page_source
     assert "getMemoryBrowserSteps()" in page_source
+    assert "'steam_workshop': window.t ? window.t('steam.workshop', 'Steam创意工坊')" in universal_source
+
+
+def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
+    page_source = _read_page_manager()
+
+    assert "const YUI_HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';" in page_source
+    assert "function parseYuiHandoffToken(rawToken)" in page_source
+    assert "function isActiveYuiHandoffTokenForPage(rawToken, pageKey)" in page_source
+    assert "if (token.consumed) return false;" in page_source
+    assert "Date.now() > expiresAt" in page_source
+    assert "return !!targetPage && targetPage === pageKey;" in page_source
+
+    handoff_block = page_source.split("hasActiveYuiHandoff() {", 1)[1].split(
+        "        checkAndStartTutorial() {",
+        1,
+    )[0]
+    assert "window.universalTutorialManager._yuiGuideHandoffToken" in handoff_block
+    assert "localStorage.getItem(YUI_HANDOFF_STORAGE_KEY)" in handoff_block
+    assert "return isActiveYuiHandoffTokenForPage(token, this.currentPage);" in handoff_block
+
+
+def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
+    source = _read_driver()
+
+    assert "console.log(" not in source
+    assert "cleanupDragHandlers()" in source
+    assert "this.cleanupDragHandlers();" in source
+
+    remove_popover_block = source.split("        removePopover() {", 1)[1].split(
+        "        destroy() {",
+        1,
+    )[0]
+    assert "this.cleanupDragHandlers();" in remove_popover_block
+    assert "this.popover.classList.remove('dragging');" in remove_popover_block
+
+    bind_drag_block = source.split("        bindDragEvents(dragHandle, popover) {", 1)[1].split(
+        "    // 暴露到全局",
+        1,
+    )[0]
+    assert "this.cleanupDragHandlers();" in bind_drag_block
+    assert "dragHandle.addEventListener('mousedown', handleDragStart);" in bind_drag_block
+    assert "document.addEventListener('mouseup', handleDragEnd);" in bind_drag_block
+    assert "dragHandle," in bind_drag_block
+    assert "handleDragStart," in bind_drag_block
 
 
 def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():

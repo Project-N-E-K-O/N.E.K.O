@@ -3845,6 +3845,7 @@ async function resetTutorialForPage(pageKey) {
         'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
         'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
         'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
+        'steam_workshop': window.t ? window.t('steam.workshop', 'Steam创意工坊') : 'Steam创意工坊',
         'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
         'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };

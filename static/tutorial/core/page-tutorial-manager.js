@@ -8,6 +8,7 @@
     'use strict';
 
     const PAGE_STORAGE_PREFIX = 'neko_tutorial_';
+    const YUI_HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
     const SUPPORTED_PAGES = Object.freeze([
         'model_manager',
         'parameter_editor',
@@ -48,6 +49,29 @@
                 timestamp: Date.now()
             }
         }));
+    }
+
+    function parseYuiHandoffToken(rawToken) {
+        if (!rawToken) return null;
+        if (typeof rawToken === 'object') return rawToken;
+        if (typeof rawToken !== 'string') return null;
+        try {
+            return JSON.parse(rawToken);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function isActiveYuiHandoffTokenForPage(rawToken, pageKey) {
+        const token = parseYuiHandoffToken(rawToken);
+        if (!token || !token.token) return false;
+        if (token.consumed) return false;
+
+        const expiresAt = Number(token.expires_at);
+        if (Number.isFinite(expiresAt) && Date.now() > expiresAt) return false;
+
+        const targetPage = typeof token.target_page === 'string' ? token.target_page.trim() : '';
+        return !!targetPage && targetPage === pageKey;
     }
 
     class PageTutorialManager {
@@ -242,14 +266,14 @@
 
         hasActiveYuiHandoff() {
             try {
-                if (
-                    window.universalTutorialManager
-                    && window.universalTutorialManager._yuiGuideHandoffToken
-                ) {
+                if (isActiveYuiHandoffTokenForPage(
+                    window.universalTutorialManager && window.universalTutorialManager._yuiGuideHandoffToken,
+                    this.currentPage
+                )) {
                     return true;
                 }
-                const token = localStorage.getItem('neko_yui_guide_handoff_token');
-                return !!token;
+                const token = localStorage.getItem(YUI_HANDOFF_STORAGE_KEY);
+                return isActiveYuiHandoffTokenForPage(token, this.currentPage);
             } catch (error) {
                 return false;
             }
