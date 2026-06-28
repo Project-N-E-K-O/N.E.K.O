@@ -1086,6 +1086,38 @@ def test_legacy_tutorial_pages_use_separate_page_tutorial_runtime():
         assert "tutorial/core/page-tutorial-manager.js" in source
         assert "initPageTutorialManager" in source
 
+    for template_path in (
+        "templates/api_key_settings.html",
+        "templates/memory_browser.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "tutorial/core/universal-manager.js" in source
+        assert "driver.min.js" in source
+        assert "driver.min.css" in source
+        assert "tutorial-styles.css" in source
+        assert "tutorial/core/page-tutorial-manager.js" in source
+        assert "initPageTutorialManager" in source
+
+
+def test_restored_page_tutorial_helpers_use_static_asset_version():
+    for template_path in (
+        "templates/live2d_emotion_manager.html",
+        "templates/mmd_emotion_manager.html",
+        "templates/vrm_emotion_manager.html",
+        "templates/model_manager.html",
+        "templates/live2d_parameter_editor.html",
+        "templates/character_card_manager.html",
+        "templates/voice_clone.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        for helper_path in (
+            "/static/tutorial/core/skip-controller.js",
+            "/static/tutorial/avatar/reload-controller.js",
+            "/static/tutorial/core/lifecycle-state-store.js",
+        ):
+            assert f'{helper_path}?v={{' in source, (template_path, helper_path)
+            assert f'src="{helper_path}"></script>' not in source, (template_path, helper_path)
+
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 

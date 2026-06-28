@@ -9,7 +9,7 @@
     background: none;
     overflow: visible;
     z-index: 100002;
-    animation: fadeIn 0.3s ease-out;
+    animation: neko-page-tutorial-fade-in 0.3s ease-out;
     pointer-events: none;
 }
 
@@ -18,7 +18,7 @@
     border: 2px solid #44b7fe;
     border-radius: 8px;
     z-index: 100003;
-    animation: pulse 2s infinite;
+    animation: neko-page-tutorial-pulse 2s infinite;
     pointer-events: none;
 }
 
@@ -32,7 +32,7 @@
     z-index: 100004;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(10px);
-    animation: slideIn 0.3s ease-out;
+    animation: neko-page-tutorial-slide-in 0.3s ease-out;
 }
 
 .driver-popover-title {
@@ -109,7 +109,7 @@
     transform: translateY(-2px);
 }
 
-@keyframes fadeIn {
+@keyframes neko-page-tutorial-fade-in {
     from {
         opacity: 0;
     }
@@ -118,7 +118,7 @@
     }
 }
 
-@keyframes slideIn {
+@keyframes neko-page-tutorial-slide-in {
     from {
         opacity: 0;
         transform: translateY(-10px) scale(0.95);
@@ -129,7 +129,7 @@
     }
 }
 
-@keyframes pulse {
+@keyframes neko-page-tutorial-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(68, 183, 254, 0.7); }
     50%       { box-shadow: 0 0 0 10px rgba(68, 183, 254, 0); }
 }

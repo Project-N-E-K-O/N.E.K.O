@@ -95,14 +95,14 @@
             if (path === '/' || path === '/index.html' || path === '/chat') {
                 return 'home';
             }
-            if (path.includes('model_manager') || path.includes('l2d')) {
-                return 'model_manager';
-            }
             if (path.includes('parameter_editor')) {
                 return 'parameter_editor';
             }
             if (path.includes('emotion_manager')) {
                 return 'emotion_manager';
+            }
+            if (path.includes('model_manager') || path === '/l2d') {
+                return 'model_manager';
             }
             if (path.includes('character_card_manager') || path.includes('chara_manager')) {
                 return 'chara_manager';
@@ -891,9 +891,8 @@
             return new Promise((resolve) => {
                 const start = Date.now();
                 const check = () => {
-                    const hasContainer = !!document.querySelector('#character-cards-content, #chara-cards-container');
                     const hasCard = !!document.querySelector('.chara-card-item, .chara-list-item');
-                    if (hasCard || hasContainer || Date.now() - start >= maxWaitTime) {
+                    if (hasCard || Date.now() - start >= maxWaitTime) {
                         resolve();
                         return;
                     }

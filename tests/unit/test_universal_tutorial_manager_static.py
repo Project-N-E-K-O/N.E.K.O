@@ -8,6 +8,8 @@ PAGE_TUTORIAL_MANAGER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/page-tutorial-manager.js"
 )
 DRIVER_PATH = Path(__file__).resolve().parents[2] / "static" / "libs/driver.min.js"
+DRIVER_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "libs/driver.min.css"
+TUTORIAL_STYLES_PATH = Path(__file__).resolve().parents[2] / "static" / "css/tutorial-styles.css"
 
 
 def _read_manager() -> str:
@@ -20,6 +22,14 @@ def _read_page_manager() -> str:
 
 def _read_driver() -> str:
     return DRIVER_PATH.read_text(encoding="utf-8")
+
+
+def _read_driver_css() -> str:
+    return DRIVER_CSS_PATH.read_text(encoding="utf-8")
+
+
+def _read_tutorial_styles() -> str:
+    return TUTORIAL_STYLES_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -88,6 +98,22 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "getMemoryBrowserSteps()" in page_source
     assert "'steam_workshop': window.t ? window.t('steam.workshop', 'Steam创意工坊')" in universal_source
 
+    detect_block = page_source.split("        static detectPage() {", 1)[1].split(
+        "        static getModelManagerDisplayMode() {",
+        1,
+    )[0]
+    assert detect_block.index("path.includes('parameter_editor')") < detect_block.index("path === '/l2d'")
+    assert detect_block.index("path.includes('emotion_manager')") < detect_block.index("path === '/l2d'")
+    assert "path.includes('l2d')" not in detect_block
+
+    character_wait_block = page_source.split("        waitForCharacterCards(maxWaitTime = 5000) {", 1)[1].split(
+        "    function resetPageTutorialStorage(pageKey) {",
+        1,
+    )[0]
+    assert "const hasCard = !!document.querySelector('.chara-card-item, .chara-list-item');" in character_wait_block
+    assert "hasCard || Date.now() - start >= maxWaitTime" in character_wait_block
+    assert "hasCard || hasContainer" not in character_wait_block
+
 
 def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
     page_source = _read_page_manager()
@@ -131,6 +157,23 @@ def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
     assert "document.addEventListener('mouseup', handleDragEnd);" in bind_drag_block
     assert "dragHandle," in bind_drag_block
     assert "handleDragStart," in bind_drag_block
+
+
+def test_restored_driver_animation_keyframes_are_namespaced():
+    driver_css = _read_driver_css()
+    tutorial_styles = _read_tutorial_styles()
+    combined = driver_css + "\n" + tutorial_styles
+
+    for obsolete_name in ("fadeIn", "slideIn", "pulse"):
+        assert f"@keyframes {obsolete_name}" not in combined
+        assert f"animation: {obsolete_name}" not in combined
+
+    for keyframe_name in (
+        "neko-page-tutorial-fade-in",
+        "neko-page-tutorial-slide-in",
+        "neko-page-tutorial-pulse",
+    ):
+        assert keyframe_name in combined
 
 
 def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
