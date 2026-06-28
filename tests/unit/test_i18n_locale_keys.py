@@ -36,6 +36,17 @@ PNG_TUBER_PREVIEW_LABELS = {
     "pt.json": ("Testar fala", "Prévia de estado"),
 }
 
+PNG_TUBER_UPLOAD_LABELS = {
+    "zh-CN.json": ("导入工程文件", "导入文件夹"),
+    "zh-TW.json": ("導入工程檔案", "導入資料夾"),
+    "en.json": ("Import Project File", "Import Folder"),
+    "ja.json": ("プロジェクトファイルをインポート", "フォルダーをインポート"),
+    "ko.json": ("프로젝트 파일 가져오기", "폴더 가져오기"),
+    "ru.json": ("Импорт файла проекта", "Импорт папки"),
+    "es.json": ("Importar archivo de proyecto", "Importar carpeta"),
+    "pt.json": ("Importar arquivo de projeto", "Importar pasta"),
+}
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
@@ -132,6 +143,23 @@ def test_pngtuber_preview_labels_are_localized():
         actual = (
             live2d.get("pngtuberTalkPreview") if isinstance(live2d, dict) else None,
             live2d.get("pngtuberStatePreview") if isinstance(live2d, dict) else None,
+        )
+        if actual != expected:
+            mismatches[locale_name] = actual
+
+    assert mismatches == {}
+
+
+@pytest.mark.unit
+def test_pngtuber_upload_choice_labels_are_localized():
+    mismatches: dict[str, tuple[str | None, str | None]] = {}
+
+    for locale_name, expected in PNG_TUBER_UPLOAD_LABELS.items():
+        data = json.loads((LOCALES_DIR / locale_name).read_text(encoding="utf-8"))
+        live2d = data.get("live2d") if isinstance(data, dict) else None
+        actual = (
+            live2d.get("pngtuberImportProjectFile") if isinstance(live2d, dict) else None,
+            live2d.get("pngtuberImportFolder") if isinstance(live2d, dict) else None,
         )
         if actual != expected:
             mismatches[locale_name] = actual
