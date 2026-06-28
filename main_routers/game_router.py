@@ -304,6 +304,7 @@ _game_sessions: Dict[str, dict] = {}
 _GAME_SPEECH_TAP_KEY = "game_route_speech"
 _game_speech_subscribers: Dict[tuple[str, str, str], set[WebSocket]] = {}
 _game_speech_subscribers_lock = asyncio.Lock()
+_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS = 20.0
 
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
@@ -7212,7 +7213,13 @@ async def game_route_speech_ws(game_type: str, websocket: WebSocket):
             "session_id": session_id,
         })
         while True:
-            await websocket.receive_text()
+            try:
+                await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                pass
             active_state = _get_active_game_route_state(lanlan_name, game_type)
             if not active_state or str(active_state.get("session_id") or "") != session_id:
                 await websocket.close(code=1000)

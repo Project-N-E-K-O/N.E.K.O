@@ -5255,7 +5255,7 @@
             "connectedNotice": "メイン画面の音声がこのラウンドに接続されました。",
             "connectHintNotice": "先にメイン画面で音声をオンにしてください。有効になるとこのラウンドが自動で引き継ぎます。",
             "routeNotReady": "音声を使う前にゲームルートの準備を待ってください。",
-            "buttonLabel": "Voice chat"
+            "buttonLabel": "音声チャット"
         },
         "exitConfirm": {
             "title": "このページを離れる？",
@@ -5332,7 +5332,7 @@
             "drawingPlaceholder": "描きながら話せます",
             "hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
             "summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ",
-            "ariaLabel": "Chat input"
+            "ariaLabel": "チャット入力"
         },
         "timer": {
             "seconds": "{{seconds}} 秒"
