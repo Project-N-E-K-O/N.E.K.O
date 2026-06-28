@@ -9,6 +9,7 @@ import pytest
 
 from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerIdentity
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
+from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
 
 
 class ConfigApi:
@@ -665,6 +666,32 @@ def test_record_result_uses_live_event_type_for_signal_observation(
 
 
 @pytest.mark.asyncio
+async def test_handle_live_payload_records_gift_as_signal_only_without_avatar_roast(runtime: RoastRuntime) -> None:
+    runtime.config.dry_run = False
+    runtime.config.live_mode = "solo_stream"
+    runtime.config.live_enabled = True
+    runtime.bili_live_ingest = BiliLiveIngestModule()
+    runtime.bili_live_ingest.ctx = runtime
+
+    result = await runtime.handle_live_payload(
+        {
+            "uid": "42",
+            "nickname": "viewer",
+            "text": "sent a small gift",
+            "event_type": "gift",
+        }
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "live_event_signal.unsupported_gift"
+    latest = runtime.recent_results[-1]
+    assert latest["event_signal"] == "gift_signal"
+    assert latest["response_module"] == "gift_signal"
+    assert latest["event"]["event_type"] == "gift"
+    assert all(step["id"] != "avatar_roast" for step in latest["steps"])
+
+
+@pytest.mark.asyncio
 async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -958,8 +985,12 @@ def test_idle_hosting_event_rotates_host_beats(runtime: RoastRuntime) -> None:
     beats = [event.raw["host_beat"] for event in events]
 
     assert len({beat["key"] for beat in beats}) == 4
+    assert len({beat["fun_axis"] for beat in beats}) >= 4
+    assert all(left["fun_axis"] != right["fun_axis"] for left, right in zip(beats, beats[1:]))
     assert all(beat["shape"] for beat in beats)
+    assert all(beat["fun_axis"] for beat in beats)
     assert all(beat["hint"] for beat in beats)
+    assert all(beat["reply_affordance"] for beat in beats)
 
 
 def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime) -> None:
@@ -969,7 +1000,9 @@ def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime)
 
     assert public["host_beat_key"]
     assert public["host_beat_shape"]
+    assert public["host_beat_fun_axis"]
     assert public["host_beat_title"]
+    assert public["host_beat_reply_affordance"]
 
 
 def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: RoastRuntime) -> None:
@@ -988,6 +1021,7 @@ def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: R
     assert "idle_hosting / idle_hosting:" in context[0]
     assert event.raw["host_beat"]["shape"] in context[0]
     assert event.raw["host_beat"]["title"] in context[0]
+    assert event.raw["host_beat"]["reply_affordance"] in context[0]
 
 
 @pytest.mark.asyncio
@@ -2971,6 +3005,63 @@ def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(r
     assert not any(fragment in title for title in titles for fragment in blocked_fragments)
 
 
+def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: RoastRuntime) -> None:
+    beats = runtime._idle_hosting_beat_candidates()
+    shapes = {beat["shape"] for beat in beats}
+    axes = {beat["fun_axis"] for beat in beats}
+    titles = [beat["title"] for beat in beats]
+
+    assert len(beats) >= 8
+    assert {
+        "soft_observation",
+        "tiny_choice",
+        "light_tease",
+        "small_mood",
+        "one_word_call",
+        "micro_challenge",
+    }.issubset(shapes)
+    assert {"choice", "tease", "mood", "micro_challenge", "viewer_callback"}.issubset(axes)
+    assert all(str(beat.get("reply_affordance") or "").strip() for beat in beats)
+    assert any("\u4e00\u4e2a\u5b57" in title or "\u4e00\u4e2a\u8bcd" in title for title in titles)
+    assert any("\u4e8c\u9009\u4e00" in title or "A/B" in title for title in titles)
+
+
+def test_active_engagement_fallback_topics_explain_fun_axis_and_reply_path(runtime: RoastRuntime) -> None:
+    topics = runtime._active_engagement_fallback_topic_candidates()
+    axes = {topic.get("fun_axis") for topic in topics}
+
+    assert len(topics) >= 20
+    assert {"choice", "tease", "mood", "micro_challenge", "viewer_callback"}.issubset(axes)
+    assert all(str(topic.get("reply_affordance") or "").strip() for topic in topics)
+    assert not any("what should we talk about" in str(topic.get("hint") or "").lower() for topic in topics)
+
+
+def test_proactive_material_avoids_generic_host_bait(runtime: RoastRuntime) -> None:
+    blocked_fragments = (
+        "everyone interact",
+        "say something",
+        "send danmaku",
+        "start sending",
+        "what should we talk about",
+        "tell me what you want",
+        "get the chat moving",
+        "keep the chat alive",
+        "\u5927\u5bb6\u5feb\u6765\u4e92\u52a8",
+        "\u5f39\u5e55\u5237\u8d77\u6765",
+        "\u60f3\u804a\u4ec0\u4e48",
+        "\u6ca1\u4eba\u8bf4\u8bdd",
+        "\u51b7\u573a",
+    )
+    materials = [*runtime._active_engagement_fallback_topic_candidates(), *runtime._idle_hosting_beat_candidates()]
+
+    for material in materials:
+        combined = " ".join(
+            str(material.get(field) or "")
+            for field in ("title", "hint", "reply_affordance", "fun_axis", "shape")
+        ).lower()
+        assert not any(fragment.lower() in combined for fragment in blocked_fragments), material
+
+
 @pytest.mark.asyncio
 async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
@@ -2998,7 +3089,34 @@ async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: 
     topic = await runtime._select_active_engagement_topic()
 
     assert topic["intent"] == "quick_vote"
-    assert "one side" in topic["reply_affordance"]
+    assert topic["reply_affordance"] == "viewer can pick one concrete side"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_topic_preserves_fallback_fun_axis(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["fun_axis"] == "choice"
+    assert topic["reply_affordance"] == "viewer can pick one concrete side"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_topic_selection_prefers_fresh_fun_axis(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topics = [await runtime._select_active_engagement_topic() for _ in range(4)]
+    axes = [topic["fun_axis"] for topic in topics]
+
+    assert len(set(axes)) >= 4
+    assert all(left != right for left, right in zip(axes, axes[1:]))
 
 
 @pytest.mark.asyncio
@@ -3124,7 +3242,38 @@ async def test_auto_active_engagement_does_not_record_skip_when_not_candidate(ru
     result = await runtime.maybe_trigger_active_engagement()
 
     assert result is None
-    assert len(runtime.recent_results) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_active_engagement_can_take_over_after_repeated_idle_hosting(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+    _record_result_at(runtime, age_seconds=300)
+    for age in (180, 120, 60):
+        runtime.record_result(
+            InteractionResult(
+                accepted=True,
+                status="pushed",
+                event=ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
+                steps=[PipelineStep("idle_hosting", "ok"), PipelineStep("neko_dispatcher", "ok")],
+                created_at=_created_at_age(age),
+            )
+        )
+
+    before = await runtime.dashboard_state()
+    assert before["live_director_status"]["next_auto_action"] == "active_engagement"
+    assert before["live_director_status"]["reason"] == "idle_hosting_streak"
+
+    result = await runtime.maybe_trigger_active_engagement()
+
+    assert result is not None
+    assert result.status == "dry_run"
+    assert result.event.source == "active_engagement"
+    assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
 
 
 @pytest.mark.asyncio

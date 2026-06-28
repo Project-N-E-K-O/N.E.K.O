@@ -88,6 +88,7 @@ class RoastRuntime:
         self._idle_hosting_sleep = asyncio.sleep
         self._idle_hosting_now = time.monotonic
         self._idle_hosting_recent_beat_keys: deque[str] = deque(maxlen=4)
+        self._idle_hosting_recent_beat_axes: deque[str] = deque(maxlen=3)
         self._idle_hosting_beat_index: int = 0
         self._active_engagement_last_attempt_at: float = 0.0
         self._active_engagement_now = time.monotonic
@@ -96,6 +97,7 @@ class RoastRuntime:
         self._active_engagement_topic_cache_at: float = 0.0
         self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=12)
         self._active_engagement_recent_topic_sources: deque[str] = deque(maxlen=6)
+        self._active_engagement_recent_fun_axes: deque[str] = deque(maxlen=4)
         self._active_engagement_recent_shapes: deque[str] = deque(maxlen=4)
         self._active_engagement_recent_intents: deque[str] = deque(maxlen=4)
         self._active_engagement_recent_topic_skip_reason: str = ""
@@ -411,7 +413,24 @@ class RoastRuntime:
 
     async def handle_live_payload(self, payload: dict[str, Any]) -> InteractionResult:
         event = self.bili_live_ingest.normalize(payload)
+        signal_event_type = str(event.raw.get("event_type") or "").strip().lower() if isinstance(event.raw, dict) else ""
+        if signal_event_type in {"gift", "guard", "super_chat", "sc"}:
+            return self._record_live_signal_only_skip(event, signal_event_type)
         return await self.pipeline.handle_event(event)
+
+    def _record_live_signal_only_skip(self, event: ViewerEvent, event_type: str) -> InteractionResult:
+        normalized = "super_chat" if event_type == "sc" else event_type
+        reason = f"live_event_signal.unsupported_{normalized}"
+        result = InteractionResult(
+            accepted=False,
+            status="skipped",
+            event=event,
+            reason=reason,
+            steps=[PipelineStep(self._signal_route_for_event_type(normalized), "skipped", reason)],
+        )
+        self.audit.record("live_event_signal_only", reason, level="info", detail={"event_type": normalized, "uid": event.uid})
+        self.record_result(result)
+        return result
 
     async def lookup_live_room(self, room_id: Any) -> dict[str, Any]:
         status = await self.bili_live_ingest.lookup_room_status(parse_room_id(room_id))
@@ -546,17 +565,32 @@ class RoastRuntime:
         candidates = self._idle_hosting_beat_candidates()
         fallback = candidates[0]
         chosen = fallback
+        chosen_offset: int | None = None
         for offset in range(len(candidates)):
             candidate = candidates[(self._idle_hosting_beat_index + offset) % len(candidates)]
             key = str(candidate.get("key") or "").strip()
-            if key and key not in self._idle_hosting_recent_beat_keys:
+            axis = str(candidate.get("fun_axis") or "").strip()
+            if key and key not in self._idle_hosting_recent_beat_keys and axis and axis not in self._idle_hosting_recent_beat_axes:
                 chosen = candidate
-                self._idle_hosting_beat_index = (self._idle_hosting_beat_index + offset + 1) % len(candidates)
+                chosen_offset = offset
                 break
         else:
+            for offset in range(len(candidates)):
+                candidate = candidates[(self._idle_hosting_beat_index + offset) % len(candidates)]
+                key = str(candidate.get("key") or "").strip()
+                if key and key not in self._idle_hosting_recent_beat_keys:
+                    chosen = candidate
+                    chosen_offset = offset
+                    break
+        if chosen_offset is None:
             self._idle_hosting_beat_index = (self._idle_hosting_beat_index + 1) % len(candidates)
+        else:
+            self._idle_hosting_beat_index = (self._idle_hosting_beat_index + chosen_offset + 1) % len(candidates)
         key = str(chosen.get("key") or fallback["key"]).strip()
+        axis = str(chosen.get("fun_axis") or "").strip()
         self._idle_hosting_recent_beat_keys.append(key)
+        if axis:
+            self._idle_hosting_recent_beat_axes.append(axis)
         return dict(chosen)
 
     @staticmethod
@@ -565,26 +599,66 @@ class RoastRuntime:
             {
                 "key": "idle:soft-observation",
                 "shape": "soft_observation",
+                "fun_axis": "mood",
                 "title": "\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b",
                 "hint": "Say one soft concrete observation, not a direct question.",
+                "reply_affordance": "viewer can agree or answer with one small mood word",
             },
             {
                 "key": "idle:tiny-choice",
                 "shape": "tiny_choice",
+                "fun_axis": "choice",
                 "title": "\u732b\u732b\u7ed9\u89c2\u4f17\u7684\u5c0f\u9009\u62e9",
                 "hint": "Offer one tiny A/B choice viewers can answer in a few words.",
+                "reply_affordance": "viewer can pick one concrete side",
             },
             {
                 "key": "idle:light-tease",
                 "shape": "light_tease",
+                "fun_axis": "tease",
                 "title": "\u732b\u732b\u5f0f\u8f7b\u5410\u69fd",
                 "hint": "Make one harmless NEKO-flavored tease about the current quiet mood.",
+                "reply_affordance": "viewer can tease NEKO back in one short line",
             },
             {
                 "key": "idle:small-mood",
                 "shape": "small_mood",
+                "fun_axis": "mood",
                 "title": "\u732b\u732b\u73b0\u5728\u7684\u5c0f\u72b6\u6001",
                 "hint": "Share one tiny NEKO mood line with a small opening for viewers.",
+                "reply_affordance": "viewer can answer with one mood word",
+            },
+            {
+                "key": "idle:one-word-call",
+                "shape": "one_word_call",
+                "fun_axis": "viewer_callback",
+                "title": "\u7528\u4e00\u4e2a\u5b57\u7ed9\u73b0\u5728\u7684\u732b\u732b\u6253\u4e2a\u6807\u7b7e",
+                "hint": "Ask for exactly one character or one word; make it playful, not needy.",
+                "reply_affordance": "viewer can answer with one character or one word",
+            },
+            {
+                "key": "idle:micro-challenge",
+                "shape": "micro_challenge",
+                "fun_axis": "micro_challenge",
+                "title": "\u732b\u732b\u5047\u88c5\u4e3b\u64ad\u529b\u6ee1\u683c\u4e09\u79d2",
+                "hint": "Offer one tiny challenge viewers can answer or tease back in a few words.",
+                "reply_affordance": "viewer can judge or tease the tiny challenge",
+            },
+            {
+                "key": "idle:prop-choice",
+                "shape": "tiny_choice",
+                "fun_axis": "choice",
+                "title": "\u684c\u9762\u4e8c\u9009\u4e00\uff1a\u6c34\u676f\u8fd8\u662f\u96f6\u98df",
+                "hint": "Offer one concrete A/B choice from ordinary stream-room objects.",
+                "reply_affordance": "viewer can pick one ordinary object",
+            },
+            {
+                "key": "idle:cat-radio",
+                "shape": "soft_observation",
+                "fun_axis": "mood",
+                "title": "\u8fd9\u4e00\u5206\u949f\u50cf\u732b\u732b\u5c0f\u7535\u53f0\u7684\u7a7a\u62cd",
+                "hint": "Make one cozy radio-like observation; keep the hook low-pressure and indirect.",
+                "reply_affordance": "viewer can answer with one cozy mood or tiny scene",
             },
         ]
 
@@ -669,7 +743,7 @@ class RoastRuntime:
             return self._record_active_engagement_skip(skip_event, "active_engagement.paused")
         if state == "blocked":
             return self._record_active_engagement_skip(skip_event, "active_engagement.blocked")
-        if state != "quiet":
+        if state != "quiet" and not (state == "idle" and bool(active_status.get("candidate"))):
             return self._record_active_engagement_skip(skip_event, "active_engagement.not_quiet")
         if not bool(active_status.get("candidate")):
             return self._record_active_engagement_skip(skip_event, "active_engagement.not_candidate")
@@ -717,37 +791,34 @@ class RoastRuntime:
         shape = self._next_active_engagement_shape()
         chosen = fallback
         exhausted_cached_topics = bool(candidates)
-        for candidate in candidates:
-            key = str(candidate.get("key") or candidate.get("title") or "").strip()
-            if not key or key in self._active_engagement_recent_topic_keys:
-                continue
+        candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True)
+        if candidate is None:
+            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=False)
+        if candidate is not None:
             chosen = candidate
             exhausted_cached_topics = False
-            break
         if exhausted_cached_topics:
             self._active_engagement_topic_cache = []
             self._active_engagement_topic_cache_at = 0.0
-            for candidate in await self._active_engagement_topic_candidates():
-                key = str(candidate.get("key") or candidate.get("title") or "").strip()
-                if not key or key in self._active_engagement_recent_topic_keys:
-                    continue
+            refreshed_candidates = await self._active_engagement_topic_candidates()
+            candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True)
+            if candidate is None:
+                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=False)
+            if candidate is not None:
                 chosen = candidate
                 exhausted_cached_topics = False
-                break
         if exhausted_cached_topics:
-            for candidate in fallback_candidates:
-                key = str(candidate.get("key") or candidate.get("title") or "").strip()
-                if not key or key in self._active_engagement_recent_topic_keys:
-                    continue
-                chosen = candidate
-                break
+            chosen = (
+                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False)
+                or fallback
+            )
         elif chosen is fallback:
-            for candidate in fallback_candidates:
-                key = str(candidate.get("key") or candidate.get("title") or "").strip()
-                if not key or key in self._active_engagement_recent_topic_keys:
-                    continue
-                chosen = candidate
-                break
+            chosen = (
+                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False)
+                or fallback
+            )
         preferred_shape = str(chosen.get("preferred_shape") or shape).strip() or shape
         shape = self._active_engagement_guarded_shape(preferred_shape)
         key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
@@ -762,13 +833,17 @@ class RoastRuntime:
             "shape": shape,
             "key": key,
             "title": title,
+            "fun_axis": str(chosen.get("fun_axis") or "").strip() or self._active_engagement_fun_axis_text(shape),
             "hook": self._active_engagement_hook_text(shape, title),
             "pattern": self._active_engagement_pattern_text(shape),
             "intent": intent,
-            "reply_affordance": self._active_engagement_reply_affordance_text(shape),
+            "reply_affordance": str(chosen.get("reply_affordance") or "").strip()
+            or self._active_engagement_reply_affordance_text(shape),
             "hint": hint,
         }
         self._active_engagement_recent_topic_sources.append(str(topic["source"]))
+        if topic["fun_axis"]:
+            self._active_engagement_recent_fun_axes.append(str(topic["fun_axis"]))
         self._active_engagement_recent_shapes.append(shape)
         self._active_engagement_recent_intents.append(intent)
         skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
@@ -779,6 +854,22 @@ class RoastRuntime:
             topic["shape_guard_reason"] = shape_guard_reason
         return topic
 
+    def _choose_active_engagement_candidate(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        avoid_recent_fun_axis: bool,
+    ) -> dict[str, Any] | None:
+        for candidate in candidates:
+            key = str(candidate.get("key") or candidate.get("title") or "").strip()
+            if not key or key in self._active_engagement_recent_topic_keys:
+                continue
+            axis = str(candidate.get("fun_axis") or "").strip()
+            if avoid_recent_fun_axis and axis and axis in self._active_engagement_recent_fun_axes:
+                continue
+            return candidate
+        return None
+
     @staticmethod
     def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
         return [
@@ -786,113 +877,181 @@ class RoastRuntime:
                 "source": "fallback",
                 "key": "fallback:snack-choice",
                 "title": "\u591c\u91cc\u53ea\u80fd\u9009\u4e00\u6837\uff1a\u5c0f\u751c\u98df\u8fd8\u662f\u70ed\u996e",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can pick one concrete side",
                 "hint": "Turn this into one tiny A/B choice; both sides must be concrete and easy to answer.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:keyboard-busy",
                 "title": "\u952e\u76d8\u4eca\u5929\u50cf\u5728\u5077\u5077\u6253\u76f9",
+                "fun_axis": "tease",
                 "preferred_shape": "tiny_tease",
+                "reply_affordance": "viewer can tease the keyboard or NEKO back",
                 "hint": "Make one playful observation; leave a tiny opening without talking about room silence.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:serious-cat",
                 "title": "\u732b\u732b\u8981\u5047\u88c5\u6b63\u7ecf\u4e09\u79d2",
+                "fun_axis": "micro_challenge",
                 "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can judge whether NEKO passed the tiny challenge",
                 "hint": "Make one small challenge viewers can react to in a few words.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:tiny-confession",
                 "title": "\u732b\u732b\u5076\u5c14\u4e5f\u4f1a\u88ab\u81ea\u5df1\u7684\u8ba4\u771f\u5413\u5230",
+                "fun_axis": "mood",
                 "preferred_shape": "light_stance",
+                "reply_affordance": "viewer can agree or lightly push back",
                 "hint": "Make one tiny confession, then stop before it becomes a monologue.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:blanket-temperature",
                 "title": "\u6b64\u523b\u6c14\u6c1b\u50cf\u6bdb\u6bef\u521a\u70ed\u8d77\u6765",
+                "fun_axis": "mood",
                 "preferred_shape": "light_stance",
+                "reply_affordance": "viewer can answer with one mood word",
                 "hint": "Describe this concrete mood image and invite one short reaction.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:today-mood-vote",
                 "title": "\u4eca\u5929\u7684\u72b6\u6001\u66f4\u50cf\u5145\u7535\u4e2d\u8fd8\u662f\u5df2\u6b7b\u673a",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can pick one side",
                 "hint": "Ask one tiny vote that can be answered with one side, not a long explanation.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:cat-radio-room",
                 "title": "\u4eca\u665a\u76f4\u64ad\u95f4\u66f4\u50cf\u732b\u7a9d\u8fd8\u662f\u5c0f\u7535\u53f0",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can pick cat nest or tiny radio",
                 "hint": "Turn this into one cozy A/B choice; keep it concrete and easy to answer.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:night-owl-energy",
                 "title": "\u591c\u732b\u5b50\u73b0\u5728\u662f\u771f\u6e05\u9192\u8fd8\u662f\u5728\u786c\u6491",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can pick one late-night state",
                 "hint": "Make one small stance or A/B choice about late-night energy.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:screen-staring-back",
                 "title": "\u76ef\u5c4f\u5e55\u4e45\u4e86\uff0c\u732b\u732b\u6000\u7591\u5c4f\u5e55\u4e5f\u5728\u76ef\u56de\u6765",
+                "fun_axis": "tease",
                 "preferred_shape": "tiny_tease",
+                "reply_affordance": "viewer can tease back or say caught",
                 "hint": "Make one tiny playful observation, not a generic question.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:three-word-task",
                 "title": "\u7ed9\u732b\u732b\u4e00\u4e2a\u4e09\u5b57\u5c0f\u4efb\u52a1\uff1a\u5356\u840c\u3001\u5410\u69fd\u3001\u88c5\u4e56",
+                "fun_axis": "micro_challenge",
                 "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can answer with one of three short choices",
                 "hint": "Make one tiny challenge that viewers can answer with a short choice.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:room-temperature-word",
                 "title": "\u7528\u4e00\u4e2a\u8bcd\u5f62\u5bb9\u73b0\u5728\u76f4\u64ad\u95f4\u7684\u6e29\u5ea6",
+                "fun_axis": "viewer_callback",
                 "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can answer with one word",
                 "hint": "Ask for one word only; avoid open-ended long discussion.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:serious-hosting",
                 "title": "\u732b\u732b\u6b63\u5728\u52aa\u529b\u50cf\u4e2a\u6b63\u7ecf\u4e3b\u64ad\uff0c\u5148\u522b\u7b11",
+                "fun_axis": "tease",
                 "preferred_shape": "tiny_tease",
+                "reply_affordance": "viewer can tease NEKO's serious host act",
                 "hint": "Take one tiny NEKO stance and leave room for viewers to tease back.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:danmaku-password",
                 "title": "\u7ed9\u4eca\u665a\u76f4\u64ad\u95f4\u5b9a\u4e00\u4e2a\u4e09\u5b57\u6697\u53f7",
+                "fun_axis": "viewer_callback",
                 "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can reply with a three-character password",
                 "hint": "Ask for one three-character room password; make it easy to answer in one short danmaku.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:cat-weather",
                 "title": "\u4eca\u665a\u732b\u732b\u72b6\u6001\u662f\u6674\u5929\u8fd8\u662f\u5c0f\u96e8",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can pick one weather mood",
                 "hint": "Turn this into one playful A/B mood vote; viewers can answer with one side.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:one-word-barrage",
                 "title": "\u7528\u4e00\u4e2a\u5b57\u7ed9\u732b\u732b\u73b0\u5728\u7684\u4e3b\u64ad\u529b\u6253\u5206",
+                "fun_axis": "viewer_callback",
                 "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can answer with one character",
                 "hint": "Ask for one character only; make it sound like NEKO inviting a tiny roast back.",
             },
             {
                 "source": "fallback",
                 "key": "fallback:desk-item-choice",
                 "title": "\u5982\u679c\u684c\u9762\u4e0a\u53ea\u80fd\u7559\u4e00\u6837\uff1a\u6c34\u676f\u8fd8\u662f\u96f6\u98df",
+                "fun_axis": "choice",
                 "preferred_shape": "either_or",
+                "reply_affordance": "viewer can choose one desk item",
                 "hint": "Make one concrete desk-life A/B choice, not a broad chat topic.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:cat-paw-button",
+                "title": "\u5982\u679c\u732b\u722a\u6709\u4e00\u4e2a\u6309\u94ae\uff1a\u5356\u840c\u8fd8\u662f\u5410\u69fd",
+                "fun_axis": "choice",
+                "preferred_shape": "either_or",
+                "reply_affordance": "viewer can choose the button mode",
+                "hint": "Make one playful cat-paw A/B choice; stop after the hook.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:host-score-one-word",
+                "title": "\u7528\u4e00\u4e2a\u8bcd\u5224\u5b9a\u732b\u732b\u4eca\u665a\u50cf\u4e0d\u50cf\u4e3b\u64ad",
+                "fun_axis": "viewer_callback",
+                "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can answer with one word",
+                "hint": "Ask for one word only; make it easy to tease back.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:tiny-brave-stance",
+                "title": "\u732b\u732b\u89c9\u5f97\u53d1\u5446\u4e5f\u7b97\u4e00\u79cd\u4e3b\u64ad\u529b",
+                "fun_axis": "mood",
+                "preferred_shape": "light_stance",
+                "reply_affordance": "viewer can agree or push back",
+                "hint": "Give one tiny NEKO stance that viewers can immediately agree or object to.",
+            },
+            {
+                "source": "fallback",
+                "key": "fallback:micro-mission-pose",
+                "title": "\u7ed9\u732b\u732b\u6307\u5b9a\u4e00\u4e2a\u4e09\u79d2\u5c0f\u59ff\u52bf",
+                "fun_axis": "micro_challenge",
+                "preferred_shape": "small_challenge",
+                "reply_affordance": "viewer can reply with one tiny pose idea",
+                "hint": "Ask for one tiny pose idea; avoid turning it into a segment.",
             },
         ]
 
@@ -1435,6 +1594,15 @@ class RoastRuntime:
         }.get(shape, "quick_reply")
 
     @staticmethod
+    def _active_engagement_fun_axis_text(shape: str) -> str:
+        return {
+            "either_or": "choice",
+            "light_stance": "mood",
+            "tiny_tease": "tease",
+            "small_challenge": "micro_challenge",
+        }.get(shape, "choice")
+
+    @staticmethod
     def _active_engagement_reply_affordance_text(shape: str) -> str:
         return {
             "either_or": "viewer can answer with one side",
@@ -1684,9 +1852,12 @@ class RoastRuntime:
         status = live_status or self.live_status_summary()
         state = live_state or self.live_state_summary(status)
         state_name = str(state.get("state") or "")
+        idle_takeover_candidate = state_name == "idle" and self._recent_actual_route_streak_since_viewer_activity(
+            "idle_hosting"
+        ) >= 3
         candidate = (
             self.config.live_mode == "solo_stream"
-            and state_name == "quiet"
+            and (state_name == "quiet" or idle_takeover_candidate)
             and status.get("summary") in {"ready_to_stream", "test_only"}
             and float(status.get("cooldown_remaining") or 0.0) <= 0.0
         )
@@ -1709,7 +1880,9 @@ class RoastRuntime:
             reason = "not_solo_stream"
         elif state_name in {"paused", "blocked"}:
             reason = state_name
-        elif state_name != "quiet":
+        elif state_name not in {"quiet", "idle"}:
+            reason = "not_quiet"
+        elif state_name == "idle" and not idle_takeover_candidate:
             reason = "not_quiet"
         elif status.get("summary") not in {"ready_to_stream", "test_only"}:
             reason = str(status.get("reason") or "live_status_not_ready")
@@ -1726,6 +1899,8 @@ class RoastRuntime:
             reason = "approaching_idle_hosting"
             cooldown_remaining = idle_hosting_wait_remaining
             eligible = False
+        elif idle_takeover_candidate:
+            reason = "idle_hosting_streak"
         return {
             "candidate": bool(candidate),
             "eligible": eligible,
@@ -1782,11 +1957,18 @@ class RoastRuntime:
                 cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
                 min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
         elif state_name == "idle":
-            next_auto_action = "idle_hosting"
-            eligible = bool(idle_status.get("eligible"))
-            reason = "solo_idle" if eligible else str(idle_status.get("reason") or "idle_hosting_not_ready")
-            cooldown_remaining = float(idle_status.get("cooldown_remaining") or 0.0)
-            min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
+            if str(active_status.get("reason") or "") == "idle_hosting_streak":
+                next_auto_action = "active_engagement"
+                eligible = bool(active_status.get("eligible"))
+                reason = "idle_hosting_streak" if eligible else str(active_status.get("reason") or "active_engagement_not_ready")
+                cooldown_remaining = float(active_status.get("cooldown_remaining") or 0.0)
+                min_interval_seconds = float(active_status.get("min_interval_seconds") or 0.0)
+            else:
+                next_auto_action = "idle_hosting"
+                eligible = bool(idle_status.get("eligible"))
+                reason = "solo_idle" if eligible else str(idle_status.get("reason") or "idle_hosting_not_ready")
+                cooldown_remaining = float(idle_status.get("cooldown_remaining") or 0.0)
+                min_interval_seconds = float(idle_status.get("min_interval_seconds") or 0.0)
         elif state_name == "engaged":
             reason = "recent_activity"
 
@@ -1888,6 +2070,24 @@ class RoastRuntime:
             if self._route_from_result(result) == target:
                 return True
         return False
+
+    def _recent_actual_route_streak_since_viewer_activity(self, module_id: str) -> int:
+        target = str(module_id)
+        streak = 0
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            if str(event.get("source") or "") == "live_danmaku":
+                return streak
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            if self._route_from_result(result) == target:
+                streak += 1
+                continue
+            if streak > 0:
+                return streak
+        return streak
 
     def _active_engagement_min_interval_seconds(self) -> float:
         return {
@@ -2027,9 +2227,12 @@ class RoastRuntime:
             if source == "idle_hosting":
                 beat_shape = str(event.get("host_beat_shape") or "").strip()
                 beat_title = str(event.get("host_beat_title") or "").strip()
+                beat_reply = str(event.get("host_beat_reply_affordance") or "").strip()
                 beat_bits = " ".join(bit for bit in (beat_shape,) if bit)
                 if beat_title:
                     beat_bits = f"{beat_bits} - {self._compact_context_text(beat_title, limit=50)}".strip()
+                if beat_reply:
+                    beat_bits = f"{beat_bits} / reply: {self._compact_context_text(beat_reply, limit=60)}".strip()
                 line = f"{route} / idle_hosting: {beat_bits or 'solo quiet-room host beat'}"
             elif source == "warmup_hosting":
                 line = f"{route} / warmup_hosting: solo opening host beat"
@@ -2068,6 +2271,10 @@ class RoastRuntime:
             return response_module
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         source = str(event.get("source") or "")
+        event_type = str(event.get("event_type") or "").strip().lower()
+        signal_route = RoastRuntime._signal_route_for_event_type(event_type)
+        if signal_route:
+            return signal_route
         if source in {"idle_hosting", "active_engagement", "warmup_hosting"}:
             return source
         steps = result.get("steps") if isinstance(result.get("steps"), list) else []
@@ -2075,9 +2282,26 @@ class RoastRuntime:
             if not isinstance(step, dict):
                 continue
             step_id = str(step.get("id") or "")
-            if step_id in {"danmaku_response", "avatar_roast", "idle_hosting", "active_engagement", "warmup_hosting"}:
+            if step_id in {
+                "danmaku_response",
+                "avatar_roast",
+                "idle_hosting",
+                "active_engagement",
+                "warmup_hosting",
+                "gift_signal",
+                "super_chat_signal",
+            }:
                 return step_id
         return source or "unknown"
+
+    @staticmethod
+    def _signal_route_for_event_type(event_type: str) -> str:
+        normalized = str(event_type or "").strip().lower()
+        if normalized in {"gift", "guard"}:
+            return "gift_signal"
+        if normalized in {"super_chat", "sc"}:
+            return "super_chat_signal"
+        return ""
 
     @staticmethod
     def _event_signal_from_result(result: dict[str, Any]) -> str:

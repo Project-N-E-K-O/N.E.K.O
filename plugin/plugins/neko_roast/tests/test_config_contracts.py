@@ -348,8 +348,10 @@ def test_idle_hosting_prompt_uses_host_beat_material():
             "host_beat": {
                 "key": "idle:soft-observation",
                 "shape": "soft_observation",
+                "fun_axis": "mood",
                 "title": "quiet room temperature",
                 "hint": "Say one soft observation, not a direct question.",
+                "reply_affordance": "viewer can answer with one small mood word",
             }
         },
     )
@@ -360,8 +362,12 @@ def test_idle_hosting_prompt_uses_host_beat_material():
 
     assert "Host beat material:" in request.prompt_text
     assert "soft_observation" in request.prompt_text
+    assert "fun_axis: mood" in request.prompt_text
     assert "quiet room temperature" in request.prompt_text
     assert "Say one soft observation, not a direct question." in request.prompt_text
+    assert "viewer can answer with one small mood word" in request.prompt_text
+    assert "Use the host beat reply_affordance as the only reply hook; do not add a second question." in request.prompt_text
+    assert "Use the host beat fun_axis as the line's purpose; do not drift into generic hosting." in request.prompt_text
 
 
 def test_active_engagement_prompt_is_one_light_solo_topic():
@@ -384,6 +390,8 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "Never address the whole room with broad audience-bait openings like everyone, anyone, chat, 大家, or 你们." in request.prompt_text
     assert "Prefer one tiny observation over a plan, segment, or open-ended topic survey." in request.prompt_text
     assert "Every active engagement line must give viewers one concrete reply handle" in request.prompt_text
+    assert "Use the provided viewer reply path as the only reply handle; do not add a second question." in request.prompt_text
+    assert "Use the provided fun axis as the line's purpose; do not drift into generic hosting." in request.prompt_text
     assert "A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side" in request.prompt_text
     assert "Do not use generic Chinese host lines equivalent to" in request.prompt_text
     assert "澶у" not in request.prompt_text

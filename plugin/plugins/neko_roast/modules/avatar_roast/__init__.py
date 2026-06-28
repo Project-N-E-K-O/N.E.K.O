@@ -88,6 +88,8 @@ class AvatarRoastModule(BaseModule):
             "Create one tiny live-room topic: a small observation, a light tease, or an easy question that a quiet viewer can answer.",
             "Use the host beat material as direction, but make the final line sound natural.",
             "Add a low-pressure reply hook: one concrete choice, tiny stance, or small playful prompt.",
+            "Use the host beat reply_affordance as the only reply hook; do not add a second question.",
+            "Use the host beat fun_axis as the line's purpose; do not drift into generic hosting.",
             "Make it feel like a spontaneous host beat, with a little NEKO personality and no formal opening.",
             "Do not pretend a viewer sent a message.",
             "Do not announce that nobody is talking or that the room is silent.",
@@ -113,17 +115,23 @@ class AvatarRoastModule(BaseModule):
         if not isinstance(host_beat, dict):
             return ""
         shape = str(host_beat.get("shape") or "").strip()
+        fun_axis = str(host_beat.get("fun_axis") or "").strip()
         title = str(host_beat.get("title") or "").strip()
         hint = str(host_beat.get("hint") or "").strip()
-        if not any((shape, title, hint)):
+        reply_affordance = str(host_beat.get("reply_affordance") or "").strip()
+        if not any((shape, fun_axis, title, hint, reply_affordance)):
             return ""
         lines = ["Host beat material:"]
         if shape:
             lines.append(f"- shape: {shape}")
+        if fun_axis:
+            lines.append(f"- fun_axis: {fun_axis}")
         if title:
             lines.append(f"- title: {title}")
         if hint:
             lines.append(f"- hint: {hint}")
+        if reply_affordance:
+            lines.append(f"- reply_affordance: {reply_affordance}")
         return "\n" + "\n".join(lines) + "\n\n"
 
     def _build_prompt(self, event: ViewerEvent, identity: ViewerIdentity, strength: str) -> str:

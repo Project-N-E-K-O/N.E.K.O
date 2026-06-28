@@ -285,6 +285,94 @@ def _render_callback_inner_item(
     return line
 
 
+_NEKO_LIVE_REPLY_TARGET_CHARS = 14
+_NEKO_LIVE_REPLY_ROUTE_CEILINGS = {
+    "avatar_roast": 32,
+    "danmaku_response": 28,
+    "warmup_hosting": 24,
+    "idle_hosting": 24,
+    "active_engagement": 28,
+}
+_NEKO_LIVE_REPLY_ROUTE_NOTES = {
+    "avatar_roast": (
+        "For avatar_roast: connect the viewer's first message with the avatar/name, "
+        "but keep it as one sharp first-appearance line."
+    ),
+    "danmaku_response": (
+        "For danmaku_response: answer only the current danmaku; do not mention avatar, "
+        "ID, first appearance, or previous replies."
+    ),
+    "warmup_hosting": (
+        "For warmup_hosting: say one small opening line, not a segment intro."
+    ),
+    "idle_hosting": (
+        "For idle_hosting: say one small hosting beat, not a survey or a long monologue."
+    ),
+    "active_engagement": (
+        "For active_engagement: offer one concrete reply hook; do not say generic phrases "
+        "like everyone interact or tell me what you want."
+    ),
+}
+
+
+def _coerce_live_reply_limit(value: Any) -> int | None:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return None
+    if limit <= 0:
+        return None
+    return min(limit, 80)
+
+
+def _render_live_reply_contract_instruction(callbacks: list[dict]) -> str:
+    """Render host-side constraints for NEKO Live short TTS callbacks."""
+    modules: list[str] = []
+    absolute_limit: int | None = None
+
+    for cb in callbacks:
+        metadata = cb.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("live_reply_contract") != "short_tts_line":
+            continue
+
+        module = str(metadata.get("response_module_hint") or "").strip()
+        if module and module not in modules:
+            modules.append(module)
+
+        metadata_limit = _coerce_live_reply_limit(metadata.get("max_reply_chars"))
+        module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
+        limit_candidates = [value for value in (metadata_limit, module_limit) if value]
+        if limit_candidates:
+            callback_limit = min(limit_candidates)
+            absolute_limit = callback_limit if absolute_limit is None else min(absolute_limit, callback_limit)
+
+    if not modules and absolute_limit is None:
+        return ""
+
+    if absolute_limit is None:
+        absolute_limit = _NEKO_LIVE_REPLY_TARGET_CHARS
+    target_limit = min(_NEKO_LIVE_REPLY_TARGET_CHARS, absolute_limit)
+    module_notes = [
+        _NEKO_LIVE_REPLY_ROUTE_NOTES[module]
+        for module in modules
+        if module in _NEKO_LIVE_REPLY_ROUTE_NOTES
+    ]
+
+    lines = [
+        "",
+        "NEKO Live short output contract:",
+        f"- Target at most {target_limit} Chinese characters; absolute ceiling {absolute_limit}.",
+        "- Output exactly one sentence, one breath, no paragraph.",
+        "- Do not continue, summarize, or imitate the previous NEKO reply.",
+        "- If a draft has two ideas, keep only the sharper one.",
+        "- Do not use host-script openings such as special plan, next let's, everyone look, or tell me what you want.",
+    ]
+    lines.extend(f"- {note}" for note in module_notes)
+    return "\n".join(lines)
+
+
 def _build_callback_instruction(
     callbacks,
     *,
@@ -391,13 +479,17 @@ def _build_callback_instruction(
             for cb in cbs
         ]
         items = [s for s in items if s]
+        live_reply_contract = _render_live_reply_contract_instruction(cbs)
         if items:
-            parts.append(header + "\n".join(items))
+            body = header + "\n".join(items)
         else:
             # No item text — outer header alone (e.g. "task X failed") still
             # tells the AI that something happened. Strip trailing newline so
             # the joined output is clean.
-            parts.append(header.rstrip())
+            body = header.rstrip()
+        if live_reply_contract:
+            body += live_reply_contract
+        parts.append(body)
     rendered = "\n\n".join(parts)
     # Total input budget: many callbacks accumulating must not blow up the turn.
     from utils.tokenize import truncate_to_tokens

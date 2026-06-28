@@ -161,6 +161,7 @@ class ViewerEvent:
                     ("shape", "topic_shape"),
                     ("title", "topic_title"),
                     ("key", "topic_key"),
+                    ("fun_axis", "topic_fun_axis"),
                     ("hook", "topic_hook"),
                     ("pattern", "topic_pattern"),
                     ("intent", "topic_intent"),
@@ -175,8 +176,10 @@ class ViewerEvent:
                 for raw_key, public_key in (
                     ("key", "host_beat_key"),
                     ("shape", "host_beat_shape"),
+                    ("fun_axis", "host_beat_fun_axis"),
                     ("title", "host_beat_title"),
                     ("hint", "host_beat_hint"),
+                    ("reply_affordance", "host_beat_reply_affordance"),
                 ):
                     value = str(host_beat.get(raw_key) or "").strip()
                     if value:

@@ -60,6 +60,8 @@ class ActiveEngagementModule(BaseModule):
             "Use the topic material as raw material only; transform it into NEKO's own live-room line.",
             "Follow the requested topic shape when present: either_or, light_stance, tiny_tease, or small_challenge.",
             "Every active engagement line must give viewers one concrete reply handle.",
+            "Use the provided viewer reply path as the only reply handle; do not add a second question.",
+            "Use the provided fun axis as the line's purpose; do not drift into generic hosting.",
             "The reply handle must be an A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side.",
             "Prefer one tiny observation over a plan, segment, or open-ended topic survey.",
             "Do not use generic host slogans like 'everyone interact' or 'say something in chat'.",
@@ -96,6 +98,7 @@ class ActiveEngagementModule(BaseModule):
         source = str(topic_material.get("source") or "fallback").strip()
         shape = str(topic_material.get("shape") or "").strip()
         title = str(topic_material.get("title") or "").strip()
+        fun_axis = str(topic_material.get("fun_axis") or "").strip()
         hook = str(topic_material.get("hook") or "").strip()
         pattern = str(topic_material.get("pattern") or "").strip()
         intent = str(topic_material.get("intent") or "").strip()
@@ -111,6 +114,8 @@ class ActiveEngagementModule(BaseModule):
             lines.append(f"- example pattern: {pattern or ActiveEngagementModule._shape_example_text(shape)}")
         if title:
             lines.append(f"- title: {title}")
+        if fun_axis:
+            lines.append(f"- fun axis: {fun_axis}")
         if hook:
             lines.append(f"- hook: {hook}")
         if intent:

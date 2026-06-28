@@ -81,6 +81,12 @@ Key fields:
                     Alert name when recent Active Engagement topics overuse one source, making proactive hosting material feel narrow.
   topic_shape_bias
                     Alert name when recent Active Engagement topics overuse one interaction shape, making proactive hosting feel repetitive.
+  topic_reply_missing / host_beat_reply_missing
+                    Alert names when proactive output lacks a visible reply hook for viewers.
+  topic_axis_bias
+                    Alert name when recent Active Engagement topics overuse one fun axis.
+  host_beat_axis_bias
+                    Alert name when recent idle-hosting beats overuse one fun axis.
   live_disabled     Alert name for real-output tests when the NEKO Live plugin is disabled.
   generic_host_prompt
                     Alert name for template-like "please interact / send danmaku" output.
@@ -162,6 +168,18 @@ function Get-EntrancePacingWindow {
         return 30.0
     }
     return 45.0
+}
+
+function Get-ReplyLengthWarnForRoute {
+    param(
+        [object]$Route,
+        [int]$DefaultWarn
+    )
+    $routeName = "$(Get-Field $Route)"
+    if ($routeName -in @("warmup_hosting", "idle_hosting", "active_engagement")) {
+        return [Math]::Min($DefaultWarn, 60)
+    }
+    return $DefaultWarn
 }
 
 function Format-IsoAge {
@@ -538,6 +556,11 @@ function Write-Snapshot {
     $speech = $state.speech_explanation
     $recent = @($state.recent_results)
     $profiles = @($state.recent_profiles)
+    $profileCount = $profiles.Count
+    $soloProfileCount = Get-NumberOrNull $soloReadiness.profile_count
+    if ($null -ne $soloProfileCount) {
+        $profileCount = [int]$soloProfileCount
+    }
     $recentRouteCounts = @{
         avatar_roast = 0
         danmaku_response = 0
@@ -596,6 +619,20 @@ function Write-Snapshot {
         tiny_tease = 0
         small_challenge = 0
     }
+    $recentTopicAxisCounts = @{
+        choice = 0
+        tease = 0
+        mood = 0
+        micro_challenge = 0
+        viewer_callback = 0
+    }
+    $recentHostBeatAxisCounts = @{
+        choice = 0
+        tease = 0
+        mood = 0
+        micro_challenge = 0
+        viewer_callback = 0
+    }
     $recentLongReplyRouteCounts = @{
         avatar_roast = 0
         danmaku_response = 0
@@ -647,10 +684,24 @@ function Write-Snapshot {
                 if ($recentTopicShapeCounts.ContainsKey($topicShape)) {
                     $recentTopicShapeCounts[$topicShape] += 1
                 }
+                $topicAxis = "$(Get-Field $result.event.topic_fun_axis)"
+                if ($recentTopicAxisCounts.ContainsKey($topicAxis)) {
+                    $recentTopicAxisCounts[$topicAxis] += 1
+                }
+            }
+            if (
+                ("$status" -in @("pushed", "dry_run")) -and
+                ($route -eq "idle_hosting" -or "$(Get-Field $result.event.source)" -eq "idle_hosting")
+            ) {
+                $hostBeatAxis = "$(Get-Field $result.event.host_beat_fun_axis)"
+                if ($recentHostBeatAxisCounts.ContainsKey($hostBeatAxis)) {
+                    $recentHostBeatAxisCounts[$hostBeatAxis] += 1
+                }
             }
         }
         if ($null -ne $result.output -and "$($result.output)" -ne "") {
-            if ("$($result.output)".Length -ge $ReplyLengthWarn) {
+            $routeReplyLengthWarn = Get-ReplyLengthWarnForRoute $route $ReplyLengthWarn
+            if ("$($result.output)".Length -ge $routeReplyLengthWarn) {
                 $recentLongReplyCount += 1
                 if ($recentLongReplyRouteCounts.ContainsKey($route)) {
                     $recentLongReplyRouteCounts[$route] += 1
@@ -707,6 +758,30 @@ function Write-Snapshot {
     if ($topicShapeTotal -ge 3 -and (($topicShapeMax * 100.0) / $topicShapeTotal) -ge 75.0) {
         $topicShapeBias = "True"
     }
+    $topicAxisTotal = 0
+    $topicAxisMax = 0
+    foreach ($axisCount in $recentTopicAxisCounts.Values) {
+        $topicAxisTotal += [int]$axisCount
+        if ([int]$axisCount -gt $topicAxisMax) {
+            $topicAxisMax = [int]$axisCount
+        }
+    }
+    $topicAxisBias = "False"
+    if ($topicAxisTotal -ge 3 -and (($topicAxisMax * 100.0) / $topicAxisTotal) -ge 75.0) {
+        $topicAxisBias = "True"
+    }
+    $hostBeatAxisTotal = 0
+    $hostBeatAxisMax = 0
+    foreach ($axisCount in $recentHostBeatAxisCounts.Values) {
+        $hostBeatAxisTotal += [int]$axisCount
+        if ([int]$axisCount -gt $hostBeatAxisMax) {
+            $hostBeatAxisMax = [int]$axisCount
+        }
+    }
+    $hostBeatAxisBias = "False"
+    if ($hostBeatAxisTotal -ge 3 -and (($hostBeatAxisMax * 100.0) / $hostBeatAxisTotal) -ge 75.0) {
+        $hostBeatAxisBias = "True"
+    }
     $latest = $null
     if ($recent.Count -gt 0) {
         $latest = $recent[0]
@@ -742,7 +817,8 @@ function Write-Snapshot {
         if ($null -ne $latest.output -and "$($latest.output)" -ne "") {
             $latestOutputText = "$($latest.output)"
             $latestOutputLen = "$($latestOutputText.Length)"
-            if ($latestOutputText.Length -ge $ReplyLengthWarn) {
+            $latestReplyLengthWarn = Get-ReplyLengthWarnForRoute $latestRoute $ReplyLengthWarn
+            if ($latestOutputText.Length -ge $latestReplyLengthWarn) {
                 $latestOutputLengthStatus = "warn"
             } else {
                 $latestOutputLengthStatus = "ok"
@@ -756,14 +832,17 @@ function Write-Snapshot {
     $latestTopicHook = "-"
     $latestTopicPattern = "-"
     $latestTopicIntent = "-"
+    $latestTopicFunAxis = "-"
     $latestTopicReplyAffordance = "-"
     $latestTopicRecentSkipReason = "-"
     $latestTopicShapeGuardReason = "-"
     $latestTopicRepeat = "False"
     $latestHostBeatShape = "-"
+    $latestHostBeatFunAxis = "-"
     $latestHostBeatTitle = "-"
     $latestHostBeatKey = "-"
     $latestHostBeatHint = "-"
+    $latestHostBeatReplyAffordance = "-"
     $latestHostBeatRepeat = "False"
     if ($null -ne $latest -and $null -ne $latest.event) {
         $latestSource = Get-CompactField $latest.event.source
@@ -776,6 +855,7 @@ function Write-Snapshot {
         $latestTopicHook = Get-CompactField $latest.event.topic_hook
         $latestTopicPattern = Get-CompactField $latest.event.topic_pattern
         $latestTopicIntent = Get-CompactField $latest.event.topic_intent
+        $latestTopicFunAxis = Get-CompactField $latest.event.topic_fun_axis
         $latestTopicReplyAffordance = Get-CompactField $latest.event.topic_reply_affordance
         $latestTopicRecentSkipReason = Get-CompactField $latest.event.topic_recent_skip_reason
         $latestTopicShapeGuardReason = Get-CompactField $latest.event.shape_guard_reason
@@ -795,9 +875,11 @@ function Write-Snapshot {
             }
         }
         $latestHostBeatShape = Get-CompactField $latest.event.host_beat_shape
+        $latestHostBeatFunAxis = Get-CompactField $latest.event.host_beat_fun_axis
         $latestHostBeatTitle = Get-CompactField $latest.event.host_beat_title
         $latestHostBeatKey = Get-CompactField $latest.event.host_beat_key
         $latestHostBeatHint = Get-CompactField $latest.event.host_beat_hint
+        $latestHostBeatReplyAffordance = Get-CompactField $latest.event.host_beat_reply_affordance
         if ("$latestStatus" -in @("pushed", "dry_run") -and $latestHostBeatKey -ne "-" -and $recent.Count -gt 1) {
             foreach ($previous in @($recent | Select-Object -Skip 1)) {
                 if ("$(Get-Field $previous.status)" -notin @("pushed", "dry_run")) {
@@ -985,6 +1067,22 @@ function Write-Snapshot {
     if ("$topicShapeBias" -eq "True") {
         $alerts += "topic_shape_bias"
     }
+    if ("$topicAxisBias" -eq "True") {
+        $alerts += "topic_axis_bias"
+    }
+    if ("$latestStatus" -in @("pushed", "dry_run") -and "$latestRoute" -eq "active_engagement" -and "$latestTopicReplyAffordance" -eq "-") {
+        $alerts += "topic_reply_missing"
+    }
+    if (
+        "$latestStatus" -in @("pushed", "dry_run") -and
+        "$latestRoute" -eq "idle_hosting" -and
+        ("$latestHostBeatFunAxis" -eq "-" -or "$latestHostBeatReplyAffordance" -eq "-")
+    ) {
+        $alerts += "host_beat_reply_missing"
+    }
+    if ("$hostBeatAxisBias" -eq "True") {
+        $alerts += "host_beat_axis_bias"
+    }
     if ("$latestHostBeatRepeat" -eq "True") {
         $alerts += "host_beat_repeat"
     }
@@ -1037,7 +1135,7 @@ function Write-Snapshot {
         "quiet_after=$(Format-Seconds $quietAfter)",
         "idle_after=$(Format-Seconds $idleAfter)",
         "entrance_pacing_window=$(Format-Seconds $entrancePacingWindow)",
-        "profile_count=$($profiles.Count)",
+        "profile_count=$profileCount",
         "solo_readiness=$(Get-Field $soloReadiness.summary)",
         "test_isolation=$testIsolationStatus",
         "test_isolation_reason=$testIsolationReason",
@@ -1112,6 +1210,16 @@ function Write-Snapshot {
         "recent_topic_shape_light_stance=$($recentTopicShapeCounts['light_stance'])",
         "recent_topic_shape_tiny_tease=$($recentTopicShapeCounts['tiny_tease'])",
         "recent_topic_shape_small_challenge=$($recentTopicShapeCounts['small_challenge'])",
+        "recent_topic_axis_choice=$($recentTopicAxisCounts['choice'])",
+        "recent_topic_axis_tease=$($recentTopicAxisCounts['tease'])",
+        "recent_topic_axis_mood=$($recentTopicAxisCounts['mood'])",
+        "recent_topic_axis_micro_challenge=$($recentTopicAxisCounts['micro_challenge'])",
+        "recent_topic_axis_viewer_callback=$($recentTopicAxisCounts['viewer_callback'])",
+        "recent_host_beat_axis_choice=$($recentHostBeatAxisCounts['choice'])",
+        "recent_host_beat_axis_tease=$($recentHostBeatAxisCounts['tease'])",
+        "recent_host_beat_axis_mood=$($recentHostBeatAxisCounts['mood'])",
+        "recent_host_beat_axis_micro_challenge=$($recentHostBeatAxisCounts['micro_challenge'])",
+        "recent_host_beat_axis_viewer_callback=$($recentHostBeatAxisCounts['viewer_callback'])",
         "recent_topic_shape_bias=$topicShapeBias",
         "recent_topic_intent_quick_vote=$($recentTopicIntentCounts['quick_vote'])",
         "recent_topic_intent_tiny_answer=$($recentTopicIntentCounts['tiny_answer'])",
@@ -1127,6 +1235,7 @@ function Write-Snapshot {
         "latest_topic_hook=$latestTopicHook",
         "latest_topic_pattern=$latestTopicPattern",
         "latest_topic_intent=$latestTopicIntent",
+        "latest_topic_fun_axis=$latestTopicFunAxis",
         "latest_topic_reply_affordance=$latestTopicReplyAffordance",
         "latest_topic_recent_skip_reason=$latestTopicRecentSkipReason",
         "latest_topic_shape_guard_reason=$latestTopicShapeGuardReason",
@@ -1135,8 +1244,10 @@ function Write-Snapshot {
         "avatar_repeat_count=$avatarRepeatCount",
         "latest_host_beat_key=$latestHostBeatKey",
         "latest_host_beat_shape=$latestHostBeatShape",
+        "latest_host_beat_fun_axis=$latestHostBeatFunAxis",
         "latest_host_beat_title=$latestHostBeatTitle",
         "latest_host_beat_hint=$latestHostBeatHint",
+        "latest_host_beat_reply_affordance=$latestHostBeatReplyAffordance",
         "latest_host_beat_repeat=$latestHostBeatRepeat",
         "latency=$(Format-Latency $latency)",
         "latency_status=$latencyStatus",

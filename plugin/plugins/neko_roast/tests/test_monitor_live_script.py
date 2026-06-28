@@ -94,12 +94,15 @@ def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> di
                         "topic_hook": "Make the topic into one concrete A/B choice.",
                         "topic_pattern": "Turn the title into two concrete sides.",
                         "topic_intent": "quick_vote",
+                        "topic_fun_axis": "choice",
                         "topic_reply_affordance": "viewer can answer with one side",
                         "topic_recent_skip_reason": "single_viewer_flood",
                         "host_beat_key": "idle:soft_observation:quiet-room",
                         "host_beat_shape": "soft_observation",
+                        "host_beat_fun_axis": "mood",
                         "host_beat_title": "\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b",
                         "host_beat_hint": "Say one soft concrete observation.",
+                        "host_beat_reply_affordance": "viewer can answer with one mood word",
                     },
                 }
             ],
@@ -355,13 +358,16 @@ def test_monitor_live_script_reports_pacing_and_active_topic_fields(tmp_path: Pa
     assert "latest_topic_hook=Make_the_topic_into_one_concrete_A/B_choice." in completed.stdout
     assert "latest_topic_pattern=Turn_the_title_into_two_concrete_sides." in completed.stdout
     assert "latest_topic_intent=quick_vote" in completed.stdout
+    assert "latest_topic_fun_axis=choice" in completed.stdout
     assert "latest_topic_reply_affordance=viewer_can_answer_with_one_side" in completed.stdout
     assert "latest_topic_recent_skip_reason=single_viewer_flood" in completed.stdout
     assert "latest_topic_repeat=False" in completed.stdout
     assert "latest_host_beat_key=idle:soft_observation:quiet-room" in completed.stdout
     assert "latest_host_beat_shape=soft_observation" in completed.stdout
+    assert "latest_host_beat_fun_axis=mood" in completed.stdout
     assert "latest_host_beat_title=\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b" in completed.stdout
     assert "latest_host_beat_hint=Say_one_soft_concrete_observation." in completed.stdout
+    assert "latest_host_beat_reply_affordance=viewer_can_answer_with_one_mood_word" in completed.stdout
     assert "active_min_wait=0.0s" in completed.stdout
     assert "active_min_interval=120.0s" in completed.stdout
     assert "active_danmaku_wait=24.0s" in completed.stdout
@@ -386,6 +392,37 @@ def test_monitor_live_script_alerts_when_real_output_test_is_not_isolated(tmp_pa
     alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
     assert alerts_match is not None
     assert "test_isolation" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_active_topic_lacks_reply_hook(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    latest = context["state"]["recent_results"][0]
+    latest["response_module"] = "active_engagement"
+    latest["event"]["source"] = "active_engagement"
+    latest["event"].pop("topic_reply_affordance", None)
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "topic_reply_missing" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_idle_host_beat_lacks_reply_hook(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    latest = context["state"]["recent_results"][0]
+    latest["response_module"] = "idle_hosting"
+    latest["event"]["source"] = "idle_hosting"
+    latest["event"].pop("host_beat_fun_axis", None)
+    latest["event"].pop("host_beat_reply_affordance", None)
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "host_beat_reply_missing" in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_reports_repeated_active_topic_key(tmp_path: Path) -> None:
@@ -573,6 +610,194 @@ def test_monitor_live_script_reports_active_topic_source_mix(tmp_path: Path) -> 
     assert "recent_topic_source_fallback=1" in completed.stdout
     assert "recent_topic_source_bili_trending=1" in completed.stdout
     assert "recent_topic_source_recent_danmaku=1" in completed.stdout
+
+
+def test_monitor_live_script_reports_active_topic_axis_mix(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {
+                "source": "active_engagement",
+                "topic_key": "topic:1",
+                "topic_fun_axis": "choice",
+            },
+        },
+        {
+            "status": "dry_run",
+            "response_module": "active_engagement",
+            "event": {
+                "source": "active_engagement",
+                "topic_key": "topic:2",
+                "topic_fun_axis": "tease",
+            },
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {
+                "source": "active_engagement",
+                "topic_key": "topic:3",
+                "topic_fun_axis": "viewer_callback",
+            },
+        },
+        {
+            "status": "skipped",
+            "response_module": "active_engagement",
+            "event": {
+                "source": "active_engagement",
+                "topic_key": "topic:4",
+                "topic_fun_axis": "choice",
+            },
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_topic_axis_choice=1" in completed.stdout
+    assert "recent_topic_axis_tease=1" in completed.stdout
+    assert "recent_topic_axis_viewer_callback=1" in completed.stdout
+
+
+def test_monitor_live_script_reports_idle_host_beat_axis_mix(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:1",
+                "host_beat_fun_axis": "mood",
+            },
+        },
+        {
+            "status": "dry_run",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:2",
+                "host_beat_fun_axis": "choice",
+            },
+        },
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:3",
+                "host_beat_fun_axis": "viewer_callback",
+            },
+        },
+        {
+            "status": "skipped",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:4",
+                "host_beat_fun_axis": "mood",
+            },
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_host_beat_axis_mood=1" in completed.stdout
+    assert "recent_host_beat_axis_choice=1" in completed.stdout
+    assert "recent_host_beat_axis_viewer_callback=1" in completed.stdout
+
+
+def test_monitor_live_script_alerts_when_idle_host_beat_axis_is_one_note(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:1",
+                "host_beat_fun_axis": "mood",
+                "host_beat_reply_affordance": "viewer can answer with one mood word",
+            },
+        },
+        {
+            "status": "dry_run",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:2",
+                "host_beat_fun_axis": "mood",
+                "host_beat_reply_affordance": "viewer can answer with one mood word",
+            },
+        },
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:3",
+                "host_beat_fun_axis": "mood",
+                "host_beat_reply_affordance": "viewer can answer with one mood word",
+            },
+        },
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "event": {
+                "source": "idle_hosting",
+                "host_beat_key": "idle:4",
+                "host_beat_fun_axis": "choice",
+                "host_beat_reply_affordance": "viewer can pick one side",
+            },
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_host_beat_axis_mood=3" in completed.stdout
+    assert "recent_host_beat_axis_choice=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "host_beat_axis_bias" in alerts_match.group(1).split(",")
+
+
+def test_monitor_live_script_alerts_when_active_topic_axis_is_one_note(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_fun_axis": "mood", "topic_key": "topic:1"},
+        },
+        {
+            "status": "dry_run",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_fun_axis": "mood", "topic_key": "topic:2"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_fun_axis": "mood", "topic_key": "topic:3"},
+        },
+        {
+            "status": "pushed",
+            "response_module": "active_engagement",
+            "event": {"source": "active_engagement", "topic_fun_axis": "choice", "topic_key": "topic:4"},
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_topic_axis_mood=3" in completed.stdout
+    assert "recent_topic_axis_choice=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "topic_axis_bias" in alerts_match.group(1).split(",")
 
 
 def test_monitor_live_script_alerts_when_active_topic_shape_is_one_note(tmp_path: Path) -> None:
@@ -845,6 +1070,27 @@ def test_monitor_live_script_reports_long_reply_counts_by_route(tmp_path: Path) 
     assert "recent_long_reply_active_engagement=1" in completed.stdout
 
 
+def test_monitor_live_script_warns_idle_hosting_before_global_long_reply_limit(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_results"] = [
+        {
+            "status": "pushed",
+            "response_module": "idle_hosting",
+            "output": "x" * 66,
+            "event": {"source": "idle_hosting"},
+        },
+    ]
+
+    completed = _run_monitor(tmp_path, context, "-ExpectRealOutput")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "recent_long_reply_count=1" in completed.stdout
+    assert "recent_long_reply_idle_hosting=1" in completed.stdout
+    alerts_match = re.search(r"\balerts=([^\s]+)", completed.stdout)
+    assert alerts_match is not None
+    assert "long_reply" in alerts_match.group(1).split(",")
+
+
 def test_monitor_live_script_alerts_when_active_output_looks_like_generic_host_bait(tmp_path: Path) -> None:
     context = _context_with_latest_route_and_signal()
     context["state"]["recent_results"] = [
@@ -903,6 +1149,17 @@ def test_monitor_live_script_reports_recent_route_counts(tmp_path: Path) -> None
     assert "recent_idle_hosting=1" in completed.stdout
     assert "recent_active_engagement=2" in completed.stdout
     assert "recent_warmup_hosting=1" in completed.stdout
+
+
+def test_monitor_live_script_uses_solo_readiness_profile_count_when_recent_profiles_are_empty(tmp_path: Path) -> None:
+    context = _context_with_latest_route_and_signal()
+    context["state"]["recent_profiles"] = []
+    context["state"]["solo_test_readiness"]["profile_count"] = 5
+
+    completed = _run_monitor(tmp_path, context)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "profile_count=5" in completed.stdout
 
 
 def test_monitor_live_script_reports_recent_actual_route_counts(tmp_path: Path) -> None:

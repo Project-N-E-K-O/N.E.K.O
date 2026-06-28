@@ -516,3 +516,76 @@ def test_voice_swap_empty_input_returns_empty_string():
     assert _render_swap([]) == ""
     assert _render_swap([_voice_entry("event")]) == ""  # all blank
     assert _render_swap([_voice_entry("event", summary="   ", detail="   ")]) == ""
+
+
+def test_neko_live_short_reply_contract_is_rendered_from_callback_metadata():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "viewer_42: why are you so quiet?",
+                "detail": "viewer_42: why are you so quiet?",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "danmaku_response",
+                },
+            }
+        ],
+    )
+
+    assert "NEKO Live short output contract:" in out
+    assert "Target at most 14 Chinese characters; absolute ceiling 28." in out
+    assert "Output exactly one sentence, one breath, no paragraph." in out
+    assert "Do not continue, summarize, or imitate the previous NEKO reply." in out
+    assert "answer only the current danmaku" in out
+    assert "first appearance" in out
+
+
+def test_neko_live_host_routes_get_tighter_reply_ceiling_than_metadata_limit():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "solo stream is idle",
+                "detail": "solo stream is idle",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "idle_hosting",
+                },
+            }
+        ],
+    )
+
+    assert "absolute ceiling 24" in out
+    assert "one small hosting beat" in out
+    assert "not a survey or a long monologue" in out
+
+
+def test_non_neko_callbacks_do_not_get_live_reply_contract():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "warthunder",
+                "summary": "mission update",
+                "detail": "mission update",
+                "delivery_mode": "proactive",
+            }
+        ],
+    )
+
+    assert "NEKO Live short output contract:" not in out
