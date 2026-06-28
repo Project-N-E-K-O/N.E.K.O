@@ -15227,6 +15227,45 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "coordinate_rotation_symmetry",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "掌握平移、对称、旋转坐标规律后，可进一步处理坐标旋转与中心对称。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "point_coordinates",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "点坐标描述位置，变换坐标规律描述变化前后关系，容易只算点不看变换。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "坐标变换规律可用于坐标法证明中的点位、对称和距离关系处理。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -19369,6 +19408,84 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "factorization_common",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "因式分解方法选择通常先检查是否能提公因式。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "factorization_formula",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "无明显公因式后，应识别平方差、完全平方等公式结构。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "factorization_grouping",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "多项式项数较多时，分组可制造公因式或公式结构。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "polynomial_operations",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "整式运算常是展开合并，因式分解是化为乘积，方向相反。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "fraction_simplification",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "分式约分和通分常需先分解分子分母再处理公因式。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        },
+        {
+          "id": "quadratic_equation_factoring",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "选对因式分解方法后，可用零因式思想解二次方程。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -20446,6 +20563,32 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "linear_system_application",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After elimination, return to the application context and verify the solution.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "linear_system",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "The system is the object; substitution and elimination are solution methods.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -20536,6 +20679,32 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "linear_system_elimination",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Reduce one variable first, then solve the resulting two-variable system.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "linear_system",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "Three-variable systems need an extra elimination layer compared with two-variable systems.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -24393,6 +24562,32 @@
             "cross_subject": true,
             "added_for": "fixed_retrieval_eval_cross_subject_cases"
           }
+        },
+        {
+          "id": "auxiliary_line_strategy",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "When direct relations are insufficient, auxiliary lines connect congruence, similarity, or parallel facts.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Synthetic proof uses geometric relations directly; coordinate proof converts them into algebra.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -25170,6 +25365,45 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "primary_triangle_area",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "特殊四边形面积常先分割或转化为三角形面积计算。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "primary_trapezoid_area",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "梯形面积依赖上下底与高，易与平行四边形、矩形、菱形面积公式混用。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "area_method_geometry",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "特殊四边形面积可进一步用于面积法证明和复杂图形求解。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
           ]
         }
       ],
@@ -33511,6 +33745,45 @@
             "source_chapter": "图形与变换",
             "target_chapter": "图形变换"
           }
+        },
+        {
+          "id": "translation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "先用平移判断图形整体位置变化，并确认形状和大小保持不变。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "axis_symmetry",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "轴对称看镜像和对称轴，平移旋转看滑动或转动，学生容易混用。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "transformation_coordinates",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.86,
+          "reason": "小学图形变换经验可迁移到坐标系中的点位变化规律。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -38565,6 +38838,58 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "senior_vector_linear_operation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "理解向量方向和长度后，下一步是学习向量加减与数乘。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "point_coordinates",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "点表示位置，向量表示有方向和大小的量，学生易把点坐标当向量本身。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "概念掌握后，可用坐标表示向量并进行代数化计算。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_geometry",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "平面向量概念可用于把几何关系转化为向量关系来证明或计算。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -38648,6 +38973,45 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "线性运算后常转为坐标表示进行计算。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_plane_vector_concept",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "易把向量概念本身与向量加减、数乘运算混为一谈。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_vector_geometry",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "向量线性运算可用于几何证明与图形关系转化。",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -38881,6 +39245,45 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_geometry",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Dot products turn angle, perpendicularity, and projection questions into algebraic vector work.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Coordinate representation focuses on components, while dot product focuses on angle and projection.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_solid_vector_angle",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Solid-geometry angle problems often apply dot products to compute vector angles.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -39436,6 +39839,45 @@
             "source_chapter": "解析几何",
             "target_chapter": "圆"
           }
+        },
+        {
+          "id": "senior_line_circle_position",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "先写出圆心和半径，再进入直线与圆的位置关系判断。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "distance_formula",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "圆的方程刻画点集，距离公式只计算两点距离，目标和用法不同。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "圆的方程常用于坐标法证明中的轨迹、距离和交点计算。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -39546,6 +39988,45 @@
             "source_chapter": "解析几何",
             "target_chapter": "圆"
           }
+        },
+        {
+          "id": "senior_line_distance",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "判断直线与圆的位置关系时，关键步骤是求圆心到直线距离并与半径比较。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_circle_equation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "圆的方程用于表示圆，位置关系题还要结合距离或交点个数判断。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "circle_tangent_length",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "相切情形是直线与圆位置关系的重要应用，可继续处理切线长问题。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -40045,7 +40526,47 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_conic_chord_midpoint",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "圆锥曲线综合题常在联立方程后进入弦中点和点差法处理。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_conic_fixed_point",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "综合题范围更宽，定点题只证明某个点的位置不随参数变化。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "senior_conic_parameter_range",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "圆锥曲线综合中的联立、判别式和几何约束常用于参数范围题。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ]
+        }
+      ],
       "typical_misconceptions": [
         "联立后漏掉判别式条件",
         "把垂直条件写成斜率乘积但忽略过原点向量",
@@ -40904,6 +41425,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "senior_function_monotonicity",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Function monotonicity can be read from definitions or graphs; derivative monotonicity depends on derivative signs.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -41300,6 +41834,19 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "senior_binomial_theorem",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Counting combinations and binomial expansion coefficients use similar symbols but answer different questions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -57569,6 +58116,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_parameter_estimation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "The sample mean is commonly used as a point estimator in parameter estimation.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
         }
       ],
       "skills": [
@@ -57645,6 +58205,32 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_sample_mean",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "The law of large numbers is usually understood through sample means approaching population expectation.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_normal_distribution",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "reason": "LLN convergence and CLT normal approximation are related but not the same conclusion.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -57755,6 +58341,32 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_confidence_interval",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "After point estimation, the next step is often constructing a confidence interval.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_hypothesis_testing",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Parameter estimation summarizes parameter values; hypothesis testing makes reject-or-not decisions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -62704,6 +63316,32 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "senior_statistics_regression",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "Before writing the regression equation, organize statistics and check the linear trend.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_covariance_correlation",
+          "relation": "confusable",
+          "priority": "useful",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "reason": "Regression predicts values, while correlation measures the strength of linear association.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -63399,6 +64037,45 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_taylor_formula",
+          "relation": "procedure_step",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "等价替换不足以处理高阶差式时，可转向泰勒展开。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_lhopital_rule",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "二者都处理未定式，但适用条件和计算路径不同。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_limit_rules",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "等价无穷小替换是极限运算法则中的常用简化工具。",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -63856,6 +64533,32 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_antiderivative",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Using Newton-Leibniz requires finding an antiderivative first.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_variable_upper_limit_integral",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "Definite-integral evaluation and differentiating variable-limit integrals are often mixed up.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -63937,6 +64640,45 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_derivative_calculation",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "变上限积分题的关键步骤通常是对积分函数求导。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "定积分结果为数，变上限积分结果通常是函数。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_integral_area_problem",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "变上限积分可表示面积随上限变化的函数关系。",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "skills": [
@@ -64012,6 +64754,45 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Improper integrals should first be rewritten as limits of definite integrals.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Finite definite integrals and improper integrals have different convergence conditions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_series",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Improper integrals are commonly used in integral tests for series convergence.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -64111,6 +64892,19 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_partial_derivative",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "Partial derivatives follow coordinate axes; directional derivatives follow arbitrary unit directions.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -64220,6 +65014,32 @@
           "reason": "单调性极值与凹凸性 extends 拉格朗日乘数法 with a broader or more advanced version of the same idea.",
           "use_cases": [
             "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_absolute_extrema",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Lagrange multipliers find constrained candidates; absolute extrema still require comparing all candidates and boundaries.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_optimization_problem",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "Equality-constrained optimization often uses Lagrange equations to find feasible optimal candidates.",
+          "use_cases": [
+            "practice_planning",
             "learning_path",
             "hint_generation"
           ]
@@ -66746,6 +67566,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_optimization_problem",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "reason": "Optimization models use extreme-value points as candidates before checking constraints and endpoints.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -66834,6 +67667,19 @@
           "reason": "Procedure step: after 最值, move to 优化建模. Keep the workflow explicit so guidance can ask for the next missing step.",
           "use_cases": [
             "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_optimization_applications",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Optimization applications require comparing all feasible candidate values to choose an absolute maximum or minimum.",
+          "use_cases": [
+            "practice_planning",
             "learning_path",
             "hint_generation"
           ]
@@ -67028,6 +67874,32 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_integral_application_integrand",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "The interval says where to integrate; the integrand says what quantity is accumulated.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_integral_area_problem",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Area problems require determining integration bounds from intersections or geometric boundaries.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -67118,6 +67990,32 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_integral_application_interval",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "reason": "The integrand and interval answer different parts of an accumulation model.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_integral_physics_application",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "Physics integral applications require building integrands from force, velocity, density, or related rates.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ]
         }
       ],
@@ -68089,6 +68987,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_combinatorics",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Combinations are the basic tool for unordered selection in combinatorics.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -68499,6 +69410,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_hypothesis_testing",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "The alternative hypothesis determines the test direction and conclusion wording.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -68588,6 +69512,19 @@
           "use_cases": [
             "diagnosis",
             "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_hypothesis_testing",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "reason": "The test statistic is the core computed quantity used to make a hypothesis-testing decision.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
             "hint_generation"
           ]
         }
@@ -68903,6 +69840,32 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_p_value",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "The p-value measures evidence strength; the statistical conclusion is the contextual decision statement.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_hypothesis_testing",
+          "relation": "application",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "reason": "Hypothesis testing must end with a conclusion stated in the original problem context.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -69187,6 +70150,45 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_graph_traversal",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "reason": "A traversal process can construct a spanning tree of a connected graph.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_graph_shortest_path",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Spanning trees emphasize connected acyclic coverage; shortest paths optimize travel between two vertices.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
+        },
+        {
+          "id": "college_graph_theory_intro",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "reason": "Spanning trees support graph modeling tasks involving connectivity, networks, and traversal structure.",
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -69288,6 +70290,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_energy_conservation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "reason": "Force analysis identifies interactions; energy conservation tracks work and energy transfer.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -69369,6 +70384,19 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_momentum_conservation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "Energy conservation depends on work and energy transfer; momentum conservation depends on external impulse.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -69439,6 +70467,32 @@
             "diagnosis",
             "learning_path",
             "hint_generation"
+          ]
+        },
+        {
+          "id": "college_force_analysis",
+          "relation": "procedure_step",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "reason": "使用动量守恒前需先判断系统外力和冲量条件。",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_energy_conservation",
+          "relation": "confusable",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.89,
+          "reason": "动量守恒看系统外冲量，能量守恒看功和能量转化。",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "review"
           ]
         }
       ],

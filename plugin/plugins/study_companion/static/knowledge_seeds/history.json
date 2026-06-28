@@ -216,6 +216,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "pol_senior_rule_of_law",
+          "relation": "application",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "reason": "Ming-Qing monarchy cases help students contrast rule by personal authority with modern rule-of-law governance.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "politics",
+            "bridge_direction": "history_to_politics",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -329,6 +348,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "pol_senior_economy_market",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "reason": "Economic-history cases ground political analysis of market mechanisms, state regulation, and macro governance.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "politics",
+            "bridge_direction": "history_to_politics",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -613,6 +651,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "pol_senior_political_participation",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.83,
+          "reason": "Reform and revolution cases give historical evidence for discussing political participation and institutional change.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "politics",
+            "bridge_direction": "history_to_politics",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -726,6 +783,25 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "pol_senior_socialism_market",
+          "relation": "application",
+          "priority": "core",
+          "context": "review",
+          "confidence": 0.86,
+          "reason": "New China construction provides the historical path for understanding socialist market-economy formation and reform.",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "history",
+            "target_subject": "politics",
+            "bridge_direction": "history_to_politics",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [

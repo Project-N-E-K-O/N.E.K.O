@@ -232,6 +232,25 @@
             "target_subject": "chinese",
             "validation_batch": "chinese_ready_core_relations_2026_06_26"
           }
+        },
+        {
+          "id": "chinese_senior_language_sentence_rewrite",
+          "relation": "extends",
+          "reason": "Sentence expansion and contraction are early forms of sentence control before senior rewrite and imitation tasks.",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "validation_batch": "chinese_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_sentence_control_to_senior_rewrite"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -339,6 +358,44 @@
             "learning_path",
             "practice_planning"
           ]
+        },
+        {
+          "id": "chinese_junior_narrative_reading",
+          "relation": "prerequisite",
+          "reason": "Finding a paragraph main idea prepares students to track events, character changes, and emotion in junior narrative reading.",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "validation_batch": "chinese_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_main_idea_to_junior_narrative_reading"
+          }
+        },
+        {
+          "id": "chinese_senior_composition_material_review",
+          "relation": "application",
+          "reason": "Observation writing trains selecting concrete details, which later supports reviewing and organizing composition materials.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "chinese",
+            "target_subject": "chinese",
+            "validation_batch": "chinese_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_observation_to_senior_composition_material"
+          }
         }
       ],
       "typical_misconceptions": [

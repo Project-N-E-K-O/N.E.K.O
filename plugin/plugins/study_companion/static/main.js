@@ -1398,6 +1398,17 @@ function renderKnowledgeStageSelector(nodes = []) {
   return root;
 }
 
+function knowledgeEdgeMeta(edge = {}) {
+  const parts = [
+    String(edge.priority || '').trim(),
+    String(edge.context || '').trim(),
+  ].filter(Boolean);
+  if (Number.isFinite(Number(edge.confidence))) {
+    parts.push(`${Math.round(Number(edge.confidence) * 100)}%`);
+  }
+  return parts.join(' / ');
+}
+
 function renderKnowledgeNodeDetail(node = {}, edges = [], labelById = new Map()) {
   const detail = drawerElement('article', 'knowledge-node-detail');
   detail.dataset.topicId = String(node.id || node.topic_id || '');
@@ -1426,7 +1437,9 @@ function renderKnowledgeNodeDetail(node = {}, edges = [], labelById = new Map())
     const other = labelById.get(otherId) || otherId || '-';
     const relation = knowledgeRelationLabel(edge.relation);
     const reason = String(edge.reason || '').trim();
-    return reason ? `${relation}: ${other} - ${reason}` : `${relation}: ${other}`;
+    const meta = knowledgeEdgeMeta(edge);
+    const prefix = meta ? `${relation} (${meta}): ${other}` : `${relation}: ${other}`;
+    return reason ? `${prefix} - ${reason}` : prefix;
   }));
   addSection('ui.knowledge.node_detail.next', 'Recommended next step', relatedEdges.filter((edge) => ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').trim().toLowerCase())).map((edge) => {
     const target = labelById.get(String(edge.to || '')) || String(edge.to || '') || '-';

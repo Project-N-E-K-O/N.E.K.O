@@ -252,6 +252,44 @@
             "target_subject": "english",
             "chapter_focus": "primary_sight_words"
           }
+        },
+        {
+          "id": "english_junior_reading_detail",
+          "relation": "prerequisite",
+          "reason": "Fast recognition of high-frequency words reduces decoding load before students locate details in junior reading passages.",
+          "priority": "core",
+          "context": "explanation",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "validation_batch": "english_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_sight_words_to_junior_reading_detail"
+          }
+        },
+        {
+          "id": "english_senior_application_email",
+          "relation": "application",
+          "reason": "Daily dialogue routines for greeting, asking, thanking, and replying become the communicative moves used in senior application emails.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "validation_batch": "english_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_dialogue_to_senior_application_email"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -401,6 +439,25 @@
             "source_subject": "english",
             "target_subject": "english",
             "chapter_focus": "primary_dialogue"
+          }
+        },
+        {
+          "id": "english_senior_continuation_writing",
+          "relation": "extends",
+          "reason": "Picture writing builds the habit of turning visual cues into complete sentences before senior continuation writing adds plot and emotion arcs.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "english",
+            "target_subject": "english",
+            "validation_batch": "english_internal_bridge_2026_06_28",
+            "bridge_focus": "primary_picture_writing_to_senior_continuation_writing"
           }
         }
       ],

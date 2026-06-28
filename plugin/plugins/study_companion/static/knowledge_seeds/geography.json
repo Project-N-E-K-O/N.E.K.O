@@ -252,6 +252,25 @@
             "target_subject": "math",
             "bridge_direction": "geography_to_math"
           }
+        },
+        {
+          "id": "linear_function_application",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "confidence": 0.85,
+          "reason": "Transport cost, distance, and time questions can be modeled with linear-function applications.",
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -406,6 +425,44 @@
             "source_subject": "geography",
             "target_subject": "biology",
             "bridge_direction": "geography_to_biology"
+          }
+        },
+        {
+          "id": "weighted_mean",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "confidence": 0.84,
+          "reason": "Agriculture and industry location comparisons often combine multiple weighted factors before choosing a region.",
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "confidence": 0.86,
+          "reason": "Runoff, precipitation, and evaporation process lines require function-graph reading before geographic interpretation.",
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
           }
         }
       ],
@@ -564,6 +621,25 @@
             "source_subject": "geography",
             "target_subject": "biology",
             "bridge_direction": "geography_to_biology"
+          }
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "confidence": 0.86,
+          "reason": "Population structure, migration, and urbanization questions require reading statistical charts and trend graphs.",
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
           }
         }
       ],
@@ -1328,6 +1404,25 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "statistical_charts",
+          "relation": "application",
+          "priority": "useful",
+          "context": "practice",
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "confidence": 0.84,
+          "reason": "Regional sustainability comparisons depend on reading indicator tables, radar charts, and trend charts together.",
+          "metadata": {
+            "source_subject": "geography",
+            "target_subject": "math",
+            "bridge_direction": "geography_to_math",
+            "validation_batch": "cross_subject_bridge_2026_06_28"
+          }
         }
       ],
       "typical_misconceptions": [

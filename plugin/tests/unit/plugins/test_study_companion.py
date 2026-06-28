@@ -1380,6 +1380,87 @@ def _read_static_knowledge_seed_payload() -> dict[str, object]:
     return {**payload, "topics": merged_topics}
 
 
+def _static_subject_component_counts() -> dict[str, int]:
+    payload = _read_static_knowledge_seed_payload()
+    topics = [
+        topic
+        for topic in payload.get("topics", [])
+        if isinstance(topic, dict) and topic.get("id") and topic.get("subject")
+    ]
+    by_id = {str(topic["id"]): topic for topic in topics}
+    by_subject: dict[str, set[str]] = {}
+    adjacency: dict[str, dict[str, set[str]]] = {}
+    for topic in topics:
+        subject = str(topic["subject"])
+        topic_id = str(topic["id"])
+        by_subject.setdefault(subject, set()).add(topic_id)
+        adjacency.setdefault(subject, {}).setdefault(topic_id, set())
+    for topic in topics:
+        source_id = str(topic["id"])
+        source_subject = str(topic["subject"])
+        for bucket in ("prerequisites", "related"):
+            edges = topic.get(bucket)
+            if not isinstance(edges, list):
+                continue
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                target_id = str(edge.get("id") or "")
+                target = by_id.get(target_id)
+                if not target or str(target.get("subject")) != source_subject:
+                    continue
+                adjacency[source_subject].setdefault(source_id, set()).add(target_id)
+                adjacency[source_subject].setdefault(target_id, set()).add(source_id)
+
+    counts: dict[str, int] = {}
+    for subject, subject_ids in by_subject.items():
+        seen: set[str] = set()
+        components = 0
+        for topic_id in sorted(subject_ids):
+            if topic_id in seen:
+                continue
+            components += 1
+            stack = [topic_id]
+            seen.add(topic_id)
+            while stack:
+                current = stack.pop()
+                for neighbor in adjacency.get(subject, {}).get(current, set()):
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+        counts[subject] = components
+    return counts
+
+
+def _static_cross_subject_bridge_counts() -> dict[tuple[str, str], int]:
+    payload = _read_static_knowledge_seed_payload()
+    topics = [
+        topic
+        for topic in payload.get("topics", [])
+        if isinstance(topic, dict) and topic.get("id") and topic.get("subject")
+    ]
+    by_id = {str(topic["id"]): topic for topic in topics}
+    counts: dict[tuple[str, str], int] = {}
+    for topic in topics:
+        source_subject = str(topic["subject"])
+        for bucket in ("prerequisites", "related"):
+            edges = topic.get(bucket)
+            if not isinstance(edges, list):
+                continue
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                target = by_id.get(str(edge.get("id") or ""))
+                if not target:
+                    continue
+                target_subject = str(target.get("subject") or "")
+                if source_subject == target_subject:
+                    continue
+                pair = (source_subject, target_subject)
+                counts[pair] = counts.get(pair, 0) + 1
+    return counts
+
+
 def test_study_static_knowledge_seed_contains_standard_base_library_fields() -> None:
     payload = _read_static_knowledge_seed_payload()
     topics = payload["topics"]
@@ -1586,29 +1667,28 @@ def test_study_knowledge_seed_validator_accepts_static_manifest() -> None:
     assert set(result.report["subject_minimum_standard_topic_counts"]) == expected_subjects
     assert set(result.report["subject_minimum_standard_ready_counts"]) == expected_subjects
     assert set(result.report["subject_minimum_standard_gap_counts"]) == expected_subjects
-    assert result.report["subject_minimum_standard_ready_counts"]["math"] > 0
-    assert result.report["subject_minimum_standard_ready_counts"]["chinese"] >= 4
-    assert result.report["subject_minimum_standard_ready_counts"]["economics"] >= 4
-    assert result.report["subject_minimum_standard_gap_counts"]["math"] > 0
     assert (
-        result.report["subject_minimum_standard_ready_counts"]["math"]
-        + result.report["subject_minimum_standard_gap_counts"]["math"]
-        == result.report["subject_minimum_standard_topic_counts"]["math"]
+        result.report["subject_minimum_standard_ready_counts"]
+        == result.report["subject_minimum_standard_topic_counts"]
     )
-    assert 0.0 <= result.report["subject_minimum_standard_ready_rates"]["math"] <= 1.0
-    assert 0.0 <= result.report["subject_minimum_standard_gap_rates"]["math"] <= 1.0
-    assert result.report["subject_minimum_standard_relation_gap_counts"]["math"][
-        "confusable"
-    ] > 0
+    assert set(result.report["subject_minimum_standard_gap_counts"].values()) == {0}
+    assert set(result.report["subject_minimum_standard_ready_rates"].values()) == {1.0}
+    assert set(result.report["subject_minimum_standard_gap_rates"].values()) == {0.0}
+    assert result.report["subject_minimum_standard_relation_gap_counts"] == {}
     assert result.report["subject_minimum_standard_uncovered_subject_counts"] == {}
-    assert "math" in result.report["sample_subject_minimum_standard_gaps"]
-    assert result.report["top_gap_topics_by_subject"]["math"]
-    assert result.report["top_missing_relation_by_subject"]["math"][0]["count"] > 0
-    assert result.report["chapter_gap_counts"]["math"]
-    assert result.report["recommended_next_batch"]["math"]
-    assert len(result.report["recommended_next_batch"]["math"]) <= 12
+    assert result.report["sample_subject_minimum_standard_gaps"] == {}
+    assert result.report["top_gap_topics_by_subject"] == {}
+    assert result.report["top_missing_relation_by_subject"] == {}
+    assert result.report["chapter_gap_counts"] == {}
+    assert result.report["recommended_next_batch"] == {}
+    assert _static_subject_component_counts() == {
+        subject: 1 for subject in expected_subjects
+    }
     assert result.report["cross_subject_edge_counts"]
     assert result.report["cross_subject_relation_counts"]
+    cross_subject_bridge_counts = _static_cross_subject_bridge_counts()
+    assert cross_subject_bridge_counts[("history", "politics")] >= 8
+    assert cross_subject_bridge_counts[("geography", "math")] >= 12
     assert result.report["legacy_edges"] == 0
     assert result.report["legacy_edge_samples"] == []
     assert result.report["missing_stage"] == 0
@@ -1627,17 +1707,62 @@ def test_study_knowledge_seed_math_relationship_density_targets() -> None:
     )
 
     result = validate_knowledge_seed_manifest(seed_path)
+    payload = _read_static_knowledge_seed_payload()
+    topics = [
+        topic
+        for topic in payload.get("topics", [])
+        if isinstance(topic, dict) and topic.get("id")
+    ]
+    by_id = {str(topic["id"]): topic for topic in topics}
+    math_layer_counts = {
+        str(topic["id"]): {"core": 0, "diagnostic": 0, "transfer": 0}
+        for topic in topics
+        if topic.get("subject") == "math"
+    }
+    for topic in topics:
+        source_id = str(topic["id"])
+        for bucket in ("prerequisites", "related"):
+            edges = topic.get(bucket)
+            if not isinstance(edges, list):
+                continue
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                relation = str(
+                    edge.get("relation")
+                    or ("prerequisite" if bucket == "prerequisites" else "related")
+                )
+                target_id = str(edge.get("id") or "")
+                for topic_id in (source_id, target_id):
+                    if topic_id not in math_layer_counts or topic_id not in by_id:
+                        continue
+                    if relation in {"prerequisite", "procedure_step"}:
+                        math_layer_counts[topic_id]["core"] += 1
+                    if relation == "confusable":
+                        math_layer_counts[topic_id]["diagnostic"] += 1
+                    if relation in {"application", "co_occurs", "extends"}:
+                        math_layer_counts[topic_id]["transfer"] += 1
 
     assert result.is_valid
     assert result.report is not None
     relation_counts = result.report["relation_counts"]
     assert result.report["typed_edges"] >= 1100
     assert result.report["legacy_edges"] == 0
+    assert result.report["cycles_in_prerequisites"] == 0
+    assert (
+        result.report["subject_minimum_standard_ready_counts"]["math"]
+        == result.report["subject_minimum_standard_topic_counts"]["math"]
+    )
+    assert result.report["subject_minimum_standard_gap_counts"]["math"] == 0
     assert relation_counts.get("nearby", 0) == 0
     assert relation_counts["next"] < 30
     assert relation_counts["confusable"] >= 60
     assert relation_counts["procedure_step"] >= 90
     assert relation_counts["application"] >= 130
+    assert math_layer_counts
+    assert all(counts["core"] > 0 for counts in math_layer_counts.values())
+    assert all(counts["diagnostic"] > 0 for counts in math_layer_counts.values())
+    assert all(counts["transfer"] > 0 for counts in math_layer_counts.values())
 
 
 def test_study_knowledge_seed_validator_reports_schema_errors(
@@ -4171,22 +4296,37 @@ def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
     surface_utils = (
         plugin_dir / "surfaces" / "study_surface_utils.ts"
     ).read_text(encoding="utf-8")
+    en_i18n = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
+    zh_i18n = json.loads((plugin_dir / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    relation_keys = {
+        "application",
+        "procedure_step",
+        "confusable",
+        "co_occurs",
+        "supports",
+        "analogy",
+    }
 
     for source in (static_source, surface_source):
-        assert "ui.knowledge.edge_relation.application" in source
-        assert "ui.knowledge.edge_relation.procedure_step" in source
-        assert "ui.knowledge.edge_relation.confusable" in source
+        for relation in relation_keys:
+            assert f"ui.knowledge.edge_relation.{relation}" in source
         assert "data-relation" in source
         assert "data-priority" in source
         assert "data-context" in source
         assert "knowledge-edge-row__reason" in source
         assert "knowledge-edge-row__meta" in source
+    for relation in relation_keys:
+        assert en_i18n[f"ui.knowledge.edge_relation.{relation}"]
+        assert zh_i18n[f"ui.knowledge.edge_relation.{relation}"]
     for source in (static_css, surface_utils):
         assert 'data-relation="confusable"' in source
         assert 'data-relation="application"' in source
         assert 'data-relation="procedure_step"' in source
         assert 'data-relation="extends"' in source
         assert 'data-relation="co_occurs"' in source
+    assert "-webkit-line-clamp: 2" in static_css
+    assert "function knowledgeEdgeMeta" in static_source
+    assert "${relation} (${meta}): ${other}" in static_source
     assert "function renderKnowledgeNodeDetail" in static_source
     assert "knowledge-node-detail" in surface_source
     assert "ui.knowledge.node_detail.why" in surface_source
