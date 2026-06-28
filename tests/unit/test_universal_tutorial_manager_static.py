@@ -148,6 +148,15 @@ def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
     assert "this.cleanupDragHandlers();" in remove_popover_block
     assert "this.popover.classList.remove('dragging');" in remove_popover_block
 
+    cleanup_block = source.split("        cleanupDragHandlers() {", 1)[1].split(
+        "        removePopover() {",
+        1,
+    )[0]
+    assert "dragHandle.removeEventListener('mousedown', handleDragStart);" in cleanup_block
+    assert "dragHandle.removeEventListener('touchstart', handleDragStart, { passive: false });" in cleanup_block
+    assert "document.removeEventListener('touchmove', handleDragMove, { passive: false });" in cleanup_block
+    assert "document.removeEventListener('touchend', handleDragEnd, { passive: false });" in cleanup_block
+
     bind_drag_block = source.split("        bindDragEvents(dragHandle, popover) {", 1)[1].split(
         "    // 暴露到全局",
         1,
@@ -155,6 +164,9 @@ def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
     assert "this.cleanupDragHandlers();" in bind_drag_block
     assert "dragHandle.addEventListener('mousedown', handleDragStart);" in bind_drag_block
     assert "document.addEventListener('mouseup', handleDragEnd);" in bind_drag_block
+    assert "dragHandle.addEventListener('touchstart', handleDragStart, { passive: false });" in bind_drag_block
+    assert "document.addEventListener('touchmove', handleDragMove, { passive: false });" in bind_drag_block
+    assert "document.addEventListener('touchend', handleDragEnd, { passive: false });" in bind_drag_block
     assert "dragHandle," in bind_drag_block
     assert "handleDragStart," in bind_drag_block
 
