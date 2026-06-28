@@ -1543,7 +1543,9 @@
         "cannotDeleteBoundModel": "无法删除当前正在使用的模型",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "测试说话",
-        "pngtuberStatePreview": "状态预览"
+        "pngtuberStatePreview": "状态预览",
+        "pngtuberImportProjectFile": "导入工程文件",
+        "pngtuberImportFolder": "导入文件夹"
     },
     "voice": {
         "title": "音色注册",

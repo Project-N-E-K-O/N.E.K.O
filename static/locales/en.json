@@ -1543,7 +1543,9 @@
         "cannotDeleteBoundModel": "Cannot delete the model currently in use",
         "modelInUse": "In use",
         "pngtuberTalkPreview": "Test Talking",
-        "pngtuberStatePreview": "State Preview"
+        "pngtuberStatePreview": "State Preview",
+        "pngtuberImportProjectFile": "Import Project File",
+        "pngtuberImportFolder": "Import Folder"
     },
     "voice": {
         "title": "Voice Registration",
