@@ -1058,7 +1058,7 @@ function Gallery(props) {
 function FileDownload(props) {
   const href = props.href || props.url || props.dataUrl || '';
   const label = props.label || props.children || props.filename || 'Download';
-  const copyText = props.path || href;
+  const path = props.path || '';
   const openHref = () => {
     if (!isSafeUrl(href)) return;
     const url = hostedAbsoluteUrl(href);
@@ -1069,13 +1069,12 @@ function FileDownload(props) {
       reportHostedRuntimeError('FileDownload.open', error);
     }
   };
-  const copy = async () => {
-    if (!copyText || !navigator.clipboard) return;
+  const openPath = () => {
+    if (!path) return;
     try {
-      await navigator.clipboard.writeText(String(copyText));
-      showToast(props.copiedLabel || 'Copied', { tone: 'success' });
+      parent.postMessage({ type: 'neko-hosted-surface-open-path', payload: { path: String(path) } }, hostedTargetOrigin());
     } catch (error) {
-      reportHostedRuntimeError('FileDownload.copy', error);
+      reportHostedRuntimeError('FileDownload.openPath', error);
     }
   };
   if (href && props.openExternal !== false && isSafeUrl(href) && !String(href).trim().toLowerCase().startsWith('data:')) {
@@ -1090,7 +1089,7 @@ function FileDownload(props) {
       target: props.target,
     }, label);
   }
-  return Button({ className: classNames('neko-download', props.className), tone: props.tone || 'primary', disabled: !copyText, onClick: copy, children: [label] });
+  return Button({ className: classNames('neko-download', props.className), tone: props.tone || 'primary', disabled: !path, onClick: openPath, children: [label] });
 }
 function Form(props) { return h('form', { className: 'neko-form ' + (props.className || ''), onSubmit: (event) => { event.preventDefault(); if (props.onSubmit) props.onSubmit(event); } }, ...(props.children || [])); }
 

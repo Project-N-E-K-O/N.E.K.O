@@ -57,3 +57,62 @@ export function openExternalUrl(url: string): void {
   }
   window.open(href, '_blank', 'noopener,noreferrer')
 }
+
+export function openLocalPath(path: string): void {
+  const raw = String(path || '').trim()
+  if (!isLocalPath(raw)) return
+  const target = normalizeLocalPath(raw)
+  const host = (window as unknown as {
+    nekoHost?: { openPath?: (payload: { path: string }) => void | Promise<unknown> }
+    electronShell?: {
+      openPath?: (path: string) => void | Promise<unknown>
+      showItemInFolder?: (path: string) => void | Promise<unknown>
+      openExternal?: (url: string) => void | Promise<unknown>
+    }
+  })
+  if (host.nekoHost && typeof host.nekoHost.openPath === 'function') {
+    Promise.resolve(host.nekoHost.openPath({ path: target })).catch((err) => {
+      console.warn('[openLocalPath] nekoHost.openPath failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.openPath === 'function') {
+    Promise.resolve(host.electronShell.openPath(target)).catch((err) => {
+      console.warn('[openLocalPath] electronShell.openPath failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.showItemInFolder === 'function') {
+    Promise.resolve(host.electronShell.showItemInFolder(target)).catch((err) => {
+      console.warn('[openLocalPath] electronShell.showItemInFolder failed:', err)
+    })
+    return
+  }
+  if (host.electronShell && typeof host.electronShell.openExternal === 'function') {
+    Promise.resolve(host.electronShell.openExternal(localPathToFileUrl(target))).catch((err) => {
+      console.warn('[openLocalPath] electronShell.openExternal(file://) failed:', err)
+    })
+  }
+}
+
+function isLocalPath(value: string): boolean {
+  if (!value) return false
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return value.toLowerCase().startsWith('file://')
+  return value.startsWith('/') || value.startsWith('~/') || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\')
+}
+
+function localPathToFileUrl(value: string): string {
+  if (value.toLowerCase().startsWith('file://')) return value
+  let normalized = value
+  if (/^[a-zA-Z]:\\/.test(normalized)) normalized = `/${normalized.replace(/\\/g, '/')}`
+  return `file://${normalized.split('/').map((part) => encodeURIComponent(part)).join('/')}`
+}
+
+function normalizeLocalPath(value: string): string {
+  if (!value.toLowerCase().startsWith('file://')) return value
+  try {
+    return decodeURIComponent(new URL(value).pathname)
+  } catch {
+    return value
+  }
+}

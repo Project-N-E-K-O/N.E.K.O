@@ -780,4 +780,25 @@ describe('hosted ui runtime', () => {
       payload: { url: 'http://127.0.0.1:48911/plugin/demo/hosted-ui/artifact?path=x.zip' },
     }])
   })
+
+  it('routes local hosted download paths through the parent window', () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          messages.push(message)
+        },
+      },
+      configurable: true,
+    })
+    window.__NEKO_PAYLOAD.host = { origin: 'http://127.0.0.1:48911' }
+
+    ui.render(ui.h(ui.FileDownload, { path: '/tmp/neko/package', label: 'Open folder' }), root)
+    fireEvent.click(root.querySelector('button')!)
+
+    expect(messages).toEqual([{
+      type: 'neko-hosted-surface-open-path',
+      payload: { path: '/tmp/neko/package' },
+    }])
+  })
 })

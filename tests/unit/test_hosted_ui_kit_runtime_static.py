@@ -72,7 +72,10 @@ def test_file_download_open_external_checks_safe_url_and_target_origin():
     assert "if (!url || !isSafeUrl(url)) return;" in download_block
     assert "props.openExternal !== false && isSafeUrl(href)" in download_block
     assert "parent.postMessage({ type: 'neko-hosted-surface-open-external', payload: { url } }, hostedTargetOrigin());" in download_block
+    assert "parent.postMessage({ type: 'neko-hosted-surface-open-path', payload: { path: String(path) } }, hostedTargetOrigin());" in download_block
     assert "payload: { url } }, '*')" not in download_block
+    assert "payload: { path: String(path) } }, '*')" not in download_block
+    assert "clipboard.writeText" not in download_block
 
 
 def test_hosted_api_requests_use_precise_target_origin():

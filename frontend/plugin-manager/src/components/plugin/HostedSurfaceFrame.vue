@@ -60,7 +60,7 @@ import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
-import { openExternalUrl } from '@/utils/openExternal'
+import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
 import type { PluginUiSurface } from '@/types/api'
 
 const props = withDefaults(defineProps<{
@@ -463,6 +463,11 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-external') {
     const url = typeof data.payload?.url === 'string' ? data.payload.url : ''
     if (url) openExternalUrl(url)
+    return
+  }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-path') {
+    const path = typeof data.payload?.path === 'string' ? data.payload.path : ''
+    if (path) openLocalPath(path)
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
