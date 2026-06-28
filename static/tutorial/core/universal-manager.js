@@ -800,6 +800,7 @@ class UniversalTutorialManager {
                 beginAvatarOverride: (overrideOptions) => this.beginTutorialAvatarOverride(overrideOptions),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
                 ensureVisible: (sceneId, ensureOptions) => this.ensureTutorialYuiLive2dVisible(sceneId, ensureOptions),
+                waitForAvatarReady: (sceneId) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000),
                 sleep: (delayMs) => this.sleep(delayMs),
                 beginTakingOver: (detail) => {
                     const director = detail && detail.director;
@@ -1899,6 +1900,60 @@ class UniversalTutorialManager {
             return true;
         }
         return ['preparing', 'applying', 'settling'].includes(String(manager._modelLoadState || ''));
+    }
+
+    isTutorialYuiLive2dVisualReady() {
+        const manager = window.live2dManager || null;
+        if (!this.isTutorialYuiLive2dActive() || !this.hasTutorialYuiLive2dRenderableModel(manager)) {
+            return false;
+        }
+        if (manager._isLoadingModel === true) {
+            return false;
+        }
+        const state = String(manager._modelLoadState || '');
+        if (state !== 'ready') {
+            return false;
+        }
+        if (manager._isModelReadyForInteraction !== true) {
+            return false;
+        }
+        return true;
+    }
+
+    waitForTutorialYuiLive2dVisualReady(reason = '', maxWaitTime = 12000) {
+        if (this.isTutorialYuiLive2dVisualReady()) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let resolved = false;
+            const timeoutMs = Math.max(0, Math.floor(Number(maxWaitTime) || 0));
+            const done = (result) => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                window.removeEventListener('neko-live2d-model-ready', onReady);
+                window.removeEventListener('live2d-model-ready', onReady);
+                if (!result) {
+                    console.warn('[Tutorial] 等待 YUI Live2D 视觉就绪超时，继续启动教程:', reason || 'unknown');
+                }
+                resolve(result);
+            };
+            const checkReady = () => {
+                if (this.isTutorialYuiLive2dVisualReady()) {
+                    done(true);
+                }
+            };
+            const onReady = () => checkReady();
+            const poller = setInterval(checkReady, 100);
+            const timer = setTimeout(() => done(false), timeoutMs);
+            window.addEventListener('neko-live2d-model-ready', onReady);
+            window.addEventListener('live2d-model-ready', onReady);
+            checkReady();
+        });
     }
 
     waitForLive2dModelLoadIdle(maxWaitTime = 30000) {
