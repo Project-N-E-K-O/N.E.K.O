@@ -7190,11 +7190,20 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         const currentCatgirl = currentData.current_catgirl || '';
 
         if (currentCatgirl) {
+            if (isUnsafeCharacterPathSegment(currentCatgirl)) {
+                console.warn('[CharacterCardManager] 当前角色名不能安全放进 URL path，跳过语音状态检查以允许救援切换:', currentCatgirl);
+                return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+            }
             const voiceResp = await fetch(
                 `/api/characters/catgirl/${encodeURIComponent(currentCatgirl)}/voice_mode_status`,
                 { cache: 'no-store' }
             );
             if (!voiceResp.ok) {
+                const errorData = await voiceResp.json().catch(() => ({}));
+                if (errorData && errorData.invalid_name) {
+                    console.warn('[CharacterCardManager] 当前角色名已被后端标记为非法，跳过语音状态检查以允许救援切换:', currentCatgirl);
+                    return { ok: true, currentCatgirl, skippedVoiceCheckForInvalidName: true };
+                }
                 throw new Error(`voice_mode_status request failed: ${voiceResp.status}`);
             }
             const voiceData = await voiceResp.json();
@@ -7213,6 +7222,18 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
         await showAlertDialog(msg, { type: 'error' });
         return { ok: false };
     }
+}
+
+function isUnsafeCharacterPathSegment(name) {
+    const value = String(name || '').trim();
+    return !value
+        || value === '.'
+        || value === '..'
+        || value.endsWith('.')
+        || value.includes('..')
+        || value.includes('/')
+        || value.includes('\\')
+        || /[\u0000-\u001F\u007F]/.test(value);
 }
 
 // 跨窗口通知主窗口（index.html / chat.html）热切换角色
@@ -7352,7 +7373,17 @@ async function workshopDeleteCatgirl(name, options = {}) {
     if (!confirmed) return false;
 
     try {
-        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });
+        const useBodyDelete = isUnsafeCharacterPathSegment(name);
+        const resp = await fetch(
+            useBodyDelete ? '/api/characters/catgirl/delete' : '/api/characters/catgirl/' + encodeURIComponent(name),
+            useBodyDelete
+                ? {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                }
+                : { method: 'DELETE' }
+        );
         if (!resp.ok) {
             let serverMsg = '';
             try {
