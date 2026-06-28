@@ -3185,12 +3185,14 @@ def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
 
 def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
     source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
-    status_block = source.split("const setStatus = (msg) => {", 1)[1].split(
+    status_block = source.split("const setStatus = (msg, options) => {", 1)[1].split(
         "const currentLanlanName",
         1,
     )[0]
 
-    assert "window.isInTutorial === true ? 'NekoClaw server ready' : (msg || '')" in status_block
+    assert "options.stabilizeTutorialText === true" in status_block
+    assert "isTutorialAgentStatusLocked()" in status_block
+    assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
     assert "s.textContent = text;" in status_block
 
 

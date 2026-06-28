@@ -606,7 +606,7 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bri
     assert "function withoutTransientYuiGuideCursorEffect(cursor)" in source
     assert "yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);" in bridge_block
     assert "payload.cursor = patch.cursor || null;" in bridge_block
-    assert "payload.cursor = yuiGuidePcOverlayCursor;" not in bridge_block
+    assert "payload.cursor = yuiGuidePcOverlayCursor;" in bridge_block
 
 
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():

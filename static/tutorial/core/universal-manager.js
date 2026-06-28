@@ -800,7 +800,7 @@ class UniversalTutorialManager {
                 beginAvatarOverride: (overrideOptions) => this.beginTutorialAvatarOverride(overrideOptions),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
                 ensureVisible: (sceneId, ensureOptions) => this.ensureTutorialYuiLive2dVisible(sceneId, ensureOptions),
-                waitForAvatarReady: (sceneId) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000),
+                waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000),
                 sleep: (delayMs) => this.sleep(delayMs),
                 beginTakingOver: (detail) => {
                     const director = detail && detail.director;

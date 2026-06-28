@@ -274,7 +274,7 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
     assert "hideTutorialLive2dRuntimeSurfaceAfterResidueClear()" in source
     assert "await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');" in start_round_block
     assert "async waitForTutorialTeardownSettled(reason = '')" in source
-    assert "waitForAvatarReady: (sceneId) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000)" in source
+    assert "waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000)" in source
     assert "if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {" in placement_block
     assert "deferRevealPrepared: true" in prelude_block
     assert "const deferRevealPrepared = options && options.deferRevealPrepared === true;" in ensure_visible_block
