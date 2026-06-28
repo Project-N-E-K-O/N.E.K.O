@@ -3678,6 +3678,9 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         await showProfileNameRequiredDialog();
         return;
     }
+    if (!(await ensureValidCharacterProfileName(catgirlName, form?.querySelector?.('[name="档案名"]')))) {
+        return;
+    }
 
     if (form && form._isNew && !form._autoCreated) {
         try {
@@ -3750,6 +3753,80 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
 
 function getProfileNameFromCharacterForm(form, fallbackName) {
     return String(form?.querySelector?.('[name="档案名"]')?.value || fallbackName || '').trim();
+}
+
+const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
+    'l2d',
+    'model_manager',
+    'live2d_parameter_editor',
+    'live2d_emotion_manager',
+    'vrm_emotion_manager',
+    'mmd_emotion_manager',
+    'voice_clone',
+    'api_key',
+    'character_card_manager',
+    'cloudsave_manager',
+    'memory_browser',
+    'cookies_login',
+    'chat',
+    'subtitle',
+    'agenthud',
+    'toast',
+    'card_maker',
+    'soccer_demo',
+    'badminton_demo',
+    'jukebox',
+    'static',
+    'user_live2d',
+    'user_live2d_local',
+    'user_vrm',
+    'user_mmd',
+    'user_mods',
+    'workshop',
+    'api',
+    'ws',
+    'health',
+]);
+const CHARACTER_PROFILE_RESERVED_DEVICE_RE = /^(con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])$/i;
+const CHARACTER_PROFILE_ALLOWED_PUNCTUATION = new Set([' ', '_', '-', '(', ')', '（', '）', '·', '・', "'", '’']);
+const CHARACTER_PROFILE_NAME_MAX_UNITS = 60;
+
+function countCharacterProfileNameUnits(name) {
+    return Array.from(String(name || '')).reduce((total, ch) => total + (ch.codePointAt(0) <= 0x7F ? 1 : 2), 0);
+}
+
+function getCharacterProfileNameError(name) {
+    const value = String(name || '').trim();
+    if (!value) return window.t ? window.t('character.profileNameRequired') : '档案名为必填项';
+    if (value.includes('/') || value.includes('\\')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value.includes('..')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value === '.' || value.endsWith('.')) return window.t ? window.t('character.profileNameUnsafeDot') : '档案名不能仅由点号组成或以点号结尾';
+    if (value.includes('.')) return window.t ? window.t('character.profileNameContainsDot') : '档案名不能包含点号(.)';
+    if (CHARACTER_PROFILE_RESERVED_DEVICE_RE.test(value.split('.', 1)[0])) return window.t ? window.t('character.profileNameReservedDevice') : '档案名不能使用 Windows 保留设备名';
+    if (CHARACTER_PROFILE_RESERVED_ROUTE_NAMES.has(value)) return window.t ? window.t('character.profileNameReservedRoute') : '此名称是系统保留的路由名称，不能用作档案名';
+    for (const ch of value) {
+        if (/[\u0000-\u001F\u007F]/.test(ch)) return window.t ? window.t('character.profileNameInvalidChars') : '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号';
+        if (/[\p{L}\p{N}]/u.test(ch) || CHARACTER_PROFILE_ALLOWED_PUNCTUATION.has(ch)) continue;
+        return window.t ? window.t('character.profileNameInvalidChars') : '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号';
+    }
+    if (countCharacterProfileNameUnits(value) > CHARACTER_PROFILE_NAME_MAX_UNITS) return window.t ? window.t('character.profileNameTooLong') : '档案名过长';
+    return '';
+}
+
+async function showCharacterProfileNameInvalidDialog(message) {
+    const text = message || (window.t ? window.t('character.profileNameInvalid') : '档案名无效');
+    showMessage(text, 'warning', 6000);
+    if (typeof showAlertDialog === 'function') {
+        await showAlertDialog(text, { type: 'warning' });
+    }
+}
+
+async function ensureValidCharacterProfileName(name, input) {
+    const error = getCharacterProfileNameError(name);
+    if (!error) return true;
+    if (input && typeof input.focus === 'function') input.focus();
+    await showCharacterProfileNameInvalidDialog(error);
+    return false;
 }
 
 async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFirst', fallback = '请先填写猫娘档案名，然后再设置模型') {
@@ -5023,6 +5100,9 @@ function openCatgirlPanel(card, originEl) {
             );
             return;
         }
+        if (!(await ensureValidCharacterProfileName(currentName, form?.querySelector?.('[name="档案名"]')))) {
+            return;
+        }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
         openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
@@ -5666,11 +5746,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', name);
             }
             if (!newName || newName.trim() === '' || newName.trim() === name) return;
+            const normalizedNewName = newName.trim();
+            if (!(await ensureValidCharacterProfileName(normalizedNewName))) {
+                return;
+            }
             try {
                 const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/rename', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ new_name: newName.trim() })
+                    body: JSON.stringify({ new_name: normalizedNewName })
                 });
                 const result = await resp.json();
                 if (result.success) {
@@ -6975,6 +7059,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
+            return false;
+        }
+        if (!(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
             return false;
         }
 
@@ -10674,6 +10761,9 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
+    if (!nameInput.readOnly && !(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
+        return;
+    }
     const baseData = nameInput.readOnly
         ? {}
         : { '档案名': normalizeCharacterFieldName(nameInput.value) };
@@ -10919,6 +11009,9 @@ async function renameMaster() {
     }
     const normalizedNewName = normalizeCharacterFieldName(newName);
     if (!normalizedNewName || normalizedNewName === oldName) return;
+    if (!(await ensureValidCharacterProfileName(normalizedNewName, nameInput))) {
+        return;
+    }
     try {
         const useBodyFallback = /[\\/]/.test(oldName);
         let resp;
