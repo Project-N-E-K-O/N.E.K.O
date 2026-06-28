@@ -19198,6 +19198,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "factorization_common",
+          "relation": "prerequisite",
+          "reason": "Grouping factorization requires first being able to extract common factors from terms before grouping terms strategically.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "factorization_strategy",
+          "relation": "procedure_step",
+          "reason": "Procedure step: group terms that share a common factor or formula pattern, factor each group, then extract the shared binomial factor.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "factorization_formula",
+          "relation": "confusable",
+          "reason": "Formula factorization directly matches a known identity, while grouping factorization reorganizes terms to create common factors or formula patterns.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "quadratic_equation_factoring",
+          "relation": "application",
+          "reason": "Grouping factorization supports solving quadratic or higher-degree equations after rewriting expressions into factorable products.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -19393,6 +19461,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "fractional_expression",
+          "relation": "prerequisite",
+          "reason": "Fraction simplification and common-denominator work require understanding fractional expressions and denominator restrictions first.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "factorization_common",
+          "relation": "procedure_step",
+          "reason": "Procedure step: factor numerators and denominators first, then cancel common factors or build a common denominator.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "radical_simplification",
+          "relation": "confusable",
+          "reason": "Fraction simplification cancels common factors in rational expressions, while radical simplification rewrites roots and rationalizes when needed.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "fractional_equation",
+          "relation": "application",
+          "reason": "Fraction simplification is applied before solving fractional equations by simplifying expressions and identifying denominator restrictions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20482,6 +20618,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "quadratic_equation_concept",
+          "relation": "prerequisite",
+          "reason": "Completing the square requires understanding the standard quadratic equation form and the role of the squared term, linear term, and constant term.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "quadratic_general_form",
+          "relation": "procedure_step",
+          "reason": "Procedure step: start from the general quadratic form, move the constant term, normalize the leading coefficient if needed, and complete a square on the variable terms.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "quadratic_equation_factoring",
+          "relation": "confusable",
+          "reason": "Factoring looks for product structure, while completing the square constructs a perfect square even when obvious factors are not available.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "quadratic_vertex_form",
+          "relation": "application",
+          "reason": "Completing the square is the algebraic bridge from general form to vertex form, supporting graph interpretation and maximum-minimum reasoning.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20563,6 +20767,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "quadratic_equation_concept",
+          "relation": "prerequisite",
+          "reason": "Quadratic equation applications require recognizing when a real situation leads to a second-degree equation before choosing a solution method.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "equation_check_solution",
+          "relation": "procedure_step",
+          "reason": "Procedure step: solve the quadratic model, then check roots against the original situation and discard impossible values.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "linear_equation_application",
+          "relation": "confusable",
+          "reason": "Linear equation applications model constant-rate or first-degree relationships, while quadratic applications involve products, areas, or repeated change that create second-degree terms.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "application",
+          "reason": "Multi-period growth-rate tasks are typical quadratic equation applications when the unknown rate appears in expressions like (1+x)^2.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -20810,6 +21082,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_percent_application",
+          "relation": "prerequisite",
+          "reason": "Profit and discount problems require percent meaning and percent application before learners compare cost, price, discount rate, and profit.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "equation_check_solution",
+          "relation": "procedure_step",
+          "reason": "Procedure step: after solving for price, profit, or discount rate, substitute the result back into the business context and check units and feasibility.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "growth_rate_problem",
+          "relation": "confusable",
+          "reason": "Profit and discount problems also use percentage rates, but growth-rate problems emphasize repeated change from a base quantity.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "quadratic_application_profit",
+          "relation": "application",
+          "reason": "Profit and discount modeling prepares learners for quadratic-function profit applications where revenue, cost, and maximum profit are modeled algebraically.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21057,6 +21397,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "linear_equation_application",
+          "relation": "prerequisite",
+          "reason": "Travel problems usually require turning distance, speed, and time relationships into one-variable equation applications before handling more complex cases.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "primary_unit_rate",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify speed as a unit rate, then combine speeds by sum for meeting problems or by difference for chasing problems.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "engineering_problem",
+          "relation": "confusable",
+          "reason": "Travel and engineering problems both use rate times time, but travel tracks distance and speed while engineering tracks total work and efficiency.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "linear_system_application",
+          "relation": "application",
+          "reason": "Two-object meeting, chasing, or segmented travel problems often extend into linear-system applications with multiple unknown times or speeds.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21315,6 +21723,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "linear_inequality",
+          "relation": "prerequisite",
+          "reason": "Parameterized inequalities require first solving and interpreting ordinary linear inequalities before adding parameter cases.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "classification_discussion",
+          "relation": "procedure_step",
+          "reason": "Procedure step: split by parameter ranges, solve each case, then merge results while checking endpoints and inequality directions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "equation_parameter",
+          "relation": "confusable",
+          "reason": "Parameterized equations solve equality conditions, while parameterized inequalities compare ranges and inequality directions under cases.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "quadratic_parameter_range",
+          "relation": "application",
+          "reason": "Parameterized inequality reasoning is applied in quadratic parameter-range tasks where constraints define allowable values.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21538,6 +22014,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "central_symmetry",
+          "relation": "prerequisite",
+          "reason": "Coordinate rotation and central symmetry require understanding rotation and symmetry transformations before writing coordinate rules.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "transformation_coordinates",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the rotation center, angle, or symmetry center, then apply the coordinate transformation rule to each point.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "coordinate_symmetry",
+          "relation": "confusable",
+          "reason": "Coordinate symmetry often reflects points across axes, while rotation and central symmetry turn points around a center by an angle or half-turn.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Coordinate rotation and central symmetry are applied in coordinate geometry proofs involving congruence, invariance, or transformed figures.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21630,6 +22174,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "coordinate_system",
+          "relation": "prerequisite",
+          "reason": "Coordinate geometry proof requires a coordinate system and coordinate representation before converting geometric relations into algebra.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "procedure_step",
+          "reason": "Procedure step: assign convenient coordinates, compute slopes, distances, or midpoints, then write the algebraic conclusion as a geometric proof.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "confusable",
+          "reason": "Synthetic geometric proof uses geometric facts directly, while coordinate proof translates the figure into algebraic coordinate calculations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "quadrilateral_midpoint_model",
+          "relation": "application",
+          "reason": "Coordinate proof is useful in quadrilateral midpoint models by assigning coordinates and applying midpoint formulas.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -21722,6 +22334,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "point_coordinates",
+          "relation": "prerequisite",
+          "reason": "Coordinate dynamic-point problems require locating points and expressing coordinates before tracking a moving point.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "function_dynamic_point",
+          "relation": "procedure_step",
+          "reason": "Procedure step: assign a parameter to the moving point, write its coordinates, then express the target length, area, or relation as a function.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "quadratic_dynamic_point",
+          "relation": "confusable",
+          "reason": "Coordinate dynamic-point problems may use many coordinate models, while quadratic dynamic-point problems specifically involve parabolas and quadratic expressions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Coordinate dynamic-point reasoning supports coordinate proofs when moving-point conditions must be converted into algebraic relations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -22171,6 +22851,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "linear_function_graph",
+          "relation": "prerequisite",
+          "reason": "Area problems with linear functions require reading line graphs, intercepts, and coordinate relationships first.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "coordinate_area",
+          "relation": "procedure_step",
+          "reason": "Procedure step: find intersection points or intercepts, form the coordinate polygon or triangle, then compute its area.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "quadratic_application_area",
+          "relation": "confusable",
+          "reason": "Linear-function area problems use straight-line boundaries, while quadratic area applications often involve parabolic boundaries or quadratic expressions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Linear-function area reasoning supports coordinate-geometry proofs where area relationships verify geometric properties.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -22525,6 +23273,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "quadratic_function_concept",
+          "relation": "prerequisite",
+          "reason": "Quadratic dynamic-point problems require understanding the quadratic graph and its key features before tracking a moving point on or around it.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "function_dynamic_point",
+          "relation": "procedure_step",
+          "reason": "Procedure step: parameterize the moving point, express the changing length or area as a function, then analyze the required condition.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "coordinate_dynamic_point",
+          "relation": "confusable",
+          "reason": "Coordinate dynamic-point problems may use any coordinate model, while quadratic dynamic-point problems specifically involve parabolas and quadratic expressions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadratic_existence_problem",
+          "relation": "application",
+          "reason": "Dynamic-point analysis is applied in quadratic existence problems when the moving point must satisfy a geometric or algebraic condition.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -22617,6 +23433,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "quadratic_function_concept",
+          "relation": "prerequisite",
+          "reason": "Quadratic existence problems require recognizing parabola features and quadratic equations before deciding whether a requested point or shape can exist.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadratic_discriminant",
+          "relation": "procedure_step",
+          "reason": "Procedure step: translate the existence condition into an equation, then use discriminant, range, or endpoint checks to decide if a solution exists.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadratic_dynamic_point",
+          "relation": "confusable",
+          "reason": "Dynamic-point problems emphasize changing positions, while existence problems ask whether some point or configuration satisfying conditions exists.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadratic_parameter_range",
+          "relation": "application",
+          "reason": "Existence conditions often become parameter-range problems that require determining which parameter values make the configuration possible.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -22851,6 +23735,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "inverse_function_area",
+          "relation": "prerequisite",
+          "reason": "Triangle-area problems on inverse-function graphs require understanding the geometric meaning of k before combining coordinates and area formulas.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "coordinate_area",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify vertex coordinates from the inverse-function graph or intersections, then compute triangle area in the coordinate plane.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "linear_function_area",
+          "relation": "confusable",
+          "reason": "Linear-function area problems use straight-line graph regions, while inverse-function triangle-area problems use hyperbola points and k-related area invariants.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "inverse_linear_intersection",
+          "relation": "application",
+          "reason": "Inverse-function triangle-area tasks often apply intersection points between inverse and linear functions to determine vertices and area.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -23075,6 +24027,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "triangle_angle_sum",
+          "relation": "prerequisite",
+          "reason": "Angle chasing requires basic triangle and polygon angle-sum facts before chaining equal angles and supplementary relationships.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "procedure_step",
+          "reason": "Procedure step: mark known angles, transfer equal or supplementary relationships, then build a chain leading to the target angle.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "angle_bisector",
+          "relation": "confusable",
+          "reason": "Angle-bisector problems use a specific equal-angle property, while angle chasing may combine many angle relationships across the diagram.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "circle_comprehensive",
+          "relation": "application",
+          "reason": "Angle chasing is widely applied in circle comprehensive problems involving inscribed angles, tangents, and cyclic quadrilaterals.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -23167,6 +24187,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "prerequisite",
+          "reason": "Auxiliary-line construction requires an overall geometric proof strategy before deciding where an added line can reveal congruence, similarity, or parallel relations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "similarity_basic_models",
+          "relation": "procedure_step",
+          "reason": "Procedure step: inspect the target relation, then add a parallel, midpoint, or extension line to create a familiar similarity or congruence model.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "area_method_geometry",
+          "relation": "confusable",
+          "reason": "Auxiliary-line strategy creates new geometric structure, while the area method proves relations by comparing equal areas or area ratios.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadrilateral_midpoint_model",
+          "relation": "application",
+          "reason": "Auxiliary lines are often applied in quadrilateral midpoint problems by connecting midpoints or extending sides to expose parallel and equal-length relations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -23529,6 +24617,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_triangle_area",
+          "relation": "prerequisite",
+          "reason": "The area method depends on triangle and quadrilateral area formulas before using equal-area or area-ratio arguments in proofs.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "trig_area",
+          "relation": "procedure_step",
+          "reason": "Procedure step: choose a common base, equal height, or sine-area expression, then compare areas to derive length or ratio relations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "similarity_dynamic_geometry",
+          "relation": "confusable",
+          "reason": "Similarity methods compare corresponding ratios, while the area method proves relations by equal areas or area ratios.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "application",
+          "reason": "The area method is a common geometric proof strategy for deriving ratios, parallelism, and equality relationships.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24107,6 +25263,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "midpoint_formula",
+          "relation": "prerequisite",
+          "reason": "Quadrilateral midpoint models require midpoint concepts and coordinate or segment midpoint relations before proving parallelism or equal lengths.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "quadrilateral_proof",
+          "relation": "procedure_step",
+          "reason": "Procedure step: connect midpoints, identify midlines or parallelogram structure, then use equal and parallel relations to finish the proof.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "special_quadrilateral_area",
+          "relation": "confusable",
+          "reason": "Midpoint models focus on segment and parallel relations in quadrilaterals, while quadrilateral area problems focus on area formulas and decomposition.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Quadrilateral midpoint models can be solved with coordinate-geometry proof by assigning coordinates and using midpoint formulas.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_dynamic_models"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24199,6 +25423,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "axis_symmetry",
+          "relation": "prerequisite",
+          "reason": "Folding geometry relies on axis-symmetry properties before translating folded parts into equal lengths, equal angles, or overlapping points.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "transformation_comprehensive",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the fold line and corresponding points, transfer equal distances or angles, then rebuild the target figure relation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "shortest_path_geometry",
+          "relation": "confusable",
+          "reason": "Folding problems use symmetry to map figures, while shortest-path problems use transformations to turn broken paths into straight-line distances.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Folding geometry can be solved in coordinate settings by mapping symmetric points and verifying distances or equations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24554,6 +25846,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "circle_chord",
+          "relation": "prerequisite",
+          "reason": "Intersecting chord and secant relationships build on chord properties and circle structure before forming product equations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "similarity_basic_models",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify similar triangles or chord-secant configurations, then write the corresponding product relation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "circle_tangent_length",
+          "relation": "confusable",
+          "reason": "Circle power relations involve products of chord or secant segments, while tangent length problems compare equal tangent segments from one point.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "circle_comprehensive",
+          "relation": "application",
+          "reason": "Circle power is a common tool in circle comprehensive problems involving chords, secants, tangents, and length calculations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24646,6 +26006,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "similarity_criteria",
+          "relation": "prerequisite",
+          "reason": "Circle similarity problems require triangle similarity criteria before using equal arcs, inscribed angles, or tangent-chord angles to prove ratios.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "inscribed_angle",
+          "relation": "procedure_step",
+          "reason": "Procedure step: use inscribed angles or tangent-chord angle facts to find equal angles, then prove similar triangles.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "circle_power_basic",
+          "relation": "confusable",
+          "reason": "Circle similarity proves proportional sides through similar triangles, while circle power writes product relations from chord or secant configurations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "circle_comprehensive",
+          "relation": "application",
+          "reason": "Circle similarity is applied in comprehensive circle problems to derive length ratios, products, and hidden equal angles.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24738,6 +26166,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "circle_comprehensive",
+          "relation": "prerequisite",
+          "reason": "Circle dynamic-point problems require circle comprehensive facts before adding motion, variable positions, and changing relationships.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "function_dynamic_point",
+          "relation": "procedure_step",
+          "reason": "Procedure step: parameterize the moving point, express the changing length or angle relation, then solve the target condition.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "quadratic_dynamic_point",
+          "relation": "confusable",
+          "reason": "Circle dynamic-point problems track movement on or around a circle, while quadratic dynamic-point problems track movement on parabolic or coordinate-function models.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
+        },
+        {
+          "id": "quadratic_existence_problem",
+          "relation": "application",
+          "reason": "Circle dynamic-point constraints often lead to existence conditions that can be modeled by equations or inequalities.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_circle_factorization_geometry"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25121,6 +26617,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "sample_survey",
+          "relation": "prerequisite",
+          "reason": "Sample estimation requires understanding sampling and representativeness before using sample data to infer population features.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "primary_average",
+          "relation": "procedure_step",
+          "reason": "Procedure step: summarize sample data with an average or proportion, then connect the sample statistic to the population estimate.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "data_project_analysis",
+          "relation": "confusable",
+          "reason": "Sample estimation focuses on inferring a population from a sample, while data project analysis may organize, visualize, and interpret a broader investigation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "senior_statistics_regression",
+          "relation": "application",
+          "reason": "Sample estimation prepares learners for regression-analysis contexts where sample data support broader statistical conclusions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25202,6 +26766,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "probability_concept",
+          "relation": "prerequisite",
+          "reason": "Fairness judgments require understanding probability as a numerical measure of chance before comparing different outcomes or players.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "simple_probability",
+          "relation": "procedure_step",
+          "reason": "Procedure step: compute each side or event probability first, then compare whether the probabilities are equal.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "probability_simulation",
+          "relation": "confusable",
+          "reason": "Probability fairness compares theoretical chances, while probability simulation uses repeated trials or frequency to approximate chance.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_probability_decision",
+          "relation": "application",
+          "reason": "Fairness comparison is applied in new-gaokao probability decision tasks when evaluating whether a scheme is reasonable or preferable.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25283,6 +26915,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "sample_survey",
+          "relation": "prerequisite",
+          "reason": "Probability simulation requires collecting repeated-trial data reliably, so sampling and survey organization provide a practical foundation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "frequency_histogram",
+          "relation": "procedure_step",
+          "reason": "Procedure step: run or read repeated trials, summarize frequencies, then compare the relative frequency with the expected probability.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "probability_fairness",
+          "relation": "confusable",
+          "reason": "Fairness judgment usually compares theoretical probabilities, while simulation estimates probability from repeated experimental frequencies.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_statistics_context",
+          "relation": "application",
+          "reason": "Probability simulation supports statistics-context tasks where repeated data are used to estimate uncertain outcomes.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25375,6 +27075,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_logic_reasoning",
+          "relation": "prerequisite",
+          "reason": "Classification discussion requires basic logical reasoning before splitting conditions into complete and non-overlapping cases.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "procedure_step",
+          "reason": "Procedure step: state the classification standard, solve each case separately, then combine conclusions and check for omissions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "senior_logic_proposition",
+          "relation": "confusable",
+          "reason": "Logic propositions judge truth under quantified conditions, while classification discussion organizes a solution by cases.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "quadratic_parameter_range",
+          "relation": "application",
+          "reason": "Classification discussion is applied in parameter-range problems when different parameter intervals require separate analysis.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25467,6 +27235,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "coordinate_system",
+          "relation": "prerequisite",
+          "reason": "Number-shape combination depends on coordinate or diagram representation before translating between algebraic quantities and geometric features.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "procedure_step",
+          "reason": "Procedure step: draw or read the graph, connect key points and intervals with algebraic conditions, then use both views to solve.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "function_thinking",
+          "relation": "confusable",
+          "reason": "Function thinking emphasizes variable relationships, while number-shape combination explicitly switches between algebraic and geometric representations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Number-shape combination is applied in coordinate-geometry proofs that turn geometric conclusions into algebraic calculations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25691,6 +27527,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "function_concept",
+          "relation": "prerequisite",
+          "reason": "Function thinking requires understanding variables and functional relationships before describing change, correspondence, and dependency.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "function_graph_reading",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify variables and relationships, use expressions or graphs to represent change, then interpret features in context.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "equation_thinking",
+          "relation": "confusable",
+          "reason": "Equation thinking solves for unknown values from equalities, while function thinking studies relationships and change patterns between variables.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "function_composite_application",
+          "relation": "application",
+          "reason": "Function thinking is applied in composite function and comprehensive application problems where multiple relationships interact.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -25783,6 +27687,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "transformation_comprehensive",
+          "relation": "prerequisite",
+          "reason": "Transformation thinking requires understanding common transformations before reducing a difficult problem to a familiar equivalent form.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "factorization_strategy",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the hard structure, transform it into an equivalent familiar form, then solve with an appropriate known method.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "auxiliary_line_strategy",
+          "relation": "confusable",
+          "reason": "Auxiliary-line strategy changes a geometric diagram by construction, while transformation thinking broadly converts a problem into an equivalent easier form.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "shortest_path_geometry",
+          "relation": "application",
+          "reason": "Transformation thinking is applied in shortest-path geometry by reflecting or unfolding paths into equivalent straight-line problems.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26138,6 +28110,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "proof_writing",
+          "relation": "prerequisite",
+          "reason": "A reliable exam error checklist requires clear written reasoning so missing conditions, units, and conclusion statements can be checked.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "equation_check_solution",
+          "relation": "procedure_step",
+          "reason": "Procedure step: after solving, check substituted values, domain restrictions, units, special cases, and whether the answer matches the question.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "mathematical_modeling",
+          "relation": "confusable",
+          "reason": "Modeling focuses on building the solution structure, while the exam checklist focuses on verifying and correcting the final work.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
+        },
+        {
+          "id": "quadratic_existence_problem",
+          "relation": "application",
+          "reason": "Exam error checklists are especially useful in existence and final-question tasks where missed constraints or unverified cases change the answer.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_thinking_strategy_methods"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26230,6 +28270,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_logic_reasoning",
+          "relation": "prerequisite",
+          "reason": "Math reading-comprehension tasks require basic logical reasoning before parsing conditions, definitions, and conclusions from text.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "new_definition_operation",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the key definitions in the text, rewrite them in familiar mathematical language, then solve the requested question.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "mathematical_modeling",
+          "relation": "confusable",
+          "reason": "Math reading comprehension focuses on interpreting problem text and definitions, while mathematical modeling focuses on constructing a model for an applied situation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "number_shape_combination",
+          "relation": "application",
+          "reason": "Reading-comprehension tasks often apply number-shape combination when text definitions must be matched with diagrams or graphs.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26323,6 +28431,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_operation_laws",
+          "relation": "prerequisite",
+          "reason": "New-definition operation tasks require understanding ordinary operation rules before applying an unfamiliar rule given in the problem.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "reading_comprehension_math",
+          "relation": "procedure_step",
+          "reason": "Procedure step: read the new rule carefully, translate it into ordinary operations, then substitute values in the required order.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "rational_number_operations",
+          "relation": "confusable",
+          "reason": "New-definition operations may look like familiar arithmetic symbols but follow a problem-specific rule rather than standard rational-number operations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "pattern_exploration_open",
+          "relation": "application",
+          "reason": "New-definition operation rules often appear in open pattern-exploration problems that require testing cases and generalizing the rule.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26417,6 +28593,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "number_pattern",
+          "relation": "prerequisite",
+          "reason": "Open pattern exploration builds on recognizing numeric or structural patterns before forming conjectures and general rules.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "sequence_pattern",
+          "relation": "procedure_step",
+          "reason": "Procedure step: list early cases, compare changes, propose a rule, and verify it against additional examples.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "mathematical_modeling",
+          "relation": "confusable",
+          "reason": "Pattern exploration generalizes from examples, while mathematical modeling builds a representation for a real situation or applied context.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "scheme_design_problem",
+          "relation": "application",
+          "reason": "Pattern exploration supports scheme-design tasks when possible plans must be generated, compared, and generalized.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26510,6 +28754,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "mathematical_modeling",
+          "relation": "prerequisite",
+          "reason": "Scheme-design problems require modeling goals, constraints, and available choices before comparing possible plans.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "classification_discussion",
+          "relation": "procedure_step",
+          "reason": "Procedure step: list feasible schemes by cases, compute or reason through each one, then compare and justify the best choice.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "probability_fairness",
+          "relation": "confusable",
+          "reason": "Probability fairness evaluates chance balance, while scheme design compares feasible plans under broader constraints and objectives.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "primary_optimization_strategy",
+          "relation": "application",
+          "reason": "Scheme-design problems apply optimization strategy when learners choose the best plan under constraints.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26604,6 +28916,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "primary_length_area_volume",
+          "relation": "prerequisite",
+          "reason": "Measurement practice problems require basic length, area, and volume measurement concepts before modeling a real measuring task.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "trig_application_height",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the measurable quantities, draw the measurement diagram, then use right-triangle or proportional relations to calculate the target.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "data_project_analysis",
+          "relation": "confusable",
+          "reason": "Measurement practice focuses on obtaining and using measurements, while data project analysis focuses on organizing data and drawing conclusions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
+        },
+        {
+          "id": "interdisciplinary_modeling",
+          "relation": "application",
+          "reason": "Measurement practice problems support interdisciplinary modeling when real objects, scales, or physical contexts must be mathematized.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_open_exploration_projects"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26697,6 +29077,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "geometric_proof_strategy",
+          "relation": "prerequisite",
+          "reason": "Geometric experiment and conjecture tasks require basic proof strategy so observed patterns can be turned into justified conclusions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "auxiliary_line_strategy",
+          "relation": "procedure_step",
+          "reason": "Procedure step: explore the figure, add helpful lines or constructions, form a conjecture, then prove it with known geometric relations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "confusable",
+          "reason": "Experiment and conjecture emphasizes discovering a pattern first, while proof writing emphasizes presenting a complete logical justification.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "coordinate_geometry_proof",
+          "relation": "application",
+          "reason": "Geometric conjectures can be verified by coordinate proof when a diagram pattern is converted into algebraic relationships.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -26790,6 +29238,74 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "data_collection",
+          "relation": "prerequisite",
+          "reason": "Data project analysis requires collecting and organizing data before making charts, calculations, and conclusions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "primary_simple_statistics",
+          "relation": "procedure_step",
+          "reason": "Procedure step: organize data into readable charts, compute useful summaries, then explain conclusions in the project context.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "sample_estimation",
+          "relation": "confusable",
+          "reason": "Sample estimation is one inference method, while data project analysis is the broader project workflow from question to conclusion.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_statistics_context",
+          "relation": "application",
+          "reason": "Data project analysis supports new-gaokao statistics contexts where data, charts, and conclusions must be interpreted together.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -31234,6 +33750,57 @@
             "source_chapter": "统计与概率",
             "target_chapter": "统计与概率"
           }
+        },
+        {
+          "id": "frequency_histogram",
+          "relation": "procedure_step",
+          "reason": "Procedure step: organize counts or categories first, then read bar, line, or sector-chart features to answer data questions.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "sample_survey",
+          "relation": "confusable",
+          "reason": "Simple statistical charts display organized data, while sample surveys focus on how the data were collected and whether the sample is representative.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "sample_estimation",
+          "relation": "application",
+          "reason": "Reading simple charts supports later sample-estimation tasks where chart information is used to infer a broader pattern.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -31328,6 +33895,57 @@
             "source_chapter": "统计与概率",
             "target_chapter": "统计与概率"
           }
+        },
+        {
+          "id": "primary_simple_statistics",
+          "relation": "procedure_step",
+          "reason": "Procedure step: read the data from a simple chart or table first, add the values, then divide by the number of items to find the average.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "variance",
+          "relation": "confusable",
+          "reason": "Average describes the center of a data set, while variance describes how spread out the data are; students often mix center and dispersion.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "sample_estimation",
+          "relation": "application",
+          "reason": "Average is used in sample estimation when a sample mean helps describe or estimate the overall level of a population.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -31421,6 +34039,57 @@
             "target_stage": "cross_stage",
             "source_chapter": "统计与概率",
             "target_chapter": "统计与概率"
+          }
+        },
+        {
+          "id": "primary_tree_counting",
+          "relation": "procedure_step",
+          "reason": "Procedure step: list possible outcomes with drawings, tables, or tree diagrams before judging whether an event is certain, possible, or impossible.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "probability_concept",
+          "relation": "confusable",
+          "reason": "Primary possibility uses qualitative language like certain, possible, and impossible, while probability concept introduces numerical measures of chance.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
+          }
+        },
+        {
+          "id": "probability_fairness",
+          "relation": "application",
+          "reason": "Possibility judgments prepare learners to compare whether simple games or draws give each side a fair chance.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_primary_statistics_probability"
           }
         }
       ],
@@ -31962,6 +34631,74 @@
             "source_chapter": "数学思维",
             "target_chapter": "综合实践与探究"
           }
+        },
+        {
+          "id": "data_collection",
+          "relation": "prerequisite",
+          "reason": "Primary math practice projects require collecting and organizing data or measurements before analyzing a real task.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "primary_simple_statistics",
+          "relation": "procedure_step",
+          "reason": "Procedure step: collect data, present it with simple charts, then describe findings in words or calculations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "data_project_analysis",
+          "relation": "confusable",
+          "reason": "Primary practice projects emphasize hands-on school-level tasks, while data project analysis is a broader cross-stage data investigation workflow.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
+        },
+        {
+          "id": "data_project_analysis",
+          "relation": "application",
+          "reason": "Primary math practice projects prepare learners for later data project analysis with richer data sources and conclusions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_project_parameter_estimation"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -32305,6 +35042,74 @@
             "target_stage": "cross_stage",
             "source_chapter": "集合与逻辑",
             "target_chapter": "数学思想与综合"
+          }
+        },
+        {
+          "id": "primary_logic_reasoning",
+          "relation": "prerequisite",
+          "reason": "Proposition and quantifier study builds on basic logical reasoning before formalizing conditions, conclusions, and truth values.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "proof_writing",
+          "relation": "procedure_step",
+          "reason": "Procedure step: translate the statement into conditions and conclusions, judge truth value, then write a clear proof or counterexample.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "classification_discussion",
+          "relation": "confusable",
+          "reason": "Logic propositions judge truth under quantified conditions, while classification discussion splits cases to cover different possibilities.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "college_discrete_logic",
+          "relation": "application",
+          "reason": "High-school propositions and quantifiers prepare learners for later predicate logic and formal reasoning in discrete mathematics.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
           }
         }
       ],
@@ -35020,7 +37825,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_trig_definitions",
+          "relation": "prerequisite",
+          "reason": "The sine and cosine laws require understanding trigonometric definitions before relating triangle sides, angles, and ratios.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "triangle_elements",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify known sides and angles in the triangle first, then choose sine law or cosine law based on the target quantity.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "right_triangle_solving",
+          "relation": "confusable",
+          "reason": "Right-triangle solving relies on right-angle trigonometric ratios, while sine and cosine laws handle general triangles without a right angle.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "trig_area",
+          "relation": "application",
+          "reason": "Sine and cosine laws support triangle area and side-angle modeling in broader trigonometric application problems.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -36231,7 +39105,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "point_coordinates",
+          "relation": "prerequisite",
+          "reason": "Line equations require coordinate representation of points before forming slope, intercept, or general-form equations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "distance_formula",
+          "relation": "procedure_step",
+          "reason": "Procedure step: use point coordinates to find slope or direction information, then write and transform the line equation.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "linear_function_expression",
+          "relation": "confusable",
+          "reason": "Linear functions emphasize function input-output relationships, while line equations describe geometric lines in the coordinate plane.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "senior_line_distance",
+          "relation": "application",
+          "reason": "Line equations are applied directly when computing point-to-line distance or analyzing line-circle position.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -36315,7 +39258,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_line_equation",
+          "relation": "prerequisite",
+          "reason": "Point-to-line distance requires a known line equation before substituting a point into the distance formula.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "distance_formula",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the point and line coefficients, then apply the point-to-line distance formula and simplify.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "distance_formula",
+          "relation": "confusable",
+          "reason": "Two-point distance measures distance between points, while point-to-line distance measures perpendicular distance from a point to a line.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "senior_line_circle_position",
+          "relation": "application",
+          "reason": "Point-to-line distance is applied when judging line-circle position by comparing the circle center distance to the radius.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -36869,7 +39881,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "quadratic_function_concept",
+          "relation": "prerequisite",
+          "reason": "Parabola study builds on quadratic-function concepts before interpreting a parabola as a conic and analyzing its equation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "senior_conic_synthesis",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify the parabola standard form, extract focus/directrix or parameter information, then connect it to the conic condition.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "senior_ellipse",
+          "relation": "confusable",
+          "reason": "Parabola, ellipse, and hyperbola are all conics, but their defining distance relationships and standard equations differ.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        },
+        {
+          "id": "senior_conic_parameter_range",
+          "relation": "application",
+          "reason": "Parabola equations frequently appear in conic parameter-range problems where focus, chord, or tangent conditions restrict variables.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_geometry_logic_area"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -37275,7 +40356,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_solid_parallel_perpendicular",
+          "relation": "prerequisite",
+          "reason": "Spatial angle and distance problems require recognizing parallel, perpendicular, and incidence relationships among lines and planes first.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "right_triangle_solving",
+          "relation": "procedure_step",
+          "reason": "Procedure step: reduce the spatial configuration to a right triangle or key section, then use trigonometry or distance relations to calculate.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_volume_area",
+          "relation": "confusable",
+          "reason": "Angle-distance problems measure positions between lines and planes, while volume-area problems measure solids; both use spatial diagrams but ask for different quantities.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_vector_distance",
+          "relation": "application",
+          "reason": "Classical spatial angle and distance reasoning extends to vector methods for computing distances in coordinate form.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -38729,7 +41879,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "sample_estimation",
+          "relation": "prerequisite",
+          "reason": "Regression analysis requires understanding samples, variables, and data summaries before fitting or interpreting a relationship.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_linear_regression_equation",
+          "relation": "procedure_step",
+          "reason": "Procedure step: identify explanatory and response variables, fit or use the regression equation, then interpret slope and prediction in context.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_statistics_context",
+          "relation": "confusable",
+          "reason": "Statistics-context problems may only require reading and evaluating data, while regression problems specifically model relationships between variables.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "college_covariance_correlation",
+          "relation": "application",
+          "reason": "Regression analysis prepares learners for later covariance and correlation topics where relationship strength and direction are formalized.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "没有先确认题目给出的范围、单位或限制条件",
         "把相近概念、公式、性质或判定条件混用",
@@ -56405,7 +59624,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "primary_fraction_meaning",
+          "relation": "prerequisite",
+          "reason": "Fraction-decimal-percent conversion requires understanding fraction meaning before rewriting the same quantity in different forms.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "primary_decimal_meaning",
+          "relation": "procedure_step",
+          "reason": "Procedure step: convert fractions to decimals by division or place value, then rewrite decimals as percentages by scaling to hundredths.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "primary_percent_meaning",
+          "relation": "confusable",
+          "reason": "Percent meaning compares to one hundred, while fractions and decimals can represent the same quantity with different notation.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        },
+        {
+          "id": "primary_percent_application",
+          "relation": "application",
+          "reason": "Conversion among fractions, decimals, and percents is applied when solving percent word problems and comparing rates.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_coordinate_fraction_conversion"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58082,7 +61370,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_conic_synthesis",
+          "relation": "prerequisite",
+          "reason": "Chord midpoint and point-difference methods require core conic synthesis skills before manipulating midpoint coordinates and chord equations.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "point_coordinates",
+          "relation": "procedure_step",
+          "reason": "Procedure step: express the chord endpoints and midpoint with coordinates, then subtract equations to obtain slope or midpoint relations.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "senior_conic_fixed_point",
+          "relation": "confusable",
+          "reason": "Chord midpoint methods solve midpoint-slope relations, while fixed-point problems prove a point remains unchanged under changing parameters.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "senior_conic_fixed_value",
+          "relation": "application",
+          "reason": "Point-difference and chord midpoint reasoning supports conic fixed-value arguments where chord relations lead to invariant quantities.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58167,7 +61524,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_conic_synthesis",
+          "relation": "prerequisite",
+          "reason": "Conic parameter-range problems require conic synthesis skills before adding parameter constraints and validity conditions.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "quadratic_parameter_range",
+          "relation": "procedure_step",
+          "reason": "Procedure step: translate the conic condition into an equation or inequality in the parameter, then solve the allowed range with constraints.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "senior_conic_fixed_value",
+          "relation": "confusable",
+          "reason": "Parameter-range problems seek possible values under constraints, while fixed-value problems prove an expression remains constant.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        },
+        {
+          "id": "inequality_parameter",
+          "relation": "application",
+          "reason": "Conic parameter ranges often become parameterized inequalities that require range analysis and endpoint checking.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase4_trig_analytic_geometry"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58252,7 +61678,93 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_vector_coordinate",
+          "relation": "prerequisite",
+          "reason": "Spatial vector coordinates extend plane vector coordinate representation, so learners need coordinate-vector operations first.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "point_coordinates",
+          "relation": "procedure_step",
+          "reason": "Procedure step: choose an origin and axes, assign point coordinates, then express line or plane directions as coordinate vectors.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_geometry_lines_planes",
+          "relation": "confusable",
+          "reason": "Point-line-plane position reasoning is geometric, while spatial vector coordinates encode those relationships algebraically.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.86,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_vector_angle",
+          "relation": "application",
+          "reason": "Spatial vector coordinates are applied directly when computing line-plane and plane-plane angles with vector dot products.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_vector_distance",
+          "relation": "extends",
+          "reason": "After coordinate setup, learners can extend the same vector framework to distance computations in solid geometry.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58337,7 +61849,76 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_solid_vector_coordinates",
+          "relation": "prerequisite",
+          "reason": "Vector angle methods require establishing spatial vector coordinates before using dot products to compute line-plane or plane-plane angles.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_vector_dot_product",
+          "relation": "procedure_step",
+          "reason": "Procedure step: write direction or normal vectors, compute the dot product, then convert the cosine value into the required spatial angle.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_solid_angle_distance",
+          "relation": "confusable",
+          "reason": "Classical spatial angle-distance methods use geometric sections, while vector-angle methods use coordinates, direction vectors, and normal vectors.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_vector_geometry",
+          "relation": "application",
+          "reason": "Vector angle computation is a core application of vector methods for solving solid-geometry problems.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58674,7 +62255,93 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "sample_estimation",
+          "relation": "prerequisite",
+          "reason": "New-gaokao statistics-context problems require sample-estimation foundations before interpreting data, charts, and conclusions in context.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "frequency_histogram",
+          "relation": "procedure_step",
+          "reason": "Procedure step: read the chart or frequency distribution first, extract the needed data, then connect the calculation to the context statement.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_probability_decision",
+          "relation": "confusable",
+          "reason": "Statistics-context tasks emphasize data interpretation and inference, while probability-decision tasks emphasize random schemes and chance comparison.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_multi_choice",
+          "relation": "application",
+          "reason": "Statistics-context reasoning supports new-gaokao multi-choice items where several data-based statements must be judged together.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "senior_statistics_regression",
+          "relation": "co_occurs",
+          "reason": "Regression-analysis tasks often appear inside new-gaokao statistics contexts that require interpreting a fitted relationship.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -58759,7 +62426,93 @@
           ]
         }
       ],
-      "related": [],
+      "related": [
+        {
+          "id": "senior_classical_probability",
+          "relation": "prerequisite",
+          "reason": "New-gaokao probability decision tasks require classical probability foundations before comparing?? probabilities or expected outcomes.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "probability_fairness",
+          "relation": "procedure_step",
+          "reason": "Procedure step: compute and compare event probabilities first, then judge whether the proposed scheme is fair or preferable.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_statistics_context",
+          "relation": "confusable",
+          "reason": "Statistics-context tasks emphasize data interpretation, while probability-decision tasks emphasize random outcomes and scheme comparison; new-gaokao wording can make them look similar.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "senior_new_gaokao_multi_choice",
+          "relation": "application",
+          "reason": "Probability decision reasoning supports new-gaokao multi-choice questions where several statements about schemes, events, or probabilities must be evaluated.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        },
+        {
+          "id": "senior_probability_counting",
+          "relation": "co_occurs",
+          "reason": "Counting methods often appear with probability decision tasks because learners must enumerate cases before comparing?? outcomes.",
+          "priority": "useful",
+          "context": "review",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase1_high_yield_recommended"
+          }
+        }
+      ],
       "typical_misconceptions": [
         "只记方法名称，没有判断题目条件是否满足",
         "把相近模型或公式混用，忽略变量范围",
@@ -60547,6 +64300,40 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_definite_integral",
+          "relation": "prerequisite",
+          "reason": "Double-integral regions build on definite-integral bounds and area interpretation before extending interval setup to two variables.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
+        },
+        {
+          "id": "college_integral_application_interval",
+          "relation": "confusable",
+          "reason": "Definite-integral interval setup chooses one-dimensional bounds, while double-integral region setup describes a two-dimensional domain and its boundary order.",
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.88,
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "phase3_phase4_statistics_solid_gap_fill"
+          }
         }
       ],
       "typical_misconceptions": [
