@@ -5205,6 +5205,8 @@
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
                         iconImg.src = '/static/icons/expand_icon_off.png';
+                        iconImg.removeAttribute('srcset');
+                        iconImg.style.imageRendering = '';
                         iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
