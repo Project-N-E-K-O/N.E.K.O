@@ -2244,8 +2244,9 @@
     }));
     if (useBeacon && navigator.sendBeacon) {
       try {
-        navigator.sendBeacon(ROUTE_API + '/route/end', new Blob([payload], { type: 'application/json' }));
-        return Promise.resolve({ ok: true, beacon: true });
+        if (navigator.sendBeacon(ROUTE_API + '/route/end', new Blob([payload], { type: 'application/json' }))) {
+          return Promise.resolve({ ok: true, beacon: true });
+        }
       } catch (_) {}
     }
     return fetch(ROUTE_API + '/route/end', {

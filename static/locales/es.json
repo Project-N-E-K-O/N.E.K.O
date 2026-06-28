@@ -5292,9 +5292,9 @@
         },
         "modelControls": {
             "group": "Controles de vista del modelo",
-            "scale": "Tamano del modelo",
-            "x": "Posicion horizontal",
-            "y": "Posicion vertical",
+            "scale": "Tamaño del modelo",
+            "x": "Posición horizontal",
+            "y": "Posición vertical",
             "reset": "Restablecer vista del modelo"
         },
         "messages": {
