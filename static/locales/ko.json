@@ -5239,8 +5239,9 @@
             "done": "다 그렸어",
             "nextRound": "다음 라운드",
             "clearCanvas": "캔버스 비우기",
-            "downloadSvg": "고양이 소녀 그림 저장",
-            "downloadPng": "내 그림 저장"
+            "saveNekoSvg": "SVG로 저장",
+            "saveNekoPng": "PNG로 저장",
+            "saveUserPng": "내 그림 저장"
         },
         "debug": {
             "wordPoolsStatus": "단어 풀 상태",

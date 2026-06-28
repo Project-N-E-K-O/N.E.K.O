@@ -5239,8 +5239,9 @@
             "done": "Готово",
             "nextRound": "Следующий раунд",
             "clearCanvas": "Очистить холст",
-            "downloadSvg": "Скачать рисунок неко",
-            "downloadPng": "Скачать мой рисунок"
+            "saveNekoSvg": "Сохранить как SVG",
+            "saveNekoPng": "Сохранить как PNG",
+            "saveUserPng": "Сохранить мой рисунок"
         },
         "debug": {
             "wordPoolsStatus": "Статус набора слов",

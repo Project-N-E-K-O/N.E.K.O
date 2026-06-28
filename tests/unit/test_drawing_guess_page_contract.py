@@ -451,8 +451,11 @@ def test_drawing_guess_static_route_contract():
     assert "dg-message-neko" in html
     assert "dg-message-event" in html
     assert "}), AI_GUESS_REQUEST_TIMEOUT_MS)" in script
-    assert "downloadAiSvg" in script
-    assert "downloadUserPng" in script
+    assert "saveAiSvg" in script
+    assert "saveAiPngFile" in script
+    assert "saveUserPng" in script
+    assert "svgMarkupToPngBlob" in script
+    assert "context.fillStyle = '#fffdfa';" in script
     assert "dg-summary-evaluation" in script
     assert "state.roundSummaries" in script
     assert "state.aiAnswerLabel = ''" in script
@@ -483,8 +486,11 @@ def test_drawing_guess_static_route_contract():
     assert "drawingGuess.summary.finalTitle" in script
     assert "drawingGuess.summary.roundLabel" in script
     assert "drawingGuess.summary.noRounds" in script
-    assert "data-download-ai-index" in script
-    assert "data-download-user-index" in script
+    assert "data-save-ai-svg-index" in script
+    assert "data-save-ai-png-index" in script
+    assert "data-save-user-png-index" in script
+    assert "data-download-ai-index" not in script
+    assert "data-download-user-index" not in script
     assert "drawingGuess.summary.score" not in script
     assert "drawingGuess.summary.outcome." not in script
     assert "animateAiDrawing" in script
@@ -499,10 +505,10 @@ def test_drawing_guess_static_route_contract():
 
 
 @pytest.mark.unit
-def test_drawing_guess_locale_cache_version_bumped_for_memory_two_options():
+def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
 
-    assert "2026-06-29-drawing-guess-tutorial-voice-i18n" in script
+    assert "2026-06-29-drawing-guess-save-art-i18n" in script
 
 
 @pytest.mark.unit
@@ -526,7 +532,9 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.tutorial.quickSummary",
         "drawingGuess.tutorial.voiceHint",
         "drawingGuess.actions.done",
-        "drawingGuess.actions.downloadPng",
+        "drawingGuess.actions.saveNekoSvg",
+        "drawingGuess.actions.saveNekoPng",
+        "drawingGuess.actions.saveUserPng",
         "drawingGuess.exitConfirm.title",
         "drawingGuess.exitConfirm.message",
         "drawingGuess.exitConfirm.stay",

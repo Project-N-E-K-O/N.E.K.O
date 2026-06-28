@@ -5239,8 +5239,9 @@
             "done": "Terminei",
             "nextRound": "Próxima rodada",
             "clearCanvas": "Limpar tela",
-            "downloadSvg": "Baixar desenho dela",
-            "downloadPng": "Baixar meu desenho"
+            "saveNekoSvg": "Salvar como SVG",
+            "saveNekoPng": "Salvar como PNG",
+            "saveUserPng": "Salvar meu desenho"
         },
         "debug": {
             "wordPoolsStatus": "Estado do banco de palavras",

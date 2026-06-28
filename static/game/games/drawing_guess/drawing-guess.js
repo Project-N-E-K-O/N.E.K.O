@@ -2789,20 +2789,22 @@
         normalizeAiDrawingSvg(aiArt.querySelector('svg'));
       }
     });
-    Array.prototype.slice.call(els.summary.querySelectorAll('[data-download-ai-index]')).forEach(function (button) {
+    Array.prototype.slice.call(els.summary.querySelectorAll('[data-save-ai-svg-index]')).forEach(function (button) {
       button.addEventListener('click', function () {
-        var summary = list[Number(button.getAttribute('data-download-ai-index') || 0)];
-        if (summary) downloadBlob('neko-drawing-round-' + summary.round + '.svg', summary.aiSvg || '', 'image/svg+xml;charset=utf-8');
+        var summary = list[Number(button.getAttribute('data-save-ai-svg-index') || 0)];
+        if (summary) saveAiSvgFile(summary.aiSvg || '', 'neko-drawing-round-' + summary.round + '.svg');
       });
     });
-    Array.prototype.slice.call(els.summary.querySelectorAll('[data-download-user-index]')).forEach(function (button) {
+    Array.prototype.slice.call(els.summary.querySelectorAll('[data-save-ai-png-index]')).forEach(function (button) {
       button.addEventListener('click', function () {
-        var summary = list[Number(button.getAttribute('data-download-user-index') || 0)];
-        if (summary && summary.userPng) {
-          fetch(summary.userPng).then(function (res) { return res.blob(); }).then(function (blob) {
-            downloadBlob('your-drawing-round-' + summary.round + '.png', blob, 'image/png');
-          }).catch(function () {});
-        }
+        var summary = list[Number(button.getAttribute('data-save-ai-png-index') || 0)];
+        if (summary) saveAiPngFile(summary.aiSvg || '', 'neko-drawing-round-' + summary.round + '.png');
+      });
+    });
+    Array.prototype.slice.call(els.summary.querySelectorAll('[data-save-user-png-index]')).forEach(function (button) {
+      button.addEventListener('click', function () {
+        var summary = list[Number(button.getAttribute('data-save-user-png-index') || 0)];
+        if (summary && summary.userPng) saveUserPngFile(summary.userPng, 'your-drawing-round-' + summary.round + '.png');
       });
     });
   }
@@ -2817,8 +2819,8 @@
       + roundLabel
       + (summary.evaluation ? '<p class="dg-summary-evaluation">' + escapeHtml(summary.evaluation) + '</p>' : '')
       + '<div class="dg-summary-grid">'
-      + '<section class="dg-thumb"><h4>' + escapeHtml(nekoTitle) + '</h4><div class="dg-thumb-preview" data-summary-ai-art="' + index + '"></div><button class="dg-button" type="button" data-download-ai-index="' + index + '">' + escapeHtml(t('drawingGuess.actions.downloadSvg', 'Download SVG')) + '</button></section>'
-      + '<section class="dg-thumb"><h4>' + escapeHtml(userTitle) + '</h4><div class="dg-thumb-preview">' + (summary.userPng ? '<img alt="" src="' + escapeAttr(summary.userPng) + '">' : '') + '</div><button class="dg-button" type="button" data-download-user-index="' + index + '">' + escapeHtml(t('drawingGuess.actions.downloadPng', 'Download PNG')) + '</button></section>'
+      + '<section class="dg-thumb"><h4>' + escapeHtml(nekoTitle) + '</h4><div class="dg-thumb-preview" data-summary-ai-art="' + index + '"></div><div class="dg-thumb-actions"><button class="dg-button" type="button" data-save-ai-svg-index="' + index + '">' + escapeHtml(t('drawingGuess.actions.saveNekoSvg', 'Save as SVG')) + '</button><button class="dg-button" type="button" data-save-ai-png-index="' + index + '">' + escapeHtml(t('drawingGuess.actions.saveNekoPng', 'Save as PNG')) + '</button></div></section>'
+      + '<section class="dg-thumb"><h4>' + escapeHtml(userTitle) + '</h4><div class="dg-thumb-preview">' + (summary.userPng ? '<img alt="" src="' + escapeAttr(summary.userPng) + '">' : '') + '</div><div class="dg-thumb-actions"><button class="dg-button" type="button" data-save-user-png-index="' + index + '">' + escapeHtml(t('drawingGuess.actions.saveUserPng', 'Save my drawing')) + '</button></div></section>'
       + '</div>'
       + '</section>';
   }
@@ -2857,13 +2859,75 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
   }
 
-  function downloadAiSvg() {
-    downloadBlob('neko-drawing.svg', state.aiSvg || '', 'image/svg+xml;charset=utf-8');
+  function saveAiSvg() {
+    saveAiSvgFile(state.aiSvg || '', 'neko-drawing.svg');
   }
 
-  function downloadUserPng() {
-    fetch(state.userPng).then(function (res) { return res.blob(); }).then(function (blob) {
-      downloadBlob('your-drawing.png', blob, 'image/png');
+  function saveAiSvgFile(svgMarkup, filename) {
+    if (!svgMarkup) return;
+    downloadBlob(filename, svgMarkup, 'image/svg+xml;charset=utf-8');
+  }
+
+  function saveAiPngFile(svgMarkup, filename) {
+    svgMarkupToPngBlob(svgMarkup).then(function (blob) {
+      if (blob) downloadBlob(filename, blob, 'image/png');
+    }).catch(function () {});
+  }
+
+  function svgMarkupToPngBlob(svgMarkup) {
+    return new Promise(function (resolve, reject) {
+      if (!svgMarkup) {
+        resolve(null);
+        return;
+      }
+      var doc = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
+      var svg = doc.documentElement;
+      if (!svg || String(svg.tagName || '').toLowerCase() !== 'svg') {
+        resolve(null);
+        return;
+      }
+      normalizeAiDrawingSvg(svg);
+      svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      svg.setAttribute('width', '800');
+      svg.setAttribute('height', '600');
+      var serialized = new XMLSerializer().serializeToString(svg);
+      var svgBlob = new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' });
+      var url = URL.createObjectURL(svgBlob);
+      var image = new Image();
+      image.onload = function () {
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width = 800;
+          canvas.height = 600;
+          var context = canvas.getContext('2d');
+          context.fillStyle = '#fffdfa';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) {
+            URL.revokeObjectURL(url);
+            resolve(blob);
+          }, 'image/png');
+        } catch (error) {
+          URL.revokeObjectURL(url);
+          reject(error);
+        }
+      };
+      image.onerror = function () {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      image.src = url;
+    });
+  }
+
+  function saveUserPng() {
+    saveUserPngFile(state.userPng, 'your-drawing.png');
+  }
+
+  function saveUserPngFile(dataUrl, filename) {
+    if (!dataUrl) return;
+    fetch(dataUrl).then(function (res) { return res.blob(); }).then(function (blob) {
+      downloadBlob(filename, blob, 'image/png');
     }).catch(function () {});
   }
 

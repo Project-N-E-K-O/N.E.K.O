@@ -5239,8 +5239,9 @@
             "done": "Done",
             "nextRound": "Next round",
             "clearCanvas": "Clear canvas",
-            "downloadSvg": "Download SVG",
-            "downloadPng": "Download PNG"
+            "saveNekoSvg": "Save as SVG",
+            "saveNekoPng": "Save as PNG",
+            "saveUserPng": "Save my drawing"
         },
         "debug": {
             "wordPoolsStatus": "Word pool status",

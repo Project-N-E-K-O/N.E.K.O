@@ -5239,8 +5239,9 @@
             "done": "描けた",
             "nextRound": "次のラウンド",
             "clearCanvas": "キャンバスを消す",
-            "downloadSvg": "猫娘の絵を保存",
-            "downloadPng": "自分の絵を保存"
+            "saveNekoSvg": "SVGで保存",
+            "saveNekoPng": "PNGで保存",
+            "saveUserPng": "自分の絵を保存"
         },
         "debug": {
             "wordPoolsStatus": "単語プールの状態",

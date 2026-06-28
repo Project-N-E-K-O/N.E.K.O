@@ -5239,8 +5239,9 @@
             "done": "畫好了",
             "nextRound": "下一輪",
             "clearCanvas": "清空畫布",
-            "downloadSvg": "下載貓娘畫作",
-            "downloadPng": "下載我的畫"
+            "saveNekoSvg": "儲存為 SVG",
+            "saveNekoPng": "儲存為 PNG",
+            "saveUserPng": "儲存我的畫"
         },
         "debug": {
             "wordPoolsStatus": "詞庫狀態",
