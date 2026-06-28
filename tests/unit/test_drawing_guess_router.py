@@ -1302,6 +1302,19 @@ async def test_repeated_user_hint_requests_keep_answer_private(monkeypatch):
     assert result["message_source"] == "persona_model"
     assert result["message"] == "fresh repeated clue 1"
 
+    second = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-repeated-hint",
+        "i18n_language": "en",
+        "text": "another hint please",
+    }))
+
+    assert second["ok"] is True
+    assert second["kind"] == "hint"
+    assert second["message_source"] == "persona_model"
+    assert second["message"] == "fresh repeated clue 2"
+    assert len(hint_details) == 2
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
