@@ -72,6 +72,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
+import { formatHttpError } from '@/utils/request'
 
 interface Props {
   pluginId: string
@@ -114,7 +115,7 @@ function showActionError(error: any, fallbackMessage: string) {
   if (typeof status === 'number' && ![401, 403, 404].includes(status)) {
     return
   }
-  ElMessage.error(error?.message || fallbackMessage)
+  ElMessage.error(formatHttpError(error) || fallbackMessage)
 }
 
 async function handleOpenUi() {

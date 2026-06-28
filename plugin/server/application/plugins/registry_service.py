@@ -403,16 +403,14 @@ def _build_discovery_payload(
         )
     else:
         entries_preview: list[dict[str, object]]
-        dependency_errors: list[str] = []
-        for dep in ctx.dependencies:
-            satisfied, dep_error = _check_plugin_dependency(dep, logger, plugin_id)
-            if not satisfied:
-                dependency_errors.append(str(dep_error or "dependency check failed"))
-                break
-        if dependency_errors:
-            error_type = "DependencyCheckFailed"
-            error_message = dependency_errors[0]
-            error_phase = "dependency_check"
+        entry_mismatch = describe_plugin_entry_directory_mismatch(
+            ctx.entry,
+            config_path=ctx.toml_path,
+        )
+        if entry_mismatch:
+            error_type = "PluginEntryDirectoryMismatch"
+            error_message = entry_mismatch
+            error_phase = "entry_validation"
             entries_preview = _extract_entries_preview(
                 plugin_id,
                 cls=type("FailedPluginStub", (), {}),
@@ -420,14 +418,16 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(
-                ctx.python_requirements,
-                search_paths=ctx.python_requirement_paths,
-            )
-            if missing_requirements:
-                error_type = "MissingPythonDependencies"
-                error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
-                error_phase = "python_requirements"
+            dependency_errors: list[str] = []
+            for dep in ctx.dependencies:
+                satisfied, dep_error = _check_plugin_dependency(dep, logger, plugin_id)
+                if not satisfied:
+                    dependency_errors.append(str(dep_error or "dependency check failed"))
+                    break
+            if dependency_errors:
+                error_type = "DependencyCheckFailed"
+                error_message = dependency_errors[0]
+                error_phase = "dependency_check"
                 entries_preview = _extract_entries_preview(
                     plugin_id,
                     cls=type("FailedPluginStub", (), {}),
@@ -435,24 +435,14 @@ def _build_discovery_payload(
                     pdata=ctx.pdata,
                 )
             else:
-                # The startup loader installs vendor paths on sys.path before
-                # importing each plugin's entry module; do the same here so a
-                # plugin whose [project].dependencies live only under its own
-                # vendor/ directory does not get falsely recorded as
-                # ImportError/ModuleNotFoundError during a registry refresh.
-                _ensure_python_requirement_paths(
-                    ctx.python_requirement_paths,
-                    logger,
-                    plugin_id,
+                missing_requirements = _find_missing_python_requirements(
+                    ctx.python_requirements,
+                    search_paths=ctx.python_requirement_paths,
                 )
-                entry_mismatch = describe_plugin_entry_directory_mismatch(
-                    ctx.entry,
-                    config_path=ctx.toml_path,
-                )
-                if entry_mismatch:
-                    error_type = "PluginEntryDirectoryMismatch"
-                    error_message = entry_mismatch
-                    error_phase = "entry_validation"
+                if missing_requirements:
+                    error_type = "MissingPythonDependencies"
+                    error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
+                    error_phase = "python_requirements"
                     entries_preview = _extract_entries_preview(
                         plugin_id,
                         cls=type("FailedPluginStub", (), {}),
@@ -460,6 +450,16 @@ def _build_discovery_payload(
                         pdata=ctx.pdata,
                     )
                 else:
+                    # The startup loader installs vendor paths on sys.path before
+                    # importing each plugin's entry module; do the same here so a
+                    # plugin whose [project].dependencies live only under its own
+                    # vendor/ directory does not get falsely recorded as
+                    # ImportError/ModuleNotFoundError during a registry refresh.
+                    _ensure_python_requirement_paths(
+                        ctx.python_requirement_paths,
+                        logger,
+                        plugin_id,
+                    )
                     try:
                         module_path, class_name = ctx.entry.split(":", 1)
                         module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)

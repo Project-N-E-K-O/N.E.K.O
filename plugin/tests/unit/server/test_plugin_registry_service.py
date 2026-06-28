@@ -407,6 +407,57 @@ async def test_refresh_registry_marks_entry_directory_mismatch_failed(
 
 
 @pytest.mark.asyncio
+async def test_refresh_registry_prioritizes_entry_directory_mismatch_before_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    config_path = _write_package_plugin_fixture(
+        root,
+        "repo_file_manager",
+        plugin_id="file_manager",
+        entry_package="file_manager",
+    )
+    (config_path.parent / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["definitely-missing-lib>=1"]\n',
+        encoding="utf-8",
+    )
+    requirements_checked = False
+
+    def _fake_find_missing(requirements, *, search_paths=None):
+        nonlocal requirements_checked
+        requirements_checked = True
+        return ["definitely-missing-lib>=1"]
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+        monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True
+        assert requirements_checked is False
+        with module.state.acquire_plugins_read_lock():
+            plugin_meta = dict(module.state.plugins["file_manager"])
+
+        assert plugin_meta["runtime_load_state"] == "failed"
+        assert plugin_meta["runtime_load_error_type"] == "PluginEntryDirectoryMismatch"
+        assert plugin_meta["runtime_load_error_phase"] == "entry_validation"
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
 async def test_list_autostart_plugin_ids_uses_dependency_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
