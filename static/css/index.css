@@ -497,6 +497,15 @@ button * {
         `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
         命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
         匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */
+#live2d-floating-buttons,
+#vrm-floating-buttons,
+#mmd-floating-buttons,
+#pngtuber-floating-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,

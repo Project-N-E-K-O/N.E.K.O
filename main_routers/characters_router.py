@@ -1308,8 +1308,10 @@ def _validate_profile_name(name: str) -> str | None:
     result = validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS)
     if result.code == 'empty':
         return '档案名为必填项'
-    if result.code == 'contains_path_separator':
+    if result.code in {'contains_path_separator', 'path_traversal'}:
         return '档案名不能包含路径分隔符(/或\\)'
+    if result.code == 'unsafe_dot':
+        return '档案名不能仅由点号组成或以点号结尾'
     if result.code == 'contains_dot':
         return '档案名不能包含点号(.)'
     if result.code == 'reserved_device_name':
@@ -1320,6 +1322,33 @@ def _validate_profile_name(name: str) -> str | None:
         return '档案名只能包含文字、数字、空格、下划线、连字符、括号、间隔号(·/・)和撇号'
     if result.code == 'too_long_units':
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    if result.code:
+        return '档案名无效'
+    return None
+
+
+def _is_safe_profile_name(name: str) -> bool:
+    return _validate_profile_name(name) is None
+
+
+def _validate_existing_character_path_name(name: str) -> str | None:
+    result = validate_character_name(name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
+    if result.code == 'empty':
+        return '角色名不能为空'
+    if result.code in {'contains_path_separator', 'path_traversal'}:
+        return '角色名不能包含路径分隔符(/或\\)'
+    if result.code == 'unsafe_dot':
+        return '角色名不能仅由点号组成或以点号结尾'
+    if result.code == 'reserved_route_name':
+        return None
+    if result.code == 'reserved_device_name':
+        return '角色名不能使用 Windows 保留设备名'
+    if result.code == 'invalid_character':
+        return '角色名只能包含文字、数字、空格、点号、下划线、连字符、括号、间隔号(·/・)和撇号'
+    if result.code == 'too_long_units':
+        return f'角色名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    if result.code:
+        return '角色名无效'
     return None
 
 
@@ -3057,6 +3086,15 @@ async def update_catgirl_voice_id(name: str, request: Request):
 @router.get('/catgirl/{name}/voice_mode_status')
 async def get_catgirl_voice_mode_status(name: str):
     """Check whether the specified character is in voice mode."""
+    if _validate_existing_character_path_name(name):
+        return _json_no_store_response({
+            'is_voice_mode': False,
+            'is_current': False,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+            'invalid_name': True,
+        })
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
@@ -3573,6 +3611,8 @@ async def set_current_catgirl(request: Request):
 
     if not catgirl_name:
         return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
+    if _validate_existing_character_path_name(catgirl_name):
+        return JSONResponse({'success': False, 'error': '猫娘名称无效'}, status_code=400)
 
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
@@ -4009,8 +4049,32 @@ async def update_catgirl(name: str, request: Request):
     }
 
 
+@router.post('/catgirl/delete')
+async def delete_catgirl_by_body(request: Request):
+    """Delete a character by JSON body.
+
+    This is the rescue path for historical unsafe names such as "." that cannot
+    be represented safely as a URL path segment.
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析删除猫娘请求体失败: {e}")
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    name = str((data or {}).get('name') or '').strip()
+    if not name:
+        return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
+    return await _delete_catgirl_by_name(name)
+
+
 @router.delete('/catgirl/{name}')
 async def delete_catgirl(name: str):
+    return await _delete_catgirl_by_name(name)
+
+
+async def _delete_catgirl_by_name(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -4021,11 +4085,57 @@ async def delete_catgirl(name: str):
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
 
+    safe_path_name = _validate_existing_character_path_name(name) is None
     assert_cloudsave_writable(
         _config_manager,
         operation="delete",
         target=f"characters/{name}",
     )
+
+    if not safe_path_name:
+        logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
+        characters_snapshot = copy.deepcopy(characters)
+        try:
+            del characters['猫娘'][name]
+            await _config_manager.asave_characters(characters)
+
+            remove_one_catgirl = get_remove_one_catgirl()
+            await remove_one_catgirl(name)
+
+            memory_server_reloaded = await notify_memory_server_reload(reason=f"救援删除非法角色名: {name}")
+            if not memory_server_reloaded:
+                rollback_error = await _rollback_character_operation(
+                    _config_manager,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=[],
+                    reason=f"救援删除非法角色名回滚: {name}",
+                )
+                error_message = "救援删除非法角色名失败: notify_memory_server_reload returned False"
+                if rollback_error:
+                    error_message = f"{error_message}; 回滚失败: {rollback_error}"
+                return JSONResponse({"success": False, "error": error_message}, status_code=500)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            rollback_error = await _rollback_character_operation(
+                _config_manager,
+                characters_snapshot=characters_snapshot,
+                memory_snapshot_records=[],
+                reason=f"救援删除非法角色名回滚: {name}",
+            )
+            logger.exception("救援删除非法角色名失败，已尝试回滚: %s", name)
+            error_message = f"救援删除非法角色名失败: {exc}"
+            if rollback_error:
+                error_message = f"{error_message}; 回滚失败: {rollback_error}"
+            return JSONResponse({"success": False, "error": error_message}, status_code=500)
+
+        return {
+            "success": True,
+            "unsafe_name_rescue": True,
+            "memory_deleted": False,
+            "card_face_deleted": False,
+            "memory_server_reloaded": memory_server_reloaded,
+        }
 
     released_memory_handle = await release_memory_server_character(
         name,
@@ -7426,9 +7536,9 @@ async def list_card_metas():
 async def get_card_meta(name: str):
     """Get a single catgirl's card-face metadata. Without a sidecar, infers origin from the catgirl config and returns defaults."""
     _config_manager = get_config_manager()
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -7446,9 +7556,9 @@ async def get_card_meta(name: str):
 async def put_card_meta(name: str, request: Request):
     """Update card-face metadata (currently only the author field, and only when origin=self)."""
     _config_manager = get_config_manager()
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -7537,10 +7647,9 @@ def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
 async def get_card_face(name: str):
     """Get the character's custom card-face image."""
     _config_manager = get_config_manager()
-    # 安全检查：防止路径遍历
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     if not face_path.exists():
@@ -7555,10 +7664,9 @@ async def get_card_face(name: str):
 async def put_card_face(name: str, image: UploadFile = File(...)):
     """Save the character's custom card-face image."""
     _config_manager = get_config_manager()
-    # 安全检查：防止路径遍历
-    safe_name = os.path.basename(name)
-    if safe_name != name or not name:
-        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+    name_error = _validate_existing_character_path_name(name)
+    if name_error:
+        return JSONResponse({'success': False, 'error': f'无效的角色名: {name_error}'}, status_code=400)
 
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):

@@ -5692,11 +5692,17 @@ const AvatarButtonMixin = {
 
             // 创建包装器
             const btnWrapper = document.createElement('div');
-            btnWrapper.style.position = 'relative';
-            btnWrapper.style.display = 'flex';
-            btnWrapper.style.alignItems = 'center';
-            btnWrapper.style.gap = '8px';
-            btnWrapper.style.pointerEvents = 'auto';
+            Object.assign(btnWrapper.style, {
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                pointerEvents: 'auto',
+                height: '48px',
+                minHeight: '48px',
+                flex: '0 0 48px',
+                boxSizing: 'border-box'
+            });
 
             const stopWrapperEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {

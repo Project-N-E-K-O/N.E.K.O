@@ -30,7 +30,10 @@ from plugin.core.registry import (
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
-from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.entry_points import (
+    describe_plugin_entry_directory_mismatch,
+    normalize_plugin_entry_point,
+)
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
@@ -341,6 +344,32 @@ def _resolve_registered_config_path_sync(plugin_meta: dict[str, object] | None) 
         return Path(config_path_obj)
 
 
+def _registered_load_failure_error(plugin_id: str, plugin_meta: dict[str, object] | None) -> ServerDomainError | None:
+    if not isinstance(plugin_meta, dict) or plugin_meta.get("runtime_load_state") != "failed":
+        return None
+
+    error_type_obj = plugin_meta.get("runtime_load_error_type")
+    error_message_obj = plugin_meta.get("runtime_load_error_message")
+    error_phase_obj = plugin_meta.get("runtime_load_error_phase")
+    error_type = str(error_type_obj or "PluginLoadFailed")
+    if error_type not in {"PluginEntryDirectoryMismatch", "SyntaxError"}:
+        return None
+
+    error_message = str(error_message_obj or "Plugin failed to load during registry refresh")
+    error_phase = str(error_phase_obj or "unknown")
+    code = "PLUGIN_ENTRY_DIRECTORY_MISMATCH" if error_type == "PluginEntryDirectoryMismatch" else "PLUGIN_LOAD_FAILED"
+    return _to_domain_error(
+        code=code,
+        message=(
+            f"Plugin '{plugin_id}' cannot be started because its entry failed during "
+            f"registry phase '{error_phase}': {error_type}: {error_message}"
+        ),
+        status_code=400,
+        plugin_id=plugin_id,
+        error_type=error_type,
+    )
+
+
 async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> None:
     removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
     target_host = host
@@ -607,6 +636,9 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 error_type="ConfigNotFound",
             )
+        registered_load_error = _registered_load_failure_error(current_plugin_id, registered_meta)
+        if registered_load_error is not None:
+            raise registered_load_error
 
         host_obj: PluginHostContract | None = None
         registered_plugin_id: str | None = None
@@ -742,6 +774,15 @@ class PluginLifecycleService:
                 config_path=config_path,
                 builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
             )
+            entry_mismatch = describe_plugin_entry_directory_mismatch(entry, config_path=config_path)
+            if entry_mismatch:
+                raise _to_domain_error(
+                    code="PLUGIN_ENTRY_DIRECTORY_MISMATCH",
+                    message=entry_mismatch,
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="PluginEntryDirectoryMismatch",
+                )
 
             resolved_id = _resolve_plugin_id_conflict(
                 current_plugin_id,

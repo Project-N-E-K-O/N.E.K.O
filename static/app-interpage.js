@@ -1641,13 +1641,16 @@
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container, #pngtuber-return-button-container'
             ).forEach(function (el) {
                 if (!el.dataset.nekoPreHideDisplay) {
+                    var isFloatingButtons = !!(el.id && /-floating-buttons$/.test(el.id));
                     var computedDisplay = '';
                     try {
                         computedDisplay = window.getComputedStyle(el).display || '';
                     } catch (_) {}
-                    el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
-                        ? computedDisplay
-                        : (el.style.display || 'none');
+                    el.dataset.nekoPreHideDisplay = isFloatingButtons && !el.style.display && computedDisplay === 'none'
+                        ? 'flex'
+                        : (computedDisplay && computedDisplay !== 'none'
+                            ? computedDisplay
+                            : (el.style.display || 'none'));
                 }
                 el.style.display = 'none';
             });
@@ -1879,7 +1882,7 @@
                         el.style.visibility = 'hidden';
                         hiddenFloatingButtonEls.push(el);
                     }
-                    el.style.display = restoreDisplay;
+                    el.style.display = isFloatingButtons ? 'flex' : restoreDisplay;
                 }
                 delete el.dataset.nekoPreHideDisplay;
             });
