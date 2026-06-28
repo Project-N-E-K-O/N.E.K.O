@@ -1941,6 +1941,7 @@
         "profileNameMaxHint": "Макс. 60 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
         "profileNameUnsafeDot": "Имя профиля не может состоять только из точек или заканчиваться точкой",
+        "profileNameDotSequence": "Имя профиля не может содержать две точки подряд (..)",
         "profileNameReservedDevice": "Имя профиля не может использовать зарезервированное имя устройства Windows",
         "profileNameInvalid": "Недопустимое имя профиля",
         "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",

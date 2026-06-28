@@ -1941,6 +1941,7 @@
         "profileNameMaxHint": "最多60個字符",
         "profileNameTooLong": "檔案名過長",
         "profileNameUnsafeDot": "檔案名不能僅由點號組成或以點號結尾",
+        "profileNameDotSequence": "檔案名不能包含連續點號(..)",
         "profileNameReservedDevice": "檔案名不能使用 Windows 保留設備名",
         "profileNameInvalid": "檔案名無效",
         "profileNameContainsSlash": "檔案名不能包含路徑分隔符(/或\\)",

@@ -1941,6 +1941,7 @@
         "profileNameMaxHint": "Máximo 60 caracteres",
         "profileNameTooLong": "El nombre del perfil es demasiado largo.",
         "profileNameUnsafeDot": "El nombre del perfil no puede estar formado solo por puntos ni terminar con un punto.",
+        "profileNameDotSequence": "El nombre del perfil no puede contener puntos consecutivos (..).",
         "profileNameReservedDevice": "El nombre del perfil no puede usar un nombre de dispositivo reservado de Windows.",
         "profileNameInvalid": "El nombre del perfil no es válido.",
         "profileNameContainsSlash": "El nombre del perfil no puede contener separadores de ruta (/ o \\)",

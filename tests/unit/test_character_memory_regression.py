@@ -363,6 +363,19 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_body_delete_rejects_non_object_json_payload():
+    characters_router_module = reload_module("main_routers.characters_router")
+
+    response = await characters_router_module.delete_catgirl_by_body(_DummyRequest(["."]))
+
+    assert response.status_code == 400
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["success"] is False
+    assert "JSON" in payload["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_paths():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -398,8 +411,9 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.write_text("keep", encoding="utf-8")
 
             characters_router_module = reload_module("main_routers.characters_router")
+            mock_notify_reload = AsyncMock(return_value=True)
             with (
-                patch.object(characters_router_module, "notify_memory_server_reload", AsyncMock(return_value=True)),
+                patch.object(characters_router_module, "notify_memory_server_reload", mock_notify_reload),
                 patch.object(characters_router_module, "delete_character_memory_storage") as mock_delete_memory,
             ):
                 result = await characters_router_module.delete_catgirl_by_body(_DummyRequest({"name": "."}))
@@ -407,6 +421,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             assert result["success"] is True
             assert result["unsafe_name_rescue"] is True
             assert result["memory_deleted"] is False
+            mock_notify_reload.assert_awaited_once()
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
             mock_delete_memory.assert_not_called()

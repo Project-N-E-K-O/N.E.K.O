@@ -3678,11 +3678,22 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         await showProfileNameRequiredDialog();
         return;
     }
-    if (!(await ensureValidCharacterProfileName(catgirlName, form?.querySelector?.('[name="档案名"]')))) {
+    const nameInput = form?.querySelector?.('[name="档案名"]');
+    const shouldCreateCharacter = form && form._isNew && (!form._autoCreated || form._autoCreatedName !== catgirlName);
+    if (shouldCreateCharacter) {
+        if (form._autoCreated && form._autoCreatedName !== catgirlName) {
+            form._autoCreatedDetachedName = form._autoCreatedName;
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        }
+        if (!(await ensureValidCharacterProfileName(catgirlName, nameInput))) {
+            return;
+        }
+    } else if (!(await ensureSafeExistingCharacterPathName(catgirlName, nameInput))) {
         return;
     }
 
-    if (form && form._isNew && !form._autoCreated) {
+    if (shouldCreateCharacter) {
         try {
             const tmpResp = await fetch('/api/characters/catgirl', {
                 method: 'POST',
@@ -3799,7 +3810,7 @@ function getCharacterProfileNameError(name) {
     const value = String(name || '').trim();
     if (!value) return window.t ? window.t('character.profileNameRequired') : '档案名为必填项';
     if (value.includes('/') || value.includes('\\')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
-    if (value.includes('..')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value.includes('..')) return window.t ? window.t('character.profileNameDotSequence') : '档案名不能包含连续点号(..)';
     if (value === '.' || value.endsWith('.')) return window.t ? window.t('character.profileNameUnsafeDot') : '档案名不能仅由点号组成或以点号结尾';
     if (value.includes('.')) return window.t ? window.t('character.profileNameContainsDot') : '档案名不能包含点号(.)';
     if (CHARACTER_PROFILE_RESERVED_DEVICE_RE.test(value.split('.', 1)[0])) return window.t ? window.t('character.profileNameReservedDevice') : '档案名不能使用 Windows 保留设备名';
@@ -3823,6 +3834,24 @@ async function showCharacterProfileNameInvalidDialog(message) {
 
 async function ensureValidCharacterProfileName(name, input) {
     const error = getCharacterProfileNameError(name);
+    if (!error) return true;
+    if (input && typeof input.focus === 'function') input.focus();
+    await showCharacterProfileNameInvalidDialog(error);
+    return false;
+}
+
+function getExistingCharacterPathNameError(name) {
+    const value = String(name || '').trim();
+    if (!isUnsafeCharacterPathSegment(value)) return '';
+    if (!value) return window.t ? window.t('character.profileNameRequired') : '档案名为必填项';
+    if (value.includes('/') || value.includes('\\')) return window.t ? window.t('character.profileNameContainsSlash') : '档案名不能包含路径分隔符(/或\\)';
+    if (value.includes('..')) return window.t ? window.t('character.profileNameDotSequence') : '档案名不能包含连续点号(..)';
+    if (value === '.' || value.endsWith('.')) return window.t ? window.t('character.profileNameUnsafeDot') : '档案名不能仅由点号组成或以点号结尾';
+    return window.t ? window.t('character.profileNameInvalid') : '档案名无效';
+}
+
+async function ensureSafeExistingCharacterPathName(name, input) {
+    const error = getExistingCharacterPathNameError(name);
     if (!error) return true;
     if (input && typeof input.focus === 'function') input.focus();
     await showCharacterProfileNameInvalidDialog(error);
@@ -5100,7 +5129,12 @@ function openCatgirlPanel(card, originEl) {
             );
             return;
         }
-        if (!(await ensureValidCharacterProfileName(currentName, form?.querySelector?.('[name="档案名"]')))) {
+        const nameInput = form?.querySelector?.('[name="档案名"]');
+        if (form && form._isNew && !form._autoCreated) {
+            if (!(await ensureValidCharacterProfileName(currentName, nameInput))) {
+                return;
+            }
+        } else if (!(await ensureSafeExistingCharacterPathName(currentName, nameInput))) {
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
@@ -7061,7 +7095,11 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return false;
         }
-        if (!(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
+        const shouldUseStrictProfileNameRule = isNew || !nameInput.readOnly;
+        if (shouldUseStrictProfileNameRule && !(await ensureValidCharacterProfileName(nameInput.value, nameInput))) {
+            return false;
+        }
+        if (!shouldUseStrictProfileNameRule && !(await ensureSafeExistingCharacterPathName(nameInput.value, nameInput))) {
             return false;
         }
 

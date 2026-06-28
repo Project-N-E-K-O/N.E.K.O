@@ -4061,6 +4061,8 @@ async def delete_catgirl_by_body(request: Request):
     except Exception as e:
         logger.warning(f"解析删除猫娘请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     name = str((data or {}).get('name') or '').strip()
     if not name:
         return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
