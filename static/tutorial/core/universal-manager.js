@@ -643,11 +643,7 @@ class UniversalTutorialManager {
         if (state.pendingRound || state.manualResetRound) {
             return state.pendingRound === round || state.manualResetRound === round;
         }
-        if (state.pendingRound !== round && state.manualResetRound !== round) {
-            const today = getTodayLocalDateForAvatarFloatingGuide();
-            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
-        }
-        return true;
+        return this.getNextAvatarFloatingGuideAutoRound() === round;
     }
 
     isAvatarFloatingGuideRoundRegistered(day) {
