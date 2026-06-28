@@ -2279,7 +2279,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame {
-  --compact-chat-minimize-ball-size: 41px;
+  --compact-chat-minimize-ball-size: 46px;
   --compact-chat-minimize-ball-inset: 2px;
   --compact-chat-minimize-ball-gap: 8px;
   --compact-chat-minimize-ball-slot: calc(
@@ -2294,6 +2294,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: relative;
   overflow: hidden;
   isolation: isolate;
+  clip-path: inset(0 round 999px);
+  background-clip: padding-box;
   display: flex;
   align-items: center;
   width: 100%;
@@ -2332,6 +2334,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   height: var(--compact-chat-minimize-ball-size);
   padding: 0;
   border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  contain: paint;
   background: transparent;
   cursor: grab;
   touch-action: none;
@@ -2346,19 +2351,26 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-minimize-ball-icon {
-  width: 37px;
-  height: 37px;
-  object-fit: contain;
+  display: block;
+  width: 46px;
+  height: 40px;
+  flex: 0 0 auto;
   opacity: 0.8;
   transition: opacity 0.15s ease, transform 0.15s ease;
   pointer-events: none;
+  background-image: -webkit-image-set(url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-1x.png') 1x, url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-2x.png') 2x);
+  background-image: image-set(url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-1x.png') 1x, url('/static/assets/neko-idle/chat-minimized-yarn-ball-compact-press-2x.png') 2x);
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  background-size: 1104px 40px;
+  image-rendering: auto;
 }
 
 .compact-chat-surface-shell:hover .compact-chat-minimize-ball-icon,
 .compact-chat-minimize-ball:hover .compact-chat-minimize-ball-icon,
 .compact-chat-minimize-ball:active .compact-chat-minimize-ball-icon {
   opacity: 1;
-  transform: scale(1.08);
+  transform: translateY(0);
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
@@ -3355,16 +3367,20 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
    但动画规则原本只在 host 的 static/css/index.css。Vite dev / 独立 React bundle 路径下没有
    index.css，class 会失效、擦除/挤压不跑（Codex P2）。这里在 bundle 自带的 styles.css 里镜像
    同一套规则，保证组件自带动画 CSS。两份保持一致。 */
-@keyframes neko-compact-minimize-press {
-  0%   { transform: scale(1, 1); }
-  30%  { transform: scale(1.12, 0.74); }
-  58%  { transform: scale(0.94, 1.08); }
-  80%  { transform: scale(1.03, 0.97); }
-  100% { transform: scale(1, 1); }
+@keyframes neko-compact-minimize-press-frame {
+  from { background-position: 0 0; }
+  to { background-position: -1058px 0; }
+}
+@keyframes neko-compact-minimize-press-move {
+  0%   { transform: translateY(0); opacity: 1; }
+  30%  { transform: translateY(3px); opacity: 1; }
+  58%  { transform: translateY(-1px); opacity: 1; }
+  80%  { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
   transform-origin: center bottom;
-  animation: neko-compact-minimize-press 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
+  animation: neko-compact-minimize-press-frame 420ms steps(23, end) both, neko-compact-minimize-press-move 420ms cubic-bezier(0.3, 0.8, 0.4, 1) both;
 }
 @keyframes neko-compact-collapse-wipe {
   from { -webkit-mask-position: 0% 0;   mask-position: 0% 0; }

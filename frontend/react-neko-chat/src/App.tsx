@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useEffect,
   useLayoutEffect,
@@ -6513,10 +6513,8 @@ function CompactChatApp({
         onCompactMinimizeRequest();
       }}
     >
-      <img
+      <span
         className="compact-chat-minimize-ball-icon"
-        src="/static/assets/neko-idle/chat-minimized-yarn-ball.png"
-        alt=""
         aria-hidden="true"
       />
     </button>
