@@ -355,12 +355,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if mode == "text":
             await self.qq_client.send_message(target_qq, normalized_text)
             return
+        if mode == "both":
+            await self.qq_client.send_message(target_qq, normalized_text)
         try:
             file_uri, _ = await self._synthesize_reply_voice_file(normalized_text)
             if mode == "voice":
                 await self.qq_client.send_private_record(target_qq, file_uri)
                 return
-            await self.qq_client.send_message(target_qq, normalized_text)
             await self.qq_client.send_private_record(target_qq, file_uri)
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
@@ -368,7 +369,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 await self.qq_client.send_message(target_qq, normalized_text)
                 return
             if mode == "both":
-                self.logger.warning("QQ 复合私聊中的语音发送失败", exc_info=True)
+                self.logger.warning("QQ 复合私聊中的语音发送失败，已保留文本", exc_info=True)
                 return
             raise
 
@@ -384,12 +385,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if mode == "text":
             await self.qq_client.send_group_message_segments(group_id, text_segments)
             return
+        if mode == "both":
+            await self.qq_client.send_group_message_segments(group_id, text_segments)
         try:
             file_uri, _ = await self._synthesize_reply_voice_file(normalized_text)
             if mode == "voice":
                 await self.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
                 return
-            await self.qq_client.send_group_message_segments(group_id, text_segments)
             await self.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
         except Exception:
             if mode == "voice" and fallback_to_text_on_voice_failure:
@@ -397,7 +399,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 await self.qq_client.send_group_message_segments(group_id, text_segments)
                 return
             if mode == "both":
-                self.logger.warning("QQ 复合群聊中的语音发送失败", exc_info=True)
+                self.logger.warning("QQ 复合群聊中的语音发送失败，已保留文本", exc_info=True)
                 return
             raise
 
@@ -1372,7 +1374,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self._deliver_private_reply(
             self._admin_qq,
             relay_text,
-            fallback_to_text_on_voice_failure=False,
+            fallback_to_text_on_voice_failure=True,
         )
         return None
 

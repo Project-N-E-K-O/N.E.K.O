@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from PIL import Image
 
@@ -96,6 +97,24 @@ class QQAutoReplyPromptingMixin:
         has_images = bool(QQAutoReplyPromptingMixin._collect_image_attachments(attachments))
         return has_images and not str(prompt_message or "").strip()
 
+    @staticmethod
+    def _should_skip_direct_llm_fallback_for_images(*, message: str, attachments: list[dict[str, Any]] | None) -> bool:
+        has_images = bool(QQAutoReplyPromptingMixin._collect_image_attachments(attachments))
+        return has_images and not str(message or "").strip()
+
+    @staticmethod
+    def _resolve_local_attachment_path(locator: str) -> Path:
+        text = str(locator or "").strip()
+        if text.startswith("file://"):
+            parsed = urlparse(text)
+            candidate = unquote(parsed.path or "")
+            if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+                candidate = f"//{parsed.netloc}{candidate}"
+            elif re.match(r"^/[A-Za-z]:/", candidate):
+                candidate = candidate[1:]
+            return Path(candidate)
+        return Path(text)
+
     async def _prepare_attachment_image_b64(self, attachment: dict[str, Any]) -> str | None:
         locator = str(attachment.get("url") or attachment.get("path") or attachment.get("file") or "").strip()
         if not locator:
@@ -111,7 +130,8 @@ class QQAutoReplyPromptingMixin:
                     response.raise_for_status()
                     image_bytes = response.content
             else:
-                image_bytes = await asyncio.to_thread(Path(locator).read_bytes)
+                image_path = self._resolve_local_attachment_path(locator)
+                image_bytes = await asyncio.to_thread(image_path.read_bytes)
             return await asyncio.to_thread(self._encode_image_bytes_to_jpeg_b64, image_bytes)
         except Exception as exc:
             self.logger.warning(f"QQ 图片附件预处理失败: {exc}")
@@ -345,7 +365,7 @@ class QQAutoReplyPromptingMixin:
                 login_nickname=login_nickname,
             )
             prompt_message = self._build_group_turn_message(user_title=user_title, sender_id=sender_id, group_id=group_id, message=message) if is_group and not group_facing else message
-            if self._should_skip_text_fallback_for_images(prompt_message=prompt_message, attachments=attachments):
+            if self._should_skip_direct_llm_fallback_for_images(message=message, attachments=attachments):
                 self.logger.warning("QQ 图片消息跳过纯文本 fallback，避免假装已看图")
                 return None
             model_config = get_config_manager().get_model_api_config("agent")

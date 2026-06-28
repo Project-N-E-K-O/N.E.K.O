@@ -108,8 +108,9 @@ class QQAutoReplyConfigStore:
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
-        if payload.get("reply_mode") in self.VALID_REPLY_MODES:
-            merged["reply_mode"] = self.normalize_reply_mode(payload.get("reply_mode"))
+        reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
+        if reply_mode != "text" or "reply_mode" in payload:
+            merged["reply_mode"] = reply_mode
         elif payload.get("audio_reply_enabled") is True:
             merged["reply_mode"] = "voice"
         else:
