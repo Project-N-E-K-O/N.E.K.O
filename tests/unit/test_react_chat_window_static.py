@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
@@ -316,6 +317,20 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "'web_chat_compact'" in source
     assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
     assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_chat_full_skips_startup_prominent_notice_queue():
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    load_block = source.split("window.addEventListener('load'", 1)[1].split(
+        "// 监听 voice_id",
+        1,
+    )[0]
+
+    assert "window.location.pathname === '/chat'" in load_block
+    assert "window.location.pathname === '/chat/'" in load_block
+    assert "window.location.pathname === '/chat_full'" in load_block
+    assert "window.location.pathname === '/chat_full/'" in load_block
+    assert "if (_isChatPage) return;" in load_block
 
 
 def test_web_chat_compact_is_allowed_during_main_limited_mode():
