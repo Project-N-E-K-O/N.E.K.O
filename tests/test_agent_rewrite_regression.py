@@ -1068,7 +1068,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
-def test_legacy_tutorial_pages_do_not_load_universal_tutorial_runtime():
+def test_legacy_tutorial_pages_use_separate_page_tutorial_runtime():
     for template_path in (
         "templates/live2d_emotion_manager.html",
         "templates/mmd_emotion_manager.html",
@@ -1080,8 +1080,11 @@ def test_legacy_tutorial_pages_do_not_load_universal_tutorial_runtime():
     ):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "tutorial/core/universal-manager.js" not in source
-        assert "driver.min" not in source
-        assert "tutorial-styles.css" not in source
+        assert "driver.min.js" in source
+        assert "driver.min.css" in source
+        assert "tutorial-styles.css" in source
+        assert "tutorial/core/page-tutorial-manager.js" in source
+        assert "initPageTutorialManager" in source
 
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
@@ -1102,6 +1105,10 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
     assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
     assert "static/tutorial/avatar/standin-controller.js" in tracked_paths
+    assert "static/tutorial/core/page-tutorial-manager.js" in tracked_paths
+    assert "static/css/tutorial-styles.css" in tracked_paths
+    assert "static/libs/driver.min.js" in tracked_paths
+    assert "static/libs/driver.min.css" in tracked_paths
     assert "static/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
     assert "static/live2d-interaction.js" in tracked_paths
@@ -1192,8 +1199,9 @@ def test_universal_tutorial_manager_keeps_page_normalization_without_legacy_step
     ):
         assert obsolete not in source
 
-def test_legacy_character_card_manager_tutorial_steps_are_removed():
+def test_legacy_character_card_manager_tutorial_steps_live_in_page_runtime():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    page_source = Path("static/tutorial/core/page-tutorial-manager.js").read_text(encoding="utf-8")
     template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
 
     for obsolete in (
@@ -1202,14 +1210,16 @@ def test_legacy_character_card_manager_tutorial_steps_are_removed():
         "prepareCharaManagerForTutorial",
         "cleanupCharaManagerTutorialIds",
         "path.includes('character_card_manager')",
-        "tutorial/core/universal-manager.js",
-        "driver.min",
-        "tutorial-styles.css",
     ):
-        if obsolete.startswith("tutorial/") or obsolete == "driver.min" or obsolete == "tutorial-styles.css":
-            assert obsolete not in template_source
-        else:
-            assert obsolete not in source
+        assert obsolete not in source
+
+    assert "getCharaManagerSteps()" in page_source
+    assert "path.includes('character_card_manager')" in page_source
+    assert "waitForCharacterCards" in page_source
+    assert "tutorial/core/universal-manager.js" not in template_source
+    assert "driver.min.js" in template_source
+    assert "tutorial-styles.css" in template_source
+    assert "tutorial/core/page-tutorial-manager.js" in template_source
 
 def test_legacy_character_card_manager_tutorial_prepare_helpers_are_removed():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")

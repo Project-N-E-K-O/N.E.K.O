@@ -45,6 +45,9 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 ))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/tutorial-styles.css",
+    _PROJECT_ROOT / "static/libs/driver.min.css",
+    _PROJECT_ROOT / "static/libs/driver.min.js",
     _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",

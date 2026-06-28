@@ -3,8 +3,22 @@
  * 支持所有页面的引导配置
  */
 
-// 新教程体系目前由 Yui Guide/7 天悬浮教程承载，旧多页面教程已下线。
-const TUTORIAL_PAGES = Object.freeze(['home']);
+// Home uses the Yui seven-day guide; non-home pages use the restored Driver.js page tutorial runtime.
+const TUTORIAL_PAGES = Object.freeze([
+    'home',
+    'model_manager',
+    'model_manager_live2d',
+    'model_manager_vrm',
+    'model_manager_mmd',
+    'model_manager_common',
+    'parameter_editor',
+    'emotion_manager',
+    'chara_manager',
+    'settings',
+    'voice_clone',
+    'steam_workshop',
+    'memory_browser',
+]);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
@@ -27,6 +41,16 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function getTutorialStorageKeysForPageFallback(pageKey) {
+    if (pageKey === 'model_manager') {
+        return [
+            'model_manager',
+            'model_manager_live2d',
+            'model_manager_vrm',
+            'model_manager_mmd',
+            'model_manager_common',
+        ].map(getTutorialStorageKeyForPage);
+    }
+
     if (pageKey === 'home') {
         return [
             getTutorialStorageKeyForPage('home_yui_v1'),
@@ -3815,6 +3839,13 @@ async function resetTutorialForPage(pageKey) {
 
     const pageNames = {
         'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
+        'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
+        'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
+        'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',
+        'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
+        'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
+        'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
         'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;

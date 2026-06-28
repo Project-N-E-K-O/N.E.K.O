@@ -4,10 +4,17 @@ from pathlib import Path
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/universal-manager.js"
 )
+PAGE_TUTORIAL_MANAGER_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/page-tutorial-manager.js"
+)
 
 
 def _read_manager() -> str:
     return UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+
+def _read_page_manager() -> str:
+    return PAGE_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -31,6 +38,48 @@ def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
         "neko-tutorial-driver",
     ):
         assert obsolete not in source
+
+
+def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
+    universal_source = _read_manager()
+    page_source = _read_page_manager()
+
+    for page_key in (
+        "'model_manager'",
+        "'model_manager_live2d'",
+        "'model_manager_vrm'",
+        "'model_manager_mmd'",
+        "'parameter_editor'",
+        "'emotion_manager'",
+        "'chara_manager'",
+        "'settings'",
+        "'voice_clone'",
+        "'memory_browser'",
+    ):
+        assert page_key in universal_source
+
+    fallback_block = universal_source.split("function getTutorialStorageKeysForPageFallback(pageKey) {", 1)[1].split(
+        "    if (pageKey === 'home')",
+        1,
+    )[0]
+    assert "pageKey === 'model_manager'" in fallback_block
+    assert "'model_manager_live2d'" in fallback_block
+    assert "'model_manager_vrm'" in fallback_block
+    assert "'model_manager_mmd'" in fallback_block
+    assert "'model_manager_common'" in fallback_block
+
+    assert "class PageTutorialManager" in page_source
+    assert "window.initPageTutorialManager = initPageTutorialManager;" in page_source
+    assert "window.resetPageTutorialStorage = resetPageTutorialStorage;" in page_source
+    assert "if (path === '/' || path === '/index.html' || path === '/chat')" in page_source
+    assert "return 'home';" in page_source
+    assert "return SUPPORTED_PAGES.includes(this.currentPage);" in page_source
+    assert "const DriverClass = window.driver;" in page_source
+    assert "this.driver = new DriverClass({" in page_source
+    assert "getModelManagerSteps()" in page_source
+    assert "getSettingsSteps()" in page_source
+    assert "getVoiceCloneSteps()" in page_source
+    assert "getMemoryBrowserSteps()" in page_source
 
 
 def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
