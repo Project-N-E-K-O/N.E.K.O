@@ -6991,6 +6991,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         attachCharacterFieldOrderPayload(data, fieldOrder);
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
+        const shouldSelectAfterSave = !!isNew;
         const effectiveIsNew = isNew && !form._autoCreated;
         const url = '/api/characters/catgirl' + (effectiveIsNew ? '' : '/' + encodeURIComponent(effectiveIsNew ? '' : (form._autoCreatedName || originalName)));
         const response = await fetch(url, {
@@ -7015,9 +7016,14 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return false;
         }
-        const localRawData = buildLocalCatgirlRawData(data['档案名'], data, fieldOrder);
+        const savedCatgirlName = String(result.character_name || data['档案名'] || '').trim();
+        if (savedCatgirlName && savedCatgirlName !== data['档案名']) {
+            data['档案名'] = savedCatgirlName;
+            if (nameInput) nameInput.value = savedCatgirlName;
+        }
+        const localRawData = buildLocalCatgirlRawData(savedCatgirlName, data, fieldOrder);
         let savedRawDataForCache = localRawData;
-        syncCharacterCardCache(data['档案名'], localRawData);
+        syncCharacterCardCache(savedCatgirlName, localRawData);
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -7030,10 +7036,10 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // voice_id 通过专用接口更新
         if (selectedVoiceId !== previousVoiceId) {
             if (selectedVoiceId) {
-                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
-                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(savedCatgirlName);
+                notifyVoiceConfigSwitching(savedCatgirlName, true, voiceSwitchOpId);
                 try {
-                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
+                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(savedCatgirlName), {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ voice_id: selectedVoiceId })
@@ -7044,7 +7050,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     // 是 PUT 被拒、还是后续 cleanup_invalid_voice_ids 把它清掉了。
                     console.log(
                         '[character voice PUT]',
-                        'name=', data['档案名'],
+                        'name=', savedCatgirlName,
                         'voice_id=', selectedVoiceId,
                         'status=', voiceResp.status,
                         'response=', voiceResult,
@@ -7066,13 +7072,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         'error'
                     );
                 } finally {
-                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
+                    notifyVoiceConfigSwitching(savedCatgirlName, false, voiceSwitchOpId);
                 }
             } else if (previousVoiceId) {
-                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
-                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(savedCatgirlName);
+                notifyVoiceConfigSwitching(savedCatgirlName, true, voiceSwitchOpId);
                 try {
-                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
+                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(savedCatgirlName) + '/unregister_voice', {
                         method: 'POST'
                     });
                     const clearResult = await clearResp.json().catch(() => ({}));
@@ -7089,7 +7095,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         'error'
                     );
                 } finally {
-                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
+                    notifyVoiceConfigSwitching(savedCatgirlName, false, voiceSwitchOpId);
                 }
             }
         }
@@ -7099,7 +7105,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const motionSelect = document.getElementById('preview-motion-select');
             const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
             try {
-                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(data['档案名']), {
+                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -7117,11 +7123,23 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
+        if (shouldSelectAfterSave) {
+            try {
+                await applyCurrentCatgirlSelection(savedCatgirlName, { showError: true });
+            } catch (switchError) {
+                console.warn('[角色面板] 新建角色已保存，但自动切换当前角色失败:', switchError);
+                showMessage(
+                    window.t ? window.t('character.switchError') : '切换猫娘时发生错误',
+                    'warning'
+                );
+            }
+        }
+
         showMessage(isNew
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
         if (isNew) {
-            const catgirlName = data['档案名'];
+            const catgirlName = savedCatgirlName;
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
                 const makerParams = new URLSearchParams({
@@ -7152,21 +7170,21 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
-                    ? freshData['猫娘'][data['档案名']]
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][savedCatgirlName]
+                    ? freshData['猫娘'][savedCatgirlName]
                     : {};
                 savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
                 setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
-                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
-                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
+                syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
+                buildCatgirlDetailForm(savedCatgirlName, savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
-                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
+                buildCatgirlDetailForm(savedCatgirlName, localRawData, false, container);
             }
         }
         await loadCharacterCards();
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
-        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+        syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
         return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);
@@ -7238,6 +7256,57 @@ function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
     }
 }
 
+async function applyCurrentCatgirlSelection(name, options = {}) {
+    const targetName = String(name || '').trim();
+    if (!targetName) return false;
+
+    let oldCatgirl = String(options.oldCatgirl || window._workshopCurrentCatgirl || '').trim();
+    if (!oldCatgirl) {
+        try {
+            const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
+            if (currentResp.ok) {
+                const currentData = await currentResp.json();
+                oldCatgirl = String(currentData.current_catgirl || '').trim();
+            }
+        } catch (e) {
+            console.warn('[CharaCardManager] 读取当前角色失败，继续尝试切换:', e);
+        }
+    }
+
+    if (oldCatgirl === targetName) {
+        window._workshopCurrentCatgirl = targetName;
+        return true;
+    }
+
+    const response = await fetch('/api/characters/current_catgirl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ catgirl_name: targetName })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success) {
+        if (options.showError !== false) {
+            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
+        }
+        return false;
+    }
+
+    window._workshopCurrentCatgirl = targetName;
+    renderCharaCardsView();
+    _refreshOpenCatgirlPanelActions();
+
+    if (typeof window.handleCatgirlSwitch === 'function') {
+        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (currentName !== targetName) {
+            await Promise.resolve(window.handleCatgirlSwitch(targetName, oldCatgirl)).catch(e => {
+                console.warn('[CharaCardManager] 同页角色切换失败:', e);
+            });
+        }
+    }
+    _broadcastCatgirlSwitched(targetName, oldCatgirl);
+    return true;
+}
+
 // 角色卡详情面板（modal）目前只读取 _workshopCurrentCatgirl 的初始值来决定按钮态，
 // 切角色后必须主动同步开着的面板，否则用户在小窗里点完按钮会觉得"毫无反应"。
 //
@@ -7273,20 +7342,9 @@ async function workshopSwitchCatgirl(name) {
     const oldCatgirl = guard.currentCatgirl || window._workshopCurrentCatgirl || '';
 
     try {
-        const response = await fetch('/api/characters/current_catgirl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ catgirl_name: name })
-        });
-        const result = await response.json();
-        if (result.success) {
-            window._workshopCurrentCatgirl = name;
-            renderCharaCardsView();
-            _refreshOpenCatgirlPanelActions();
-            _broadcastCatgirlSwitched(name, oldCatgirl);
+        const switched = await applyCurrentCatgirlSelection(name, { oldCatgirl });
+        if (switched) {
             showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
-        } else {
-            showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
         }
     } catch (error) {
         console.error('切换猫娘失败:', error);
