@@ -450,7 +450,7 @@
       top: 112px;
       right: 72px;
       z-index: 28;
-      width: 238px;
+      width: 254px;
       padding: 12px;
       border: 1px solid rgba(99, 165, 235, 0.36);
       border-radius: 14px;
@@ -576,6 +576,13 @@
       gap: 7px;
     }
 
+    .dg-color-grid-history {
+      grid-auto-rows: 34px;
+      min-height: 34px;
+      align-items: center;
+      background: transparent;
+    }
+
     .dg-color-chip {
       width: 24px;
       height: 24px;
@@ -591,6 +598,26 @@
       box-shadow: 0 0 0 2px rgba(23, 167, 255, 0.28), 0 8px 18px rgba(33, 101, 179, 0.16);
       transform: translateY(-1px);
       outline: none;
+    }
+
+    .dg-color-eyedropper {
+      position: relative;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(135deg, rgba(23, 167, 255, 0.16), rgba(255, 255, 255, 0.92)),
+        #ffffff;
+      color: var(--dg-accent-strong);
+    }
+
+    .dg-color-eyedropper svg {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      stroke-width: 2.2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
     .dg-canvas-wrap {
@@ -2142,11 +2169,24 @@
         <button class="dg-color-chip" type="button" data-color="#2ec4b6" style="--chip-color: #2ec4b6" title="#2ec4b6"></button>
         <button class="dg-color-chip" type="button" data-color="#17a7ff" style="--chip-color: #17a7ff" title="#17a7ff"></button>
         <button class="dg-color-chip" type="button" data-color="#7c3aed" style="--chip-color: #7c3aed" title="#7c3aed"></button>
+        <button class="dg-color-chip" type="button" data-color="#f8f5ef" style="--chip-color: #f8f5ef" title="#f8f5ef"></button>
+        <button class="dg-color-chip" type="button" data-color="#8ad7ff" style="--chip-color: #8ad7ff" title="#8ad7ff"></button>
+        <button class="dg-color-chip" type="button" data-color="#a7f3d0" style="--chip-color: #a7f3d0" title="#a7f3d0"></button>
+        <button class="dg-color-chip" type="button" data-color="#ffd6e7" style="--chip-color: #ffd6e7" title="#ffd6e7"></button>
+        <button class="dg-color-chip" type="button" data-color="#fb7185" style="--chip-color: #fb7185" title="#fb7185"></button>
+        <button class="dg-color-chip" type="button" data-color="#92400e" style="--chip-color: #92400e" title="#92400e"></button>
+        <button id="eyedropper-button" class="dg-color-chip dg-color-eyedropper" type="button" aria-label="Pick color" title="Pick color" data-i18n-aria="drawingGuess.tools.eyedropper" data-i18n-title="drawingGuess.tools.eyedropper">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M14 4l6 6"></path>
+            <path d="M19 5l-9.5 9.5"></path>
+            <path d="M8.5 13.5l2 2L7 19H4v-3z"></path>
+          </svg>
+        </button>
       </div>
     </div>
     <div class="dg-color-section">
       <span class="dg-color-section-title" data-i18n="drawingGuess.tools.historyColors">History colors</span>
-      <div id="color-history-colors" class="dg-color-grid" aria-label="History colors" data-i18n-aria="drawingGuess.tools.historyColors"></div>
+      <div id="color-history-colors" class="dg-color-grid dg-color-grid-history" aria-label="History colors" data-i18n-aria="drawingGuess.tools.historyColors"></div>
     </div>
   </section>
 

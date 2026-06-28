@@ -5215,6 +5215,7 @@
             "redo": "重做",
             "color": "颜色",
             "size": "粗细",
+            "eyedropper": "取色器",
             "basicColors": "基础颜色",
             "historyColors": "历史颜色"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "猫娘正在绘画中",
             "aiGuessing": "她正在看你的画...",
             "aiGuessLine": "她猜：{{guess}}",
+            "aiGuessCorrect": "她猜对了。",
+            "aiGuessWrong": "没猜中。",
+            "aiGuessMissAnswer": "她没猜中。答案：{{answer}}",
             "aiNeedsHint": "可以先继续聊天；想让她再猜时再给提示。",
             "summaryReady": "结算页准备好了。",
             "canvasCleared": "画布已清空。",

@@ -26,10 +26,7 @@ from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Request
 
-from config.prompts.prompts_drawing_guess import (
-    DRAWING_GUESS_WORD_DATA,
-    get_drawing_guess_direct_hint_template,
-)
+from config.prompts.prompts_drawing_guess import DRAWING_GUESS_WORD_DATA
 from utils.logger_config import get_module_logger
 
 
@@ -204,8 +201,8 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
         "\u304b\u3055", "\uc6b0\uc0b0", "paraguas", "guarda chuva",
     ),
     "cup": (
-        "mug", "teacup", "glass", "\u676f", "\u676f\u5b50", "\u8336\u676f",
-        "\u9a6c\u514b\u676f", "\u30b3\u30c3\u30d7", "\ucef5", "taza", "copo",
+        "mug", "teacup", "glass", "\u676f", "\u676f\u5b50", "\u6c34\u676f",
+        "\u8336\u676f", "\u9a6c\u514b\u676f", "\u30b3\u30c3\u30d7", "\ucef5", "taza", "copo",
     ),
     "book": (
         "novel", "notebook", "storybook", "\u4e66", "\u66f8", "\u4e66\u672c",
@@ -400,308 +397,6 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     "bridge": (
         "overpass", "\u6865", "\u6a4b", "\u6865\u6881", "\u6a4b\u6a11", "\u5927\u6865",
         "\u5927\u6a4b", "\u306f\u3057", "\u6a4b", "\ub2e4\ub9ac", "puente", "ponte", "most",
-    ),
-}
-_WORD_SAFE_HINTS: dict[str, tuple[str, ...]] = {
-    "apple": (
-        "It is usually round-ish.",
-        "It is often red or green.",
-        "It can show up as a simple snack or in a fruit bowl.",
-    ),
-    "banana": (
-        "It is often yellow.",
-        "Its silhouette is long and curved.",
-        "People usually peel it before eating.",
-    ),
-    "cat": (
-        "It has pointed ears and whiskers.",
-        "It is often drawn with a tail and small paws.",
-        "It is famous for acting cute and proud at the same time.",
-    ),
-    "dog": (
-        "It often has floppy ears or a wagging tail.",
-        "It is usually drawn with a snout.",
-        "People often think of it as loyal and energetic.",
-    ),
-    "fish": (
-        "It usually has fins and a tail.",
-        "It belongs in water.",
-        "Its body is often drawn as a smooth oval with a little eye.",
-    ),
-    "bird": (
-        "It usually has wings and a beak.",
-        "It is often seen in the sky or on branches.",
-        "A small triangle can be a strong clue for its face.",
-    ),
-    "rabbit": (
-        "It has very long ears.",
-        "It often looks soft and jumpy.",
-        "A small round tail is a classic clue.",
-    ),
-    "turtle": (
-        "It carries a hard shell shape.",
-        "It is usually drawn low and slow-looking.",
-        "A small head poking out from an oval body is a clue.",
-    ),
-    "flower": (
-        "It usually has petals around a center.",
-        "It is often connected to stems and leaves.",
-        "It tends to look decorative and bright.",
-    ),
-    "tree": (
-        "It has a trunk and a leafy top.",
-        "It is usually taller than it is wide.",
-        "Branches are a strong clue.",
-    ),
-    "sun": (
-        "It is bright and often round.",
-        "It is commonly drawn with rays around it.",
-        "It belongs high in the daytime sky.",
-    ),
-    "moon": (
-        "It is tied to the night sky.",
-        "It is often drawn as a crescent.",
-        "Its shape can look like a curved slice.",
-    ),
-    "star": (
-        "It is tied to the night sky.",
-        "It often has five points.",
-        "It can be a simple shiny symbol.",
-    ),
-    "cloud": (
-        "It floats in the sky.",
-        "It often has several soft round bumps.",
-        "It is usually light-colored and fluffy-looking.",
-    ),
-    "umbrella": (
-        "It has a curved top and a handle.",
-        "It is useful when weather gets wet.",
-        "It can look like a half circle on a stick.",
-    ),
-    "cup": (
-        "It is a container for drinks.",
-        "A handle on the side can be a clue.",
-        "It is often drawn wider at the top.",
-    ),
-    "book": (
-        "It can open into two flat sides.",
-        "It is connected with reading.",
-        "Pages or a cover are useful clues.",
-    ),
-    "chair": (
-        "It is something people sit on.",
-        "It often has a back and legs.",
-        "Four thin supports can make it recognizable.",
-    ),
-    "bed": (
-        "It is linked with sleeping.",
-        "It often has pillows or a blanket.",
-        "It is usually drawn as a wide rectangle.",
-    ),
-    "clock": (
-        "It tells time.",
-        "A round face with hands is a strong clue.",
-        "Numbers or tick marks can help.",
-    ),
-    "key": (
-        "It can open something locked.",
-        "It often has a round end and teeth.",
-        "Its shape is small and metallic-looking.",
-    ),
-    "phone": (
-        "It is used for calling or messaging.",
-        "It often looks like a rounded rectangle with a screen.",
-        "A small button or camera dot can help.",
-    ),
-    "car": (
-        "It moves on roads.",
-        "It usually has wheels and windows.",
-        "A low body shape is a strong clue.",
-    ),
-    "bus": (
-        "It carries many passengers.",
-        "It is usually boxy with several windows.",
-        "It moves on roads but looks larger than a small road vehicle.",
-    ),
-    "bicycle": (
-        "It has two big wheels.",
-        "It is powered by a rider.",
-        "A frame and handlebar shape help a lot.",
-    ),
-    "boat": (
-        "It travels on water.",
-        "A hull shape is the main clue.",
-        "A sail or waves can make it clearer.",
-    ),
-    "train": (
-        "It moves on tracks.",
-        "It can have connected cars.",
-        "Rails underneath are a strong clue.",
-    ),
-    "airplane": (
-        "It flies through the sky.",
-        "Wings are the strongest clue.",
-        "Its body is long with a pointed front.",
-    ),
-    "house": (
-        "It is a place people live in.",
-        "A roof and windows are strong clues.",
-        "It often looks like a box with a triangle on top.",
-    ),
-    "door": (
-        "It opens and closes an entrance.",
-        "It is often a tall rectangle.",
-        "A small knob can make it obvious.",
-    ),
-    "hat": (
-        "It is worn on the head.",
-        "A brim can be a strong clue.",
-        "It often sits like a cap shape.",
-    ),
-    "shoe": (
-        "It is worn on a foot.",
-        "A sole shape is a good clue.",
-        "It often looks long and low.",
-    ),
-    "cake": (
-        "It is a sweet food.",
-        "Layers or candles can be strong clues.",
-        "It often appears at celebrations.",
-    ),
-    "pizza": (
-        "It is a flat food.",
-        "A triangular slice can be a clue.",
-        "Small toppings on top make it clearer.",
-    ),
-    "ice_cream": (
-        "It is a cold sweet food.",
-        "A cone shape can be a clue.",
-        "Rounded scoops stacked on top help.",
-    ),
-    "toothbrush": (
-        "It is used in the bathroom.",
-        "It has a long handle and bristles.",
-        "It is often used with paste.",
-    ),
-    "guitar": (
-        "It is a musical object.",
-        "It has strings and a long neck.",
-        "Its body often has a rounded middle.",
-    ),
-    "ball": (
-        "It is usually round.",
-        "It often appears in games or exercise.",
-        "Lines on the surface can make it clearer.",
-    ),
-    "kite": (
-        "It is flown outside.",
-        "It often has a diamond shape.",
-        "A string or tail is a strong clue.",
-    ),
-    "heart": (
-        "It is a simple symbol.",
-        "It is often connected with affection.",
-        "Its top has two rounded bumps and a pointed bottom.",
-    ),
-    "table": (
-        "It has a flat surface with supports underneath.",
-        "People often put things on it.",
-        "Four straight supports can make it clear.",
-    ),
-    "lamp": (
-        "It can make a room brighter.",
-        "It often has a shade above a base.",
-        "It is usually found on a stand or near furniture.",
-    ),
-    "spoon": (
-        "It has a small rounded bowl shape at one end.",
-        "It has a long thin handle.",
-        "It is used when eating or serving food.",
-    ),
-    "fork": (
-        "It has several pointed tips at one end.",
-        "It has a long handle.",
-        "It is used when eating.",
-    ),
-    "bottle": (
-        "It is a container with a narrow neck.",
-        "It often holds drinks.",
-        "A cap on top is a strong clue.",
-    ),
-    "backpack": (
-        "It is carried on the back.",
-        "Shoulder straps are strong clues.",
-        "It can hold books or supplies.",
-    ),
-    "scissors": (
-        "It has two loop handles.",
-        "It has two crossed sharp parts.",
-        "It is used for cutting.",
-    ),
-    "pencil": (
-        "It is a long thin writing tool.",
-        "A pointed tip is a strong clue.",
-        "It often has a small erasing end.",
-    ),
-    "camera": (
-        "It is used to take pictures.",
-        "A round lens on the front is a strong clue.",
-        "It often looks like a small box with a button.",
-    ),
-    "television": (
-        "It has a large screen.",
-        "It is used for watching shows.",
-        "A stand underneath can make it clearer.",
-    ),
-    "computer": (
-        "It is used for typing and working.",
-        "A screen and keyboard are strong clues.",
-        "It is common on a desk.",
-    ),
-    "shirt": (
-        "It is worn on the upper body.",
-        "Sleeves and a collar can be clues.",
-        "It often has a simple T-like outline.",
-    ),
-    "pants": (
-        "It is worn on the lower body.",
-        "Two long leg openings are the main clue.",
-        "A waistband at the top helps.",
-    ),
-    "sock": (
-        "It is worn on one foot.",
-        "It is soft and usually has a bent foot shape.",
-        "A cuff at the top can help.",
-    ),
-    "glasses": (
-        "It has two lenses connected in the middle.",
-        "Thin side arms are useful clues.",
-        "It is worn on the face.",
-    ),
-    "candle": (
-        "It is a small vertical object with a flame on top.",
-        "It can melt slowly.",
-        "A glowing tip is a strong clue.",
-    ),
-    "broom": (
-        "It has a long handle.",
-        "One end has many bristles.",
-        "It is used to clean the floor.",
-    ),
-    "bucket": (
-        "It is an open container.",
-        "A curved handle over the top is a strong clue.",
-        "It can hold water or small items.",
-    ),
-    "ladder": (
-        "It has two long rails.",
-        "Short steps connect the sides.",
-        "It is used to reach higher places.",
-    ),
-    "bridge": (
-        "It crosses over water, roads, or gaps.",
-        "It often has supports underneath.",
-        "A long arch or flat span is a useful clue.",
     ),
 }
 _drawing_guess_sessions: dict[str, dict[str, Any]] = {}
@@ -1008,21 +703,35 @@ def _is_hint_request(text: str) -> bool:
     ))
 
 
-def _safe_word_hint_options(word: DrawingGuessWord, locale: str) -> list[str]:
-    options = [_word_hint(word, locale), *_WORD_SAFE_HINTS.get(word.id, ())]
-    safe_options: list[str] = []
-    for hint in options:
-        cleaned = _truncate_text(hint, 120)
-        if not cleaned or _mentions_word_alias(cleaned, word):
-            continue
-        if cleaned not in safe_options:
-            safe_options.append(cleaned)
-    return safe_options or [_word_hint(word, locale)]
-
-
-def _direct_word_hint(word: DrawingGuessWord, locale: str) -> str:
-    label = _word_label(word, locale)
-    return get_drawing_guess_direct_hint_template(locale).format(answer=label)
+def _is_direct_answer_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in (
+        "答案是什么",
+        "答案是啥",
+        "告诉我答案",
+        "告訴我答案",
+        "直接告诉我",
+        "直接告訴我",
+        "公布答案",
+        "揭晓答案",
+        "揭曉答案",
+        "不猜了",
+        "what is the answer",
+        "what's the answer",
+        "tell me the answer",
+        "give me the answer",
+        "reveal the answer",
+        "show the answer",
+        "i give up",
+        "答えを教えて",
+        "正解を教えて",
+        "정답 알려",
+        "ответ",
+        "resposta",
+        "respuesta",
+    ))
 
 
 def _is_ai_retry_hint(text: str) -> bool:
@@ -1583,6 +1292,7 @@ def _drawing_guess_scene_premise(event: str) -> str:
         "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
         "hint_request": "The user wants help while guessing your drawing. You know your own hidden answer; make a fresh in-character clue from that answer, but do not expose the exact answer unless public_details.allow_answer_reveal is true.",
         "user_guess_timeout": "The user's guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
+        "ai_guess_attempt": "The character is making a visual guess from the user's drawing. The backend has not told the character whether the guess is correct yet. Speak the guess naturally and wait for feedback.",
         "ai_guess_correct": "The character is making a visual guess from the user's drawing and that guess happens to be correct. The user was the drawer, not the guesser. Speak from what the character can see now, not as if the hidden answer was known beforehand.",
         "ai_guess_wrong": "The character guessed the user's drawing wrong. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character without making it feel like a failure.",
         "ai_guess_final_miss": "The character used all guess attempts and missed the user's drawing. The user was the drawer, not the guesser. The round is ending; comment on the user's drawing itself in-character without making it feel like a failure.",
@@ -2449,7 +2159,10 @@ def _build_drawing_guess_game_line_prompts(
             "- For hint_request, generate a fresh indirect clue from character_private_answer_label in the character's own style; do not use a fixed template or say that a keyword triggered a hint.\n"
             "- If public_details.allow_answer_reveal is false, do not directly say the exact answer label or obvious aliases; if it is true, you may guide the user directly and naturally.\n"
             "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
+            "- For user_guess_correct and user_guess_wrong, public_details.judgement is the backend-scored result of the user's guess. Do not re-score, reinterpret, or contradict that judgement.\n"
+            "- If public_details.judgement.is_correct is false, respond as a missed guess and keep the hidden answer private.\n"
             "- For user_guess_correct and user_guess_timeout, keep the turn transition clear: the character's drawing turn has ended, the next drawing belongs to the user, and the character will guess.\n"
+            "- For ai_guess_attempt, public_details.guess_label is only the character's current guess. Do not say whether it is correct or wrong; the backend will give feedback after the guess.\n"
             "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
             "- For ai_guess_* events, do not present guess_label as a confirmed hidden answer unless public_details.allow_answer_reveal is true.\n"
             "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
@@ -2470,6 +2183,7 @@ def _build_drawing_guess_game_line_prompts(
         "output": {
             "json_line_only": True,
             "chat_bubble_length": True,
+            "backend_judgement_is_authoritative": event in {"user_guess_correct", "user_guess_wrong"},
             "settlement_evaluation": event == "summary_evaluation",
             "do_not_copy_recent_game_chat": event == "summary_evaluation",
         },
@@ -3204,8 +2918,6 @@ async def drawing_guess_round_start(request: Request):
         "user_score": 0,
         "ai_score": 0,
         "ai_guess_attempts": 0,
-        "hint_count": 0,
-        "safe_hint_history": [],
         "created_at": now,
         "last_activity": now,
         "memory_consent": _normalize_memory_consent(data.get("memory_consent")),
@@ -3374,6 +3086,7 @@ async def _handle_drawing_guess_input_payload_locked(
 
     if guessed_word is not None:
         _append_game_chat(session, "user", text, kind="user_guess")
+        guessed_public = _word_public(guessed_word, locale)
         if guessed_word is not None and guessed_word.id == word.id:
             session["user_score"] = 1
             session["phase"] = "word_picking"
@@ -3385,6 +3098,13 @@ async def _handle_drawing_guess_input_payload_locked(
                 fallback=_localized_line(locale, "user_correct"),
                 details={
                     "answer_label": _word_public(word, locale)["label"],
+                    "guess_label": guessed_public["label"],
+                    "judgement": {
+                        "actor": "user",
+                        "guess_label": guessed_public["label"],
+                        "is_correct": True,
+                        "answer_revealed": True,
+                    },
                     "allow_answer_reveal": True,
                 },
             )
@@ -3409,7 +3129,13 @@ async def _handle_drawing_guess_input_payload_locked(
             event="user_guess_wrong",
             fallback=_localized_line(locale, "user_wrong"),
             details={
-                "guess_label": _word_public(guessed_word, locale)["label"] if guessed_word is not None else _truncate_text(text, 80),
+                "guess_label": guessed_public["label"],
+                "judgement": {
+                    "actor": "user",
+                    "guess_label": guessed_public["label"],
+                    "is_correct": False,
+                    "answer_revealed": False,
+                },
                 "allow_answer_reveal": False,
             },
         )
@@ -3424,32 +3150,24 @@ async def _handle_drawing_guess_input_payload_locked(
             "state": _public_round_state(session, locale),
         }
 
-    if _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
+    direct_answer_request = _is_direct_answer_request(text)
+    if direct_answer_request or _is_hint_request(text) or (input_intent and input_intent.get("intent") == "hint" and float(input_intent.get("confidence") or 0.0) >= 0.45):
         _append_game_chat(session, "user", text, kind="hint_request")
-        hint_count = int(session.get("hint_count") or 0) + 1
-        session["hint_count"] = hint_count
-        hint_levels = max(1, len(_safe_word_hint_options(word, locale)))
-        direct_hint = hint_count > hint_levels
-        fallback_hint = _direct_word_hint(word, locale) if direct_hint else random.choice(_safe_word_hint_options(word, locale))
-        if direct_hint:
-            session["direct_hint_count"] = int(session.get("direct_hint_count") or 0) + 1
+        answer_label = _word_public(word, locale)["label"]
         hint_details = {
-            "character_private_answer_label": _word_public(word, locale)["label"],
-            "hint_number": hint_count,
-            "indirect_hint_levels": hint_levels,
-            "safe_hints_exhausted": direct_hint,
+            "character_private_answer_label": answer_label,
             "generate_hint_from_answer": True,
             "do_not_use_fixed_hint_template": True,
-            "allow_answer_reveal": direct_hint,
+            "allow_answer_reveal": direct_answer_request,
         }
-        if direct_hint:
-            hint_details["answer_label"] = _word_public(word, locale)["label"]
+        if direct_answer_request:
+            hint_details["answer_label"] = answer_label
         line, line_source = await _generate_persona_game_line(
             session=session,
             locale=locale,
             lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
             event="hint_request",
-            fallback=fallback_hint,
+            fallback=_localized_line(locale, "chat_fallback"),
             details=hint_details,
         )
         _append_game_chat(session, "assistant", line, kind="hint")
@@ -3720,23 +3438,24 @@ async def _run_drawing_guess_vision_turn(
     round_will_summarize = bool(correct or settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS)
     message_source = source if message else "fallback"
     if round_will_summarize or not message:
-        event = "ai_guess_correct" if correct else ("ai_guess_final_miss" if round_will_summarize else "ai_guess_wrong")
+        event = "ai_guess_attempt"
         line_details: dict[str, Any] = {
             "guess_label": _word_public(guessed_word, locale)["label"],
             "attempt": attempts,
             "max_attempts": MAX_AI_GUESS_ATTEMPTS,
+            "guess_feedback_pending": True,
         }
         if correct:
             line_details.update({
                 "allow_answer_reveal": False,
-                "guess_is_correct": True,
                 "speak_as_visual_guess": True,
                 "do_not_imply_prior_knowledge": True,
             })
-        elif round_will_summarize:
+        else:
             line_details.update({
-                "answer_label": _word_public(answer, locale)["label"],
-                "allow_answer_reveal": True,
+                "allow_answer_reveal": False,
+                "speak_as_visual_guess": True,
+                "do_not_imply_prior_knowledge": True,
             })
         message, message_source = await _generate_persona_game_line(
             session=session,

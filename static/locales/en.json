@@ -5215,6 +5215,7 @@
             "redo": "Redo",
             "color": "Color",
             "size": "Size",
+            "eyedropper": "Eyedropper",
             "basicColors": "Basic colors",
             "historyColors": "History colors"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "She is drawing",
             "aiGuessing": "She is looking at your drawing...",
             "aiGuessLine": "She guessed: {{guess}}",
+            "aiGuessCorrect": "She guessed it right.",
+            "aiGuessWrong": "Not quite.",
+            "aiGuessMissAnswer": "She missed it. Answer: {{answer}}",
             "aiNeedsHint": "You can just keep chatting. Give her a hint when you want another guess.",
             "summaryReady": "Round summary is ready.",
             "canvasCleared": "Canvas cleared.",

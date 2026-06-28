@@ -5215,6 +5215,7 @@
             "redo": "やり直す",
             "color": "色",
             "size": "太さ",
+            "eyedropper": "スポイト",
             "basicColors": "基本色",
             "historyColors": "履歴の色"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "猫娘が描いています",
             "aiGuessing": "彼女があなたの絵を見ています...",
             "aiGuessLine": "彼女の答え: {{guess}}",
+            "aiGuessCorrect": "彼女の答えは正解でした。",
+            "aiGuessWrong": "まだ当たっていません。",
+            "aiGuessMissAnswer": "彼女は外しました。答え: {{answer}}",
             "aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
             "summaryReady": "結果ページを表示しました。",
             "canvasCleared": "キャンバスを消しました。",

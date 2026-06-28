@@ -20,9 +20,6 @@ upstream. Keep Drawing Guess imports feature-specific so callers do not depend
 on the old generic name.
 """
 
-from config.prompts.prompts_minigame_common import _localized_template
-
-
 DRAWING_GUESS_WORD_DATA: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("apple", "food", {"en": "apple", "ja": "りんご", "ko": "사과", "zh-CN": "苹果", "zh-TW": "蘋果", "ru": "яблоко", "pt": "maçã", "es": "manzana"}),
     ("banana", "food", {"en": "banana", "ja": "バナナ", "ko": "바나나", "zh-CN": "香蕉", "zh-TW": "香蕉", "ru": "банан", "pt": "banana", "es": "banana"}),
@@ -85,31 +82,6 @@ DRAWING_GUESS_WORD_DATA: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("ladder", "object", {"en": "ladder", "ja": "はしご", "ko": "사다리", "zh-CN": "梯子", "zh-TW": "梯子", "ru": "лестница", "pt": "escada", "es": "escalera"}),
     ("bridge", "place", {"en": "bridge", "ja": "橋", "ko": "다리", "zh-CN": "桥", "zh-TW": "橋", "ru": "мост", "pt": "ponte", "es": "puente"}),
 )
-
-
-DRAWING_GUESS_DIRECT_HINT_TEMPLATES = {
-    "en": 'Try aiming your guess right at "{answer}" now.',
-    "ja": "ここまで来たら「{answer}」の方向で見てみて。",
-    "ko": '이쯤이면 "{answer}" 쪽으로 딱 찍어봐.',
-    "zh": "都提示到这份上了，就往“{answer}”这个方向猜吧。",
-    "zh-CN": "都提示到这份上了，就往“{answer}”这个方向猜吧。",
-    "zh-TW": "都提示到這份上了，就往「{answer}」這個方向猜吧。",
-    "ru": 'Теперь целься прямо в вариант "{answer}".',
-    "pt": 'Agora mira direto em "{answer}".',
-    "es": 'Ahora apunta directo a "{answer}".',
-}
-
-
-def get_drawing_guess_direct_hint_template(lang: str | None) -> str:
-    value = str(lang or "").strip().lower().replace("_", "-")
-    if value in {"zh-cn", "zh-hans", "schinese"}:
-        return DRAWING_GUESS_DIRECT_HINT_TEMPLATES["zh-CN"]
-    if value in {"zh-tw", "zh-hant", "zh-hk", "tchinese"}:
-        return DRAWING_GUESS_DIRECT_HINT_TEMPLATES["zh-TW"]
-    return _localized_template(DRAWING_GUESS_DIRECT_HINT_TEMPLATES, lang)
-
-
 __all__ = [
     "DRAWING_GUESS_WORD_DATA",
-    "get_drawing_guess_direct_hint_template",
 ]

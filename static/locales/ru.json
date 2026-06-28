@@ -5215,6 +5215,7 @@
             "redo": "Повторить",
             "color": "Цвет",
             "size": "Толщина",
+            "eyedropper": "Пипетка",
             "basicColors": "Основные цвета",
             "historyColors": "История цветов"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "Неко рисует",
             "aiGuessing": "Она рассматривает ваш рисунок...",
             "aiGuessLine": "Она предположила: {{guess}}",
+            "aiGuessCorrect": "Она угадала.",
+            "aiGuessWrong": "Пока не угадала.",
+            "aiGuessMissAnswer": "Она не угадала. Ответ: {{answer}}",
             "aiNeedsHint": "Можно просто поболтать. Дайте ей подсказку, когда захотите еще одну попытку.",
             "summaryReady": "Страница итогов готова.",
             "canvasCleared": "Холст очищен.",

@@ -11,6 +11,8 @@
   var AI_GUESS_MAX_DELAY_MS = 60000;
   var DRAW_PICK_DURATION_MS = 1450;
   var AI_DRAWING_PLACEHOLDER_DELAY_MS = 1200;
+  var COLOR_HISTORY_VISIBLE_COUNT = 7;
+  var COLOR_HISTORY_MAX_COUNT = 28;
   var boot = window.__DRAWING_GUESS_BOOT__ || {};
 
   var state = {
@@ -189,6 +191,7 @@
       colorPanelHandle: $('color-panel-handle'),
       colorPanelClose: $('color-panel-close'),
       colorPanelToggle: $('color-panel-toggle'),
+      eyedropperButton: $('eyedropper-button'),
       colorWheel: $('color-wheel'),
       colorTriggerPreview: $('color-trigger-preview'),
       colorPanelPreview: $('color-panel-preview'),
@@ -1964,6 +1967,21 @@
     return String((res && (res.message || res.line || res.evaluation)) || '').trim();
   }
 
+  function addAiGuessOutcomeMessage(res) {
+    if (!res || res.kind !== 'ai_guess') return;
+    if (res.correct) {
+      addEventMessage('drawingGuess.messages.aiGuessCorrect', 'She guessed it right.');
+      return;
+    }
+    if (res.answer && res.answer.label) {
+      addEventMessage('drawingGuess.messages.aiGuessMissAnswer', 'She missed it. Answer: {{answer}}', {
+        answer: res.answer.label
+      });
+      return;
+    }
+    addEventMessage('drawingGuess.messages.aiGuessWrong', 'Not quite.');
+  }
+
   function applyExternalDrawingResult(res) {
     if (!res || !res.ok) return;
     if (res.kind === 'guess' && res.correct) {
@@ -1982,6 +2000,7 @@
       state.aiGuessAttempts = Number(res.attempt || state.aiGuessAttempts || 0);
       state.maxAiGuessAttempts = Number(res.max_attempts || state.maxAiGuessAttempts || 3);
       addEventMessage('drawingGuess.messages.aiGuessLine', 'She guessed: {{guess}}', { guess: guessLabel });
+      addAiGuessOutcomeMessage(res);
       if (res.state && res.state.phase === 'summary') {
         renderSummary(res);
       } else {
@@ -2457,6 +2476,7 @@
         state.maxAiGuessAttempts = Number(res.max_attempts || state.maxAiGuessAttempts || 3);
         addNekoMessage(res.message);
         addEventMessage('drawingGuess.messages.aiGuessLine', 'She guessed: {{guess}}', { guess: guessLabel });
+        addAiGuessOutcomeMessage(res);
         if (res.state && res.state.phase === 'summary') {
           renderSummary(res);
         } else {
@@ -2595,6 +2615,7 @@
       state.maxAiGuessAttempts = Number(res.max_attempts || state.maxAiGuessAttempts || 3);
       addNekoMessage(res.message);
       addEventMessage('drawingGuess.messages.aiGuessLine', 'She guessed: {{guess}}', { guess: guessLabel });
+      addAiGuessOutcomeMessage(res);
       if (res.state && res.state.phase === 'summary') {
         renderSummary(res);
       } else {
@@ -3363,20 +3384,20 @@
       loaded = [];
     }
     state.colorHistory = Array.isArray(loaded)
-      ? loaded.map(normalizeHexColor).filter(Boolean).slice(0, 14)
+      ? loaded.map(normalizeHexColor).filter(Boolean).slice(0, COLOR_HISTORY_MAX_COUNT)
       : [];
   }
 
   function saveColorHistory() {
     try {
-      localStorage.setItem(colorHistoryStorageKey(), JSON.stringify(state.colorHistory.slice(0, 14)));
+      localStorage.setItem(colorHistoryStorageKey(), JSON.stringify(state.colorHistory.slice(0, COLOR_HISTORY_MAX_COUNT)));
     } catch (_) {}
   }
 
   function renderColorHistory() {
     if (!els.colorHistoryColors) return;
     els.colorHistoryColors.innerHTML = '';
-    state.colorHistory.slice(0, 14).forEach(function (color) {
+    state.colorHistory.slice(0, COLOR_HISTORY_VISIBLE_COUNT).forEach(function (color) {
       var button = document.createElement('button');
       button.className = 'dg-color-chip';
       button.type = 'button';
@@ -3386,15 +3407,28 @@
       button.addEventListener('click', function () {
         setBrushColor(color, { remember: true });
       });
+      button.addEventListener('contextmenu', function (event) {
+        event.preventDefault();
+        removeBrushColorFromHistory(color);
+      });
       els.colorHistoryColors.appendChild(button);
     });
+  }
+
+  function removeBrushColorFromHistory(color) {
+    var normalized = normalizeHexColor(color);
+    state.colorHistory = state.colorHistory.filter(function (item) {
+      return normalizeHexColor(item) !== normalized;
+    }).slice(0, COLOR_HISTORY_MAX_COUNT);
+    saveColorHistory();
+    renderColorHistory();
   }
 
   function rememberBrushColor(color) {
     var normalized = normalizeHexColor(color);
     state.colorHistory = [normalized].concat(state.colorHistory.filter(function (item) {
       return normalizeHexColor(item) !== normalized;
-    })).slice(0, 14);
+    })).slice(0, COLOR_HISTORY_MAX_COUNT);
     saveColorHistory();
     renderColorHistory();
   }
@@ -3420,20 +3454,15 @@
   function colorWheelGeometry() {
     if (!els.colorWheel) return null;
     var rect = els.colorWheel.getBoundingClientRect();
-    var style = window.getComputedStyle ? window.getComputedStyle(els.colorWheel) : null;
-    var borderLeft = style ? parseFloat(style.borderLeftWidth || '0') || 0 : 0;
-    var borderTop = style ? parseFloat(style.borderTopWidth || '0') || 0 : 0;
-    var borderRight = style ? parseFloat(style.borderRightWidth || '0') || 0 : 0;
-    var borderBottom = style ? parseFloat(style.borderBottomWidth || '0') || 0 : 0;
-    var width = Math.max(1, rect.width - borderLeft - borderRight);
-    var height = Math.max(1, rect.height - borderTop - borderBottom);
+    var width = Math.max(1, rect.width);
+    var height = Math.max(1, rect.height);
     return {
-      left: rect.left + borderLeft,
-      top: rect.top + borderTop,
+      left: rect.left,
+      top: rect.top,
       width: width,
       height: height,
-      cx: rect.left + borderLeft + width / 2,
-      cy: rect.top + borderTop + height / 2,
+      cx: rect.left + width / 2,
+      cy: rect.top + height / 2,
       radius: Math.max(1, Math.min(width, height) / 2)
     };
   }
@@ -3752,6 +3781,20 @@
     try { els.colorWheel.releasePointerCapture(event.pointerId); } catch (_) {}
   }
 
+  function requestEyeDropperColor() {
+    if (window.EyeDropper) {
+      try {
+        new window.EyeDropper().open().then(function (result) {
+          if (result && result.sRGBHex) setBrushColor(result.sRGBHex, { remember: true });
+        }).catch(function () {});
+        return;
+      } catch (_) {}
+    }
+    if (els.brushColor) {
+      els.brushColor.click();
+    }
+  }
+
   function configureStrokeContext() {
     els.ctx.lineCap = 'round';
     els.ctx.lineJoin = 'round';
@@ -4020,6 +4063,7 @@
       els.eraserSize.addEventListener('input', function () { showSizePreview('eraser'); });
     }
     if (els.colorPanelToggle) els.colorPanelToggle.addEventListener('click', toggleColorPanel);
+    if (els.eyedropperButton) els.eyedropperButton.addEventListener('click', requestEyeDropperColor);
     if (els.colorPanelClose) els.colorPanelClose.addEventListener('click', hideColorPanel);
     if (els.colorPanelHandle) {
       els.colorPanelHandle.addEventListener('pointerdown', beginColorPanelDrag);

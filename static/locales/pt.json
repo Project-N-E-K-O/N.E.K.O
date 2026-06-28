@@ -5215,6 +5215,7 @@
             "redo": "Refazer",
             "color": "Cor",
             "size": "Espessura",
+            "eyedropper": "Conta-gotas",
             "basicColors": "Cores básicas",
             "historyColors": "Cores recentes"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "A Neko está desenhando",
             "aiGuessing": "Ela está olhando seu desenho...",
             "aiGuessLine": "Ela chutou: {{guess}}",
+            "aiGuessCorrect": "Ela acertou.",
+            "aiGuessWrong": "Ainda não acertou.",
+            "aiGuessMissAnswer": "Ela não acertou. Resposta: {{answer}}",
             "aiNeedsHint": "Você pode continuar conversando. Dê uma dica quando quiser que ela tente adivinhar de novo.",
             "summaryReady": "O resumo da rodada está pronto.",
             "canvasCleared": "Tela limpa.",

@@ -116,7 +116,9 @@ def test_drawing_guess_static_route_contract():
     assert 'id="color-wheel" class="dg-color-wheel"' in html
     assert 'id="brush-color" type="color"' in html
     assert 'id="color-panel-preview" class="dg-color-current"' in html
-    assert 'id="color-history-colors" class="dg-color-grid"' in html
+    assert 'id="color-history-colors" class="dg-color-grid dg-color-grid-history"' in html
+    assert 'id="eyedropper-button"' in html
+    assert 'data-i18n-aria="drawingGuess.tools.eyedropper"' in html
     assert 'data-i18n="drawingGuess.tools.basicColors"' in html
     assert 'data-i18n="drawingGuess.tools.historyColors"' in html
     assert 'class="dg-swatch"' not in html
@@ -143,6 +145,10 @@ def test_drawing_guess_static_route_contract():
     assert ".dg-color-wheel::after" in html
     assert "pointer-events: none;" in html
     assert ".dg-color-chip" in html
+    assert ".dg-color-grid-history" in html
+    assert "min-height: 34px;" in html
+    assert "background: transparent;" in html
+    assert ".dg-color-eyedropper" in html
     assert ".dg-tool-menu[data-brush-kind=\"bucket\"] .dg-brush-size-control" in html
     assert ".dg-size-preview" in html
     assert "left: -220px;" in html
@@ -288,6 +294,7 @@ def test_drawing_guess_static_route_contract():
     assert "brushModeBucket: $('brush-mode-bucket')" in script
     assert "modelLoading: $('model-loading')" in script
     assert "colorPanelToggle: $('color-panel-toggle')" in script
+    assert "eyedropperButton: $('eyedropper-button')" in script
     assert "colorWheel: $('color-wheel')" in script
     assert "colorHistoryColors: $('color-history-colors')" in script
     assert "canvasStage: $('canvas-stage')" in script
@@ -295,14 +302,19 @@ def test_drawing_guess_static_route_contract():
     assert "sizePreviewRing: $('brush-size-preview-ring')" in script
     assert "function normalizeHexColor" in script
     assert "function currentBrushColor" in script
+    assert "COLOR_HISTORY_VISIBLE_COUNT = 7" in script
+    assert "COLOR_HISTORY_MAX_COUNT = 28" in script
     assert "function renderColorHistory" in script
+    assert "function removeBrushColorFromHistory" in script
     assert "function setBrushColor" in script
     assert "function hsvToHex" in script
     assert "function colorWheelGeometry" in script
-    assert "borderLeftWidth" in script
+    assert "borderLeftWidth" not in script
     assert "angle * 180 / Math.PI + 450" in script
     assert "function pickColorFromWheel" in script
     assert "function beginColorWheelPick" in script
+    assert "function requestEyeDropperColor" in script
+    assert "new window.EyeDropper().open()" in script
     assert "function hexToRgba" in script
     assert "function floodFillCanvas" in script
     assert "state.brushMode === 'brush' && state.brushToolKind === 'bucket'" in script
@@ -337,6 +349,7 @@ def test_drawing_guess_static_route_contract():
     assert "els.eraserSize.addEventListener('pointerdown', function () { showSizePreview('eraser'); });" in script
     assert "els.eraserSize.addEventListener('input', function () { showSizePreview('eraser'); });" in script
     assert "els.colorPanelToggle.addEventListener('click', toggleColorPanel);" in script
+    assert "els.eyedropperButton.addEventListener('click', requestEyeDropperColor);" in script
     assert "els.colorWheel.addEventListener('pointerdown', beginColorWheelPick);" in script
     assert "els.colorWheel.addEventListener('pointermove', moveColorWheelPick);" in script
     assert "els.brushColor.addEventListener('change', function ()" in script
@@ -376,6 +389,10 @@ def test_drawing_guess_static_route_contract():
     assert "setChatPlaceholder('drawingGuess.input.summaryPlaceholder'" in script
     assert "startCountdown(ROUND_FALLBACK_SECONDS, handleAiGuessTimeout)" in script
     assert "postVisionGuess('', { first_guess: true })" in script
+    assert "function addAiGuessOutcomeMessage" in script
+    assert "drawingGuess.messages.aiGuessCorrect" in script
+    assert "drawingGuess.messages.aiGuessWrong" in script
+    assert "drawingGuess.messages.aiGuessMissAnswer" in script
     assert "function triggerSupplementGuess" in script
     assert "drawingGuess.messages.userSupplemented" not in script
     assert "function captureUserCanvasPng" in script
@@ -449,7 +466,7 @@ def test_drawing_guess_static_route_contract():
 def test_drawing_guess_locale_cache_version_bumped_for_memory_two_options():
     script = _i18n_script()
 
-    assert "2026-06-27-drawing-guess-vllm-omni-i18n" in script
+    assert "2026-06-28-drawing-guess-ai-feedback-i18n" in script
 
 
 @pytest.mark.unit
@@ -462,6 +479,7 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.layout.sideResize",
         "drawingGuess.tools.color",
         "drawingGuess.tools.bucket",
+        "drawingGuess.tools.eyedropper",
         "drawingGuess.tools.basicColors",
         "drawingGuess.tools.historyColors",
         "drawingGuess.tutorial.memoryNone",
@@ -497,6 +515,9 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.messages.drawingPickReveal",
         "drawingGuess.messages.aiDrawingWaiting",
         "drawingGuess.messages.aiGuessLine",
+        "drawingGuess.messages.aiGuessCorrect",
+        "drawingGuess.messages.aiGuessWrong",
+        "drawingGuess.messages.aiGuessMissAnswer",
         "drawingGuess.messages.summaryReady",
         "drawingGuess.messages.userSupplemented",
         "drawingGuess.messages.requestTimeout",

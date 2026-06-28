@@ -5215,6 +5215,7 @@
             "redo": "다시 실행",
             "color": "색상",
             "size": "굵기",
+            "eyedropper": "스포이트",
             "basicColors": "기본 색상",
             "historyColors": "최근 색상"
         },
@@ -5311,6 +5312,9 @@
             "aiDrawingWaiting": "고양이 소녀가 그림을 그리는 중",
             "aiGuessing": "그녀가 당신의 그림을 보고 있어요...",
             "aiGuessLine": "그녀의 추측: {{guess}}",
+            "aiGuessCorrect": "그녀가 맞혔어요.",
+            "aiGuessWrong": "아직 아니에요.",
+            "aiGuessMissAnswer": "그녀가 맞히지 못했어요. 정답: {{answer}}",
             "aiNeedsHint": "그냥 계속 이야기해도 돼요. 다시 맞히게 하고 싶을 때 힌트를 주세요.",
             "summaryReady": "결산 페이지가 준비됐어요.",
             "canvasCleared": "캔버스를 비웠어요.",
