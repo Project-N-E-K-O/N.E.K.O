@@ -688,9 +688,6 @@
             if (this.lastOverlayPositionUpdateAt && timestamp - this.lastOverlayPositionUpdateAt < minIntervalMs) return;
             this.lastOverlayPositionUpdateAt = timestamp;
             this.updateLockIconPosition();
-            if (typeof this.updateFloatingButtonsPosition === 'function') {
-                this.updateFloatingButtonsPosition();
-            }
         }
 
         applyAnimationTransform(timestamp = performance.now()) {
