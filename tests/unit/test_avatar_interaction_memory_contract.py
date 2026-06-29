@@ -291,6 +291,24 @@ def test_game_route_user_reply_assistant_lines_stay_in_ordinary_memory():
 
 
 @pytest.mark.unit
+def test_neko_live_short_replies_are_not_ordinary_memory():
+    live_reply_meta = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+        "max_reply_chars": 28,
+    }
+
+    assert is_mirror_assistant_message({
+        "type": "gemini_response",
+        "text": "Testing a short live reply",
+        "metadata": live_reply_meta,
+    }) is True
+
+    assert is_mirror_turn_end_meta(live_reply_meta) is True
+
+
+@pytest.mark.unit
 def test_game_route_memory_disabled_user_reply_lines_are_game_only():
     assert is_mirror_assistant_message({
         "type": "gemini_response",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from ..stores.credential_store import CredentialStore
 from ..stores.viewer_store import ViewerStore
 from .contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent, ViewerProfile, parse_room_id
 from .event_bus import EventBus
+from . import active_topic_rules
+from .live_content import active_engagement_fallback_topic_candidates, idle_hosting_beat_candidates
 from .instructions import (
     NEKO_ROAST_CONTEXT_INSTRUCTIONS,
     NEKO_ROAST_DEVELOPER_ANNOUNCEMENT,
@@ -40,6 +43,89 @@ from .pipeline import RoastPipeline
 from .safety_guard import SafetyGuard
 
 
+_SPENT_OUTPUT_ASCII_WORD_RE = re.compile(r"[a-z0-9]+")
+_SPENT_OUTPUT_FAMILY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("surprise", ("surprise", "惊喜", "小惊喜")),
+    ("reward", ("reward", "present", "gift", "snack", "小鱼干", "鱼干", "奖励", "礼物")),
+    ("program_plan", ("plan", "program", "segment", "企划", "节目", "环节", "计划")),
+    (
+        "audience_prompt",
+        (
+            "chat",
+            "danmaku",
+            "viewer",
+            "audience",
+            "drop a 1",
+            "type 1",
+            "say hi",
+            "anyone here",
+            "still here",
+            "大家",
+            "你们",
+            "观众",
+            "弹幕",
+            "互动",
+            "接话",
+            "发言",
+            "发弹幕",
+            "发个1",
+            "扣1",
+            "想听",
+            "想看",
+            "聊点",
+            "聊什么",
+            "说点",
+            "来一句",
+            "扣个",
+            "扣个1",
+            "打个1",
+            "打个分",
+            "打个标签",
+            "吱一声",
+            "冒个泡",
+            "举个爪",
+            "给点反应",
+            "给猫猫一点反应",
+            "还在吗",
+            "有人吗",
+            "有人在吗",
+            "在不在",
+        ),
+    ),
+    ("host_self_test", ("host score", "主播力", "正经主播", "主持", "像主播")),
+    ("short_callback", ("one word", "password", "一个字", "一个词", "三字", "暗号", "打分")),
+    ("choice_vote", ("either_or", "a/b", "choice", "二选一", "选一个", "还是")),
+    ("room_mood", ("room mood", "气氛", "温度", "猫窝", "小电台", "晴天", "小雨")),
+    ("object_scene", ("desk", "screen", "keyboard", "桌面", "水杯", "零食", "屏幕", "键盘")),
+    ("tease", ("tease", "吐槽", "别笑", "被自己")),
+    ("micro_challenge", ("challenge", "task", "三秒", "挑战", "任务", "姿势")),
+    ("quiet_room", ("quiet", "idle", "冷场", "安静", "没人说话", "没弹幕")),
+)
+
+
+def _normalize_spent_output_family_text(value: str) -> str:
+    return "".join(str(value or "").casefold().split())
+
+
+def _spent_output_ascii_words(value: str) -> set[str]:
+    return set(_SPENT_OUTPUT_ASCII_WORD_RE.findall(str(value or "").casefold()))
+
+
+def _spent_output_family_token_matches(
+    *,
+    normalized_output: str,
+    ascii_words: set[str],
+    token: str,
+) -> bool:
+    token_text = str(token or "").strip()
+    normalized_token = _normalize_spent_output_family_text(token_text)
+    if not normalized_token:
+        return False
+    if token_text.isascii() and token_text.replace(" ", "").isalnum() and " " not in token_text:
+        return normalized_token in ascii_words
+    return normalized_token in normalized_output
+
+
 class RoastRuntime:
     # host 配置持久化预算（秒）：超过即放弃等待（配置已内存生效），避免被 host 的写竞争
     # （update_own_config 偶发卡满 10s）拖垮 update_config / connect 等 action。
@@ -49,6 +135,8 @@ class RoastRuntime:
     _IDLE_HOSTING_CHECK_INTERVAL_SECONDS = 5.0
     _IDLE_HOSTING_MIN_INTERVAL_SECONDS = 120.0
     _IDLE_HOSTING_FAILURE_LIMIT = 3
+    _IDLE_HOSTING_STREAK_FOR_ACTIVE_TAKEOVER = 2
+    _SOLO_WARMUP_TIMEOUT_SECONDS = 45.0
     _ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS = 75.0
     _ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS = 360.0
     _ACTIVE_ENGAGEMENT_IDLE_GRACE_SECONDS = 25.0
@@ -87,19 +175,26 @@ class RoastRuntime:
         self._idle_hosting_consecutive_failures: int = 0
         self._idle_hosting_sleep = asyncio.sleep
         self._idle_hosting_now = time.monotonic
-        self._idle_hosting_recent_beat_keys: deque[str] = deque(maxlen=4)
-        self._idle_hosting_recent_beat_axes: deque[str] = deque(maxlen=3)
+        self._live_state_now = time.monotonic
+        self._live_listener_started_at: float = 0.0
+        self._idle_hosting_recent_beat_keys: deque[str] = deque(maxlen=10)
+        self._idle_hosting_recent_beat_axes: deque[str] = deque(maxlen=5)
+        self._idle_hosting_recent_beat_titles: deque[str] = deque(maxlen=10)
+        self._idle_hosting_recent_reply_affordances: deque[str] = deque(maxlen=5)
         self._idle_hosting_beat_index: int = 0
+        self._recent_host_material_families: deque[str] = deque(maxlen=12)
         self._active_engagement_last_attempt_at: float = 0.0
         self._active_engagement_now = time.monotonic
         self._active_engagement_topic_fetcher: Any = None
         self._active_engagement_topic_cache: list[dict[str, Any]] = []
         self._active_engagement_topic_cache_at: float = 0.0
         self._active_engagement_recent_topic_keys: deque[str] = deque(maxlen=12)
+        self._active_engagement_recent_topic_titles: deque[str] = deque(maxlen=8)
         self._active_engagement_recent_topic_sources: deque[str] = deque(maxlen=6)
-        self._active_engagement_recent_fun_axes: deque[str] = deque(maxlen=4)
-        self._active_engagement_recent_shapes: deque[str] = deque(maxlen=4)
-        self._active_engagement_recent_intents: deque[str] = deque(maxlen=4)
+        self._active_engagement_recent_fun_axes: deque[str] = deque(maxlen=6)
+        self._active_engagement_recent_shapes: deque[str] = deque(maxlen=6)
+        self._active_engagement_recent_intents: deque[str] = deque(maxlen=6)
+        self._active_engagement_recent_reply_affordances: deque[str] = deque(maxlen=6)
         self._active_engagement_recent_topic_skip_reason: str = ""
         self._active_engagement_shape_guard_reason: str = ""
         self._active_engagement_shape_index: int = 0
@@ -340,6 +435,7 @@ class RoastRuntime:
         started = await self.bili_live_ingest.start_listening(room_id)
         if started:
             self.pipeline.clear_dry_run_session_state()
+            self._live_listener_started_at = float(self._live_state_now())
         self.live_connection_state = "connected" if started else "disconnected"
         self.config.live_enabled = bool(started)
         self.safety_guard.set_connected(started)
@@ -352,6 +448,7 @@ class RoastRuntime:
             self.config.live_enabled = False
             await self.restore_instructions()
         self.live_connection_state = "disconnected"
+        self._live_listener_started_at = 0.0
         self.safety_guard.set_connected(False)
 
     async def _persist_config_best_effort(self, clean: dict[str, Any]) -> None:
@@ -408,8 +505,25 @@ class RoastRuntime:
         payload = result.to_public_dict()
         payload["response_module"] = self._route_from_result(payload)
         payload["event_signal"] = self._event_signal_from_result(payload)
+        self._expose_request_metadata(payload)
+        if str(payload.get("status") or "") == "pushed":
+            spent_output = self._spent_output_text(payload)
+            spent_families = self._spent_output_families(spent_output)
+            if spent_families:
+                payload["spent_output_family"] = ",".join(spent_families)
         self.recent_results.append(payload)
         self.event_bus.emit("result", payload)
+
+    @staticmethod
+    def _expose_request_metadata(payload: dict[str, Any]) -> None:
+        request = payload.get("request")
+        metadata = request.get("metadata") if isinstance(request, dict) else None
+        if not isinstance(metadata, dict):
+            return
+        for key in ("danmaku_profile", "danmaku_reply_target", "danmaku_reply_shape"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                payload[key] = value
 
     async def handle_live_payload(self, payload: dict[str, Any]) -> InteractionResult:
         event = self.bili_live_ingest.normalize(payload)
@@ -566,101 +680,123 @@ class RoastRuntime:
         fallback = candidates[0]
         chosen = fallback
         chosen_offset: int | None = None
-        for offset in range(len(candidates)):
-            candidate = candidates[(self._idle_hosting_beat_index + offset) % len(candidates)]
+        preferred_stage = self._idle_hosting_preferred_stage()
+        ordered_candidates = self._idle_hosting_stage_ordered_candidates(candidates, preferred_stage)
+        recent_spent_families = self._recent_spent_output_families()
+        for offset, candidate in enumerate(ordered_candidates):
             key = str(candidate.get("key") or "").strip()
             axis = str(candidate.get("fun_axis") or "").strip()
-            if key and key not in self._idle_hosting_recent_beat_keys and axis and axis not in self._idle_hosting_recent_beat_axes:
+            title = str(candidate.get("title") or "").strip()
+            family = self._host_material_family(candidate)
+            reply_affordance = str(candidate.get("reply_affordance") or "").strip()
+            if (
+                key
+                and key not in self._idle_hosting_recent_beat_keys
+                and axis
+                and axis not in self._idle_hosting_recent_beat_axes
+                and family
+                and family not in self._recent_host_material_families
+                and family not in recent_spent_families
+                and (
+                    not reply_affordance
+                    or reply_affordance not in self._idle_hosting_recent_reply_affordances
+                )
+                and not self._is_similar_idle_hosting_beat_title(title)
+            ):
                 chosen = candidate
                 chosen_offset = offset
                 break
         else:
-            for offset in range(len(candidates)):
-                candidate = candidates[(self._idle_hosting_beat_index + offset) % len(candidates)]
+            for offset, candidate in enumerate(ordered_candidates):
                 key = str(candidate.get("key") or "").strip()
-                if key and key not in self._idle_hosting_recent_beat_keys:
+                title = str(candidate.get("title") or "").strip()
+                family = self._host_material_family(candidate)
+                if (
+                    key
+                    and key not in self._idle_hosting_recent_beat_keys
+                    and family
+                    and family not in self._recent_host_material_families
+                    and family not in recent_spent_families
+                    and not self._is_similar_idle_hosting_beat_title(title)
+                ):
                     chosen = candidate
                     chosen_offset = offset
                     break
+            else:
+                for offset, candidate in enumerate(ordered_candidates):
+                    key = str(candidate.get("key") or "").strip()
+                    if key and key not in self._idle_hosting_recent_beat_keys:
+                        chosen = candidate
+                        chosen_offset = offset
+                        break
         if chosen_offset is None:
             self._idle_hosting_beat_index = (self._idle_hosting_beat_index + 1) % len(candidates)
         else:
             self._idle_hosting_beat_index = (self._idle_hosting_beat_index + chosen_offset + 1) % len(candidates)
         key = str(chosen.get("key") or fallback["key"]).strip()
         axis = str(chosen.get("fun_axis") or "").strip()
+        title = str(chosen.get("title") or "").strip()
+        family = self._host_material_family(chosen)
+        reply_affordance = str(chosen.get("reply_affordance") or "").strip()
         self._idle_hosting_recent_beat_keys.append(key)
         if axis:
             self._idle_hosting_recent_beat_axes.append(axis)
-        return dict(chosen)
+        if title:
+            self._idle_hosting_recent_beat_titles.append(title)
+        if family:
+            self._recent_host_material_families.append(family)
+        if reply_affordance:
+            self._idle_hosting_recent_reply_affordances.append(reply_affordance)
+        payload = dict(chosen)
+        if family:
+            payload["family"] = family
+        payload["idle_stage"] = self._idle_hosting_material_stage(payload)
+        return payload
 
     @staticmethod
     def _idle_hosting_beat_candidates() -> list[dict[str, Any]]:
-        return [
-            {
-                "key": "idle:soft-observation",
-                "shape": "soft_observation",
-                "fun_axis": "mood",
-                "title": "\u5b89\u9759\u7684\u76f4\u64ad\u95f4\u6c14\u6c1b",
-                "hint": "Say one soft concrete observation, not a direct question.",
-                "reply_affordance": "viewer can agree or answer with one small mood word",
-            },
-            {
-                "key": "idle:tiny-choice",
-                "shape": "tiny_choice",
-                "fun_axis": "choice",
-                "title": "\u732b\u732b\u7ed9\u89c2\u4f17\u7684\u5c0f\u9009\u62e9",
-                "hint": "Offer one tiny A/B choice viewers can answer in a few words.",
-                "reply_affordance": "viewer can pick one concrete side",
-            },
-            {
-                "key": "idle:light-tease",
-                "shape": "light_tease",
-                "fun_axis": "tease",
-                "title": "\u732b\u732b\u5f0f\u8f7b\u5410\u69fd",
-                "hint": "Make one harmless NEKO-flavored tease about the current quiet mood.",
-                "reply_affordance": "viewer can tease NEKO back in one short line",
-            },
-            {
-                "key": "idle:small-mood",
-                "shape": "small_mood",
-                "fun_axis": "mood",
-                "title": "\u732b\u732b\u73b0\u5728\u7684\u5c0f\u72b6\u6001",
-                "hint": "Share one tiny NEKO mood line with a small opening for viewers.",
-                "reply_affordance": "viewer can answer with one mood word",
-            },
-            {
-                "key": "idle:one-word-call",
-                "shape": "one_word_call",
-                "fun_axis": "viewer_callback",
-                "title": "\u7528\u4e00\u4e2a\u5b57\u7ed9\u73b0\u5728\u7684\u732b\u732b\u6253\u4e2a\u6807\u7b7e",
-                "hint": "Ask for exactly one character or one word; make it playful, not needy.",
-                "reply_affordance": "viewer can answer with one character or one word",
-            },
-            {
-                "key": "idle:micro-challenge",
-                "shape": "micro_challenge",
-                "fun_axis": "micro_challenge",
-                "title": "\u732b\u732b\u5047\u88c5\u4e3b\u64ad\u529b\u6ee1\u683c\u4e09\u79d2",
-                "hint": "Offer one tiny challenge viewers can answer or tease back in a few words.",
-                "reply_affordance": "viewer can judge or tease the tiny challenge",
-            },
-            {
-                "key": "idle:prop-choice",
-                "shape": "tiny_choice",
-                "fun_axis": "choice",
-                "title": "\u684c\u9762\u4e8c\u9009\u4e00\uff1a\u6c34\u676f\u8fd8\u662f\u96f6\u98df",
-                "hint": "Offer one concrete A/B choice from ordinary stream-room objects.",
-                "reply_affordance": "viewer can pick one ordinary object",
-            },
-            {
-                "key": "idle:cat-radio",
-                "shape": "soft_observation",
-                "fun_axis": "mood",
-                "title": "\u8fd9\u4e00\u5206\u949f\u50cf\u732b\u732b\u5c0f\u7535\u53f0\u7684\u7a7a\u62cd",
-                "hint": "Make one cozy radio-like observation; keep the hook low-pressure and indirect.",
-                "reply_affordance": "viewer can answer with one cozy mood or tiny scene",
-            },
-        ]
+        return idle_hosting_beat_candidates()
+
+    def _idle_hosting_preferred_stage(self) -> str:
+        streak = self._recent_actual_route_streak_since_viewer_activity("idle_hosting")
+        if streak <= 0:
+            return "settle"
+        if streak == 1:
+            return "column"
+        return "callback"
+
+    def _idle_hosting_stage_ordered_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        preferred_stage: str,
+    ) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        rotated = [candidates[(self._idle_hosting_beat_index + offset) % len(candidates)] for offset in range(len(candidates))]
+        preferred = [candidate for candidate in rotated if self._idle_hosting_material_stage(candidate) == preferred_stage]
+        rest = [candidate for candidate in rotated if candidate not in preferred]
+        return [*preferred, *rest]
+
+    @staticmethod
+    def _idle_hosting_material_stage(material: dict[str, Any] | None) -> str:
+        if not isinstance(material, dict):
+            return "settle"
+        explicit = str(material.get("idle_stage") or "").strip()
+        if explicit:
+            return explicit
+        shape = str(material.get("shape") or "").strip()
+        axis = str(material.get("fun_axis") or "").strip()
+        if shape in {"one_word_call", "micro_challenge"} or axis in {"viewer_callback", "micro_challenge"}:
+            return "callback"
+        if shape in {"tiny_choice", "light_tease"} or axis in {"choice", "tease"}:
+            return "column"
+        return "settle"
+
+    def _is_similar_idle_hosting_beat_title(self, title: str) -> bool:
+        return bool(title) and active_topic_rules._is_similar_active_topic_title(
+            title,
+            self._idle_hosting_recent_beat_titles,
+        )
 
     def _record_idle_hosting_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
         result = InteractionResult(
@@ -791,9 +927,11 @@ class RoastRuntime:
         shape = self._next_active_engagement_shape()
         chosen = fallback
         exhausted_cached_topics = bool(candidates)
-        candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True)
+        candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
         if candidate is None:
-            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=False)
+            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
+        if candidate is None:
+            candidate = self._choose_active_engagement_candidate(candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
         if candidate is not None:
             chosen = candidate
             exhausted_cached_topics = False
@@ -801,22 +939,38 @@ class RoastRuntime:
             self._active_engagement_topic_cache = []
             self._active_engagement_topic_cache_at = 0.0
             refreshed_candidates = await self._active_engagement_topic_candidates()
-            candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True)
+            candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
             if candidate is None:
-                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=False)
+                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
+            if candidate is None:
+                candidate = self._choose_active_engagement_candidate(refreshed_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
             if candidate is not None:
                 chosen = candidate
                 exhausted_cached_topics = False
         if exhausted_cached_topics:
             chosen = (
-                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False)
+                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
+                or self._choose_active_engagement_candidate(
+                    fallback_candidates,
+                    avoid_recent_fun_axis=False,
+                    avoid_recent_family=False,
+                    allow_similar_title=True,
+                )
                 or fallback
             )
         elif chosen is fallback:
             chosen = (
-                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True)
-                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False)
+                self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=False, avoid_recent_family=True)
+                or self._choose_active_engagement_candidate(fallback_candidates, avoid_recent_fun_axis=True, avoid_recent_family=False)
+                or self._choose_active_engagement_candidate(
+                    fallback_candidates,
+                    avoid_recent_fun_axis=False,
+                    avoid_recent_family=False,
+                    allow_similar_title=True,
+                )
                 or fallback
             )
         preferred_shape = str(chosen.get("preferred_shape") or shape).strip() or shape
@@ -824,6 +978,8 @@ class RoastRuntime:
         key = str(chosen.get("key") or chosen.get("title") or fallback["key"]).strip()
         self._active_engagement_recent_topic_keys.append(key)
         title = str(chosen.get("title") or fallback["title"]).strip()
+        if title:
+            self._active_engagement_recent_topic_titles.append(title)
         intent = self._active_engagement_intent_text(shape)
         hint = str(chosen.get("hint") or fallback["hint"]).strip()
         if shape != preferred_shape:
@@ -833,10 +989,13 @@ class RoastRuntime:
             "shape": shape,
             "key": key,
             "title": title,
+            "family": self._host_material_family(chosen),
             "fun_axis": str(chosen.get("fun_axis") or "").strip() or self._active_engagement_fun_axis_text(shape),
             "hook": self._active_engagement_hook_text(shape, title),
             "pattern": self._active_engagement_pattern_text(shape),
             "intent": intent,
+            "live_column": str(chosen.get("live_column") or "").strip(),
+            "topic_pack": self._active_engagement_topic_pack(chosen),
             "reply_affordance": str(chosen.get("reply_affordance") or "").strip()
             or self._active_engagement_reply_affordance_text(shape),
             "hint": hint,
@@ -844,8 +1003,12 @@ class RoastRuntime:
         self._active_engagement_recent_topic_sources.append(str(topic["source"]))
         if topic["fun_axis"]:
             self._active_engagement_recent_fun_axes.append(str(topic["fun_axis"]))
+        if topic["family"]:
+            self._recent_host_material_families.append(str(topic["family"]))
         self._active_engagement_recent_shapes.append(shape)
         self._active_engagement_recent_intents.append(intent)
+        if topic["reply_affordance"]:
+            self._active_engagement_recent_reply_affordances.append(str(topic["reply_affordance"]))
         skip_reason = str(self._active_engagement_recent_topic_skip_reason or "").strip()
         if skip_reason:
             topic["recent_topic_skip_reason"] = skip_reason
@@ -859,201 +1022,78 @@ class RoastRuntime:
         candidates: list[dict[str, Any]],
         *,
         avoid_recent_fun_axis: bool,
+        avoid_recent_family: bool,
+        allow_similar_title: bool = False,
     ) -> dict[str, Any] | None:
+        recent_spent_families = self._recent_spent_output_families() if avoid_recent_family else set()
         for candidate in candidates:
             key = str(candidate.get("key") or candidate.get("title") or "").strip()
             if not key or key in self._active_engagement_recent_topic_keys:
                 continue
+            title = str(candidate.get("title") or "").strip()
+            if (
+                not allow_similar_title
+                and title
+                and self._is_similar_active_topic_title(title, self._active_engagement_recent_topic_titles)
+            ):
+                if not self._active_engagement_recent_topic_skip_reason:
+                    self._active_engagement_recent_topic_skip_reason = "similar_topic_title"
+                continue
             axis = str(candidate.get("fun_axis") or "").strip()
             if avoid_recent_fun_axis and axis and axis in self._active_engagement_recent_fun_axes:
                 continue
+            reply_affordance = str(candidate.get("reply_affordance") or "").strip()
+            if (
+                avoid_recent_fun_axis
+                and reply_affordance
+                and reply_affordance in self._active_engagement_recent_reply_affordances
+            ):
+                continue
+            family = self._host_material_family(candidate)
+            if avoid_recent_family and family:
+                if family in self._recent_host_material_families:
+                    if not self._active_engagement_recent_topic_skip_reason:
+                        self._active_engagement_recent_topic_skip_reason = "recent_host_family"
+                    continue
+                if family in recent_spent_families:
+                    if not self._active_engagement_recent_topic_skip_reason:
+                        self._active_engagement_recent_topic_skip_reason = "recent_spent_output_family"
+                    continue
             return candidate
         return None
 
     @staticmethod
     def _active_engagement_fallback_topic_candidates() -> list[dict[str, Any]]:
-        return [
-            {
-                "source": "fallback",
-                "key": "fallback:snack-choice",
-                "title": "\u591c\u91cc\u53ea\u80fd\u9009\u4e00\u6837\uff1a\u5c0f\u751c\u98df\u8fd8\u662f\u70ed\u996e",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can pick one concrete side",
-                "hint": "Turn this into one tiny A/B choice; both sides must be concrete and easy to answer.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:keyboard-busy",
-                "title": "\u952e\u76d8\u4eca\u5929\u50cf\u5728\u5077\u5077\u6253\u76f9",
-                "fun_axis": "tease",
-                "preferred_shape": "tiny_tease",
-                "reply_affordance": "viewer can tease the keyboard or NEKO back",
-                "hint": "Make one playful observation; leave a tiny opening without talking about room silence.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:serious-cat",
-                "title": "\u732b\u732b\u8981\u5047\u88c5\u6b63\u7ecf\u4e09\u79d2",
-                "fun_axis": "micro_challenge",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can judge whether NEKO passed the tiny challenge",
-                "hint": "Make one small challenge viewers can react to in a few words.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:tiny-confession",
-                "title": "\u732b\u732b\u5076\u5c14\u4e5f\u4f1a\u88ab\u81ea\u5df1\u7684\u8ba4\u771f\u5413\u5230",
-                "fun_axis": "mood",
-                "preferred_shape": "light_stance",
-                "reply_affordance": "viewer can agree or lightly push back",
-                "hint": "Make one tiny confession, then stop before it becomes a monologue.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:blanket-temperature",
-                "title": "\u6b64\u523b\u6c14\u6c1b\u50cf\u6bdb\u6bef\u521a\u70ed\u8d77\u6765",
-                "fun_axis": "mood",
-                "preferred_shape": "light_stance",
-                "reply_affordance": "viewer can answer with one mood word",
-                "hint": "Describe this concrete mood image and invite one short reaction.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:today-mood-vote",
-                "title": "\u4eca\u5929\u7684\u72b6\u6001\u66f4\u50cf\u5145\u7535\u4e2d\u8fd8\u662f\u5df2\u6b7b\u673a",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can pick one side",
-                "hint": "Ask one tiny vote that can be answered with one side, not a long explanation.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:cat-radio-room",
-                "title": "\u4eca\u665a\u76f4\u64ad\u95f4\u66f4\u50cf\u732b\u7a9d\u8fd8\u662f\u5c0f\u7535\u53f0",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can pick cat nest or tiny radio",
-                "hint": "Turn this into one cozy A/B choice; keep it concrete and easy to answer.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:night-owl-energy",
-                "title": "\u591c\u732b\u5b50\u73b0\u5728\u662f\u771f\u6e05\u9192\u8fd8\u662f\u5728\u786c\u6491",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can pick one late-night state",
-                "hint": "Make one small stance or A/B choice about late-night energy.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:screen-staring-back",
-                "title": "\u76ef\u5c4f\u5e55\u4e45\u4e86\uff0c\u732b\u732b\u6000\u7591\u5c4f\u5e55\u4e5f\u5728\u76ef\u56de\u6765",
-                "fun_axis": "tease",
-                "preferred_shape": "tiny_tease",
-                "reply_affordance": "viewer can tease back or say caught",
-                "hint": "Make one tiny playful observation, not a generic question.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:three-word-task",
-                "title": "\u7ed9\u732b\u732b\u4e00\u4e2a\u4e09\u5b57\u5c0f\u4efb\u52a1\uff1a\u5356\u840c\u3001\u5410\u69fd\u3001\u88c5\u4e56",
-                "fun_axis": "micro_challenge",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can answer with one of three short choices",
-                "hint": "Make one tiny challenge that viewers can answer with a short choice.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:room-temperature-word",
-                "title": "\u7528\u4e00\u4e2a\u8bcd\u5f62\u5bb9\u73b0\u5728\u76f4\u64ad\u95f4\u7684\u6e29\u5ea6",
-                "fun_axis": "viewer_callback",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can answer with one word",
-                "hint": "Ask for one word only; avoid open-ended long discussion.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:serious-hosting",
-                "title": "\u732b\u732b\u6b63\u5728\u52aa\u529b\u50cf\u4e2a\u6b63\u7ecf\u4e3b\u64ad\uff0c\u5148\u522b\u7b11",
-                "fun_axis": "tease",
-                "preferred_shape": "tiny_tease",
-                "reply_affordance": "viewer can tease NEKO's serious host act",
-                "hint": "Take one tiny NEKO stance and leave room for viewers to tease back.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:danmaku-password",
-                "title": "\u7ed9\u4eca\u665a\u76f4\u64ad\u95f4\u5b9a\u4e00\u4e2a\u4e09\u5b57\u6697\u53f7",
-                "fun_axis": "viewer_callback",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can reply with a three-character password",
-                "hint": "Ask for one three-character room password; make it easy to answer in one short danmaku.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:cat-weather",
-                "title": "\u4eca\u665a\u732b\u732b\u72b6\u6001\u662f\u6674\u5929\u8fd8\u662f\u5c0f\u96e8",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can pick one weather mood",
-                "hint": "Turn this into one playful A/B mood vote; viewers can answer with one side.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:one-word-barrage",
-                "title": "\u7528\u4e00\u4e2a\u5b57\u7ed9\u732b\u732b\u73b0\u5728\u7684\u4e3b\u64ad\u529b\u6253\u5206",
-                "fun_axis": "viewer_callback",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can answer with one character",
-                "hint": "Ask for one character only; make it sound like NEKO inviting a tiny roast back.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:desk-item-choice",
-                "title": "\u5982\u679c\u684c\u9762\u4e0a\u53ea\u80fd\u7559\u4e00\u6837\uff1a\u6c34\u676f\u8fd8\u662f\u96f6\u98df",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can choose one desk item",
-                "hint": "Make one concrete desk-life A/B choice, not a broad chat topic.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:cat-paw-button",
-                "title": "\u5982\u679c\u732b\u722a\u6709\u4e00\u4e2a\u6309\u94ae\uff1a\u5356\u840c\u8fd8\u662f\u5410\u69fd",
-                "fun_axis": "choice",
-                "preferred_shape": "either_or",
-                "reply_affordance": "viewer can choose the button mode",
-                "hint": "Make one playful cat-paw A/B choice; stop after the hook.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:host-score-one-word",
-                "title": "\u7528\u4e00\u4e2a\u8bcd\u5224\u5b9a\u732b\u732b\u4eca\u665a\u50cf\u4e0d\u50cf\u4e3b\u64ad",
-                "fun_axis": "viewer_callback",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can answer with one word",
-                "hint": "Ask for one word only; make it easy to tease back.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:tiny-brave-stance",
-                "title": "\u732b\u732b\u89c9\u5f97\u53d1\u5446\u4e5f\u7b97\u4e00\u79cd\u4e3b\u64ad\u529b",
-                "fun_axis": "mood",
-                "preferred_shape": "light_stance",
-                "reply_affordance": "viewer can agree or push back",
-                "hint": "Give one tiny NEKO stance that viewers can immediately agree or object to.",
-            },
-            {
-                "source": "fallback",
-                "key": "fallback:micro-mission-pose",
-                "title": "\u7ed9\u732b\u732b\u6307\u5b9a\u4e00\u4e2a\u4e09\u79d2\u5c0f\u59ff\u52bf",
-                "fun_axis": "micro_challenge",
-                "preferred_shape": "small_challenge",
-                "reply_affordance": "viewer can reply with one tiny pose idea",
-                "hint": "Ask for one tiny pose idea; avoid turning it into a segment.",
-            },
-        ]
+        return active_engagement_fallback_topic_candidates()
+
+    @staticmethod
+    def _active_engagement_topic_pack(material: dict[str, Any] | None) -> str:
+        if not isinstance(material, dict):
+            return ""
+        explicit = str(material.get("topic_pack") or "").strip()
+        if explicit:
+            return explicit
+        live_column = str(material.get("live_column") or "").lower()
+        family = active_topic_rules._host_material_family(material)
+        combined = " ".join(
+            str(material.get(field) or "").lower()
+            for field in ("key", "title", "fun_axis", "preferred_shape", "shape", "reply_affordance")
+        )
+        if family in {"tease", "host_self_test"} or any(marker in live_column for marker in ("verdict", "court", "award", "score")):
+            return "neko_verdict"
+        if family == "short_callback" or any(marker in live_column for marker in ("callback", "password", "command")):
+            return "viewer_callback"
+        if family == "choice_vote" or any(marker in live_column for marker in ("poll", "vote", "choice", "button")):
+            return "micro_poll"
+        if family == "micro_challenge" or any(marker in live_column for marker in ("challenge", "mission")):
+            return "micro_challenge"
+        if family == "object_scene" or any(marker in live_column for marker in ("observation", "patrol", "detective")):
+            return "room_observation"
+        if family == "room_mood" or any(marker in live_column for marker in ("radio", "weather", "thermometer", "filter", "mood")):
+            return "room_mood"
+        if "stance" in combined:
+            return "neko_stance"
+        return family or "general"
 
     async def _active_engagement_topic_candidates(self) -> list[dict[str, Any]]:
         recent = self._recent_danmaku_topic_candidates()
@@ -1097,14 +1137,16 @@ class RoastRuntime:
                 continue
             key = str(item.get("bvid") or item.get("id") or title).strip()
             compact_title = self._compact_context_text(title, limit=40)
-            candidates.append(
-                {
-                    "source": "bili_trending",
-                    "key": f"bili:{key}",
-                    "title": compact_title,
-                    "hint": "Use this Bilibili topic as material for one playful live-room line; do not read it like news.",
-                }
-            )
+            profile = self._active_topic_material_profile(compact_title)
+            candidate = {
+                "source": "bili_trending",
+                "key": f"bili:{key}",
+                "title": compact_title,
+                "hint": "Use this Bilibili topic as material for one playful live-room line; do not read it like news.",
+            }
+            if profile:
+                candidate.update(profile)
+            candidates.append(candidate)
             if len(candidates) >= 6:
                 break
         self._active_engagement_topic_cache = candidates
@@ -1161,14 +1203,16 @@ class RoastRuntime:
             return []
         candidates: list[dict[str, Any]] = []
         for _uid, compact in recent_items[:3]:
-            candidates.append(
-                {
-                    "source": "recent_danmaku",
-                    "key": f"danmaku:{compact}",
-                    "title": compact,
-                    "hint": "Extend this recent danmaku into one small live-room hook without pretending a new viewer spoke.",
-                }
-            )
+            profile = self._active_topic_material_profile(compact)
+            candidate = {
+                "source": "recent_danmaku",
+                "key": f"danmaku:{compact}",
+                "title": compact,
+                "hint": "Extend this recent danmaku into one small live-room hook without pretending a new viewer spoke.",
+            }
+            if profile:
+                candidate.update(profile)
+            candidates.append(candidate)
             if len(candidates) >= 3:
                 break
         if candidates:
@@ -1177,274 +1221,31 @@ class RoastRuntime:
 
     @staticmethod
     def _is_meaningful_active_topic_text(text: str) -> bool:
-        compact = " ".join(str(text or "").strip().split())
-        if not compact:
-            return False
-        lowered = compact.lower()
-        if lowered in {"hi", "hello", "ok", "1", "?", "？", "好", "嗯", "啊", "草", "6"}:
-            return False
-        generic_host_phrases = (
-            "what should we talk about",
-            "what are we doing",
-            "what should we do",
-            "everyone interact",
-            "send danmaku",
-            "come chat",
-            "tell me what you want",
-            "get the chat moving",
-            "keep the chat moving",
-            "keep the chat alive",
-            "keep the chat going",
-            "any recommendations",
-            "what do you recommend",
-            "recommend me",
-            "give me recommendations",
-            "sponsored",
-            "giveaway",
-            "subscribe and win",
-            "limited offer",
-            "promo code",
-            "death toll",
-            "casualties",
-            "accident",
-            "disaster",
-            "suicide",
-            "murder",
-            "scandal",
-            "controversy",
-            "harassment",
-            "doxx",
-            "why so quiet",
-            "so quiet here",
-            "suddenly quiet",
-            "room is silent",
-            "stream is quiet",
-            "chat is quiet",
-            "nobody is talking",
-            "no one is talking",
-            "dead chat",
-            "\u5927\u5bb6\u4e92\u52a8",
-            "\u53d1\u5f39\u5e55",
-            "\u6765\u804a\u5929",
-            "\u804a\u4ec0\u4e48",
-            "\u505a\u4ec0\u4e48",
-            "\u4eca\u665a\u505a\u4ec0\u4e48",
-            "\u60f3\u542c\u4ec0\u4e48",
-            "\u6765\u70b9\u5f39\u5e55",
-            "\u62631",
-            "\u5f39\u5e55\u5237\u8d77\u6765",
-            "\u60f3\u770b\u4ec0\u4e48",
-            "\u60f3\u804a\u4ec0\u4e48",
-            "\u5927\u5bb6\u60f3\u770b",
-            "\u6709\u4ec0\u4e48\u63a8\u8350",
-            "\u6c42\u63a8\u8350",
-            "\u63a8\u8350\u4e00\u4e0b",
-            "\u62bd\u5956",
-            "\u8f6c\u53d1\u62bd\u5956",
-            "\u5173\u6ce8\u8f6c\u53d1",
-            "\u9650\u65f6\u798f\u5229",
-            "\u9650\u65f6\u4f18\u60e0",
-            "\u5e7f\u544a",
-            "\u7a81\u53d1\u4e8b\u6545",
-            "\u4e8b\u6545",
-            "\u4f24\u4ea1",
-            "\u6b7b\u4ea1",
-            "\u53bb\u4e16",
-            "\u707e\u5bb3",
-            "\u5730\u9707",
-            "\u5760\u673a",
-            "\u706b\u707e",
-            "\u584c\u623f",
-            "\u4e89\u8bae",
-            "\u7f51\u66b4",
-            "\u5f00\u76d2",
-            "\u81ea\u6740",
-            "\u51f6\u6740",
-            "\u6709\u4ec0\u4e48\u597d\u804a\u7684",
-            "\u76f4\u64ad\u95f4\u600e\u4e48\u8fd9\u4e48\u5b89\u9759",
-            "\u600e\u4e48\u8fd9\u4e48\u5b89\u9759",
-            "\u4e3a\u4ec0\u4e48\u7a81\u7136\u5b89\u9759",
-            "\u7a81\u7136\u5b89\u9759",
-            "\u6ca1\u4eba\u8bf4\u8bdd",
-            "\u6ca1\u5f39\u5e55",
-            "\u5f39\u5e55\u5c11",
-            "\u51b7\u573a",
-        )
-        dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
-        if (
-            ("?" in compact or "\uff1f" in compact or dense_lowered.endswith("\u5417"))
-            and (
-                any(target in dense_lowered for target in ("\u4f60", "\u732b\u732b", "neko"))
-                or any(
-                    marker in lowered
-                    for marker in ("do you", "are you", "what do you", "can you", "could you", "will you", "would you")
-                )
-            )
-        ):
-            return False
-        if (
-            "\u4f60\u89c9\u5f97" in dense_lowered
-            or "\u732b\u732b\u89c9\u5f97" in dense_lowered
-            or "doyouthink" in dense_lowered
-        ):
-            return False
-        if RoastRuntime._is_direct_neko_request_or_ack(dense_lowered):
-            return False
-        if RoastRuntime._is_untargeted_request_or_reaction(dense_lowered):
-            return False
-        if RoastRuntime._is_live_test_or_runtime_feedback(dense_lowered):
-            return False
-        if any(
-            phrase in lowered
-            or "".join(ch for ch in phrase if ch.isalnum() or "\u4e00" <= ch <= "\u9fff") in dense_lowered
-            for phrase in generic_host_phrases
-        ):
-            return False
-        signal_chars = [ch for ch in compact if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"]
-        return len(signal_chars) >= 4
+        return active_topic_rules._is_meaningful_active_topic_text(text)
 
     @staticmethod
     def _active_topic_filter_reason(text: str) -> str:
-        compact = " ".join(str(text or "").strip().split())
-        if not compact:
-            return "filtered_recent_danmaku"
-        lowered = compact.lower()
-        dense_lowered = "".join(ch for ch in lowered if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
-        if RoastRuntime._is_viewer_to_viewer_mention_text(compact):
-            return "viewer_to_viewer_mention"
-        if RoastRuntime._is_direct_neko_request_or_ack(dense_lowered) or RoastRuntime._is_untargeted_request(
-            dense_lowered
-        ):
-            return "filtered_direct_request"
-        if RoastRuntime._is_live_test_or_runtime_feedback(dense_lowered):
-            return "filtered_runtime_feedback"
-        if RoastRuntime._is_reaction_only(dense_lowered):
-            return "filtered_reaction"
-        return "filtered_recent_danmaku"
+        return active_topic_rules._active_topic_filter_reason(text)
 
     @staticmethod
     def _is_direct_neko_request_or_ack(dense_lowered: str) -> bool:
-        if not any(target in dense_lowered for target in ("\u732b\u732b", "neko")):
-            return False
-        chinese_markers = (
-            "\u8bb2\u8bb2",
-            "\u8bf4\u8bf4",
-            "\u804a\u804a",
-            "\u8bc4\u4ef7\u4e00\u4e0b",
-            "\u9510\u8bc4\u4e00\u4e0b",
-            "\u70b9\u8bc4\u4e00\u4e0b",
-            "\u5e2e\u6211",
-            "\u7ed9\u6211",
-            "\u80fd\u4e0d\u80fd",
-            "\u53ef\u4e0d\u53ef\u4ee5",
-            "\u53ef\u4ee5\u4e0d\u53ef\u4ee5",
-            "\u8981\u4e0d\u8981",
-            "\u8c22\u8c22",
-            "\u611f\u8c22",
-            "\u8f9b\u82e6\u4e86",
-        )
-        english_markers = (
-            "tellus",
-            "helpme",
-            "giveme",
-            "ratemy",
-            "tellme",
-            "canyou",
-            "couldyou",
-            "willyou",
-            "wouldyou",
-            "please",
-            "pls",
-            "thankyou",
-            "thanks",
-            "thx",
-        )
-        return any(marker in dense_lowered for marker in chinese_markers + english_markers)
+        return active_topic_rules._is_direct_neko_request_or_ack(dense_lowered)
 
     @staticmethod
     def _is_untargeted_request_or_reaction(dense_lowered: str) -> bool:
-        return RoastRuntime._is_untargeted_request(dense_lowered) or RoastRuntime._is_reaction_only(dense_lowered)
+        return active_topic_rules._is_untargeted_request_or_reaction(dense_lowered)
 
     @staticmethod
     def _is_untargeted_request(dense_lowered: str) -> bool:
-        request_markers = (
-            "\u8bb2\u8bb2",
-            "\u8bf4\u8bf4",
-            "\u804a\u804a",
-            "\u8bc4\u4ef7\u4e00\u4e0b",
-            "\u9510\u8bc4\u4e00\u4e0b",
-            "\u70b9\u8bc4\u4e00\u4e0b",
-            "\u63a8\u8350\u4e00\u4e0b",
-            "\u9009\u4e00\u4e0b",
-            "\u8d77\u4e2a\u5916\u53f7",
-            "\u5e2e\u6211",
-            "\u7ed9\u6211",
-            "tellme",
-            "recommendme",
-            "giveme",
-            "ratemy",
-            "helpme",
-            "canyou",
-            "couldyou",
-            "please",
-            "pls",
-        )
-        return any(marker in dense_lowered for marker in request_markers)
+        return active_topic_rules._is_untargeted_request(dense_lowered)
 
     @staticmethod
     def _is_reaction_only(dense_lowered: str) -> bool:
-        reaction_markers = (
-            "\u54c8\u54c8",
-            "\u7b11\u6b7b",
-            "\u7ef7\u4e0d\u4f4f",
-            "\u8349\u8349",
-            "\u725b\u554a",
-            "\u725b\u903c",
-            "\u597d\u8036",
-            "666",
-            "lol",
-            "lmao",
-        )
-        return len(dense_lowered) <= 8 and any(marker in dense_lowered for marker in reaction_markers)
+        return active_topic_rules._is_reaction_only(dense_lowered)
 
     @staticmethod
     def _is_live_test_or_runtime_feedback(dense_lowered: str) -> bool:
-        control_markers = (
-            "\u4e0b\u4e00\u6b65",
-            "\u770b\u72b6\u6001",
-            "\u68c0\u6d4b\u72b6\u6001",
-            "\u91cd\u542f",
-            "\u5173\u95ed",
-            "\u5f00\u542f",
-            "\u63d0\u4ea4",
-            "\u63a8\u9001",
-            "\u6d4b\u8bd5\u7ed3\u675f",
-            "nextstep",
-            "checkstatus",
-            "restart",
-            "reload",
-            "shutdown",
-        )
-        if any(marker in dense_lowered for marker in control_markers):
-            return True
-        feedback_markers = (
-            "\u5ef6\u8fdf",
-            "\u5361\u4e86",
-            "\u5361\u4f4f",
-            "\u6709\u70b9\u957f",
-            "\u592a\u957f",
-            "\u56de\u590d\u957f",
-            "\u8f93\u51fa\u957f",
-            "\u6ca1\u8f93\u51fa",
-            "\u6ca1\u6709\u8f93\u51fa",
-            "\u6ca1\u89e6\u53d1",
-            "\u89e6\u53d1\u4e86",
-            "latency",
-            "toolong",
-            "nooutput",
-            "notriggered",
-        )
-        return any(marker in dense_lowered for marker in feedback_markers)
+        return active_topic_rules._is_live_test_or_runtime_feedback(dense_lowered)
 
     def _next_active_engagement_shape(self) -> str:
         shapes = ["either_or", "light_stance", "tiny_tease", "small_challenge"]
@@ -1471,145 +1272,51 @@ class RoastRuntime:
 
     @staticmethod
     def _has_active_engagement_streak(values: deque[str], value: str, count: int) -> bool:
-        if count <= 0 or len(values) < count:
-            return False
-        tail = list(values)[-count:]
-        return all(str(item or "") == value for item in tail)
+        return active_topic_rules._has_active_engagement_streak(values, value, count)
+
+    @staticmethod
+    def _is_similar_active_topic_title(title: str, recent_titles: deque[str]) -> bool:
+        return active_topic_rules._is_similar_active_topic_title(title, recent_titles)
+
+    @staticmethod
+    def _host_material_family(material: dict[str, Any] | None) -> str:
+        return active_topic_rules._host_material_family(material)
+
+    @staticmethod
+    def _active_topic_material_profile(title: str) -> dict[str, str]:
+        return active_topic_rules._active_topic_material_profile(title)
 
     @staticmethod
     def _is_viewer_to_viewer_mention_text(text: str) -> bool:
-        compact = " ".join(str(text or "").strip().replace("＠", "@").split())
-        if "@" not in compact:
-            return False
-        aliases = {"neko", "\u732b\u732b", "\u5c0f\u5929", "\u732b\u5a18"}
-        lowered_aliases = {alias.lower() for alias in aliases}
-        for part in compact.split("@")[1:]:
-            target = []
-            for ch in part.strip():
-                if ch.isspace() or ch in ":：,，.。!！?？/\\|[]()（）<>《》":
-                    break
-                target.append(ch)
-            name = "".join(target).strip()
-            if not name:
-                continue
-            if RoastRuntime._is_neko_mention_target(name, lowered_aliases):
-                return False
-            return True
-        return False
+        return active_topic_rules._is_viewer_to_viewer_mention_text(text)
 
     @staticmethod
     def _is_neko_mention_target(name: str, lowered_aliases: set[str]) -> bool:
-        lowered_name = str(name or "").strip().lower()
-        if not lowered_name:
-            return False
-        if lowered_name in lowered_aliases:
-            return True
-        live_address_prefixes = (
-            "\u4eca",
-            "\u4f60",
-            "\u5728",
-            "\u80fd",
-            "\u53ef",
-            "\u5e2e",
-            "\u6765",
-            "\u8bb2",
-            "\u8bf4",
-            "\u600e",
-            "\u4e3a",
-            "\u8981",
-            "\u6709",
-            "\u662f",
-            "\u4f1a",
-            "\u60f3",
-            "\u64ad",
-            "\u8bc4",
-            "\u9510",
-            "\u65e9",
-            "\u665a",
-            "\u5462",
-            "\u5440",
-            "\u554a",
-            "\u5417",
-            "\u561b",
-            "\u5427",
-            "\u54c8",
-            "what",
-            "why",
-            "how",
-            "can",
-            "could",
-            "please",
-            "pls",
-            "pick",
-            "rate",
-            "tell",
-            "help",
-            "say",
-        )
-        for alias in lowered_aliases:
-            if not lowered_name.startswith(alias):
-                continue
-            rest = lowered_name[len(alias) :].lstrip("_-")
-            if not rest:
-                return True
-            if rest.startswith(live_address_prefixes):
-                return True
-        return False
+        return active_topic_rules._is_neko_mention_target(name, lowered_aliases)
 
     @staticmethod
     def _active_engagement_hook_text(shape: str, title: str) -> str:
-        compact_title = title.strip() or "this live-room topic"
-        return {
-            "either_or": f"Make '{compact_title}' into one concrete A/B choice viewers can answer with one side.",
-            "light_stance": f"Take one small, playful NEKO stance about '{compact_title}' so viewers can agree or push back.",
-            "tiny_tease": f"Turn '{compact_title}' into one tiny playful tease, not a news recap or generic question.",
-            "small_challenge": f"Turn '{compact_title}' into one tiny low-pressure challenge viewers can answer in a few words.",
-        }.get(shape, f"Turn '{compact_title}' into one specific low-pressure hook viewers can answer quickly.")
+        return active_topic_rules._active_engagement_hook_text(shape, title)
 
     @staticmethod
     def _active_engagement_pattern_text(shape: str) -> str:
-        return {
-            "either_or": "two concrete sides, then let viewers pick one",
-            "light_stance": "one tiny NEKO opinion, then leave room for pushback",
-            "tiny_tease": "one small playful jab, then stop before it becomes a bit",
-            "small_challenge": "one tiny challenge viewers can answer in a few words",
-        }.get(shape, "one concrete reply point viewers can answer quickly")
+        return active_topic_rules._active_engagement_pattern_text(shape)
 
     @staticmethod
     def _active_engagement_hint_text(shape: str) -> str:
-        return {
-            "either_or": "Make one tiny A/B choice; both sides must be concrete and easy to answer.",
-            "light_stance": "Make one tiny NEKO stance; leave room for viewers to agree or push back.",
-            "tiny_tease": "Make one tiny playful tease; stop before it becomes a bit.",
-            "small_challenge": "Make one tiny low-pressure challenge viewers can answer in a few words.",
-        }.get(shape, "Make one specific low-pressure hook viewers can answer quickly.")
+        return active_topic_rules._active_engagement_hint_text(shape)
 
     @staticmethod
     def _active_engagement_intent_text(shape: str) -> str:
-        return {
-            "either_or": "quick_vote",
-            "light_stance": "agree_or_pushback",
-            "tiny_tease": "tease_back",
-            "small_challenge": "tiny_answer",
-        }.get(shape, "quick_reply")
+        return active_topic_rules._active_engagement_intent_text(shape)
 
     @staticmethod
     def _active_engagement_fun_axis_text(shape: str) -> str:
-        return {
-            "either_or": "choice",
-            "light_stance": "mood",
-            "tiny_tease": "tease",
-            "small_challenge": "micro_challenge",
-        }.get(shape, "choice")
+        return active_topic_rules._active_engagement_fun_axis_text(shape)
 
     @staticmethod
     def _active_engagement_reply_affordance_text(shape: str) -> str:
-        return {
-            "either_or": "viewer can answer with one side",
-            "light_stance": "viewer can agree or push back",
-            "tiny_tease": "viewer can tease NEKO back",
-            "small_challenge": "viewer can answer in a few words",
-        }.get(shape, "viewer can reply quickly")
+        return active_topic_rules._active_engagement_reply_affordance_text(shape)
 
     def _record_active_engagement_skip(self, event: ViewerEvent, reason: str) -> InteractionResult:
         result = InteractionResult(
@@ -1771,6 +1478,11 @@ class RoastRuntime:
         last_viewer_activity_age_sec = self._last_viewer_activity_age_sec(rows)
         last_output_age_sec = self._last_output_age_sec(rows)
         warmup_observed = self._has_recent_response_module("warmup_hosting")
+        warmup_elapsed = self._solo_warmup_elapsed_seconds()
+        warmup_timeout = (
+            warmup_elapsed is not None
+            and warmup_elapsed >= self._solo_warmup_timeout_seconds()
+        )
 
         if status.get("summary") == "cannot_stream" or safety_status in {"tripped", "degraded", "disconnected"}:
             state = "blocked"
@@ -1778,7 +1490,12 @@ class RoastRuntime:
         elif safety_status == "paused":
             state = "paused"
             reason = "manual_paused"
-        elif last_viewer_activity_age_sec is None and self.config.live_mode == "solo_stream" and not warmup_observed:
+        elif (
+            last_viewer_activity_age_sec is None
+            and self.config.live_mode == "solo_stream"
+            and not warmup_observed
+            and not warmup_timeout
+        ):
             state = "warmup"
             reason = "solo_stream_warmup"
         elif last_viewer_activity_age_sec is None or last_viewer_activity_age_sec > idle_threshold:
@@ -1813,6 +1530,8 @@ class RoastRuntime:
             "last_output_age_sec": last_output_age_sec,
             "engaged_threshold_seconds": float(engaged_threshold),
             "idle_threshold_seconds": float(idle_threshold),
+            "warmup_elapsed_sec": warmup_elapsed,
+            "warmup_timeout_seconds": self._solo_warmup_timeout_seconds(),
         }
 
     def idle_hosting_status(self, live_state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1854,7 +1573,7 @@ class RoastRuntime:
         state_name = str(state.get("state") or "")
         idle_takeover_candidate = state_name == "idle" and self._recent_actual_route_streak_since_viewer_activity(
             "idle_hosting"
-        ) >= 3
+        ) >= self._IDLE_HOSTING_STREAK_FOR_ACTIVE_TAKEOVER
         candidate = (
             self.config.live_mode == "solo_stream"
             and (state_name == "quiet" or idle_takeover_candidate)
@@ -2092,18 +1811,18 @@ class RoastRuntime:
     def _active_engagement_min_interval_seconds(self) -> float:
         return {
             "quiet": 300.0,
-            "active": 60.0,
-            "standard": 90.0,
-        }.get(str(getattr(self.config, "activity_level", "standard")), 90.0)
+            "active": 45.0,
+            "standard": 60.0,
+        }.get(str(getattr(self.config, "activity_level", "standard")), 60.0)
 
     def _active_engagement_after_danmaku_interval_seconds(self) -> float:
         return {
             "quiet": 210.0,
-            "active": 60.0,
-            "standard": float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS),
+            "active": 30.0,
+            "standard": 45.0,
         }.get(
             str(getattr(self.config, "activity_level", "standard")),
-            float(self._ACTIVE_ENGAGEMENT_AFTER_DANMAKU_INTERVAL_SECONDS),
+            45.0,
         )
 
     def _active_engagement_idle_grace_seconds(self) -> float:
@@ -2130,9 +1849,21 @@ class RoastRuntime:
     def _idle_hosting_min_interval_seconds(self) -> float:
         return {
             "quiet": 180.0,
-            "active": 60.0,
-            "standard": float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS),
-        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._IDLE_HOSTING_MIN_INTERVAL_SECONDS))
+            "active": 45.0,
+            "standard": 90.0,
+        }.get(str(getattr(self.config, "activity_level", "standard")), 90.0)
+
+    def _solo_warmup_elapsed_seconds(self) -> float | None:
+        if self._live_listener_started_at <= 0:
+            return None
+        return max(0.0, float(self._live_state_now()) - float(self._live_listener_started_at))
+
+    def _solo_warmup_timeout_seconds(self) -> float:
+        return {
+            "quiet": 90.0,
+            "active": 30.0,
+            "standard": float(self._SOLO_WARMUP_TIMEOUT_SECONDS),
+        }.get(str(getattr(self.config, "activity_level", "standard")), float(self._SOLO_WARMUP_TIMEOUT_SECONDS))
 
     def _live_state_threshold_seconds(self) -> tuple[float, float]:
         return {
@@ -2226,9 +1957,13 @@ class RoastRuntime:
             route = self._route_from_result(result)
             if source == "idle_hosting":
                 beat_shape = str(event.get("host_beat_shape") or "").strip()
+                beat_family = str(event.get("host_beat_family") or "").strip()
+                beat_axis = str(event.get("host_beat_fun_axis") or "").strip()
+                beat_column = str(event.get("host_beat_live_column") or "").strip()
+                beat_stage = str(event.get("host_beat_idle_stage") or "").strip()
                 beat_title = str(event.get("host_beat_title") or "").strip()
                 beat_reply = str(event.get("host_beat_reply_affordance") or "").strip()
-                beat_bits = " ".join(bit for bit in (beat_shape,) if bit)
+                beat_bits = " ".join(bit for bit in (beat_stage, beat_column, beat_shape, beat_family, beat_axis) if bit)
                 if beat_title:
                     beat_bits = f"{beat_bits} - {self._compact_context_text(beat_title, limit=50)}".strip()
                 if beat_reply:
@@ -2240,10 +1975,21 @@ class RoastRuntime:
                 topic_source = str(event.get("topic_source") or "").strip()
                 topic_shape = str(event.get("topic_shape") or "").strip()
                 topic_intent = str(event.get("topic_intent") or "").strip()
+                topic_family = str(event.get("topic_family") or "").strip()
+                topic_axis = str(event.get("topic_fun_axis") or "").strip()
+                topic_column = str(event.get("topic_live_column") or "").strip()
+                topic_pack = str(event.get("topic_pack") or "").strip()
                 topic_title = str(event.get("topic_title") or "").strip()
-                topic_bits = " ".join(bit for bit in (topic_source, topic_shape, topic_intent) if bit)
+                topic_bits = " ".join(
+                    bit
+                    for bit in (topic_pack, topic_column, topic_source, topic_shape, topic_intent, topic_family, topic_axis)
+                    if bit
+                )
                 if topic_title:
                     topic_bits = f"{topic_bits} - {self._compact_context_text(topic_title, limit=50)}".strip()
+                topic_reply = str(event.get("topic_reply_affordance") or "").strip()
+                if topic_reply:
+                    topic_bits = f"{topic_bits} / reply: {self._compact_context_text(topic_reply, limit=60)}".strip()
                 line = f"{route} / active_engagement: {topic_bits or 'solo engagement beat'}"
             else:
                 identity = result.get("identity") if isinstance(result.get("identity"), dict) else {}
@@ -2252,17 +1998,111 @@ class RoastRuntime:
                 line = f"{route} / {source} from {who}"
                 if text:
                     line += f": {self._compact_context_text(text)}"
+            output = self._spent_output_text(result)
+            if output:
+                families = self._spent_output_families(output)
+                if families:
+                    line += f" / spent_output_family={','.join(families)}"
+                line += f" / NEKO already said: {self._compact_context_text(output, limit=60)}"
+            lines.append(line)
+            if len(lines) >= max(1, int(limit)):
+                break
+        return lines
+
+    def viewer_session_context(self, uid: str, *, limit: int = 2) -> list[str]:
+        target_uid = str(uid or "").strip()
+        if not target_uid:
+            return []
+        lines: list[str] = []
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") not in {"pushed", "dry_run"}:
+                continue
+            event = result.get("event") if isinstance(result.get("event"), dict) else {}
+            if str(event.get("uid") or "").strip() != target_uid:
+                continue
+            text = str(event.get("danmaku_text") or "").strip()
+            route = self._route_from_result(result)
+            output = self._spent_output_text(result)
+            if not text and not output:
+                continue
+            line = f"{route}: {self._compact_context_text(text, limit=60)}" if text else route
+            if output:
+                families = self._spent_output_families(output)
+                if families:
+                    line += f" / spent_output_family={','.join(families)}"
+                line += f" / NEKO already said: {self._compact_context_text(output, limit=50)}"
             lines.append(line)
             if len(lines) >= max(1, int(limit)):
                 break
         return lines
 
     @staticmethod
+    def _spent_output_text(result: dict[str, Any]) -> str:
+        if str(result.get("status") or "") != "pushed":
+            return ""
+        output = str(result.get("output") or "").strip()
+        if not output:
+            return ""
+        synthetic_prefixes = (
+            "queued_to_neko(",
+            "dry_run(",
+            "skipped_to_neko(",
+            "instructions_queued(",
+            "instructions_restored(",
+            "developer_instructions_queued(",
+            "developer_instructions_restored(",
+            "developer_mode_announced(",
+        )
+        if output.startswith(synthetic_prefixes):
+            return ""
+        return output
+
+    @staticmethod
+    def _spent_output_families(output: str) -> list[str]:
+        normalized = _normalize_spent_output_family_text(output)
+        if not normalized:
+            return []
+        ascii_words = _spent_output_ascii_words(output)
+        families: list[str] = []
+        for family, tokens in _SPENT_OUTPUT_FAMILY_TOKENS:
+            if any(
+                _spent_output_family_token_matches(
+                    normalized_output=normalized,
+                    ascii_words=ascii_words,
+                    token=token,
+                )
+                for token in tokens
+            ):
+                families.append(family)
+        return families
+
+    def _recent_spent_output_families(self, *, limit: int = 12) -> set[str]:
+        families: set[str] = set()
+        seen_results = 0
+        for result in reversed(self.recent_results):
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "") != "pushed":
+                continue
+            raw_family = str(result.get("spent_output_family") or "").strip()
+            if not raw_family:
+                raw_family = ",".join(self._spent_output_families(self._spent_output_text(result)))
+            if not raw_family:
+                continue
+            seen_results += 1
+            families.update(part.strip() for part in raw_family.split(",") if part.strip())
+            if seen_results >= max(1, int(limit)):
+                break
+        return families
+
+    @staticmethod
     def _compact_context_text(value: str, *, limit: int = 80) -> str:
         text = " ".join(str(value).split())
         if len(text) <= limit:
             return text
-        return text[: limit - 1].rstrip() + "…"
+        return text[: max(0, limit - 3)].rstrip() + "..."
 
     @staticmethod
     def _route_from_result(result: dict[str, Any]) -> str:

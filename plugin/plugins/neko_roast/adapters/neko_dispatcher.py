@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from ..core.contracts import InteractionRequest
 
 _AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
+_MAX_LIVE_REPLY_CHARS = 28
 
 
 def _normalize_avatar_for_neko_vision(data: bytes, mime: str) -> tuple[bytes, str]:
@@ -260,10 +261,11 @@ class NekoDispatcher:
             return f"skipped_to_neko(reason={reason})"
         identity = request.identity
         is_demo_event = request.event.source == "developer_sandbox" and request.event.raw.get("fixture") == "demo_avatar"
-        # 锐评指令由 avatar_roast.build_request 集中构造（自适应焦点 / META / 禁脑补）。
+        # The roast instruction is owned by avatar_roast.build_request()
+        # (adaptive focus, metadata, and no-invented-avatar rules).
         text = request.prompt_text or ""
         if is_demo_event:
-            text = "（这是 NEKO Live 弹幕锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
+            text = "（这是 NEKO Live 首次出场锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
         if request.allow_avatar_image and identity.avatar_bytes:
             avatar_bytes, avatar_mime = _normalize_avatar_for_neko_vision(
@@ -283,11 +285,11 @@ class NekoDispatcher:
         image_part_bytes = len(parts[1]["data"]) if len(parts) > 1 else 0
         target_lanlan = _resolve_target_lanlan(self.plugin, request)
         if request.dry_run:
-            # 安全测试态：整条 pipeline 已跑完（身份/锐评/头像/安全门），但不真的投给猫猫。
+            # Safe test mode: the whole pipeline has run, but nothing is delivered to NEKO.
             return (
                 f"dry_run(target={target_lanlan or 'none'}, ai_behavior=respond, "
                 f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)}, "
-                f"reply_contract=short_tts_line, max_reply_chars=40, "
+                f"reply_contract=short_tts_line, max_reply_chars={_MAX_LIVE_REPLY_CHARS}, "
                 f"response_module_hint={_response_module_hint(request)})"
             )
         if request.event.source == "developer_sandbox" and not target_lanlan:
@@ -298,7 +300,7 @@ class NekoDispatcher:
             "live_mode": request.live_mode,
             "demo": is_demo_event,
             "live_reply_contract": "short_tts_line",
-            "max_reply_chars": 40,
+            "max_reply_chars": _MAX_LIVE_REPLY_CHARS,
             "response_module_hint": _response_module_hint(request),
         }
         if target_lanlan:

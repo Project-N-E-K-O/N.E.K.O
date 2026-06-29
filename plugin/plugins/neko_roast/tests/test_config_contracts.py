@@ -69,6 +69,99 @@ def test_danmaku_response_prompt_is_not_avatar_roast_template():
     assert "only host on stage" in request.prompt_text
 
 
+def test_danmaku_response_prompt_profiles_tiny_reactions():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="哈哈哈",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="viewer"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert "danmaku_profile: emoji_or_reaction" in request.prompt_text
+    assert "reply_shape: mirror_mood_in_a_few_chars" in request.prompt_text
+    assert request.metadata["danmaku_profile"] == "emoji_or_reaction"
+    assert request.metadata["danmaku_reply_shape"] == "mirror_mood_in_a_few_chars"
+    assert "mirror the mood in a few characters" in request.prompt_text
+    assert "Do not explain the joke, expand the reaction, or turn it into a topic." in request.prompt_text
+
+
+def test_danmaku_response_prompt_answers_questions_directly():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="猫猫你觉得呢？",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="viewer"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert "danmaku_profile: question" in request.prompt_text
+    assert "reply_target: current_question" in request.prompt_text
+    assert "answer it directly first" in request.prompt_text
+    assert "Do not dodge into a topic change or ask a new question." in request.prompt_text
+
+
+def test_danmaku_response_prompt_marks_viewer_to_viewer_mentions():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="@路过的舰长 你看这个",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="viewer"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert "danmaku_profile: viewer_to_viewer_mention" in request.prompt_text
+    assert "reply_target: public_side_reaction" in request.prompt_text
+    assert "do not answer as if it was addressed to NEKO" in request.prompt_text
+    assert "do not mediate between viewers" in request.prompt_text
+
+
+def test_danmaku_response_prompt_keeps_neko_mentions_as_current_target():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="@猫猫 今天像小电台",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="viewer"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert "danmaku_profile: viewer_to_viewer_mention" not in request.prompt_text
+    assert "reply_target: current_short_line" in request.prompt_text
+    assert "Do not answer @other-viewer messages as a call to NEKO unless NEKO is the mentioned target." in request.prompt_text
+
+
 def test_danmaku_response_prompt_includes_recent_interaction_context():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
@@ -77,6 +170,12 @@ def test_danmaku_response_prompt_includes_recent_interaction_context():
             "avatar_roast / live_danmaku from viewer: 第一次来",
             "idle_hosting / idle_hosting: solo quiet-room host beat",
         ],
+        viewer_session_context=lambda uid, limit=2: [
+            "avatar_roast: 第一次来",
+            "danmaku_response: 那你继续说",
+        ]
+        if uid == "42"
+        else [],
     )
     event = ViewerEvent(
         uid="42",
@@ -90,13 +189,58 @@ def test_danmaku_response_prompt_includes_recent_interaction_context():
 
     request = module.build_request(event, identity, profile)
 
-    assert "Recent live context:" in request.prompt_text
+    assert "Used live material, for anti-repeat only:" in request.prompt_text
     assert "avatar_roast / live_danmaku from viewer: 第一次来" in request.prompt_text
     assert "idle_hosting / idle_hosting: solo quiet-room host beat" in request.prompt_text
-    assert "Use recent context only to avoid repetition" in request.prompt_text
-    assert "Do not continue the previous reply" in request.prompt_text
+    assert "Anti-repeat rule: Treat every line above as already spent material." in request.prompt_text
+    assert "Do not continue, summarize, paraphrase, or remix those old lines." in request.prompt_text
+    assert "Lines starting with 'NEKO already said' are previous broadcast outputs" in request.prompt_text
+    assert "topic_family, host_beat_family, spent_output_family, fun_axis, shape, intent, or reply path" in request.prompt_text
+    assert "avoid using the same family or reply path again" in request.prompt_text
+    assert "This block is a forbidden-material list" in request.prompt_text
+    assert "not context to continue and not a script prefix" in request.prompt_text
     assert "The current danmaku is always the primary target" in request.prompt_text
     assert "Short danmaku should receive a short reply" in request.prompt_text
+    assert "Same viewer used material, for anti-repeat only:" in request.prompt_text
+    assert "danmaku_response: 那你继续说" in request.prompt_text
+    assert "Lines starting with 'NEKO already said' are previous outputs to this viewer" in request.prompt_text
+    assert "Treat same-viewer history as spent material" in request.prompt_text
+    assert "If a line lists spent_output_family, treat that family as already used for this viewer." in request.prompt_text
+    assert "Do not repeat this viewer's previous danmaku" in request.prompt_text
+    assert "Only continue an old thread if the current danmaku explicitly asks to continue that exact thread." in request.prompt_text
+    assert "Do not repeat avatar, ID, or first-appearance comments for this viewer." in request.prompt_text
+
+
+def test_danmaku_response_prompt_uses_wider_recent_context_window_by_default():
+    requested_limits: list[int] = []
+
+    def recent_context(limit: int = 3) -> list[str]:
+        requested_limits.append(limit)
+        return [f"danmaku_response / live_danmaku from viewer: old line {index}" for index in range(limit)]
+
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=recent_context,
+        viewer_session_context=lambda uid, limit=2: [],
+    )
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="new line",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="viewer"),
+        ViewerProfile(uid="42", nickname="viewer", roast_count=1),
+    )
+
+    assert requested_limits == [12]
+    assert "old line 0" in request.prompt_text
+    assert "old line 11" in request.prompt_text
 
 
 def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
@@ -131,7 +275,7 @@ def test_danmaku_response_prompt_blocks_previous_reply_pollution():
     module.ctx = SimpleNamespace(
         config=RoastConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
-            "danmaku_response / live_danmaku from viewer: 上一条很长很长的接话",
+            "danmaku_response / live_danmaku from viewer: previous line / NEKO already said: old reward bit",
         ],
     )
     event = ViewerEvent(
@@ -146,12 +290,84 @@ def test_danmaku_response_prompt_blocks_previous_reply_pollution():
 
     request = module.build_request(event, identity, profile)
 
-    assert "Do not inherit the previous answer's topic, rhythm, or sentence length." in request.prompt_text
-    assert "Do not continue prizes, plans, games, or audience-suggestion beats from the previous reply." in request.prompt_text
+    assert "Do not inherit their topic, rhythm, sentence length, reward bit, plan, or audience prompt." in request.prompt_text
+    assert "Do not reuse the same opening, punchline shape, reward/present bit, plan, audience-suggestion beat, or host beat." in request.prompt_text
+    assert "Before writing, compare against NEKO's recent live-output memory." in request.prompt_text
+    assert "Do not reuse the same wording, opening, rhythm, punchline, or topic framing as the previous NEKO reply." in request.prompt_text
+    assert "Do not paraphrase the previous NEKO reply with different words." in request.prompt_text
+    assert "Do not revive an old reward bit, plan, game, audience prompt, or host beat unless the current event explicitly asks for it." in request.prompt_text
+    assert "If a recent line and the current draft share the same subject" in request.prompt_text
     assert "Current danmaku wins over recent context." in request.prompt_text
     assert "For one-word or very short danmaku, answer with a tiny reaction." in request.prompt_text
     assert "Do not launch a new show segment, special plan, topic poll, reward bit, or audience-suggestion prompt." in request.prompt_text
     assert "Carrying the room means crisp timing, not monologue, plans, or host-script expansion." in request.prompt_text
+    assert "NEKO already said: old reward bit" in request.prompt_text
+
+
+def test_danmaku_response_prompt_compacts_long_recent_context():
+    long_recent_line = (
+        "danmaku_response / live_danmaku from viewer: "
+        + "old reply material should not be injected back into the prompt " * 5
+    )
+    long_viewer_line = "danmaku_response: " + "same viewer old joke should not be resumed " * 4
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [long_recent_line],
+        viewer_session_context=lambda uid, limit=2: [long_viewer_line] if uid == "42" else [],
+    )
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="new short line",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+
+    request = module.build_request(event, identity, profile)
+
+    assert "old reply material should not be injected back into the prompt " * 2 not in request.prompt_text
+    assert "same viewer old joke should not be resumed " * 2 not in request.prompt_text
+    assert "..." in request.prompt_text
+    assert "Current danmaku wins over recent context." in request.prompt_text
+    assert "Treat same-viewer history as spent material" in request.prompt_text
+
+
+def test_danmaku_response_prompt_preserves_spent_neko_output_when_context_is_long():
+    long_recent_line = (
+        "active_engagement / active_engagement: fallback small_challenge tiny_answer "
+        + "long route context " * 8
+        + " / NEKO already said: keep this old punchline"
+    )
+    long_viewer_line = (
+        "danmaku_response: same viewer long context "
+        + "same viewer old context " * 8
+        + " / NEKO already said: viewer old joke"
+    )
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [long_recent_line],
+        viewer_session_context=lambda uid, limit=2: [long_viewer_line] if uid == "42" else [],
+    )
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="new short line",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+
+    request = module.build_request(event, identity, profile)
+
+    assert "NEKO already said: keep this old punchline" in request.prompt_text
+    assert "NEKO already said: viewer old joke" in request.prompt_text
+    assert "long route context " * 2 not in request.prompt_text
+    assert "same viewer old context " * 2 not in request.prompt_text
 
 
 def test_live_interaction_prompts_share_short_reply_contract():
@@ -202,6 +418,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
         "Do not chain multiple clauses with commas",
+        "Avoid repeated presence checks like anyone here, still here, 有人吗, 还在吗, or 在不在",
     ]
     reply_rules = [
         "If the viewer's danmaku is short, answer even shorter.",
@@ -295,6 +512,53 @@ def test_solo_avatar_roast_uses_current_danmaku_before_avatar_details():
     assert "solo_stream first-appearance priority: current danmaku first" not in co_stream.prompt_text
 
 
+def test_avatar_roast_prompt_includes_recent_used_material_blocklist():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [
+            "avatar_roast / live_danmaku from viewer: 猫猫先夸了小鱼干",
+            "idle_hosting / idle_hosting: solo quiet-room host beat",
+        ],
+    )
+    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku", live_mode="solo_stream")
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+
+    request = module.build_request(event, identity, profile)
+
+    assert "Used live material, for anti-repeat only:" in request.prompt_text
+    assert "猫猫先夸了小鱼干" in request.prompt_text
+    assert "forbidden-material list" in request.prompt_text
+    assert "Do not use the same opening, sentence shape, punchline, or host beat as recent live replies." in request.prompt_text
+    assert "Do not revive an old reward bit, plan, game, audience prompt, or host beat" in request.prompt_text
+
+
+def test_avatar_roast_prompt_includes_same_viewer_used_material_blocklist():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [],
+        viewer_session_context=lambda uid, limit=2: [
+            "avatar_roast / live_danmaku from viewer: first entrance / NEKO already said: old avatar bit",
+            "danmaku_response / live_danmaku from viewer: one more / spent_output_family=audience_prompt",
+        ]
+        if uid == "42"
+        else [],
+    )
+    event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="again", source="live_danmaku", live_mode="solo_stream")
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+
+    request = module.build_request(event, identity, profile)
+
+    assert "Same viewer used material, for anti-repeat only:" in request.prompt_text
+    assert "old avatar bit" in request.prompt_text
+    assert "spent_output_family=audience_prompt" in request.prompt_text
+    assert "Treat same-viewer history as spent material" in request.prompt_text
+    assert "Do not repeat avatar, ID, or first-appearance comments for this viewer." in request.prompt_text
+
+
 def test_idle_hosting_prompt_includes_recent_interaction_context_without_metrics():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(
@@ -310,10 +574,12 @@ def test_idle_hosting_prompt_includes_recent_interaction_context_without_metrics
 
     request = module.build_request(event, identity, profile)
 
-    assert "Recent live context:" in request.prompt_text
+    assert "Used live material, for anti-repeat only:" in request.prompt_text
     assert "danmaku_response / live_danmaku from viewer: 猫猫在吗" in request.prompt_text
     assert "idle_hosting / idle_hosting: solo quiet-room host beat" in request.prompt_text
-    assert "Do not reuse the same opening, punchline shape, or host beat" in request.prompt_text
+    assert "Do not reuse the same opening, punchline shape, reward/present bit, plan, audience-suggestion beat, or host beat." in request.prompt_text
+    assert "This block is a forbidden-material list" in request.prompt_text
+    assert "Do not paraphrase the previous NEKO reply with different words." in request.prompt_text
     assert "last_activity_age_sec" not in request.prompt_text
     assert "cooldown" not in request.prompt_text.lower()
 
@@ -351,6 +617,8 @@ def test_idle_hosting_prompt_uses_host_beat_material():
                 "fun_axis": "mood",
                 "title": "quiet room temperature",
                 "hint": "Say one soft observation, not a direct question.",
+                "live_column": "NEKO tiny radio",
+                "idle_stage": "settle",
                 "reply_affordance": "viewer can answer with one small mood word",
             }
         },
@@ -365,6 +633,8 @@ def test_idle_hosting_prompt_uses_host_beat_material():
     assert "fun_axis: mood" in request.prompt_text
     assert "quiet room temperature" in request.prompt_text
     assert "Say one soft observation, not a direct question." in request.prompt_text
+    assert "NEKO live column: NEKO tiny radio" in request.prompt_text
+    assert "idle_stage: settle" in request.prompt_text
     assert "viewer can answer with one small mood word" in request.prompt_text
     assert "Use the host beat reply_affordance as the only reply hook; do not add a second question." in request.prompt_text
     assert "Use the host beat fun_axis as the line's purpose; do not drift into generic hosting." in request.prompt_text
@@ -397,7 +667,25 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
     assert "澶у" not in request.prompt_text
     assert "Do not say special plan, everyone look, next let's, what should we talk about, or tell me what you want." in request.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
-    assert "Continuity rule" in request.prompt_text
+    assert "Anti-repeat rule: Treat every line above as already spent material." in request.prompt_text
+
+
+def test_active_engagement_prompt_treats_recent_reply_path_as_spent_material():
+    module = ActiveEngagementModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(activity_level="active", roast_strength="sharp", dry_run=True),
+        recent_interaction_context=lambda limit=3: [
+            "active_engagement / active_engagement: fallback small_challenge / reply: viewer can answer in a few words",
+        ],
+    )
+    event = ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream")
+    identity = ViewerIdentity(uid=event.uid, nickname=event.nickname)
+    profile = ViewerProfile(uid=event.uid, nickname=event.nickname)
+
+    request = module.build_request(event, identity, profile)
+
+    assert "reply: viewer can answer in a few words" in request.prompt_text
+    assert "avoid using the same family or reply path again" in request.prompt_text
 
 
 def test_active_engagement_prompt_turns_shape_into_concrete_task():
@@ -414,6 +702,8 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
                 "shape": "either_or",
                 "title": "猫猫今天怎么这么安静",
                 "intent": "quick_vote",
+                "live_column": "NEKO micro poll",
+                "topic_pack": "micro_poll",
                 "reply_affordance": "viewer can answer with one side",
                 "hint": "Use this topic as raw material.",
             }
@@ -429,6 +719,8 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
     assert "example pattern:" in request.prompt_text
     assert "two concrete sides" in request.prompt_text
     assert "intent: quick_vote" in request.prompt_text
+    assert "NEKO live column: NEKO micro poll" in request.prompt_text
+    assert "topic pack: micro_poll" in request.prompt_text
     assert "viewer reply path: viewer can answer with one side" in request.prompt_text
     assert "avoid yes/no questions" in request.prompt_text
 
@@ -465,6 +757,29 @@ def test_warmup_hosting_prompt_is_opening_not_idle_filler():
     assert "Do not pretend a viewer sent a message" in request.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in request.prompt_text
     assert "Output only NEKO's line" in request.prompt_text
+
+
+def test_warmup_hosting_prompt_includes_recent_used_material_blocklist():
+    module = WarmupHostingModule()
+    module.ctx = SimpleNamespace(
+        config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True),
+        recent_interaction_context=lambda limit=3: [
+            "warmup_hosting / warmup_hosting: NEKO opened with a fish snack bit",
+            "idle_hosting / idle_hosting: solo quiet-room host beat",
+        ],
+    )
+    event = ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream")
+    identity = ViewerIdentity(uid=event.uid, nickname=event.nickname)
+    profile = ViewerProfile(uid=event.uid, nickname=event.nickname)
+
+    request = module.build_request(event, identity, profile)
+
+    assert "Used live material, for anti-repeat only:" in request.prompt_text
+    assert "warmup_hosting / warmup_hosting" in request.prompt_text
+    assert "NEKO opened" in request.prompt_text
+    assert "Do not continue, summarize, paraphrase, or remix those old lines." in request.prompt_text
+    assert "Do not repeat the same host beat shape twice in a row" in request.prompt_text
+    assert "This block is a forbidden-material list" in request.prompt_text
 
 
 def test_utc_now_iso_returns_timezone_aware_utc_timestamp():
@@ -644,7 +959,7 @@ async def test_dispatcher_marks_live_requests_with_short_reply_contract():
     await NekoDispatcher(plugin).push_roast(request)
 
     assert plugin.metadata["live_reply_contract"] == "short_tts_line"
-    assert plugin.metadata["max_reply_chars"] == 40
+    assert plugin.metadata["max_reply_chars"] == 28
     assert plugin.metadata["response_module_hint"] == "avatar_roast"
 
 
@@ -667,7 +982,7 @@ async def test_dispatcher_dry_run_summary_includes_short_reply_contract():
     result = await NekoDispatcher(Plugin()).push_roast(request)
 
     assert "reply_contract=short_tts_line" in result
-    assert "max_reply_chars=40" in result
+    assert "max_reply_chars=28" in result
     assert "response_module_hint=danmaku_response" in result
 
 
@@ -1108,6 +1423,7 @@ async def test_pipeline_routes_repeat_live_danmaku_to_danmaku_response():
     assert result.status == "pushed"
     assert result.request is not None
     assert result.request.prompt_text == "reply to: 还在吗"
+    assert result.request.allow_avatar_image is False
     assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in result.steps)
     assert any(step.id == "danmaku_response" and step.status == "ok" for step in result.steps)
     assert not any(step.id == "viewer_profile.mark_roasted" for step in result.steps)
@@ -1602,6 +1918,88 @@ async def test_pipeline_session_marker_prevents_repeat_avatar_roast_when_persist
     assert first.request.prompt_text == "avatar_roast:first"
     assert second.request.prompt_text == "danmaku_response:second"
     assert viewer_profile.mark_calls == 1
+    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_when_once_disabled():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def before_output(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+        def record_failure(self, _kind, _message):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
+
+        async def has_roasted(self, _uid):
+            return False
+
+        async def mark_roasted(self, _uid, _output):
+            return None
+
+    class Dispatcher:
+        async def push_roast(self, request):
+            return f"queued_to_neko({request.prompt_text})"
+
+    class AvatarRoast:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"avatar_roast:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    class DanmakuResponse:
+        def build_request(self, event, identity, profile):
+            return InteractionRequest(
+                event=event,
+                identity=identity,
+                profile=profile,
+                prompt_text=f"danmaku_response:{event.danmaku_text}",
+                live_mode=event.live_mode,
+                strength="normal",
+            )
+
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=RoastConfig(live_enabled=True, roast_once_per_uid=False),
+        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=False)),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
+        viewer_profile=ViewerProfileModule(),
+        avatar_roast=AvatarRoast(),
+        danmaku_response=DanmakuResponse(),
+        dispatcher=Dispatcher(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+    pipeline = RoastPipeline(ctx)
+
+    first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
+    second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+
+    assert first.status == "pushed"
+    assert second.status == "pushed"
+    assert first.request is not None
+    assert second.request is not None
+    assert first.request.prompt_text == "avatar_roast:first"
+    assert second.request.prompt_text == "danmaku_response:second"
     assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
 
 

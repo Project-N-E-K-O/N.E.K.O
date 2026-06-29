@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import short_reply_rules
+from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules
 
 
 class WarmupHostingModule(BaseModule):
@@ -24,14 +24,14 @@ class WarmupHostingModule(BaseModule):
             event=event,
             identity=identity,
             profile=profile,
-            prompt_text=self._build_prompt(strength, activity_level),
+            prompt_text=self._build_prompt(strength, activity_level, recent_context_block(self.ctx)),
             live_mode=event.live_mode,
             strength=strength,
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
         )
 
     @staticmethod
-    def _build_prompt(strength: str, activity_level: str = "standard") -> str:
+    def _build_prompt(strength: str, activity_level: str = "standard", recent_context: str = "") -> str:
         strength_hint = {
             "gentle": "warm, soft, and welcoming",
             "sharp": "playfully sharp, but not aggressive",
@@ -51,6 +51,7 @@ class WarmupHostingModule(BaseModule):
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it TTS-friendly and easy to continue from.",
+            *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
             "Output only NEKO's line.",
         ]
@@ -60,6 +61,8 @@ class WarmupHostingModule(BaseModule):
             f"tone: {strength_hint}\n"
             f"pacing: {activity_level}\n"
             f"pacing rule: {activity_hint}\n\n"
+            + recent_context
+            + "\n"
             "Rules:\n"
             + "\n".join(f"- {rule}" for rule in rules)
         )

@@ -7,7 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerIdentity
+from plugin.plugins.neko_roast.core.contracts import (
+    InteractionRequest,
+    InteractionResult,
+    PipelineStep,
+    ViewerEvent,
+    ViewerIdentity,
+    ViewerProfile,
+)
 from plugin.plugins.neko_roast.core.runtime import RoastRuntime
 from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
 
@@ -474,7 +481,7 @@ def _record_result_at(
 
 
 def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: RoastRuntime) -> None:
-    first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="绗竴娆℃潵", source="live_danmaku")
+    first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku")
     second_event = ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting")
     runtime.record_result(
         InteractionResult(
@@ -498,8 +505,45 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
 
     assert context == [
         "idle_hosting / idle_hosting: solo quiet-room host beat",
-        "avatar_roast / live_danmaku from viewer: 绗竴娆℃潵",
+        "avatar_roast / live_danmaku from viewer: 第一次来",
     ]
+
+def test_viewer_session_context_keeps_same_uid_recent_danmaku(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku"),
+            identity=ViewerIdentity(uid="42", nickname="viewer"),
+            steps=[PipelineStep("avatar_roast", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="77", nickname="other", danmaku_text="别人的弹幕", source="live_danmaku"),
+            identity=ViewerIdentity(uid="77", nickname="other"),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=ViewerEvent(uid="42", nickname="viewer", danmaku_text="那你继续说", source="live_danmaku"),
+            identity=ViewerIdentity(uid="42", nickname="viewer"),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    context = runtime.viewer_session_context("42")
+
+    assert context == [
+        "danmaku_response: 那你继续说",
+        "avatar_roast: 第一次来",
+    ]
+
 
 def test_live_state_viewer_activity_ignores_non_danmaku_health_rows(runtime: RoastRuntime) -> None:
     rows = [
@@ -530,7 +574,7 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
             "topic_material": {
                 "source": "bili_trending",
                 "shape": "either_or",
-                "title": "鐚尗浠婂ぉ鎬庝箞杩欎箞瀹夐潤",
+                "title": "猫猫今天怎么这么安静",
                 "key": "bili:BV1",
             }
         },
@@ -546,7 +590,39 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
 
     context = runtime.recent_interaction_context(limit=1)
 
-    assert context == ["active_engagement / active_engagement: bili_trending either_or - 鐚尗浠婂ぉ鎬庝箞杩欎箞瀹夐潤"]
+    assert context == ["active_engagement / active_engagement: bili_trending either_or - 猫猫今天怎么这么安静"]
+
+
+def test_recent_interaction_context_includes_active_engagement_family_and_axis(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="__neko_active__",
+        nickname="NEKO",
+        source="active_engagement",
+        raw={
+            "topic_material": {
+                "source": "fallback",
+                "shape": "either_or",
+                "title": "Pick one desk charm",
+                "key": "fallback:desk",
+                "family": "choice_vote",
+                "fun_axis": "choice",
+            }
+        },
+    )
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            steps=[PipelineStep("active_engagement", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert context == [
+        "active_engagement / active_engagement: fallback either_or choice_vote choice - Pick one desk charm"
+    ]
 
 
 def test_recent_interaction_context_includes_active_engagement_reply_intent(runtime: RoastRuntime) -> None:
@@ -561,6 +637,8 @@ def test_recent_interaction_context_includes_active_engagement_reply_intent(runt
                 "title": "Pick one tiny room goal",
                 "key": "fallback:test",
                 "intent": "tiny_answer",
+                "family": "micro_challenge",
+                "fun_axis": "micro_challenge",
                 "reply_affordance": "viewer can answer in a few words",
             }
         },
@@ -577,8 +655,179 @@ def test_recent_interaction_context_includes_active_engagement_reply_intent(runt
     context = runtime.recent_interaction_context(limit=1)
 
     assert context == [
-        "active_engagement / active_engagement: fallback small_challenge tiny_answer - Pick one tiny room goal"
+        "active_engagement / active_engagement: fallback small_challenge tiny_answer micro_challenge micro_challenge - Pick one tiny room goal / reply: viewer can answer in a few words"
     ]
+
+
+def test_recent_interaction_context_includes_spent_neko_output(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="one more line",
+                source="live_danmaku",
+            ),
+            output="old snack reward bit",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert context == [
+        "danmaku_response / live_danmaku from viewer: one more line / spent_output_family=reward / NEKO already said: old snack reward bit"
+    ]
+
+
+def test_recent_interaction_context_ignores_dispatcher_placeholder_output(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="one more line",
+                source="live_danmaku",
+            ),
+            output="queued_to_neko(target=Lanlan, ai_behavior=respond, visibility=none)",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert context == ["danmaku_response / live_danmaku from viewer: one more line"]
+    assert "NEKO already said" not in context[0]
+
+
+def test_viewer_session_context_includes_spent_neko_output(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="same viewer line",
+                source="live_danmaku",
+            ),
+            output="old avatar joke",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.viewer_session_context("42", limit=1)
+
+    assert context == ["danmaku_response: same viewer line / NEKO already said: old avatar joke"]
+
+
+def test_recent_interaction_context_marks_spent_output_families(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="say something",
+                source="live_danmaku",
+            ),
+            output="小鱼干奖励先记账，等弹幕接一句",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    context = runtime.recent_interaction_context(limit=1)
+
+    assert "spent_output_family=reward,audience_prompt" in context[0]
+    assert "NEKO already said" in context[0]
+
+
+def test_spent_output_family_does_not_treat_common_or_as_choice_vote(runtime: RoastRuntime) -> None:
+    assert "choice_vote" not in runtime._spent_output_families("short reaction for viewer")
+    assert "choice_vote" in runtime._spent_output_families("either_or room choice")
+
+
+def test_spent_output_family_matches_english_tokens_as_words(runtime: RoastRuntime) -> None:
+    families = runtime._spent_output_families("I can explain this catch without a presentation.")
+
+    assert "program_plan" not in families
+    assert "audience_prompt" not in families
+    assert "reward" not in families
+    assert "program_plan" in runtime._spent_output_families("tiny plan for the room")
+    assert "audience_prompt" in runtime._spent_output_families("chat can answer this")
+    assert "reward" in runtime._spent_output_families("gift for the first answer")
+
+
+def test_spent_output_family_marks_live_audience_prompt_variants(runtime: RoastRuntime) -> None:
+    for output in (
+        "大家想听猫猫聊点什么",
+        "你们想看猫猫做什么，发弹幕说一句",
+        "来一句短弹幕给猫猫接话",
+        "给猫猫打个分或者打个标签",
+        "还在的观众扣个1，猫猫看看有没有人",
+        "给猫猫一点反应，吱一声也行",
+        "drop a 1 if the chat is still alive",
+        "直播间还有人吗，猫猫探头",
+        "有人在吗，猫猫确认一下信号",
+        "anyone here with a tiny signal",
+    ):
+        assert "audience_prompt" in runtime._spent_output_families(output)
+
+
+def test_spent_output_family_does_not_mark_example_phrase_as_audience_prompt(runtime: RoastRuntime) -> None:
+    assert "audience_prompt" not in runtime._spent_output_families("猫猫打个比方，这局像开盲盒")
+
+
+def test_recent_spent_output_family_keeps_longer_live_window(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(uid="viewer_reward", nickname="viewer", source="live_danmaku"),
+            output="小鱼干奖励先收好。",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+    for index in range(8):
+        runtime.record_result(
+            InteractionResult(
+                accepted=True,
+                status="pushed",
+                event=ViewerEvent(uid=f"viewer_{index}", nickname="viewer", source="live_danmaku"),
+                output=f"普通回应 {index}",
+                steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+            )
+        )
+
+    assert "reward" in runtime._recent_spent_output_families()
+
+
+def test_viewer_session_context_ignores_dry_run_placeholder_output(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="dry_run",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="same viewer line",
+                source="live_danmaku",
+            ),
+            output="dry_run(target=none, ai_behavior=respond)",
+            reason="dispatcher.dry_run",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    context = runtime.viewer_session_context("42", limit=1)
+
+    assert context == ["danmaku_response: same viewer line"]
+    assert "NEKO already said" not in context[0]
 
 
 def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRuntime) -> None:
@@ -603,6 +852,115 @@ def test_record_result_exposes_response_module_and_gift_signal(runtime: RoastRun
     assert latest["event_signal"] == "gift_signal"
 
 
+def test_record_result_exposes_danmaku_response_profile_for_monitoring(runtime: RoastRuntime) -> None:
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="哈哈哈",
+        source="live_danmaku",
+    )
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
+    request = InteractionRequest(
+        event=event,
+        identity=identity,
+        profile=profile,
+        prompt_text="prompt",
+        live_mode="solo_stream",
+        strength="normal",
+        metadata={
+            "danmaku_profile": "emoji_or_reaction",
+            "danmaku_reply_target": "current_reaction",
+            "danmaku_reply_shape": "mirror_mood_in_a_few_chars",
+        },
+    )
+
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=event,
+            identity=identity,
+            profile=profile,
+            request=request,
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+
+    assert latest["response_module"] == "danmaku_response"
+    assert latest["danmaku_profile"] == "emoji_or_reaction"
+    assert latest["danmaku_reply_target"] == "current_reaction"
+    assert latest["danmaku_reply_shape"] == "mirror_mood_in_a_few_chars"
+
+
+def test_record_result_exposes_spent_output_family_for_monitoring(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="ok",
+                source="live_danmaku",
+            ),
+            output="小鱼干奖励先记账，等弹幕接一句",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+
+    assert latest["spent_output_family"] == "reward,audience_prompt"
+
+
+def test_record_result_does_not_expose_spent_output_family_for_dispatcher_placeholder(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="one more line",
+                source="live_danmaku",
+            ),
+            output="queued_to_neko(target=Lanlan, ai_behavior=respond, visibility=none, text=gift chat plan)",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+
+    assert "spent_output_family" not in latest
+
+
+def test_record_result_does_not_expose_spent_output_family_for_dry_run_text(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=False,
+            status="dry_run",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="one more line",
+                source="live_danmaku",
+            ),
+            output="小鱼干奖励先记账，等弹幕接一句。",
+            reason="dispatcher.dry_run",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+
+    latest = runtime.recent_results[-1]
+
+    assert "spent_output_family" not in latest
+    assert runtime._recent_spent_output_families() == set()
+    assert runtime.recent_interaction_context(limit=1) == ["danmaku_response / live_danmaku from viewer: one more line"]
+
+
 def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRuntime) -> None:
     runtime.record_result(
         InteractionResult(
@@ -617,6 +975,7 @@ def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRun
                         "source": "bili_trending",
                         "key": "bili:BV_ROOM_NEUTRAL",
                         "title": "room neutral tiny desk vote",
+                        "live_column": "NEKO micro poll",
                         "recent_topic_skip_reason": "single_viewer_flood",
                     }
                 },
@@ -627,6 +986,7 @@ def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRun
 
     event = runtime.recent_results[-1]["event"]
     assert event["topic_source"] == "bili_trending"
+    assert event["topic_live_column"] == "NEKO micro poll"
     assert event["topic_recent_skip_reason"] == "single_viewer_flood"
 
 
@@ -646,7 +1006,7 @@ def test_record_result_uses_live_event_type_for_signal_observation(
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
-        danmaku_text="璋㈣阿鐚尗",
+        danmaku_text="谢谢猫猫",
         source="live_danmaku",
         raw={"event_type": event_type},
     )
@@ -772,6 +1132,25 @@ async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: 
 
 
 @pytest.mark.asyncio
+async def test_live_state_times_out_warmup_to_idle_when_no_one_speaks(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._live_state_now = lambda: 100.0
+    await runtime._start_live_listener(123)
+    runtime._live_state_now = lambda: 160.0
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_state"]["reason"] == "no_recent_activity"
+    assert state["live_state"]["warmup_hosting_candidate"] is False
+    assert state["live_state"]["idle_hosting_candidate"] is True
+    assert state["live_director_status"]["next_auto_action"] == "idle_hosting"
+
+
+@pytest.mark.asyncio
 async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -834,8 +1213,8 @@ async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRunti
     assert state["live_state"]["idle_hosting_candidate"] is True
     assert state["idle_hosting_status"]["eligible"] is False
     assert state["idle_hosting_status"]["reason"] == "minimum_interval"
-    assert state["idle_hosting_status"]["cooldown_remaining"] == 70.0
-    assert state["idle_hosting_status"]["min_interval_seconds"] == 120.0
+    assert state["idle_hosting_status"]["cooldown_remaining"] == 40.0
+    assert state["idle_hosting_status"]["min_interval_seconds"] == 90.0
 
 
 @pytest.mark.asyncio
@@ -856,8 +1235,8 @@ async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: Ro
 
     runtime.config.activity_level = "active"
     active_state = await runtime.dashboard_state()
-    assert active_state["idle_hosting_status"]["min_interval_seconds"] == 60.0
-    assert active_state["idle_hosting_status"]["cooldown_remaining"] == 10.0
+    assert active_state["idle_hosting_status"]["min_interval_seconds"] == 45.0
+    assert active_state["idle_hosting_status"]["cooldown_remaining"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -993,6 +1372,112 @@ def test_idle_hosting_event_rotates_host_beats(runtime: RoastRuntime) -> None:
     assert all(beat["reply_affordance"] for beat in beats)
 
 
+def test_idle_hosting_skips_similar_recent_beat_titles(runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+    candidates = [
+        {
+            "key": "idle:cat-radio-a",
+            "shape": "soft_observation",
+            "fun_axis": "mood",
+            "title": "今晚猫猫小电台怎么开场",
+            "hint": "first",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "key": "idle:cat-radio-b",
+            "shape": "tiny_choice",
+            "fun_axis": "choice",
+            "title": "今晚猫猫小电台开场方式",
+            "hint": "similar",
+            "reply_affordance": "viewer can pick one side",
+        },
+        {
+            "key": "idle:desk-snack",
+            "shape": "tiny_choice",
+            "fun_axis": "choice",
+            "title": "桌面零食二选一",
+            "hint": "fresh",
+            "reply_affordance": "viewer can pick one snack",
+        },
+    ]
+    monkeypatch.setattr(runtime, "_idle_hosting_beat_candidates", lambda: list(candidates))
+
+    first = runtime._next_idle_hosting_beat()
+    second = runtime._next_idle_hosting_beat()
+
+    assert first["key"] == "idle:cat-radio-a"
+    assert second["key"] == "idle:desk-snack"
+
+
+def test_idle_hosting_prefers_fresh_reply_affordance(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = [
+        {
+            "key": "idle:mood-one",
+            "shape": "soft_observation",
+            "fun_axis": "mood",
+            "title": "quiet mood one",
+            "hint": "first",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "key": "idle:choice-same-reply",
+            "shape": "tiny_choice",
+            "fun_axis": "choice",
+            "title": "fresh choice",
+            "hint": "same reply path",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "key": "idle:tease-new-reply",
+            "shape": "tiny_tease",
+            "fun_axis": "tease",
+            "title": "fresh tease",
+            "hint": "fresh reply path",
+            "reply_affordance": "viewer can tease NEKO back",
+        },
+    ]
+    monkeypatch.setattr(runtime, "_idle_hosting_beat_candidates", lambda: list(candidates))
+
+    first = runtime._next_idle_hosting_beat()
+    second = runtime._next_idle_hosting_beat()
+
+    assert first["key"] == "idle:mood-one"
+    assert second["key"] == "idle:tease-new-reply"
+
+
+def test_idle_hosting_falls_back_when_all_beat_titles_are_similar(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = [
+        {
+            "key": "idle:cat-radio-a",
+            "shape": "soft_observation",
+            "fun_axis": "mood",
+            "title": "今晚猫猫小电台怎么开场",
+            "hint": "first",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "key": "idle:cat-radio-b",
+            "shape": "tiny_choice",
+            "fun_axis": "choice",
+            "title": "今晚猫猫小电台开场方式",
+            "hint": "similar",
+            "reply_affordance": "viewer can pick one side",
+        },
+    ]
+    monkeypatch.setattr(runtime, "_idle_hosting_beat_candidates", lambda: list(candidates))
+
+    first = runtime._next_idle_hosting_beat()
+    second = runtime._next_idle_hosting_beat()
+
+    assert first["key"] == "idle:cat-radio-a"
+    assert second["key"] == "idle:cat-radio-b"
+
+
 def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime) -> None:
     event = runtime._idle_hosting_event({"state": "idle"})
 
@@ -1002,6 +1487,8 @@ def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime)
     assert public["host_beat_shape"]
     assert public["host_beat_fun_axis"]
     assert public["host_beat_title"]
+    assert public["host_beat_live_column"]
+    assert public["host_beat_idle_stage"]
     assert public["host_beat_reply_affordance"]
 
 
@@ -1020,8 +1507,38 @@ def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: R
 
     assert "idle_hosting / idle_hosting:" in context[0]
     assert event.raw["host_beat"]["shape"] in context[0]
+    assert event.raw["host_beat"]["family"] in context[0]
+    assert event.raw["host_beat"]["fun_axis"] in context[0]
+    assert event.raw["host_beat"]["live_column"] in context[0]
+    assert event.raw["host_beat"]["idle_stage"] in context[0]
     assert event.raw["host_beat"]["title"] in context[0]
     assert event.raw["host_beat"]["reply_affordance"] in context[0]
+
+
+def test_idle_hosting_progresses_stage_after_repeated_idle_beats(runtime: RoastRuntime) -> None:
+    first = runtime._idle_hosting_event({"state": "idle"})
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=first,
+            steps=[PipelineStep("idle_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+    second = runtime._idle_hosting_event({"state": "idle"})
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="dry_run",
+            event=second,
+            steps=[PipelineStep("idle_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+        )
+    )
+    third = runtime._idle_hosting_event({"state": "idle"})
+
+    assert first.raw["host_beat"]["idle_stage"] == "settle"
+    assert second.raw["host_beat"]["idle_stage"] == "column"
+    assert third.raw["host_beat"]["idle_stage"] == "callback"
 
 
 @pytest.mark.asyncio
@@ -1131,11 +1648,12 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
     runtime.config.live_mode = "solo_stream"
+    runtime.config.activity_level = "quiet"
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
     _record_result_at(
         runtime,
-        age_seconds=70,
+        age_seconds=100,
         steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
     )
 
@@ -1146,7 +1664,7 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     assert state["active_engagement_status"]["eligible"] is False
     assert state["active_engagement_status"]["reason"] == "recent_danmaku_output"
     assert state["active_engagement_status"]["minimum_interval_remaining"] == 0.0
-    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 15.0
+    assert 0.0 < state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] <= 120.0
     assert state["live_director_status"]["next_auto_action"] == "active_engagement"
     assert state["live_director_status"]["eligible"] is False
     assert state["live_director_status"]["reason"] == "recent_danmaku_output"
@@ -1270,14 +1788,62 @@ async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_bili_trending_topic_material_gets_replyable_shape_profile(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "desk snack or hot drink choice", "bvid": "BV_CHOICE"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["source"] == "bili_trending"
+    assert topic["key"] == "bili:BV_CHOICE"
+    assert topic["shape"] == "either_or"
+    assert topic["fun_axis"] == "choice"
+    assert topic["family"] == "choice_vote"
+    assert topic["live_column"] == "NEKO micro poll"
+    assert topic["reply_affordance"] == "viewer can pick one concrete side"
+    assert "A/B choice" in topic["hint"]
+
+
+def test_recent_danmaku_topic_material_gets_replyable_shape_profile(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="keyboard sounds sleepy tonight",
+                source="live_danmaku",
+            ),
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topics = runtime._recent_danmaku_topic_candidates()
+
+    assert topics[0]["source"] == "recent_danmaku"
+    assert topics[0]["preferred_shape"] == "tiny_tease"
+    assert topics[0]["fun_axis"] == "tease"
+    assert topics[0]["live_column"] == "NEKO tiny verdict"
+    assert topics[0]["reply_affordance"] == "viewer can tease NEKO or the topic back"
+
+
+@pytest.mark.asyncio
 async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtime: RoastRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
             "videos": [
-                {"title": "閲嶅妫€鏌ョ敤璇濋 A", "bvid": "BV_A"},
-                {"title": "閲嶅妫€鏌ョ敤璇濋 B", "bvid": "BV_B"},
-                {"title": "閲嶅妫€鏌ョ敤璇濋 C", "bvid": "BV_C"},
+                {"title": "普通直播话题 A", "bvid": "BV_A"},
+                {"title": "普通直播话题 B", "bvid": "BV_B"},
+                {"title": "普通直播话题 C", "bvid": "BV_C"},
             ],
         }
 
@@ -2618,7 +3184,7 @@ async def test_active_engagement_compacts_long_trending_titles(runtime: RoastRun
     assert topic["source"] == "bili_trending"
     assert topic["key"] == "bili:BV_LONG_TOPIC"
     assert len(topic["title"]) <= 40
-    assert topic["title"].endswith("…")
+    assert topic["title"].endswith("...")
 
 
 @pytest.mark.asyncio
@@ -2931,7 +3497,7 @@ async def test_active_engagement_uses_fallback_instead_of_repeating_recent_singl
         return {
             "success": True,
             "videos": [
-                {"title": "闁插秴顦插Λ鈧弻銉ф暏閸楁洑绔撮悜顓熸偝", "bvid": "BV_ONLY"},
+                {"title": "单一直播话题", "bvid": "BV_ONLY"},
             ],
         }
 
@@ -2943,6 +3509,51 @@ async def test_active_engagement_uses_fallback_instead_of_repeating_recent_singl
     assert first["source"] == "bili_trending"
     assert second["source"] == "fallback"
     assert second["key"] != first["key"]
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_skips_similar_topic_titles_even_with_different_keys(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "今晚猫猫小电台怎么开场", "bvid": "BV_CAT_RADIO_A"},
+                {"title": "今晚猫猫小电台开场方式", "bvid": "BV_CAT_RADIO_B"},
+                {"title": "桌面零食二选一", "bvid": "BV_SNACK_CHOICE"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["key"] == "bili:BV_CAT_RADIO_A"
+    assert second["key"] == "bili:BV_SNACK_CHOICE"
+    assert second["title"] == "桌面零食二选一"
+    assert second["recent_topic_skip_reason"] == "similar_topic_title"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_falls_back_when_all_external_titles_are_similar(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {
+            "success": True,
+            "videos": [
+                {"title": "今晚猫猫小电台怎么开场", "bvid": "BV_CAT_RADIO_A"},
+                {"title": "今晚猫猫小电台开场方式", "bvid": "BV_CAT_RADIO_B"},
+            ],
+        }
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["key"] == "bili:BV_CAT_RADIO_A"
+    assert second["source"] == "fallback"
+    assert second["key"] != first["key"]
+    assert second["recent_topic_skip_reason"] == "similar_topic_title"
 
 
 @pytest.mark.asyncio
@@ -2964,7 +3575,7 @@ async def test_active_engagement_refreshes_trending_when_cached_topics_are_exhau
         return {
             "success": True,
             "videos": [
-                {"title": "second tiny desk choice", "bvid": "BV_SECOND_TOPIC"},
+                {"title": "second tiny cat challenge", "bvid": "BV_SECOND_TOPIC"},
             ],
         }
 
@@ -2996,6 +3607,99 @@ async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stre
     assert all(len(topic["title"]) >= 8 for topic in topics)
 
 
+def test_active_engagement_relaxed_similarity_still_prefers_unused_key(runtime: RoastRuntime) -> None:
+    runtime._active_engagement_recent_topic_keys.append("fallback:used")
+    runtime._active_engagement_recent_topic_titles.append("same tiny room choice")
+
+    candidate = runtime._choose_active_engagement_candidate(
+        [
+            {"key": "fallback:used", "title": "same tiny room choice", "fun_axis": "choice"},
+            {"key": "fallback:unused", "title": "same tiny room choice again", "fun_axis": "choice"},
+        ],
+        avoid_recent_fun_axis=False,
+        avoid_recent_family=False,
+        allow_similar_title=True,
+    )
+
+    assert candidate is not None
+    assert candidate["key"] == "fallback:unused"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_avoids_recent_idle_hosting_material_family(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime._recent_host_material_families.append("choice_vote")
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert topic["key"] == "fallback:keyboard-busy"
+    assert topic["family"] != "choice_vote"
+    assert topic["recent_topic_skip_reason"] == "recent_host_family"
+
+
+def test_idle_hosting_avoids_recent_active_engagement_material_family(runtime: RoastRuntime) -> None:
+    runtime._recent_host_material_families.append("room_mood")
+
+    beat = runtime._next_idle_hosting_beat()
+
+    assert beat["family"] != "room_mood"
+    assert beat["idle_stage"] == "settle"
+
+
+def test_idle_hosting_avoids_recent_spent_output_family(runtime: RoastRuntime) -> None:
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="42",
+                nickname="viewer",
+                danmaku_text="one more line",
+                source="live_danmaku",
+            ),
+            output="今晚猫窝小电台的气氛先记一笔。",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    beat = runtime._next_idle_hosting_beat()
+
+    assert "room_mood" in runtime._recent_spent_output_families()
+    assert beat["family"] != "room_mood"
+    assert beat["idle_stage"] == "settle"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_avoids_recent_spent_output_family(runtime: RoastRuntime) -> None:
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+    runtime.record_result(
+        InteractionResult(
+            accepted=True,
+            status="pushed",
+            event=ViewerEvent(
+                uid="__neko_active__",
+                nickname="NEKO",
+                source="active_engagement",
+            ),
+            output="那就二选一，今晚先选热饮还是小甜食。",
+            steps=[PipelineStep("danmaku_response", "ok"), PipelineStep("neko_dispatcher", "ok")],
+        )
+    )
+
+    topic = await runtime._select_active_engagement_topic()
+
+    assert "choice_vote" in runtime._recent_spent_output_families()
+    assert topic["key"] == "fallback:keyboard-busy"
+    assert topic["family"] != "choice_vote"
+    assert topic["recent_topic_skip_reason"] == "recent_spent_output_family"
+
+
 def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(runtime: RoastRuntime) -> None:
     blocked_fragments = ("\u5f39\u5e55\u5c11", "\u6ca1\u5f39\u5e55", "\u6ca1\u4eba\u8bf4\u8bdd", "\u51b7\u573a", "\u5b89\u9759")
 
@@ -3011,7 +3715,7 @@ def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: RoastRuntime)
     axes = {beat["fun_axis"] for beat in beats}
     titles = [beat["title"] for beat in beats]
 
-    assert len(beats) >= 8
+    assert len(beats) >= 24
     assert {
         "soft_observation",
         "tiny_choice",
@@ -3021,19 +3725,30 @@ def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: RoastRuntime)
         "micro_challenge",
     }.issubset(shapes)
     assert {"choice", "tease", "mood", "micro_challenge", "viewer_callback"}.issubset(axes)
+    assert len({beat.get("live_column") for beat in beats if beat.get("live_column")}) >= 12
     assert all(str(beat.get("reply_affordance") or "").strip() for beat in beats)
     assert any("\u4e00\u4e2a\u5b57" in title or "\u4e00\u4e2a\u8bcd" in title for title in titles)
     assert any("\u4e8c\u9009\u4e00" in title or "A/B" in title for title in titles)
+    assert any("\u4e09\u5b57" in title for title in titles)
+    assert any("\u5c4f\u5e55" in title for title in titles)
+    assert any("\u5c3e\u5df4" in title for title in titles)
+    assert any("\u4e00\u5b57" in title for title in titles)
+    assert any("\u4e0d\u592a\u9760\u8c31\u5956" in title for title in titles)
 
 
 def test_active_engagement_fallback_topics_explain_fun_axis_and_reply_path(runtime: RoastRuntime) -> None:
     topics = runtime._active_engagement_fallback_topic_candidates()
     axes = {topic.get("fun_axis") for topic in topics}
 
-    assert len(topics) >= 20
+    assert len(topics) >= 36
     assert {"choice", "tease", "mood", "micro_challenge", "viewer_callback"}.issubset(axes)
+    assert len({topic.get("live_column") for topic in topics if topic.get("live_column")}) >= 14
     assert all(str(topic.get("reply_affordance") or "").strip() for topic in topics)
     assert not any("what should we talk about" in str(topic.get("hint") or "").lower() for topic in topics)
+    keys = {topic["key"] for topic in topics}
+    assert "fallback:tiny-court" in keys
+    assert "fallback:two-char-password" in keys
+    assert "fallback:lightstick-reflection" in keys
 
 
 def test_proactive_material_avoids_generic_host_bait(runtime: RoastRuntime) -> None:
@@ -3074,8 +3789,12 @@ async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtim
 
     assert first["key"] == "fallback:snack-choice"
     assert first["shape"] == "either_or"
+    assert first["live_column"] == "NEKO micro poll"
+    assert first["topic_pack"] == "micro_poll"
     assert second["key"] == "fallback:keyboard-busy"
     assert second["shape"] == "tiny_tease"
+    assert second["live_column"] == "NEKO tiny verdict"
+    assert second["topic_pack"] == "neko_verdict"
     assert "tiny playful tease" in second["hook"]
 
 
@@ -3089,6 +3808,7 @@ async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: 
     topic = await runtime._select_active_engagement_topic()
 
     assert topic["intent"] == "quick_vote"
+    assert topic["topic_pack"] == "micro_poll"
     assert topic["reply_affordance"] == "viewer can pick one concrete side"
 
 
@@ -3120,26 +3840,83 @@ async def test_active_engagement_topic_selection_prefers_fresh_fun_axis(runtime:
 
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_shapes_keep_rotating_after_full_cycle(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_selection_prefers_fresh_reply_affordance(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = [
+        {
+            "source": "fallback",
+            "key": "topic:mood-one",
+            "title": "quiet mood one",
+            "hint": "first",
+            "preferred_shape": "light_stance",
+            "fun_axis": "mood",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "source": "fallback",
+            "key": "topic:choice-same-reply",
+            "title": "fresh choice",
+            "hint": "same reply path",
+            "preferred_shape": "either_or",
+            "fun_axis": "choice",
+            "reply_affordance": "viewer can answer with one mood word",
+        },
+        {
+            "source": "fallback",
+            "key": "topic:tease-new-reply",
+            "title": "fresh tease",
+            "hint": "fresh reply path",
+            "preferred_shape": "tiny_tease",
+            "fun_axis": "tease",
+            "reply_affordance": "viewer can tease NEKO back",
+        },
+    ]
+    monkeypatch.setattr(runtime, "_active_engagement_fallback_topic_candidates", lambda: list(candidates))
+
+    async def fetch_topics(limit: int = 6) -> dict:
+        return {"success": True, "videos": []}
+
+    runtime._active_engagement_topic_fetcher = fetch_topics
+
+    first = await runtime._select_active_engagement_topic()
+    second = await runtime._select_active_engagement_topic()
+
+    assert first["key"] == "topic:mood-one"
+    assert second["key"] == "topic:tease-new-reply"
+
+
+@pytest.mark.asyncio
+async def test_active_engagement_topic_shapes_follow_material_profile(runtime: RoastRuntime) -> None:
+    titles = [
+        "桌面零食二选一",
+        "键盘像在打盹",
+        "猫猫假装正经三秒",
+        "今晚小电台气氛",
+        "水杯还是热饮",
+        "屏幕也在盯回来",
+        "夜猫子状态投票",
+        "猫爪按钮选择",
+    ]
+
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
             "videos": [
-                {"title": f"杞崲妫€鏌ョ敤璇濋 {index}", "bvid": f"BV_ROTATE_{index}"}
-                for index in range(8)
+                {"title": title, "bvid": f"BV_ROTATE_{index}"}
+                for index, title in enumerate(titles)
             ],
         }
 
     runtime._active_engagement_topic_fetcher = fetch_topics
 
-    shapes = [(await runtime._select_active_engagement_topic())["shape"] for _ in range(6)]
+    shapes = [(await runtime._select_active_engagement_topic())["shape"] for _ in range(4)]
 
     assert shapes == [
         "either_or",
-        "light_stance",
         "tiny_tease",
         "small_challenge",
-        "either_or",
         "light_stance",
     ]
 
@@ -3195,7 +3972,7 @@ async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRu
     assert result is None
     state = await runtime.dashboard_state()
     assert state["active_engagement_status"]["reason"] == "minimum_interval"
-    assert state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
+    assert state["active_engagement_status"]["minimum_interval_remaining"] == 10.0
     assert state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] == 0.0
     assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
 
@@ -3223,10 +4000,10 @@ async def test_activity_level_controls_active_engagement_minimum_interval(runtim
 
     assert quiet_state["active_engagement_status"]["minimum_interval_seconds"] == 300.0
     assert quiet_state["active_engagement_status"]["minimum_interval_remaining"] == 250.0
-    assert standard_state["active_engagement_status"]["minimum_interval_seconds"] == 90.0
-    assert standard_state["active_engagement_status"]["minimum_interval_remaining"] == 40.0
-    assert active_state["active_engagement_status"]["minimum_interval_seconds"] == 60.0
-    assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 10.0
+    assert standard_state["active_engagement_status"]["minimum_interval_seconds"] == 60.0
+    assert standard_state["active_engagement_status"]["minimum_interval_remaining"] == 10.0
+    assert active_state["active_engagement_status"]["minimum_interval_seconds"] == 45.0
+    assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -3274,6 +4051,33 @@ async def test_auto_active_engagement_can_take_over_after_repeated_idle_hosting(
     assert result.status == "dry_run"
     assert result.event.source == "active_engagement"
     assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_auto_active_engagement_takes_over_after_two_idle_beats(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime._live_listener_started_at = runtime._live_state_now() - 120.0
+    runtime.safety_guard.set_connected(True)
+    for age in (120, 60):
+        runtime.record_result(
+            InteractionResult(
+                accepted=True,
+                status="dry_run",
+                event=ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
+                steps=[PipelineStep("idle_hosting", "ok"), PipelineStep("neko_dispatcher", "dry_run")],
+                created_at=_created_at_age(age),
+            )
+        )
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_state"]["state"] == "idle"
+    assert state["live_director_status"]["next_auto_action"] == "active_engagement"
+    assert state["live_director_status"]["reason"] == "idle_hosting_streak"
 
 
 @pytest.mark.asyncio

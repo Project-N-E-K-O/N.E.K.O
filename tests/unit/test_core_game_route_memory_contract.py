@@ -1,5 +1,5 @@
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 import queue
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -91,12 +91,16 @@ class _FakeActivityTracker:
     def __init__(self):
         self.voice_rms_count = 0
         self.user_messages = []
+        self.ai_messages = []
 
     def on_voice_rms(self):
         self.voice_rms_count += 1
 
     def on_user_message(self, text):
         self.user_messages.append(text)
+
+    def on_ai_message(self, text=None, now=None):
+        self.ai_messages.append((text, now))
 
 
 class _FakeVoiceBridgeSession:
@@ -175,6 +179,7 @@ def _make_manager():
     mgr.user_activity = []
     mgr.last_user_activity_time = None
     mgr.last_user_message_time = None
+    mgr._activity_tracker = _FakeActivityTracker()
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -1461,6 +1466,1080 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 
     assert mgr._recent_ai_voice_echo_text == "确认已经播报的文本"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
+
+
+@pytest.mark.unit
+def test_neko_live_reply_repeat_detects_chinese_paraphrase():
+    assert core_module._looks_like_repeated_neko_live_reply(
+        "我可是随时准备着给你们惊喜的喵",
+        "我可是随时准备给你们惊喜的喵",
+    )
+
+
+@pytest.mark.unit
+def test_neko_live_reply_repeat_detects_same_host_beat_with_changed_words():
+    assert core_module._looks_like_repeated_neko_live_reply(
+        "小鱼干奖励先记账，等弹幕接一句",
+        "给你们备了鱼干小奖励，谁先发弹幕",
+    )
+
+
+@pytest.mark.unit
+def test_neko_live_reply_repeat_detects_same_reward_bit_with_low_word_overlap():
+    assert core_module._looks_like_repeated_neko_live_reply(
+        "小鱼干先记账",
+        "奖励小本本又打开了",
+    )
+
+
+@pytest.mark.unit
+def test_neko_live_reply_repeat_detects_same_host_score_bit_with_changed_words():
+    assert core_module._looks_like_repeated_neko_live_reply(
+        "猫猫主播力先满格三秒",
+        "正经主持挑战开始，别笑",
+    )
+
+
+@pytest.mark.unit
+def test_neko_live_reply_repeat_keeps_different_short_lines_apart():
+    assert not core_module._looks_like_repeated_neko_live_reply(
+        "小鱼干先记账",
+        "今天先看弹幕",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_marks_repeated_neko_live_reply_metadata(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    mgr.current_speech_id = "live-turn-1"
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "猫猫先蹲一下",
+        metadata=metadata,
+    )
+    mgr.current_speech_id = "live-turn-2"
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "猫猫先蹲一下！",
+        metadata=metadata,
+    )
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert first["neko_live_reply_repeat"] is False
+    assert second["neko_live_reply_repeat"] is True
+    assert second["neko_live_reply_repeat_window"] == 2
+    assert mgr._neko_live_recent_reply_text == "猫猫先蹲一下！"
+    assert metadata.get("neko_live_reply_repeat") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_marks_non_adjacent_neko_live_reply_repeat():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    mgr.current_speech_id = "live-turn-1"
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "cat says tiny plan", metadata=metadata)
+    mgr.current_speech_id = "live-turn-2"
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "fresh different angle", metadata=metadata)
+    mgr.current_speech_id = "live-turn-3"
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "cat says tiny plan!", metadata=metadata)
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    third = mgr.sync_message_queue.messages[2]["data"]["metadata"]
+    assert first["neko_live_reply_repeat"] is False
+    assert second["neko_live_reply_repeat"] is False
+    assert third["neko_live_reply_repeat"] is True
+    assert third["neko_live_reply_repeat_window"] == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_detects_older_neko_live_reply_repeat_inside_wider_window():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+    outputs = [
+        "cat says tiny plan",
+        "fresh desk charm",
+        "small moon check",
+        "quiet room blink",
+        "one word vote",
+        "tiny snack compass",
+        "soft corner tease",
+        "room light report",
+        "cat says tiny plan!",
+    ]
+
+    for index, output in enumerate(outputs, start=1):
+        mgr.current_speech_id = f"live-turn-{index}"
+        await core_module.LLMSessionManager.send_lanlan_response(mgr, output, metadata=metadata)
+
+    last = mgr.sync_message_queue.messages[-1]["data"]["metadata"]
+    assert last["neko_live_reply_repeat"] is True
+    assert last["neko_live_reply_repeat_window"] == 9
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_prunes_neko_live_repeat_history_before_detection():
+    mgr = _make_manager()
+    mgr._neko_live_recent_reply_texts = OrderedDict(
+        [("live-turn-0", "ancient moon phrase")]
+        + [(f"live-turn-{index}", f"fresh angle {index}") for index in range(1, 26)]
+    )
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    mgr.current_speech_id = "live-turn-new"
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "ancient moon phrase!",
+        metadata=metadata,
+    )
+
+    saved = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    assert saved["neko_live_reply_repeat"] is False
+    assert saved["neko_live_reply_repeat_window"] == 24
+    assert list(mgr._neko_live_recent_reply_texts.values()) == [
+        *(f"fresh angle {index}" for index in range(3, 26)),
+        "ancient moon phrase!",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_shapes_neko_live_reply_to_first_sentence():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+        "max_reply_chars": 24,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "第一句刚好很短！第二句不该播出来。",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "第一句刚好很短！"
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "first_sentence"
+    assert saved["neko_live_reply_output_chars"] == len("第一句刚好很短！")
+    assert saved["neko_live_reply_original_chars"] == len("第一句刚好很短！第二句不该播出来。")
+    assert metadata.get("neko_live_reply_shaped") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_clips_long_neko_live_reply_without_sentence_break():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "warmup_hosting",
+        "max_reply_chars": 12,
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "这一整段没有停顿会变成很长很长的直播回复",
+        metadata=metadata,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    saved = message["metadata"]
+    assert message["text"] == "这一整段没有停顿会变成很"
+    assert len(message["text"]) == 12
+    assert saved["neko_live_reply_shaped"] is True
+    assert saved["neko_live_reply_shape_reason"] == "max_reply_chars"
+    assert saved["neko_live_reply_output_chars"] == 12
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_queues_shaped_neko_live_reply_for_tts():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+        "max_reply_chars": 28,
+    }
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "第一句刚好很短！第二句不该进入语音。",
+        metadata=metadata,
+        mirror_text=True,
+        emit_turn_end_after=False,
+    )
+
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert result["ok"] is True
+    assert result["audio_queued"] is True
+    assert message["text"] == "第一句刚好很短！"
+    assert mgr.tts_request_queue.messages[0][1] == "第一句刚好很短！"
+    assert result["metadata"]["neko_live_reply_shaped"] is True
+    assert result["metadata"]["neko_live_reply_shape_reason"] == "first_sentence"
+    assert message["metadata"]["neko_live_reply_shaped"] is True
+    assert metadata.get("neko_live_reply_shaped") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_marks_similar_neko_live_reply_repeat():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    mgr.current_speech_id = "live-turn-1"
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat is ready with a tiny surprise",
+        metadata=metadata,
+    )
+    mgr.current_speech_id = "live-turn-2"
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat is ready with tiny surprises",
+        metadata=metadata,
+    )
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert first["neko_live_reply_repeat"] is False
+    assert second["neko_live_reply_repeat"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_suppresses_repeated_neko_live_first_chunk():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    sent = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan!",
+        is_first_chunk=True,
+        turn_id="live-turn-2",
+        metadata=metadata,
+    )
+
+    assert sent is False
+    assert len(mgr.sync_message_queue.messages) == 1
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    assert first["neko_live_reply_repeat"] is False
+    assert mgr._last_neko_live_reply_suppressed is True
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["cat says tiny plan"]
+    assert mgr._current_ai_turn_text == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_suppresses_repeated_neko_live_reply_stream_turn():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    first_chunk_sent = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat",
+        is_first_chunk=True,
+        turn_id="live-turn-2",
+        metadata=metadata,
+    )
+    second_chunk_sent = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        " says tiny plan!",
+        is_first_chunk=False,
+        turn_id="live-turn-2",
+        metadata=metadata,
+    )
+
+    assert first_chunk_sent is False
+    assert second_chunk_sent is False
+    assert len(mgr.sync_message_queue.messages) == 2
+    assert mgr.sync_message_queue.messages[-1]["data"]["text"] == "cat"
+    assert mgr._last_neko_live_reply_suppressed is True
+    tracked_meta = mgr._last_tracked_neko_live_reply_metadata(metadata)
+    assert tracked_meta["neko_live_reply_repeat"] is True
+    assert tracked_meta["neko_live_reply_suppressed"] == "repeat"
+    assert list(mgr._neko_live_recent_reply_texts.values()) == [
+        "cat says tiny plan",
+        "cat",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_output_reports_suppressed_repeated_neko_live_reply():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+
+    result = await core_module.LLMSessionManager.mirror_assistant_output(
+        mgr,
+        "cat says tiny plan!",
+        metadata=metadata,
+        turn_id="live-turn-2",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "repeated_live_reply"
+    assert result["mirrored"] is False
+    assert result["metadata"]["neko_live_reply_repeat"] is True
+    assert result["metadata"]["neko_live_reply_suppressed"] == "repeat"
+    assert len(mgr.sync_message_queue.messages) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_does_not_queue_audio_for_suppressed_neko_live_repeat():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "cat says tiny plan!",
+        metadata=metadata,
+        mirror_text=True,
+        emit_turn_end_after=True,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "repeated_live_reply"
+    assert result["audio_sent"] is False
+    assert result["audio_queued"] is False
+    assert result["metadata"]["neko_live_reply_repeat"] is True
+    assert result["metadata"]["neko_live_reply_suppressed"] == "repeat"
+    assert result["turn_end_emitted"] is True
+    assert mgr.sync_message_queue.messages[-1]["meta"]["neko_live_reply_suppressed"] == "repeat"
+    assert len(mgr.tts_request_queue.messages) == 0
+    assert len(mgr.tts_pending_chunks) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_suppresses_voice_only_neko_live_repeat():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "cat says tiny plan!",
+        metadata=metadata,
+        mirror_text=False,
+        emit_turn_end_after=True,
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "repeated_live_reply"
+    assert result["audio_sent"] is False
+    assert result["audio_queued"] is False
+    assert result["metadata"]["neko_live_reply_repeat"] is True
+    assert result["metadata"]["neko_live_reply_suppressed"] == "repeat"
+    assert result["turn_end_emitted"] is True
+    assert mgr.sync_message_queue.messages[-1]["meta"]["neko_live_reply_suppressed"] == "repeat"
+    assert len(mgr.tts_request_queue.messages) == 0
+    assert len(mgr.tts_pending_chunks) == 0
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["cat says tiny plan"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_tracks_voice_only_neko_live_without_text_mirror():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "fresh tiny host beat",
+        metadata=metadata,
+        mirror_text=False,
+        emit_turn_end_after=False,
+    )
+
+    assert result["ok"] is True
+    assert result["audio_queued"] is True
+    assert result["metadata"]["neko_live_reply_repeat"] is False
+    assert result["turn_end_emitted"] is False
+    assert len(mgr.tts_request_queue.messages) > 0
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["fresh tiny host beat"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_aggregates_neko_live_streaming_chunks_by_turn():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says ",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "tiny plan",
+        is_first_chunk=False,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "fresh different angle",
+        is_first_chunk=True,
+        turn_id="live-turn-2",
+        metadata=metadata,
+    )
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    third = mgr.sync_message_queue.messages[2]["data"]["metadata"]
+    assert first["neko_live_reply_repeat_window"] == 1
+    assert second["neko_live_reply_repeat_window"] == 1
+    assert second["neko_live_reply_repeat"] is False
+    assert third["neko_live_reply_repeat"] is False
+    assert third["neko_live_reply_repeat_window"] == 2
+    assert list(mgr._neko_live_recent_reply_texts.values()) == [
+        "cat says tiny plan",
+        "fresh different angle",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_merges_neko_live_full_buffer_snapshots_by_turn():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says ",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=False,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert first["neko_live_reply_repeat_window"] == 1
+    assert second["neko_live_reply_repeat_window"] == 1
+    assert second["neko_live_reply_repeat"] is False
+    assert list(mgr._neko_live_recent_reply_texts.values()) == [
+        "cat says tiny plan",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_detects_repeated_neko_live_reply_without_turn_id():
+    mgr = _make_manager()
+    mgr.current_speech_id = None
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "cat says tiny plan", metadata=metadata)
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "cat says tiny plan!", metadata=metadata)
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert first["neko_live_reply_repeat"] is False
+    assert second["neko_live_reply_repeat"] is True
+    assert second["neko_live_reply_repeat_window"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_migrates_legacy_recent_live_reply_values():
+    mgr = _make_manager()
+    mgr._neko_live_recent_reply_texts = deque(["cat says tiny plan"], maxlen=6)
+    mgr.current_speech_id = "live-turn-2"
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr, "cat says tiny plan!", metadata=metadata
+    )
+
+    saved = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    assert saved["neko_live_reply_repeat"] is True
+    assert saved["neko_live_reply_repeat_window"] == 2
+    assert list(mgr._neko_live_recent_reply_texts.values()) == [
+        "cat says tiny plan",
+        "cat says tiny plan!",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_callback_buffers_proactive_live_reply_metadata_until_flush():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says tiny plan", is_first_chunk=True
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert mgr.sent_responses == []
+    await core_module.LLMSessionManager._flush_neko_live_reply_output_buffer(
+        mgr, log_context="unit-test"
+    )
+
+    saved_metadata = mgr.sent_responses[0]["metadata"]
+    assert saved_metadata["plugin"] == metadata["plugin"]
+    assert saved_metadata["live_reply_contract"] == metadata["live_reply_contract"]
+    assert saved_metadata["response_module_hint"] == metadata["response_module_hint"]
+    assert saved_metadata["neko_live_reply_shaped"] is False
+    assert mgr.sent_responses[0]["text"] == "cat says tiny plan"
+    assert mgr.sent_responses[0]["is_first_chunk"] is True
+    assert metadata.get("neko_live_reply_repeat") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_output_transcript_buffers_sid_cached_proactive_live_reply_metadata_until_flush():
+    mgr = _make_manager()
+    mgr.current_speech_id = "live-sid"
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+    }
+
+    core_module.LLMSessionManager._remember_proactive_live_reply_metadata(
+        mgr, "live-sid", metadata
+    )
+    await core_module.LLMSessionManager.handle_output_transcript(
+        mgr, "cat says tiny plan", is_first_chunk=True
+    )
+
+    assert mgr.sent_responses == []
+    await core_module.LLMSessionManager._flush_neko_live_reply_output_buffer(
+        mgr, log_context="unit-test"
+    )
+
+    saved_metadata = mgr.sent_responses[0]["metadata"]
+    assert saved_metadata["plugin"] == metadata["plugin"]
+    assert saved_metadata["live_reply_contract"] == metadata["live_reply_contract"]
+    assert saved_metadata["response_module_hint"] == metadata["response_module_hint"]
+    assert saved_metadata["neko_live_reply_shaped"] is False
+    assert mgr.sent_responses[0]["text"] == "cat says tiny plan"
+    assert mgr.sent_responses[0]["turn_id"] == "live-sid"
+    assert metadata.get("neko_live_reply_repeat") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_callback_neko_live_buffer_suppresses_repeat_before_prefix_reaches_queue():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "cat says tiny plan",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    mgr.current_speech_id = "live-turn-2"
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, " says tiny plan!", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert len(mgr.sync_message_queue.messages) == 1
+    flushed = await core_module.LLMSessionManager._flush_neko_live_reply_output_buffer(
+        mgr, log_context="unit-test"
+    )
+
+    assert flushed is False
+    assert len(mgr.sync_message_queue.messages) == 1
+    assert mgr._last_neko_live_reply_suppressed is True
+    tracked_meta = mgr._last_tracked_neko_live_reply_metadata(metadata)
+    assert tracked_meta["neko_live_reply_repeat"] is True
+    assert tracked_meta["neko_live_reply_suppressed"] == "repeat"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_complete_flushes_buffered_neko_live_reply_once():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-buffered"
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says ", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "tiny plan", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert mgr.sync_message_queue.messages == []
+
+    await core_module.LLMSessionManager.handle_response_complete(mgr)
+
+    assert len(mgr.sync_message_queue.messages) == 1
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert message["text"] == "cat says tiny plan"
+    assert message["isNewMessage"] is True
+    assert message["turn_id"] == "live-turn-buffered"
+    assert message["metadata"]["response_module_hint"] == "danmaku_response"
+    assert message["metadata"]["neko_live_reply_repeat"] is False
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["cat says tiny plan"]
+    mgr._emit_turn_end.assert_awaited_once_with(None)
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_complete_flushes_buffered_neko_live_reply_to_tts_after_text():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-tts-buffered"
+    mgr.use_tts = True
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says ", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "tiny plan", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert mgr.sync_message_queue.messages == []
+    assert mgr.tts_request_queue.messages == []
+
+    await core_module.LLMSessionManager.handle_response_complete(mgr)
+
+    assert mgr.sync_message_queue.messages[0]["data"]["text"] == "cat says tiny plan"
+    assert mgr.tts_request_queue.messages == [
+        ("live-turn-tts-buffered", "cat says tiny plan"),
+        (None, None),
+    ]
+    assert mgr._tts_done_queued_for_turn is True
+    mgr._emit_turn_end.assert_awaited_once_with(None)
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_discarded_clears_buffered_neko_live_reply_without_output():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-discarded"
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says ", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "tiny plan", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert isinstance(mgr._neko_live_reply_output_buffer, dict)
+    assert mgr.sync_message_queue.messages == []
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        reason="unit-test",
+        attempt=1,
+        max_attempts=2,
+        will_retry=True,
+    )
+
+    assert mgr._neko_live_reply_output_buffer is None
+    assert mgr.sync_message_queue.messages == [
+        {"type": "system", "data": "response_discarded_clear"}
+    ]
+    assert not hasattr(mgr, "_neko_live_recent_reply_text")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proactive_complete_flushes_buffered_neko_live_reply_once():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-proactive"
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says ", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "tiny plan", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert mgr.sync_message_queue.messages == []
+
+    await core_module.LLMSessionManager.handle_proactive_complete(mgr)
+
+    assert len(mgr.sync_message_queue.messages) == 2
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert message["text"] == "cat says tiny plan"
+    assert message["turn_id"] == "live-turn-proactive"
+    assert message["metadata"]["response_module_hint"] == "active_engagement"
+    assert mgr.sync_message_queue.messages[1] == {
+        "type": "system",
+        "data": "turn end agent_callback",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proactive_complete_flushes_buffered_neko_live_reply_to_tts_before_done():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-proactive-tts"
+    mgr.use_tts = True
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says ", is_first_chunk=True
+        )
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "tiny plan", is_first_chunk=False
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert mgr.sync_message_queue.messages == []
+    assert mgr.tts_request_queue.messages == []
+
+    await core_module.LLMSessionManager.handle_proactive_complete(mgr)
+
+    assert mgr.sync_message_queue.messages[0]["data"]["text"] == "cat says tiny plan"
+    assert mgr.tts_request_queue.messages == [
+        ("live-turn-proactive-tts", "cat says tiny plan"),
+        (None, None),
+    ]
+    assert mgr._tts_done_queued_for_turn is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proactive_complete_without_content_clears_buffered_neko_live_reply():
+    mgr = _make_manager()
+    delattr(mgr, "send_lanlan_response")
+    mgr.current_speech_id = "live-turn-proactive-empty"
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "active_engagement",
+    }
+    token = core_module._proactive_live_reply_metadata.set(metadata)
+    try:
+        await core_module.LLMSessionManager.handle_text_data(
+            mgr, "cat says tiny plan", is_first_chunk=True
+        )
+    finally:
+        core_module._proactive_live_reply_metadata.reset(token)
+
+    assert isinstance(mgr._neko_live_reply_output_buffer, dict)
+
+    await core_module.LLMSessionManager.handle_proactive_complete(
+        mgr, content_committed=False
+    )
+
+    assert mgr._neko_live_reply_output_buffer is None
+    assert mgr.sync_message_queue.messages == []
+    assert not hasattr(mgr, "_neko_live_recent_reply_text")
+
+
+@pytest.mark.unit
+def test_sid_cached_proactive_live_reply_metadata_is_bounded():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    for index in range(core_module._PROACTIVE_LIVE_REPLY_METADATA_BY_SID_MAX + 3):
+        core_module.LLMSessionManager._remember_proactive_live_reply_metadata(
+            mgr, f"sid-{index}", metadata
+        )
+
+    by_sid = mgr._proactive_live_reply_metadata_by_sid
+    assert len(by_sid) == core_module._PROACTIVE_LIVE_REPLY_METADATA_BY_SID_MAX
+    assert "sid-0" not in by_sid
+    assert f"sid-{core_module._PROACTIVE_LIVE_REPLY_METADATA_BY_SID_MAX + 2}" in by_sid
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_does_not_mark_non_neko_live_reply_repeat():
+    mgr = _make_manager()
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "普通回复",
+        metadata={"plugin": "other"},
+    )
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "普通回复",
+        metadata={"plugin": "other"},
+    )
+
+    first = mgr.sync_message_queue.messages[0]["data"]["metadata"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert "neko_live_reply_repeat" not in first
+    assert "neko_live_reply_repeat" not in second
+    assert not hasattr(mgr, "_neko_live_recent_reply_text")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_keeps_neko_live_reply_out_of_ordinary_ai_turn(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "猫猫换个角度接这句",
+        metadata=metadata,
+        remember_voice_echo=True,
+    )
+
+    assert mgr._current_ai_turn_text == ""
+    assert mgr._recent_ai_voice_echo_text == "猫猫换个角度接这句"
+    assert mgr._recent_ai_voice_echo_at == FIXED_TS
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert message["text"] == "猫猫换个角度接这句"
+    assert message["metadata"]["live_reply_contract"] == "short_tts_line"
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["猫猫换个角度接这句"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_keeps_neko_live_reply_out_of_new_session_cache():
+    mgr = _make_manager()
+    mgr.is_preparing_new_session = True
+    mgr.message_cache_for_new_session = []
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "idle_hosting",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "今晚别复读上一句",
+        metadata=metadata,
+    )
+
+    assert mgr.message_cache_for_new_session == []
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert message["text"] == "今晚别复读上一句"
+    assert message["metadata"]["live_reply_contract"] == "short_tts_line"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_keeps_ordinary_reply_in_new_session_cache():
+    mgr = _make_manager()
+    mgr.is_preparing_new_session = True
+    mgr.message_cache_for_new_session = []
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "普通回复仍然预热新会话",
+        metadata={"plugin": "normal_chat"},
+    )
+
+    assert mgr.message_cache_for_new_session == [
+        {"role": mgr.lanlan_name, "text": "普通回复仍然预热新会话"}
+    ]
+    message = mgr.sync_message_queue.messages[0]["data"]
+    assert message["text"] == "普通回复仍然预热新会话"
+    assert message["metadata"]["plugin"] == "normal_chat"
 
 
 @pytest.mark.unit

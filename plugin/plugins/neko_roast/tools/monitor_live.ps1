@@ -26,8 +26,8 @@ Usage:
 
 Important options:
   -Once              Print one snapshot and exit.
-  -ExpectRealOutput  Add real-output alerts for dry_run, disabled live plugin, disconnects, stale latest results, latency, test isolation, watchdogs, contamination, and long replies.
-  -BackendLogPath    Read backend log tail for playback watchdog, unrelated proactive output, and send_lanlan_response length markers.
+  -ExpectRealOutput  Add real-output alerts for dry_run, disabled live plugin, disconnects, stale latest results, latency, test isolation, watchdogs, contamination, long replies, and repeated live replies.
+  -BackendLogPath    Read backend log tail for playback watchdog, unrelated proactive output, send_lanlan_response length markers, template host-bait, and repeated reply text.
                       If omitted, the monitor tries .codex-backend-live-test.log in the current directory and repo root.
 
 Key fields:
@@ -45,6 +45,10 @@ Key fields:
                     Count of recent hosted-ui outputs that look like template host-bait lines.
   log_generic_host_prompt
                     True when send_lanlan_response text in backend log contains template host-bait reply text.
+  log_reply_repeat
+                    True when the latest send_lanlan_response text line repeats or remixes a recent live reply in the backend log window.
+  log_reply_suppressed
+                    True when backend log shows host-side repeat suppression, useful when plugin result says pushed but NEKO stays silent.
   avatar_repeat_count
                     How many recent avatar_roast results were seen for avatar_repeat_uid.
   recent_*          Recent route counts for avatar_roast, danmaku_response, warmup_hosting, idle_hosting, and active_engagement.
@@ -83,13 +87,27 @@ Key fields:
                     Alert name when recent Active Engagement topics overuse one interaction shape, making proactive hosting feel repetitive.
   topic_reply_missing / host_beat_reply_missing
                     Alert names when proactive output lacks a visible reply hook for viewers.
+  topic_reply_affordance_bias
+                    Alert name when recent Active Engagement topics overuse one viewer reply path.
+  host_beat_reply_affordance_bias
+                    Alert name when recent idle-hosting beats overuse one viewer reply path.
   topic_axis_bias
                     Alert name when recent Active Engagement topics overuse one fun axis.
   host_beat_axis_bias
                     Alert name when recent idle-hosting beats overuse one fun axis.
+  topic_family_bias
+                    Alert name when recent Active Engagement topics overuse one content family.
+  host_beat_family_bias
+                    Alert name when recent idle-hosting beats overuse one content family.
+  latest_spent_output_family
+                    Latest pushed NEKO output's spent-output family tags; dry_run/skipped results are ignored.
+  recent_spent_output_family_*
+                    Recent pushed spent-output family counts, useful for spotting repeated old live bits such as rewards or audience prompts.
+  spent_output_family_bias
+                    Alert name when recent pushed NEKO outputs overuse one spent-output family.
   live_disabled     Alert name for real-output tests when the NEKO Live plugin is disabled.
   generic_host_prompt
-                    Alert name for template-like "please interact / send danmaku" output.
+                    Alert name for template-like "please interact / send danmaku / anyone here" output.
   host_beat_repeat  Alert name for repeated idle-hosting host beat material.
   proactive_in_engaged
                     Alert name when the latest actual proactive output happened while live_state is engaged.
@@ -391,6 +409,46 @@ function Get-CompactPreview {
     return $text.Substring(0, $MaxLength)
 }
 
+function Add-DynamicCount {
+    param(
+        [hashtable]$Counts,
+        [object]$Value
+    )
+    $key = Get-CompactField $Value
+    if ($key -eq "-") {
+        return
+    }
+    if (-not $Counts.ContainsKey($key)) {
+        $Counts[$key] = 0
+    }
+    $Counts[$key] += 1
+}
+
+function Get-DynamicCountBias {
+    param([hashtable]$Counts)
+    $total = 0
+    $max = 0
+    $top = "-"
+    foreach ($entry in $Counts.GetEnumerator()) {
+        $count = [int]$entry.Value
+        $total += $count
+        if ($count -gt $max) {
+            $max = $count
+            $top = "$($entry.Key)"
+        }
+    }
+    $bias = "False"
+    if ($total -ge 3 -and (($max * 100.0) / $total) -ge 75.0) {
+        $bias = "True"
+    }
+    return [pscustomobject]@{
+        Total = $total
+        Max = $max
+        Top = $top
+        Bias = $bias
+    }
+}
+
 function Test-GenericHostPromptOutput {
     param([object]$Value)
     if ($null -eq $Value) {
@@ -407,8 +465,10 @@ function Test-GenericHostPromptOutput {
         "\u4f60\u4eec.{0,8}(\u60f3\u542c|\u60f3\u804a|\u60f3\u8ba9\u6211\u8bf4|\u6700\u60f3\u542c)",
         "\u60f3\u542c.{0,8}(\u4ec0\u4e48|\u5565)",
         "\u804a\u70b9.{0,8}(\u4ec0\u4e48|\u5565)",
+        "(\u6709\u4eba\u5417|\u6709\u4eba\u5728\u5417|\u8fd8\u5728\u5417|\u5728\u4e0d\u5728)",
         "(?i)what\s+should\s+we\s+talk\s+about",
         "(?i)what\s+do\s+you\s+want\s+to\s+(hear|talk)",
+        "(?i)(anyone\s+here|still\s+here)",
         "(?i)(get|keep).{0,12}chat.{0,12}(moving|alive|going)",
         "(?i)(send|drop).{0,12}(chat|message|comment)",
         "(?i)come\s+(chat|interact)"
@@ -417,6 +477,325 @@ function Test-GenericHostPromptOutput {
         if ($text -match $pattern) {
             return $true
         }
+    }
+    return $false
+}
+
+function Normalize-LiveReplyText {
+    param([string]$Text)
+    $value = "$Text".Trim().ToLowerInvariant()
+    return [regex]::Replace($value, "[\s\p{P}\p{S}_]+", "")
+}
+
+function Get-LiveReplyNgrams {
+    param(
+        [string]$Text,
+        [int]$Size = 3
+    )
+    $value = Normalize-LiveReplyText $Text
+    $grams = @{}
+    if ($value.Length -le $Size) {
+        return $grams
+    }
+    for ($index = 0; $index -le ($value.Length - $Size); $index++) {
+        $gram = $value.Substring($index, $Size)
+        if ($gram) {
+            $grams[$gram] = $true
+        }
+    }
+    return $grams
+}
+
+function Test-LiveReplyNgramOverlap {
+    param(
+        [string]$Previous,
+        [string]$Current
+    )
+    return ((Get-LiveReplyNgramOverlapRatio $Previous $Current) -ge 0.62)
+}
+
+function Get-LiveReplyNgramOverlapRatio {
+    param(
+        [string]$Previous,
+        [string]$Current
+    )
+    $left = Get-LiveReplyNgrams $Previous
+    $right = Get-LiveReplyNgrams $Current
+    if ($left.Count -lt 4 -or $right.Count -lt 4) {
+        return 0.0
+    }
+    $shared = 0
+    foreach ($key in $left.Keys) {
+        if ($right.ContainsKey($key)) {
+            $shared += 1
+        }
+    }
+    $denominator = [Math]::Min($left.Count, $right.Count)
+    if ($denominator -le 0) {
+        return 0.0
+    }
+    return ($shared / $denominator)
+}
+
+function New-UnicodeToken {
+    param([int[]]$Codepoints)
+    $chars = @()
+    foreach ($codepoint in $Codepoints) {
+        $chars += [char]$codepoint
+    }
+    return -join $chars
+}
+
+function Get-LiveReplyAnchorFingerprint {
+    param([string]$Text)
+    $value = Normalize-LiveReplyText $Text
+    $anchors = @{}
+    if (-not $value) {
+        return $anchors
+    }
+    $groups = @(
+        @(
+            (New-UnicodeToken @(0x60CA, 0x559C)),
+            (New-UnicodeToken @(0x5C0F, 0x60CA, 0x559C)),
+            (New-UnicodeToken @(0x60CA, 0x559C, 0x5956, 0x52B1)),
+            "surprise"
+        ),
+        @(
+            (New-UnicodeToken @(0x5C0F, 0x9C7C, 0x5E72)),
+            (New-UnicodeToken @(0x9C7C, 0x5E72)),
+            (New-UnicodeToken @(0x5956, 0x52B1)),
+            (New-UnicodeToken @(0x5956, 0x8D4F)),
+            (New-UnicodeToken @(0x7292, 0x52B3)),
+            (New-UnicodeToken @(0x793C, 0x7269))
+        ),
+        @(
+            (New-UnicodeToken @(0x7279, 0x522B, 0x4F01, 0x5212)),
+            (New-UnicodeToken @(0x4F01, 0x5212)),
+            (New-UnicodeToken @(0x8282, 0x76EE)),
+            (New-UnicodeToken @(0x73AF, 0x8282)),
+            (New-UnicodeToken @(0x8BA1, 0x5212))
+        ),
+        @(
+            (New-UnicodeToken @(0x5927, 0x5BB6)),
+            (New-UnicodeToken @(0x4F60, 0x4EEC)),
+            (New-UnicodeToken @(0x89C2, 0x4F17)),
+            (New-UnicodeToken @(0x5F39, 0x5E55)),
+            (New-UnicodeToken @(0x4E92, 0x52A8)),
+            (New-UnicodeToken @(0x53D1, 0x8A00)),
+            (New-UnicodeToken @(0x63A5, 0x8BDD)),
+            (New-UnicodeToken @(0x60F3, 0x542C, 0x4EC0, 0x4E48)),
+            (New-UnicodeToken @(0x804A, 0x70B9, 0x4EC0, 0x4E48)),
+            (New-UnicodeToken @(0x6263, 0x0031)),
+            (New-UnicodeToken @(0x6263, 0x4E2A, 0x0031)),
+            (New-UnicodeToken @(0x5431, 0x4E00, 0x58F0)),
+            (New-UnicodeToken @(0x5192, 0x4E2A, 0x6CE1)),
+            (New-UnicodeToken @(0x7ED9, 0x70B9, 0x53CD, 0x5E94)),
+            (New-UnicodeToken @(0x7ED9, 0x732B, 0x732B, 0x4E00, 0x70B9, 0x53CD, 0x5E94)),
+            (New-UnicodeToken @(0x8FD8, 0x5728, 0x5417)),
+            (New-UnicodeToken @(0x6709, 0x4EBA, 0x5417)),
+            (New-UnicodeToken @(0x6709, 0x4EBA, 0x5728, 0x5417)),
+            (New-UnicodeToken @(0x5728, 0x4E0D, 0x5728))
+        ),
+        @(
+            (New-UnicodeToken @(0x4E3B, 0x64AD, 0x529B)),
+            (New-UnicodeToken @(0x6B63, 0x7ECF, 0x4E3B, 0x64AD)),
+            (New-UnicodeToken @(0x50CF, 0x4E3B, 0x64AD)),
+            (New-UnicodeToken @(0x4E3B, 0x6301)),
+            "hostscore"
+        ),
+        @(
+            (New-UnicodeToken @(0x4E00, 0x4E2A, 0x5B57)),
+            (New-UnicodeToken @(0x4E00, 0x4E2A, 0x8BCD)),
+            (New-UnicodeToken @(0x4E09, 0x5B57)),
+            (New-UnicodeToken @(0x6697, 0x53F7)),
+            (New-UnicodeToken @(0x6253, 0x5206)),
+            "oneword",
+            "password"
+        ),
+        @(
+            (New-UnicodeToken @(0x4E8C, 0x9009, 0x4E00)),
+            (New-UnicodeToken @(0x9009, 0x4E00, 0x4E2A)),
+            (New-UnicodeToken @(0x8FD8, 0x662F)),
+            "ab",
+            "eitheror"
+        ),
+        @(
+            (New-UnicodeToken @(0x6C14, 0x6C1B)),
+            (New-UnicodeToken @(0x6E29, 0x5EA6)),
+            (New-UnicodeToken @(0x732B, 0x7A9D)),
+            (New-UnicodeToken @(0x5C0F, 0x7535, 0x53F0)),
+            (New-UnicodeToken @(0x6674, 0x5929)),
+            (New-UnicodeToken @(0x5C0F, 0x96E8)),
+            "roommood"
+        ),
+        @(
+            (New-UnicodeToken @(0x684C, 0x9762)),
+            (New-UnicodeToken @(0x6C34, 0x676F)),
+            (New-UnicodeToken @(0x96F6, 0x98DF)),
+            (New-UnicodeToken @(0x5C4F, 0x5E55)),
+            (New-UnicodeToken @(0x952E, 0x76D8)),
+            "objectscene"
+        ),
+        @(
+            (New-UnicodeToken @(0x5410, 0x69FD)),
+            (New-UnicodeToken @(0x522B, 0x7B11)),
+            (New-UnicodeToken @(0x88AB, 0x81EA, 0x5DF1)),
+            "tease"
+        ),
+        @(
+            (New-UnicodeToken @(0x6311, 0x6218)),
+            (New-UnicodeToken @(0x4EFB, 0x52A1)),
+            (New-UnicodeToken @(0x59FF, 0x52BF)),
+            (New-UnicodeToken @(0x4E09, 0x79D2)),
+            "microchallenge"
+        ),
+        @(
+            (New-UnicodeToken @(0x5B89, 0x9759)),
+            (New-UnicodeToken @(0x51B7, 0x573A)),
+            (New-UnicodeToken @(0x6CA1, 0x4EBA, 0x8BF4, 0x8BDD)),
+            (New-UnicodeToken @(0x6CA1, 0x5F39, 0x5E55)),
+            "quietroom"
+        )
+    )
+    for ($index = 0; $index -lt $groups.Count; $index++) {
+        foreach ($token in $groups[$index]) {
+            $normalizedToken = Normalize-LiveReplyText $token
+            if ($normalizedToken -and $value.Contains($normalizedToken)) {
+                $anchors["group:$index"] = $true
+                break
+            }
+        }
+    }
+    return $anchors
+}
+
+function Get-LiveReplyAudiencePromptSignalCount {
+    param([string]$Text)
+    $value = Normalize-LiveReplyText $Text
+    if (-not $value) {
+        return 0
+    }
+    $tokens = @(
+        (New-UnicodeToken @(0x53D1, 0x8A00)),
+        (New-UnicodeToken @(0x63A5, 0x8BDD)),
+        (New-UnicodeToken @(0x4E92, 0x52A8)),
+        (New-UnicodeToken @(0x60F3, 0x542C)),
+        (New-UnicodeToken @(0x60F3, 0x770B)),
+        (New-UnicodeToken @(0x804A, 0x70B9)),
+        (New-UnicodeToken @(0x804A, 0x4EC0, 0x4E48)),
+        (New-UnicodeToken @(0x8BF4, 0x70B9)),
+        (New-UnicodeToken @(0x6765, 0x4E00, 0x53E5)),
+        (New-UnicodeToken @(0x53D1, 0x5F39, 0x5E55)),
+        (New-UnicodeToken @(0x53D1, 0x4E2A, 0x0031)),
+        (New-UnicodeToken @(0x6263, 0x0031)),
+        (New-UnicodeToken @(0x6263, 0x4E2A)),
+        (New-UnicodeToken @(0x6263, 0x4E2A, 0x0031)),
+        (New-UnicodeToken @(0x6253, 0x4E2A, 0x0031)),
+        (New-UnicodeToken @(0x6253, 0x4E2A, 0x5206)),
+        (New-UnicodeToken @(0x6253, 0x4E2A, 0x6807, 0x7B7E)),
+        (New-UnicodeToken @(0x5431, 0x4E00, 0x58F0)),
+        (New-UnicodeToken @(0x5192, 0x4E2A, 0x6CE1)),
+        (New-UnicodeToken @(0x4E3E, 0x4E2A, 0x722A)),
+        (New-UnicodeToken @(0x7ED9, 0x70B9, 0x53CD, 0x5E94)),
+        (New-UnicodeToken @(0x7ED9, 0x732B, 0x732B, 0x4E00, 0x70B9, 0x53CD, 0x5E94)),
+        (New-UnicodeToken @(0x8FD8, 0x5728, 0x5417)),
+        (New-UnicodeToken @(0x6709, 0x4EBA, 0x5417)),
+        (New-UnicodeToken @(0x6709, 0x4EBA, 0x5728, 0x5417)),
+        (New-UnicodeToken @(0x5728, 0x4E0D, 0x5728)),
+        "dropa1",
+        "type1",
+        "sayhi",
+        "anyonehere",
+        "stillhere"
+    )
+    $count = 0
+    foreach ($token in $tokens) {
+        $normalizedToken = Normalize-LiveReplyText $token
+        if ($normalizedToken -and $value.Contains($normalizedToken)) {
+            $count += 1
+        }
+    }
+    return $count
+}
+
+function Test-LiveReplyAudiencePromptRepeat {
+    param(
+        [string]$Previous,
+        [string]$Current
+    )
+    return ((Get-LiveReplyAudiencePromptSignalCount $Previous) -ge 1 -and (Get-LiveReplyAudiencePromptSignalCount $Current) -ge 1)
+}
+
+function Test-LiveReplyHostBeatRepeat {
+    param(
+        [string]$Previous,
+        [string]$Current
+    )
+    $left = Get-LiveReplyAnchorFingerprint $Previous
+    $right = Get-LiveReplyAnchorFingerprint $Current
+    if ($left.Count -lt 1 -or $right.Count -lt 1) {
+        return $false
+    }
+    $shared = @()
+    foreach ($key in $left.Keys) {
+        if ($right.ContainsKey($key)) {
+            $shared += $key
+        }
+    }
+    if ($shared.Count -ge 2) {
+        return $true
+    }
+    if ($shared.Count -lt 1) {
+        return $false
+    }
+    if (($shared -contains "group:3") -and (Test-LiveReplyAudiencePromptRepeat $Previous $Current)) {
+        return $true
+    }
+    $singleAnchorGroups = @(0, 1, 2, 4, 5, 11)
+    $contextualAnchorGroups = @(6, 7, 8, 9, 10)
+    foreach ($key in $shared) {
+        $groupIndex = [int]("$key" -replace "^group:", "")
+        if ($singleAnchorGroups -contains $groupIndex) {
+            return $true
+        }
+        if ($contextualAnchorGroups -contains $groupIndex) {
+            return ((Get-LiveReplyNgramOverlapRatio $Previous $Current) -ge 0.25)
+        }
+    }
+    return $false
+}
+
+function Test-RepeatedLiveReplyOutput {
+    param(
+        [string]$Previous,
+        [string]$Current
+    )
+    $left = Normalize-LiveReplyText $Previous
+    $right = Normalize-LiveReplyText $Current
+    if ($left.Length -lt 4 -or $right.Length -lt 4) {
+        return $false
+    }
+    if ($left -eq $right) {
+        return $true
+    }
+    $shorter = $left
+    $longer = $right
+    if ($shorter.Length -gt $longer.Length) {
+        $shorter = $right
+        $longer = $left
+    }
+    if ($shorter.Length -ge 8 -and $longer.Contains($shorter)) {
+        return $true
+    }
+    $prefix = [Math]::Min(8, [Math]::Min($left.Length, $right.Length))
+    if ($prefix -ge 4 -and $left.Substring(0, $prefix) -eq $right.Substring(0, $prefix)) {
+        return $true
+    }
+    if (Test-LiveReplyHostBeatRepeat $Previous $Current) {
+        return $true
+    }
+    if (Test-LiveReplyNgramOverlap $left $right) {
+        return $true
     }
     return $false
 }
@@ -462,6 +841,8 @@ function Get-BackendLogSignals {
         ReplyLen = "-"
         ReplyLengthStatus = "-"
         GenericHostPrompt = "-"
+        ReplyRepeat = "-"
+        ReplySuppressed = "-"
     }
     if (-not $Path) {
         return [pscustomobject]$signals
@@ -504,6 +885,31 @@ function Get-BackendLogSignals {
             $signals.GenericHostPrompt = "True"
             break
         }
+    }
+    $signals.ReplyRepeat = "False"
+    $replyTexts = @()
+    foreach ($match in $responseTextMatches) {
+        $reply = "$($match.Groups[1].Value)".Trim()
+        if ($reply) {
+            $replyTexts += $reply
+        }
+    }
+    if ($replyTexts.Count -ge 2) {
+        $window = @($replyTexts | Select-Object -Last 10)
+        $current = $window[$window.Count - 1]
+        foreach ($previous in @($window | Select-Object -First ($window.Count - 1))) {
+            if (Test-RepeatedLiveReplyOutput $previous $current) {
+                $signals.ReplyRepeat = "True"
+                break
+            }
+        }
+    }
+    if ($signals.ReplyRepeat -ne "True" -and $text -match "(?i)(NEKO Live repeated reply detected|NEKO Live repeated reply suppressed|neko_live_reply_repeat\s*[=:]\s*true|neko_live_reply_suppressed\s*[=:]\s*repeat)") {
+        $signals.ReplyRepeat = "True"
+    }
+    $signals.ReplySuppressed = "False"
+    if ($text -match "(?i)(NEKO Live repeated reply suppressed|neko_live_reply_suppressed\s*[=:]\s*repeat)") {
+        $signals.ReplySuppressed = "True"
     }
     return [pscustomobject]$signals
 }
@@ -601,6 +1007,7 @@ function Write-Snapshot {
         filtered_runtime_feedback = 0
         viewer_to_viewer_mention = 0
         recent_danmaku_source_streak = 0
+        similar_topic_title = 0
     }
     $recentTopicIntentCounts = @{
         quick_vote = 0
@@ -633,6 +1040,40 @@ function Write-Snapshot {
         micro_challenge = 0
         viewer_callback = 0
     }
+    $recentTopicFamilyCounts = @{
+        choice_vote = 0
+        short_callback = 0
+        room_mood = 0
+        object_scene = 0
+        host_self_test = 0
+        tease = 0
+        micro_challenge = 0
+    }
+    $recentHostBeatFamilyCounts = @{
+        choice_vote = 0
+        short_callback = 0
+        room_mood = 0
+        object_scene = 0
+        host_self_test = 0
+        tease = 0
+        micro_challenge = 0
+    }
+    $recentTopicReplyAffordanceCounts = @{}
+    $recentHostBeatReplyAffordanceCounts = @{}
+    $recentSpentOutputFamilyCounts = @{
+        surprise = 0
+        reward = 0
+        program_plan = 0
+        audience_prompt = 0
+        host_self_test = 0
+        short_callback = 0
+        choice_vote = 0
+        room_mood = 0
+        object_scene = 0
+        tease = 0
+        micro_challenge = 0
+        quiet_room = 0
+    }
     $recentLongReplyRouteCounts = @{
         avatar_roast = 0
         danmaku_response = 0
@@ -642,6 +1083,7 @@ function Write-Snapshot {
     }
     $recentLongReplyCount = 0
     $recentGenericHostPromptCount = 0
+    $recentSpentOutputFamilyResultTotal = 0
     foreach ($result in $recent) {
         $route = "$(Get-Field $result.response_module)"
         if ($recentRouteCounts.ContainsKey($route)) {
@@ -661,6 +1103,20 @@ function Write-Snapshot {
             $signal = "$(Get-Field $result.event_signal)"
             if ($recentSignalCounts.ContainsKey($signal)) {
                 $recentSignalCounts[$signal] += 1
+            }
+        }
+        if ("$status" -eq "pushed") {
+            $spentFamilyValue = "$(Get-Field $result.spent_output_family)"
+            $hasSpentOutputFamily = $false
+            foreach ($spentFamily in @($spentFamilyValue -split ",")) {
+                $spentFamily = "$spentFamily".Trim()
+                if ($recentSpentOutputFamilyCounts.ContainsKey($spentFamily)) {
+                    $recentSpentOutputFamilyCounts[$spentFamily] += 1
+                    $hasSpentOutputFamily = $true
+                }
+            }
+            if ($hasSpentOutputFamily) {
+                $recentSpentOutputFamilyResultTotal += 1
             }
         }
         if ($null -ne $result.event) {
@@ -688,6 +1144,11 @@ function Write-Snapshot {
                 if ($recentTopicAxisCounts.ContainsKey($topicAxis)) {
                     $recentTopicAxisCounts[$topicAxis] += 1
                 }
+                $topicFamily = "$(Get-Field $result.event.topic_family)"
+                if ($recentTopicFamilyCounts.ContainsKey($topicFamily)) {
+                    $recentTopicFamilyCounts[$topicFamily] += 1
+                }
+                Add-DynamicCount $recentTopicReplyAffordanceCounts $result.event.topic_reply_affordance
             }
             if (
                 ("$status" -in @("pushed", "dry_run")) -and
@@ -697,6 +1158,11 @@ function Write-Snapshot {
                 if ($recentHostBeatAxisCounts.ContainsKey($hostBeatAxis)) {
                     $recentHostBeatAxisCounts[$hostBeatAxis] += 1
                 }
+                $hostBeatFamily = "$(Get-Field $result.event.host_beat_family)"
+                if ($recentHostBeatFamilyCounts.ContainsKey($hostBeatFamily)) {
+                    $recentHostBeatFamilyCounts[$hostBeatFamily] += 1
+                }
+                Add-DynamicCount $recentHostBeatReplyAffordanceCounts $result.event.host_beat_reply_affordance
             }
         }
         if ($null -ne $result.output -and "$($result.output)" -ne "") {
@@ -782,6 +1248,46 @@ function Write-Snapshot {
     if ($hostBeatAxisTotal -ge 3 -and (($hostBeatAxisMax * 100.0) / $hostBeatAxisTotal) -ge 75.0) {
         $hostBeatAxisBias = "True"
     }
+    $topicFamilyTotal = 0
+    $topicFamilyMax = 0
+    foreach ($familyCount in $recentTopicFamilyCounts.Values) {
+        $topicFamilyTotal += [int]$familyCount
+        if ([int]$familyCount -gt $topicFamilyMax) {
+            $topicFamilyMax = [int]$familyCount
+        }
+    }
+    $topicFamilyBias = "False"
+    if ($topicFamilyTotal -ge 3 -and (($topicFamilyMax * 100.0) / $topicFamilyTotal) -ge 75.0) {
+        $topicFamilyBias = "True"
+    }
+    $hostBeatFamilyTotal = 0
+    $hostBeatFamilyMax = 0
+    foreach ($familyCount in $recentHostBeatFamilyCounts.Values) {
+        $hostBeatFamilyTotal += [int]$familyCount
+        if ([int]$familyCount -gt $hostBeatFamilyMax) {
+            $hostBeatFamilyMax = [int]$familyCount
+        }
+    }
+    $hostBeatFamilyBias = "False"
+    if ($hostBeatFamilyTotal -ge 3 -and (($hostBeatFamilyMax * 100.0) / $hostBeatFamilyTotal) -ge 75.0) {
+        $hostBeatFamilyBias = "True"
+    }
+    $topicReplyAffordanceSummary = Get-DynamicCountBias $recentTopicReplyAffordanceCounts
+    $topicReplyAffordanceBias = "$($topicReplyAffordanceSummary.Bias)"
+    $topicReplyAffordanceTop = "$($topicReplyAffordanceSummary.Top)"
+    $hostBeatReplyAffordanceSummary = Get-DynamicCountBias $recentHostBeatReplyAffordanceCounts
+    $hostBeatReplyAffordanceBias = "$($hostBeatReplyAffordanceSummary.Bias)"
+    $hostBeatReplyAffordanceTop = "$($hostBeatReplyAffordanceSummary.Top)"
+    $spentOutputFamilyMax = 0
+    foreach ($familyCount in $recentSpentOutputFamilyCounts.Values) {
+        if ([int]$familyCount -gt $spentOutputFamilyMax) {
+            $spentOutputFamilyMax = [int]$familyCount
+        }
+    }
+    $spentOutputFamilyBias = "False"
+    if ($recentSpentOutputFamilyResultTotal -ge 3 -and (($spentOutputFamilyMax * 100.0) / $recentSpentOutputFamilyResultTotal) -ge 75.0) {
+        $spentOutputFamilyBias = "True"
+    }
     $latest = $null
     if ($recent.Count -gt 0) {
         $latest = $recent[0]
@@ -798,6 +1304,8 @@ function Write-Snapshot {
     }
     $latestRoute = "-"
     $latestSignal = "-"
+    $latestDanmakuProfile = "-"
+    $latestDanmakuReplyShape = "-"
     $latestStatus = "-"
     $latestReason = "-"
     $latestUid = "-"
@@ -812,6 +1320,8 @@ function Write-Snapshot {
         $latestReason = Get-CompactField $latest.reason
         $latestRoute = Get-Field $latest.response_module
         $latestSignal = Get-Field $latest.event_signal
+        $latestDanmakuProfile = Get-CompactField $latest.danmaku_profile
+        $latestDanmakuReplyShape = Get-CompactField $latest.danmaku_reply_shape
         $latestAge = Format-IsoAge $latest.created_at
         $latestAgeStatus = Get-AgeStatus $latest.created_at $LatestAgeWarnSec $LatestAgeStaleSec
         if ($null -ne $latest.output -and "$($latest.output)" -ne "") {
@@ -833,21 +1343,27 @@ function Write-Snapshot {
     $latestTopicPattern = "-"
     $latestTopicIntent = "-"
     $latestTopicFunAxis = "-"
+    $latestTopicFamily = "-"
     $latestTopicReplyAffordance = "-"
     $latestTopicRecentSkipReason = "-"
     $latestTopicShapeGuardReason = "-"
     $latestTopicRepeat = "False"
     $latestHostBeatShape = "-"
     $latestHostBeatFunAxis = "-"
+    $latestHostBeatFamily = "-"
     $latestHostBeatTitle = "-"
     $latestHostBeatKey = "-"
     $latestHostBeatHint = "-"
     $latestHostBeatReplyAffordance = "-"
     $latestHostBeatRepeat = "False"
+    $latestSpentOutputFamily = "-"
     if ($null -ne $latest -and $null -ne $latest.event) {
         $latestSource = Get-CompactField $latest.event.source
         $latestUid = Get-CompactField $latest.event.uid
         $latestText = Get-CompactPreview $latest.event.danmaku_text
+        if ("$latestStatus" -eq "pushed") {
+            $latestSpentOutputFamily = Get-CompactField $latest.spent_output_family
+        }
         $latestTopicSource = Get-CompactField $latest.event.topic_source
         $latestTopicShape = Get-CompactField $latest.event.topic_shape
         $latestTopicTitle = Get-CompactField $latest.event.topic_title
@@ -856,6 +1372,8 @@ function Write-Snapshot {
         $latestTopicPattern = Get-CompactField $latest.event.topic_pattern
         $latestTopicIntent = Get-CompactField $latest.event.topic_intent
         $latestTopicFunAxis = Get-CompactField $latest.event.topic_fun_axis
+        $latestTopicFamily = Get-CompactField $latest.event.topic_family
+        $latestTopicPack = Get-CompactField $latest.event.topic_pack
         $latestTopicReplyAffordance = Get-CompactField $latest.event.topic_reply_affordance
         $latestTopicRecentSkipReason = Get-CompactField $latest.event.topic_recent_skip_reason
         $latestTopicShapeGuardReason = Get-CompactField $latest.event.shape_guard_reason
@@ -876,9 +1394,11 @@ function Write-Snapshot {
         }
         $latestHostBeatShape = Get-CompactField $latest.event.host_beat_shape
         $latestHostBeatFunAxis = Get-CompactField $latest.event.host_beat_fun_axis
+        $latestHostBeatFamily = Get-CompactField $latest.event.host_beat_family
         $latestHostBeatTitle = Get-CompactField $latest.event.host_beat_title
         $latestHostBeatKey = Get-CompactField $latest.event.host_beat_key
         $latestHostBeatHint = Get-CompactField $latest.event.host_beat_hint
+        $latestHostBeatIdleStage = Get-CompactField $latest.event.host_beat_idle_stage
         $latestHostBeatReplyAffordance = Get-CompactField $latest.event.host_beat_reply_affordance
         if ("$latestStatus" -in @("pushed", "dry_run") -and $latestHostBeatKey -ne "-" -and $recent.Count -gt 1) {
             foreach ($previous in @($recent | Select-Object -Skip 1)) {
@@ -1031,6 +1551,12 @@ function Write-Snapshot {
     if ("$($logSignals.GenericHostPrompt)" -eq "True" -and $alerts -notcontains "generic_host_prompt") {
         $alerts += "generic_host_prompt"
     }
+    if ("$($logSignals.ReplyRepeat)" -eq "True") {
+        $alerts += "reply_repeat"
+    }
+    if ("$($logSignals.ReplySuppressed)" -eq "True") {
+        $alerts += "reply_suppressed"
+    }
     if ($avatarRepeatUid -ne "-") {
         $alerts += "avatar_repeat"
     }
@@ -1055,6 +1581,9 @@ function Write-Snapshot {
     if ($recentTopicSkipCounts['recent_danmaku_source_streak'] -gt 0) {
         $alerts += "topic_source_streak"
     }
+    if ($recentTopicSkipCounts['similar_topic_title'] -gt 0) {
+        $alerts += "topic_similar_title"
+    }
     if ($latestTopicShapeGuardReason -ne "-") {
         $alerts += "topic_shape_guard"
     }
@@ -1070,6 +1599,12 @@ function Write-Snapshot {
     if ("$topicAxisBias" -eq "True") {
         $alerts += "topic_axis_bias"
     }
+    if ("$topicFamilyBias" -eq "True") {
+        $alerts += "topic_family_bias"
+    }
+    if ("$topicReplyAffordanceBias" -eq "True") {
+        $alerts += "topic_reply_affordance_bias"
+    }
     if ("$latestStatus" -in @("pushed", "dry_run") -and "$latestRoute" -eq "active_engagement" -and "$latestTopicReplyAffordance" -eq "-") {
         $alerts += "topic_reply_missing"
     }
@@ -1082,6 +1617,15 @@ function Write-Snapshot {
     }
     if ("$hostBeatAxisBias" -eq "True") {
         $alerts += "host_beat_axis_bias"
+    }
+    if ("$hostBeatFamilyBias" -eq "True") {
+        $alerts += "host_beat_family_bias"
+    }
+    if ("$hostBeatReplyAffordanceBias" -eq "True") {
+        $alerts += "host_beat_reply_affordance_bias"
+    }
+    if ("$spentOutputFamilyBias" -eq "True") {
+        $alerts += "spent_output_family_bias"
     }
     if ("$latestHostBeatRepeat" -eq "True") {
         $alerts += "host_beat_repeat"
@@ -1159,6 +1703,8 @@ function Write-Snapshot {
         "latest_status=$latestStatus",
         "latest_route=$latestRoute",
         "latest_signal=$latestSignal",
+        "latest_danmaku_profile=$latestDanmakuProfile",
+        "latest_danmaku_reply_shape=$latestDanmakuReplyShape",
         "latest_uid=$latestUid",
         "latest_source=$latestSource",
         "latest_text=$latestText",
@@ -1202,6 +1748,7 @@ function Write-Snapshot {
         "recent_topic_skip_filtered_runtime_feedback=$($recentTopicSkipCounts['filtered_runtime_feedback'])",
         "recent_topic_skip_viewer_to_viewer_mention=$($recentTopicSkipCounts['viewer_to_viewer_mention'])",
         "recent_topic_skip_recent_danmaku_source_streak=$($recentTopicSkipCounts['recent_danmaku_source_streak'])",
+        "recent_topic_skip_similar_topic_title=$($recentTopicSkipCounts['similar_topic_title'])",
         "recent_topic_source_fallback=$($recentTopicSourceCounts['fallback'])",
         "recent_topic_source_bili_trending=$($recentTopicSourceCounts['bili_trending'])",
         "recent_topic_source_recent_danmaku=$($recentTopicSourceCounts['recent_danmaku'])",
@@ -1215,17 +1762,45 @@ function Write-Snapshot {
         "recent_topic_axis_mood=$($recentTopicAxisCounts['mood'])",
         "recent_topic_axis_micro_challenge=$($recentTopicAxisCounts['micro_challenge'])",
         "recent_topic_axis_viewer_callback=$($recentTopicAxisCounts['viewer_callback'])",
+        "recent_topic_family_choice_vote=$($recentTopicFamilyCounts['choice_vote'])",
+        "recent_topic_family_short_callback=$($recentTopicFamilyCounts['short_callback'])",
+        "recent_topic_family_room_mood=$($recentTopicFamilyCounts['room_mood'])",
+        "recent_topic_family_object_scene=$($recentTopicFamilyCounts['object_scene'])",
+        "recent_topic_family_host_self_test=$($recentTopicFamilyCounts['host_self_test'])",
+        "recent_topic_family_tease=$($recentTopicFamilyCounts['tease'])",
+        "recent_topic_family_micro_challenge=$($recentTopicFamilyCounts['micro_challenge'])",
         "recent_host_beat_axis_choice=$($recentHostBeatAxisCounts['choice'])",
         "recent_host_beat_axis_tease=$($recentHostBeatAxisCounts['tease'])",
         "recent_host_beat_axis_mood=$($recentHostBeatAxisCounts['mood'])",
         "recent_host_beat_axis_micro_challenge=$($recentHostBeatAxisCounts['micro_challenge'])",
         "recent_host_beat_axis_viewer_callback=$($recentHostBeatAxisCounts['viewer_callback'])",
+        "recent_host_beat_family_choice_vote=$($recentHostBeatFamilyCounts['choice_vote'])",
+        "recent_host_beat_family_short_callback=$($recentHostBeatFamilyCounts['short_callback'])",
+        "recent_host_beat_family_room_mood=$($recentHostBeatFamilyCounts['room_mood'])",
+        "recent_host_beat_family_object_scene=$($recentHostBeatFamilyCounts['object_scene'])",
+        "recent_host_beat_family_host_self_test=$($recentHostBeatFamilyCounts['host_self_test'])",
+        "recent_host_beat_family_tease=$($recentHostBeatFamilyCounts['tease'])",
+        "recent_host_beat_family_micro_challenge=$($recentHostBeatFamilyCounts['micro_challenge'])",
+        "recent_spent_output_family_reward=$($recentSpentOutputFamilyCounts['reward'])",
+        "recent_spent_output_family_audience_prompt=$($recentSpentOutputFamilyCounts['audience_prompt'])",
+        "recent_spent_output_family_program_plan=$($recentSpentOutputFamilyCounts['program_plan'])",
+        "recent_spent_output_family_host_self_test=$($recentSpentOutputFamilyCounts['host_self_test'])",
+        "recent_spent_output_family_short_callback=$($recentSpentOutputFamilyCounts['short_callback'])",
+        "recent_spent_output_family_choice_vote=$($recentSpentOutputFamilyCounts['choice_vote'])",
+        "recent_spent_output_family_quiet_room=$($recentSpentOutputFamilyCounts['quiet_room'])",
         "recent_topic_shape_bias=$topicShapeBias",
         "recent_topic_intent_quick_vote=$($recentTopicIntentCounts['quick_vote'])",
         "recent_topic_intent_tiny_answer=$($recentTopicIntentCounts['tiny_answer'])",
         "recent_topic_intent_tease_back=$($recentTopicIntentCounts['tease_back'])",
         "recent_topic_intent_agree_or_pushback=$($recentTopicIntentCounts['agree_or_pushback'])",
         "recent_topic_intent_bias=$topicIntentBias",
+        "recent_topic_family_bias=$topicFamilyBias",
+        "recent_topic_reply_affordance_top=$topicReplyAffordanceTop",
+        "recent_topic_reply_affordance_bias=$topicReplyAffordanceBias",
+        "recent_host_beat_family_bias=$hostBeatFamilyBias",
+        "recent_host_beat_reply_affordance_top=$hostBeatReplyAffordanceTop",
+        "recent_host_beat_reply_affordance_bias=$hostBeatReplyAffordanceBias",
+        "recent_spent_output_family_bias=$spentOutputFamilyBias",
         "avatar_roast_share=$avatarRoastShare",
         "avatar_roast_bias=$avatarRoastBias",
         "latest_topic_source=$latestTopicSource",
@@ -1236,6 +1811,8 @@ function Write-Snapshot {
         "latest_topic_pattern=$latestTopicPattern",
         "latest_topic_intent=$latestTopicIntent",
         "latest_topic_fun_axis=$latestTopicFunAxis",
+        "latest_topic_family=$latestTopicFamily",
+        "latest_topic_pack=$latestTopicPack",
         "latest_topic_reply_affordance=$latestTopicReplyAffordance",
         "latest_topic_recent_skip_reason=$latestTopicRecentSkipReason",
         "latest_topic_shape_guard_reason=$latestTopicShapeGuardReason",
@@ -1245,10 +1822,13 @@ function Write-Snapshot {
         "latest_host_beat_key=$latestHostBeatKey",
         "latest_host_beat_shape=$latestHostBeatShape",
         "latest_host_beat_fun_axis=$latestHostBeatFunAxis",
+        "latest_host_beat_family=$latestHostBeatFamily",
         "latest_host_beat_title=$latestHostBeatTitle",
         "latest_host_beat_hint=$latestHostBeatHint",
+        "latest_host_beat_idle_stage=$latestHostBeatIdleStage",
         "latest_host_beat_reply_affordance=$latestHostBeatReplyAffordance",
         "latest_host_beat_repeat=$latestHostBeatRepeat",
+        "latest_spent_output_family=$latestSpentOutputFamily",
         "latency=$(Format-Latency $latency)",
         "latency_status=$latencyStatus",
         "log_watchdog=$($logSignals.Watchdog)",
@@ -1256,6 +1836,8 @@ function Write-Snapshot {
         "log_reply_len=$($logSignals.ReplyLen)",
         "log_reply_length_status=$($logSignals.ReplyLengthStatus)",
         "log_generic_host_prompt=$($logSignals.GenericHostPrompt)",
+        "log_reply_repeat=$($logSignals.ReplyRepeat)",
+        "log_reply_suppressed=$($logSignals.ReplySuppressed)",
         "alerts=$alertText",
         "solo_test_hint=$soloTestHint",
         "solo_test_focus=$soloTestFocus"

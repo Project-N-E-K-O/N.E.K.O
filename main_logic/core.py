@@ -161,10 +161,211 @@ _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
 _VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+_NEKO_LIVE_REPLY_REPEAT_MIN_CHARS = 4
+_NEKO_LIVE_REPLY_REPEAT_PREFIX_CHARS = 8
+_NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE = 24
+_NEKO_LIVE_RECENT_REPLY_AVOIDANCE_SIZE = 12
+_NEKO_LIVE_REPLY_REPEAT_SIMILARITY_THRESHOLD = 0.82
+_NEKO_LIVE_REPLY_REPEAT_NGRAM_SIZE = 3
+_PROACTIVE_LIVE_REPLY_METADATA_BY_SID_MAX = 16
+_NEKO_LIVE_REPEAT_ANCHOR_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("惊喜", "小惊喜", "惊喜奖励", "surprise"),
+    ("小鱼干", "鱼干", "奖励", "奖赏", "犒劳", "礼物"),
+    ("特别企划", "企划", "节目", "环节", "计划"),
+    (
+        "大家",
+        "你们",
+        "观众",
+        "弹幕",
+        "互动",
+        "发言",
+        "接话",
+        "想听什么",
+        "聊点什么",
+        "扣1",
+        "扣个1",
+        "吱一声",
+        "冒个泡",
+        "给点反应",
+        "还在吗",
+        "有人吗",
+        "有人在吗",
+        "在不在",
+    ),
+    ("主播力", "正经主播", "像主播", "主持", "host score"),
+    ("一个字", "一个词", "三字", "暗号", "打分", "one word", "password"),
+    ("二选一", "选一个", "还是", "A/B", "either or"),
+    ("气氛", "温度", "猫窝", "小电台", "晴天", "小雨", "room mood"),
+    ("桌面", "水杯", "零食", "屏幕", "键盘", "object scene"),
+    ("吐槽", "别笑", "被自己", "tease"),
+    ("挑战", "任务", "姿势", "三秒", "micro challenge"),
+    ("安静", "冷场", "没人说话", "没弹幕", "quiet room"),
+)
+_NEKO_LIVE_REPEAT_SINGLE_ANCHOR_GROUPS = frozenset({0, 1, 2, 4, 5, 7, 11})
+_NEKO_LIVE_REPEAT_CONTEXTUAL_ANCHOR_GROUPS = frozenset({6, 7, 8, 9, 10})
+_NEKO_LIVE_REPLY_CONTEXTUAL_ANCHOR_NGRAM_THRESHOLD = 0.25
+_NEKO_LIVE_AUDIENCE_PROMPT_TOKENS = (
+    "发言",
+    "接话",
+    "互动",
+    "想听",
+    "想看",
+    "聊点",
+    "聊什么",
+    "说点",
+    "来一句",
+    "发弹幕",
+    "发个1",
+    "扣1",
+    "扣个",
+    "扣个1",
+    "打个1",
+    "打个分",
+    "打个标签",
+    "吱一声",
+    "冒个泡",
+    "举个爪",
+    "给点反应",
+    "给猫猫一点反应",
+    "还在吗",
+    "有人吗",
+    "有人在吗",
+    "在不在",
+    "drop a 1",
+    "type 1",
+    "say hi",
+    "anyone here",
+    "still here",
+)
 
 
 def _normalize_voice_echo_text(text: str) -> str:
     return _VOICE_ECHO_NORMALIZE_RE.sub("", str(text or "").casefold())
+
+
+def _is_neko_live_reply_metadata(metadata: Mapping[str, Any] | None) -> bool:
+    return isinstance(metadata, Mapping) and metadata.get("live_reply_contract") == "short_tts_line"
+
+
+def _looks_like_repeated_neko_live_reply(current: str, previous: str) -> bool:
+    current_norm = _normalize_voice_echo_text(current)
+    previous_norm = _normalize_voice_echo_text(previous)
+    if len(current_norm) < _NEKO_LIVE_REPLY_REPEAT_MIN_CHARS or len(previous_norm) < _NEKO_LIVE_REPLY_REPEAT_MIN_CHARS:
+        return False
+    if current_norm == previous_norm:
+        return True
+    shorter, longer = (
+        (current_norm, previous_norm)
+        if len(current_norm) <= len(previous_norm)
+        else (previous_norm, current_norm)
+    )
+    if len(shorter) >= _NEKO_LIVE_REPLY_REPEAT_PREFIX_CHARS and shorter in longer:
+        return True
+    prefix_len = min(_NEKO_LIVE_REPLY_REPEAT_PREFIX_CHARS, len(current_norm), len(previous_norm))
+    if prefix_len >= _NEKO_LIVE_REPLY_REPEAT_MIN_CHARS and current_norm[:prefix_len] == previous_norm[:prefix_len]:
+        return True
+    if min(len(current_norm), len(previous_norm)) >= _NEKO_LIVE_REPLY_REPEAT_PREFIX_CHARS:
+        if SequenceMatcher(None, current_norm, previous_norm).ratio() >= _NEKO_LIVE_REPLY_REPEAT_SIMILARITY_THRESHOLD:
+            return True
+    if _looks_like_same_neko_live_host_beat(current, previous):
+        return True
+    current_grams = _neko_live_reply_char_ngrams(current_norm)
+    previous_grams = _neko_live_reply_char_ngrams(previous_norm)
+    if not current_grams or not previous_grams:
+        return False
+    overlap = _neko_live_reply_ngram_overlap(current_grams, previous_grams)
+    return overlap >= 0.65
+
+
+def _neko_live_reply_char_ngrams(text: str) -> set[str]:
+    if len(text) < _NEKO_LIVE_REPLY_REPEAT_NGRAM_SIZE + 1:
+        return set()
+    return {
+        text[index : index + _NEKO_LIVE_REPLY_REPEAT_NGRAM_SIZE]
+        for index in range(0, len(text) - _NEKO_LIVE_REPLY_REPEAT_NGRAM_SIZE + 1)
+    }
+
+
+def _neko_live_reply_ngram_overlap(current_grams: set[str], previous_grams: set[str]) -> float:
+    if not current_grams or not previous_grams:
+        return 0.0
+    return len(current_grams & previous_grams) / max(1, min(len(current_grams), len(previous_grams)))
+
+
+def _neko_live_reply_anchor_fingerprint(text: str) -> set[int]:
+    normalized = _normalize_voice_echo_text(text)
+    if not normalized:
+        return set()
+    anchors: set[int] = set()
+    for index, group in enumerate(_NEKO_LIVE_REPEAT_ANCHOR_GROUPS):
+        if any(_normalize_voice_echo_text(token) in normalized for token in group):
+            anchors.add(index)
+    return anchors
+
+
+def _looks_like_same_neko_live_host_beat(current: str, previous: str) -> bool:
+    current_anchors = _neko_live_reply_anchor_fingerprint(current)
+    previous_anchors = _neko_live_reply_anchor_fingerprint(previous)
+    shared_anchors = current_anchors & previous_anchors
+    if not shared_anchors:
+        return False
+    if 3 in shared_anchors and _looks_like_repeated_audience_prompt(current, previous):
+        return True
+    if len(shared_anchors) >= 2:
+        return True
+    if shared_anchors & _NEKO_LIVE_REPEAT_SINGLE_ANCHOR_GROUPS:
+        return True
+    if shared_anchors & _NEKO_LIVE_REPEAT_CONTEXTUAL_ANCHOR_GROUPS:
+        current_grams = _neko_live_reply_char_ngrams(_normalize_voice_echo_text(current))
+        previous_grams = _neko_live_reply_char_ngrams(_normalize_voice_echo_text(previous))
+        return (
+            _neko_live_reply_ngram_overlap(current_grams, previous_grams)
+            >= _NEKO_LIVE_REPLY_CONTEXTUAL_ANCHOR_NGRAM_THRESHOLD
+        )
+    return False
+
+
+def _looks_like_repeated_audience_prompt(current: str, previous: str) -> bool:
+    current_norm = _normalize_voice_echo_text(current)
+    previous_norm = _normalize_voice_echo_text(previous)
+    if not current_norm or not previous_norm:
+        return False
+    return (
+        _neko_live_audience_prompt_signal_count(current_norm) >= 1
+        and _neko_live_audience_prompt_signal_count(previous_norm) >= 1
+    )
+
+
+def _neko_live_audience_prompt_signal_count(normalized_text: str) -> int:
+    return sum(
+        1
+        for token in _NEKO_LIVE_AUDIENCE_PROMPT_TOKENS
+        if _normalize_voice_echo_text(token) in normalized_text
+    )
+
+
+def _looks_like_recent_neko_live_reply_repeat(current: str, recent: Any) -> bool:
+    if not recent:
+        return False
+    try:
+        candidates = list(recent)
+    except TypeError:
+        candidates = [recent]
+    return any(_looks_like_repeated_neko_live_reply(current, str(previous or "")) for previous in candidates)
+
+
+def _merge_neko_live_reply_chunk(existing: str, incoming: str, *, is_first_chunk: bool) -> str:
+    existing_text = str(existing or "")
+    incoming_text = str(incoming or "")
+    if is_first_chunk or not existing_text:
+        return incoming_text
+    if not incoming_text:
+        return existing_text
+    if incoming_text.startswith(existing_text):
+        return incoming_text
+    if existing_text.endswith(incoming_text):
+        return existing_text
+    return existing_text + incoming_text
 
 
 def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
@@ -325,7 +526,107 @@ def _coerce_live_reply_limit(value: Any) -> int | None:
     return min(limit, 80)
 
 
-def _render_live_reply_contract_instruction(callbacks: list[dict]) -> str:
+def _neko_live_reply_limit_from_metadata(metadata: Mapping[str, Any] | None) -> int | None:
+    if not _is_neko_live_reply_metadata(metadata):
+        return None
+    module = str((metadata or {}).get("response_module_hint") or "").strip()
+    metadata_limit = _coerce_live_reply_limit((metadata or {}).get("max_reply_chars"))
+    module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
+    candidates = [value for value in (metadata_limit, module_limit) if value]
+    return min(candidates) if candidates else None
+
+
+def _first_neko_live_sentence(text: str) -> tuple[str, bool]:
+    cleaned = " ".join(str(text or "").replace("\r", "\n").split())
+    if not cleaned:
+        return "", False
+    for index, char in enumerate(cleaned):
+        if char in "。！？!?":
+            first = cleaned[: index + 1].strip()
+            return first, first != cleaned
+    return cleaned, False
+
+
+def _shape_neko_live_reply_text(text: str, metadata: dict | None) -> tuple[str, dict | None]:
+    outgoing_metadata = dict(metadata) if isinstance(metadata, dict) else metadata
+    if not _is_neko_live_reply_metadata(outgoing_metadata):
+        return text, outgoing_metadata
+    if outgoing_metadata.get("neko_live_reply_shaped") is True:
+        return str(text or "").strip(), outgoing_metadata
+    limit = _neko_live_reply_limit_from_metadata(outgoing_metadata)
+    if not limit:
+        return text, outgoing_metadata
+
+    raw = str(text or "")
+    original = raw.strip()
+    first_sentence, clipped_sentence = _first_neko_live_sentence(original)
+    shaped = first_sentence or original
+    clipped_length = False
+    if len(shaped) > limit:
+        shaped = shaped[:limit].rstrip(" ，,、；;：:")
+        clipped_length = True
+    shaped = shaped.strip()
+
+    if shaped and shaped != original:
+        outgoing_metadata["neko_live_reply_shaped"] = True
+        outgoing_metadata["neko_live_reply_original_chars"] = len(original)
+        outgoing_metadata["neko_live_reply_output_chars"] = len(shaped)
+        reasons = []
+        if clipped_sentence:
+            reasons.append("first_sentence")
+        if clipped_length:
+            reasons.append("max_reply_chars")
+        outgoing_metadata["neko_live_reply_shape_reason"] = "+".join(reasons) or "short_tts_line"
+        return shaped, outgoing_metadata
+    if outgoing_metadata is not None:
+        outgoing_metadata["neko_live_reply_shaped"] = False
+        outgoing_metadata["neko_live_reply_output_chars"] = len(original)
+    return raw, outgoing_metadata
+
+
+def _coerce_recent_live_reply_values(recent_live_replies: Any) -> list[str]:
+    if not recent_live_replies:
+        return []
+    if isinstance(recent_live_replies, Mapping):
+        source = recent_live_replies.values()
+    else:
+        try:
+            source = list(recent_live_replies)
+        except TypeError:
+            source = [recent_live_replies]
+    values: list[str] = []
+    for reply in source:
+        text = str(reply or "").strip()
+        if text:
+            values.append(text)
+    return values
+
+
+def _render_live_recent_reply_avoidance(recent_live_replies: list[str] | None) -> list[str]:
+    recent_reply_values = _coerce_recent_live_reply_values(recent_live_replies)
+    if not recent_reply_values:
+        return []
+    lines = [
+        "- Recent NEKO Live outputs below are negative examples; do not continue or paraphrase them.",
+    ]
+    for reply in recent_reply_values[-_NEKO_LIVE_RECENT_REPLY_AVOIDANCE_SIZE:]:
+        text = str(reply or "").strip().replace("\n", " ")
+        if not text:
+            continue
+        if len(text) > 48:
+            text = text[:48].rstrip() + "..."
+        lines.append(f"  - Avoid repeating: {text}")
+    if len(lines) == 1:
+        return []
+    lines.append("- Answer the current live event from a fresh angle even if the topic is similar.")
+    return lines
+
+
+def _render_live_reply_contract_instruction(
+    callbacks: list[dict],
+    *,
+    recent_live_replies: list[str] | None = None,
+) -> str:
     """Render host-side constraints for NEKO Live short TTS callbacks."""
     modules: list[str] = []
     absolute_limit: int | None = None
@@ -366,11 +667,51 @@ def _render_live_reply_contract_instruction(callbacks: list[dict]) -> str:
         f"- Target at most {target_limit} Chinese characters; absolute ceiling {absolute_limit}.",
         "- Output exactly one sentence, one breath, no paragraph.",
         "- Do not continue, summarize, or imitate the previous NEKO reply.",
+        "- Treat previous NEKO Live outputs as forbidden material, not conversation context to resume.",
+        "- If the draft sounds like the previous NEKO reply, change the angle before output.",
+        "- Do not reuse the previous reply's opening words, sentence rhythm, punchline, or host beat.",
         "- If a draft has two ideas, keep only the sharper one.",
         "- Do not use host-script openings such as special plan, next let's, everyone look, or tell me what you want.",
     ]
+    lines.extend(_render_live_recent_reply_avoidance(recent_live_replies))
     lines.extend(f"- {note}" for note in module_notes)
     return "\n".join(lines)
+
+
+def _merge_live_reply_metadata_from_callbacks(callbacks: list[dict]) -> dict[str, Any] | None:
+    """Carry NEKO Live short-reply metadata into generated callback output."""
+    merged: dict[str, Any] | None = None
+    modules: list[str] = []
+    absolute_limit: int | None = None
+
+    for cb in callbacks:
+        metadata = cb.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("live_reply_contract") != "short_tts_line":
+            continue
+        if merged is None:
+            merged = dict(metadata)
+
+        module = str(metadata.get("response_module_hint") or "").strip()
+        if module and module not in modules:
+            modules.append(module)
+
+        metadata_limit = _coerce_live_reply_limit(metadata.get("max_reply_chars"))
+        module_limit = _NEKO_LIVE_REPLY_ROUTE_CEILINGS.get(module)
+        limit_candidates = [value for value in (metadata_limit, module_limit) if value]
+        if limit_candidates:
+            callback_limit = min(limit_candidates)
+            absolute_limit = callback_limit if absolute_limit is None else min(absolute_limit, callback_limit)
+
+    if merged is None:
+        return None
+
+    if modules:
+        merged["response_module_hint"] = modules[0] if len(modules) == 1 else "mixed"
+    if absolute_limit is not None:
+        merged["max_reply_chars"] = absolute_limit
+    return merged
 
 
 def _build_callback_instruction(
@@ -380,6 +721,7 @@ def _build_callback_instruction(
     lanlan_name: str,
     master_name: str,
     passive: bool = False,
+    recent_live_replies: list[str] | None = None,
 ) -> str:
     """Render a list of agent_task_callbacks into the LLM injection string.
 
@@ -479,7 +821,10 @@ def _build_callback_instruction(
             for cb in cbs
         ]
         items = [s for s in items if s]
-        live_reply_contract = _render_live_reply_contract_instruction(cbs)
+        live_reply_contract = _render_live_reply_contract_instruction(
+            cbs,
+            recent_live_replies=recent_live_replies,
+        )
         if items:
             body = header + "\n".join(items)
         else:
@@ -749,6 +1094,9 @@ CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
 # contextvar 是 per-task 隔离，不会泄漏到用户 stream_text 所在的独立任务。
 _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     '_proactive_expected_sid', default=None,
+)
+_proactive_live_reply_metadata: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    '_proactive_live_reply_metadata', default=None,
 )
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
@@ -3041,11 +3389,23 @@ class LLMSessionManager:
                     except: # noqa
                         break
 
+        live_reply_metadata = self._current_proactive_live_reply_metadata()
+        if self._buffer_neko_live_reply_output(
+            text,
+            is_first_chunk=is_first_chunk,
+            metadata=live_reply_metadata,
+            ui_enabled=ui_enabled,
+            tts_enabled=tts_enabled,
+            remember_voice_echo=not self.use_tts,
+        ):
+            return
+
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
         if ui_enabled:
             await self.send_lanlan_response(
                 text,
                 is_first_chunk,
+                metadata=live_reply_metadata,
                 remember_voice_echo=not self.use_tts,
             )
 
@@ -3133,8 +3493,10 @@ class LLMSessionManager:
         exclusively to user-initiated conversation turns.
         """
         if not content_committed:
+            self._neko_live_reply_output_buffer = None
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
+        await self._flush_neko_live_reply_output_buffer(log_context="handle_proactive_complete")
         # Activity tracker flush：proactive 也算 AI 在说话。和 _emit_turn_end
         # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
         # send_lanlan_response（finish_proactive_delivery 内部会调），所以
@@ -3214,17 +3576,143 @@ class LLMSessionManager:
         request_id_str = str(request_id or "")
         return bool(request_id_str and request_id_str in self._magic_command_image_drop_request_ids)
 
+    def _remember_proactive_live_reply_metadata(self, speech_id: object, metadata: dict[str, Any] | None) -> None:
+        if not speech_id or not _is_neko_live_reply_metadata(metadata):
+            return
+        by_sid = getattr(self, "_proactive_live_reply_metadata_by_sid", None)
+        if not isinstance(by_sid, OrderedDict):
+            by_sid = OrderedDict()
+            self._proactive_live_reply_metadata_by_sid = by_sid
+        sid = str(speech_id)
+        by_sid[sid] = dict(metadata or {})
+        by_sid.move_to_end(sid)
+        while len(by_sid) > _PROACTIVE_LIVE_REPLY_METADATA_BY_SID_MAX:
+            by_sid.popitem(last=False)
+
+    def _current_proactive_live_reply_metadata(self) -> dict[str, Any] | None:
+        metadata = _proactive_live_reply_metadata.get()
+        if _is_neko_live_reply_metadata(metadata):
+            return dict(metadata or {})
+        by_sid = getattr(self, "_proactive_live_reply_metadata_by_sid", None)
+        if not isinstance(by_sid, OrderedDict):
+            return None
+        speech_id = str(getattr(self, "current_speech_id", "") or "")
+        metadata = by_sid.get(speech_id)
+        if _is_neko_live_reply_metadata(metadata):
+            by_sid.move_to_end(speech_id)
+            return dict(metadata or {})
+        return None
+
+    def _buffer_neko_live_reply_output(
+        self,
+        text: str,
+        *,
+        is_first_chunk: bool,
+        metadata: dict[str, Any] | None,
+        ui_enabled: bool = True,
+        tts_enabled: bool = True,
+        remember_voice_echo: bool = False,
+    ) -> bool:
+        if not _is_neko_live_reply_metadata(metadata):
+            return False
+        turn_id = str(getattr(self, "current_speech_id", "") or "")
+        if not turn_id:
+            return False
+
+        buffer = getattr(self, "_neko_live_reply_output_buffer", None)
+        if not isinstance(buffer, dict) or is_first_chunk or buffer.get("turn_id") != turn_id:
+            buffer = {
+                "turn_id": turn_id,
+                "text": "",
+                "metadata": dict(metadata or {}),
+                "ui_enabled": False,
+                "tts_enabled": False,
+                "remember_voice_echo": False,
+            }
+            self._neko_live_reply_output_buffer = buffer
+
+        buffer["text"] = _merge_neko_live_reply_chunk(
+            str(buffer.get("text") or ""),
+            str(text or ""),
+            is_first_chunk=is_first_chunk,
+        )
+        buffer["metadata"] = dict(metadata or buffer.get("metadata") or {})
+        buffer["ui_enabled"] = bool(buffer.get("ui_enabled")) or bool(ui_enabled)
+        buffer["tts_enabled"] = bool(buffer.get("tts_enabled")) or bool(tts_enabled)
+        buffer["remember_voice_echo"] = bool(buffer.get("remember_voice_echo")) or bool(remember_voice_echo)
+        return True
+
+    async def _flush_neko_live_reply_output_buffer(self, *, log_context: str) -> bool:
+        buffer = getattr(self, "_neko_live_reply_output_buffer", None)
+        if not isinstance(buffer, dict):
+            return False
+        self._neko_live_reply_output_buffer = None
+
+        text = str(buffer.get("text") or "").strip()
+        if not text:
+            return False
+        turn_id = str(buffer.get("turn_id") or getattr(self, "current_speech_id", "") or "")
+        metadata = dict(buffer.get("metadata") or {})
+        ui_enabled = bool(buffer.get("ui_enabled", True))
+        tts_enabled = bool(buffer.get("tts_enabled", True))
+        remember_voice_echo = bool(buffer.get("remember_voice_echo", False))
+
+        text_clean = self.emotion_pattern.sub("", text)
+        text_clean, shaped_metadata = _shape_neko_live_reply_text(text_clean, metadata)
+        if not text_clean.strip():
+            return False
+
+        suppressed = False
+        if ui_enabled:
+            await self.send_lanlan_response(
+                text_clean,
+                is_first_chunk=True,
+                turn_id=turn_id,
+                metadata=shaped_metadata,
+                remember_voice_echo=remember_voice_echo,
+            )
+            suppressed = bool(getattr(self, "_last_neko_live_reply_suppressed", False))
+        else:
+            _, suppressed = self._track_neko_live_reply_output(
+                text_clean,
+                is_first_chunk=True,
+                turn_id=turn_id,
+                metadata=shaped_metadata,
+            )
+
+        if suppressed:
+            logger.info("[%s] NEKO Live buffered reply suppressed at %s", self.lanlan_name, log_context)
+            return False
+
+        if self.use_tts and tts_enabled:
+            async with self.tts_cache_lock:
+                if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                    try:
+                        self._enqueue_tts_text_chunk(turn_id, text_clean)
+                    except Exception as e:
+                        logger.warning(f"⚠️ 发送TTS请求失败: {e}")
+                else:
+                    self.tts_pending_chunks.append((turn_id, text_clean))
+                    if len(self.tts_pending_chunks) == 1:
+                        logger.info("TTS未就绪，开始缓存文本chunk...")
+                    if self.tts_thread and not self.tts_thread.is_alive():
+                        self._respawn_tts_worker()
+        return True
+
     async def handle_response_complete(self):
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
+            self._neko_live_reply_output_buffer = None
             self._pending_turn_meta = None
             self._current_ai_turn_text = ""
             self._active_text_request_id = None
             return
 
         active_request_id = self._active_text_request_id
+
+        await self._flush_neko_live_reply_output_buffer(log_context="handle_response_complete")
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
@@ -3365,6 +3853,7 @@ class LLMSessionManager:
                 print(f"[response_discarded parse_err] raw: {message!r}")
 
         await self._clear_tts_pipeline()
+        self._neko_live_reply_output_buffer = None
 
         if self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -4002,10 +4491,21 @@ class LLMSessionManager:
                 expected_sid, self.current_speech_id, len(text),
             )
             return
+        live_reply_metadata = self._current_proactive_live_reply_metadata()
+        if self._buffer_neko_live_reply_output(
+            text,
+            is_first_chunk=is_first_chunk,
+            metadata=live_reply_metadata,
+            ui_enabled=True,
+            tts_enabled=True,
+            remember_voice_echo=not self.use_tts,
+        ):
+            return
         # 无论是否使用TTS，都要发送文本到前端显示
         await self.send_lanlan_response(
             text,
             is_first_chunk,
+            metadata=live_reply_metadata,
             remember_voice_echo=not self.use_tts,
         )
         
@@ -4027,6 +4527,123 @@ class LLMSessionManager:
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
+
+    def _track_neko_live_reply_output(
+        self,
+        text_clean: str,
+        *,
+        is_first_chunk: bool,
+        turn_id: str | None,
+        metadata: dict | None,
+    ) -> tuple[dict | None, bool]:
+        outgoing_metadata = dict(metadata) if isinstance(metadata, dict) else None
+        self._last_neko_live_reply_suppressed = False
+        self._last_neko_live_reply_metadata = outgoing_metadata
+        if not _is_neko_live_reply_metadata(outgoing_metadata):
+            return outgoing_metadata, False
+
+        turn_key = str(turn_id or uuid4())
+        recent_live_replies = getattr(self, "_neko_live_recent_reply_texts", None)
+        if not isinstance(recent_live_replies, OrderedDict):
+            raw_recent_live_replies = recent_live_replies
+            recent_live_replies = OrderedDict()
+            legacy_replies = _coerce_recent_live_reply_values(raw_recent_live_replies)
+            if not legacy_replies:
+                previous_live_reply = str(getattr(self, "_neko_live_recent_reply_text", "") or "")
+                if previous_live_reply:
+                    legacy_replies = [previous_live_reply]
+            for index, previous in enumerate(legacy_replies[-_NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE:]):
+                recent_live_replies[f"__legacy_previous_{index}__"] = previous
+            self._neko_live_recent_reply_texts = recent_live_replies
+
+        while len(recent_live_replies) > _NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE:
+            recent_live_replies.popitem(last=False)
+
+        previous_texts = [
+            previous
+            for sid, previous in recent_live_replies.items()
+            if sid != turn_key
+        ]
+        suppressed_turns = getattr(self, "_neko_live_suppressed_reply_turn_ids", None)
+        if not isinstance(suppressed_turns, set):
+            suppressed_turns = set()
+            self._neko_live_suppressed_reply_turn_ids = suppressed_turns
+        if turn_key in suppressed_turns:
+            if outgoing_metadata is None:
+                outgoing_metadata = {}
+            outgoing_metadata["neko_live_reply_repeat"] = True
+            outgoing_metadata["neko_live_reply_repeat_window"] = len(recent_live_replies)
+            outgoing_metadata["neko_live_reply_suppressed"] = "repeat"
+            self._last_neko_live_reply_suppressed = True
+            self._last_neko_live_reply_metadata = outgoing_metadata
+            return outgoing_metadata, True
+
+        existing_text = str(recent_live_replies.get(turn_key, "") or "")
+        accumulated_text = _merge_neko_live_reply_chunk(
+            existing_text,
+            text_clean,
+            is_first_chunk=is_first_chunk,
+        )
+        repeated_live_reply = _looks_like_recent_neko_live_reply_repeat(accumulated_text, previous_texts)
+        if repeated_live_reply and is_first_chunk and not existing_text:
+            if outgoing_metadata is None:
+                outgoing_metadata = {}
+            outgoing_metadata["neko_live_reply_repeat"] = True
+            outgoing_metadata["neko_live_reply_repeat_window"] = len(recent_live_replies)
+            outgoing_metadata["neko_live_reply_suppressed"] = "repeat"
+            self._last_neko_live_reply_suppressed = True
+            logger.warning(
+                "[%s] NEKO Live repeated reply suppressed module=%s len=%d window=%d",
+                self.lanlan_name,
+                outgoing_metadata.get("response_module_hint", ""),
+                len(accumulated_text),
+                len(recent_live_replies),
+            )
+            self._last_neko_live_reply_metadata = outgoing_metadata
+            suppressed_turns.add(turn_key)
+            if len(suppressed_turns) > _NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE:
+                suppressed_turns.pop()
+            return outgoing_metadata, True
+        if repeated_live_reply and existing_text:
+            if outgoing_metadata is None:
+                outgoing_metadata = {}
+            outgoing_metadata["neko_live_reply_repeat"] = True
+            outgoing_metadata["neko_live_reply_repeat_window"] = len(recent_live_replies)
+            outgoing_metadata["neko_live_reply_suppressed"] = "repeat"
+            self._last_neko_live_reply_suppressed = True
+            self._last_neko_live_reply_metadata = outgoing_metadata
+            suppressed_turns.add(turn_key)
+            if len(suppressed_turns) > _NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE:
+                suppressed_turns.pop()
+            return outgoing_metadata, True
+
+        self._neko_live_recent_reply_text = accumulated_text
+        self._neko_live_recent_reply_at = time.time()
+        recent_live_replies[turn_key] = accumulated_text
+        recent_live_replies.move_to_end(turn_key)
+        suppressed_turns.discard(turn_key)
+        while len(recent_live_replies) > _NEKO_LIVE_REPLY_REPEAT_HISTORY_SIZE:
+            recent_live_replies.popitem(last=False)
+        if outgoing_metadata is None:
+            outgoing_metadata = {}
+        outgoing_metadata["neko_live_reply_repeat"] = bool(repeated_live_reply)
+        outgoing_metadata["neko_live_reply_repeat_window"] = len(recent_live_replies)
+        if repeated_live_reply:
+            logger.warning(
+                "[%s] NEKO Live repeated reply detected module=%s len=%d window=%d",
+                self.lanlan_name,
+                outgoing_metadata.get("response_module_hint", ""),
+                len(accumulated_text),
+                len(recent_live_replies),
+            )
+        self._last_neko_live_reply_metadata = outgoing_metadata
+        return outgoing_metadata, False
+
+    def _last_tracked_neko_live_reply_metadata(self, fallback: dict | None) -> dict:
+        tracked = getattr(self, "_last_neko_live_reply_metadata", None)
+        if isinstance(tracked, dict):
+            return dict(tracked)
+        return dict(fallback or {}) if isinstance(fallback, dict) else {}
 
     async def send_lanlan_response(
         self,
@@ -4059,14 +4676,24 @@ class LLMSessionManager:
         ``request_id is None`` check.
         """
         text_clean = self.emotion_pattern.sub('', text)
+        text_clean, shaped_metadata = _shape_neko_live_reply_text(text_clean, metadata)
+        effective_turn_id = turn_id or self.current_speech_id
+        outgoing_metadata, suppressed = self._track_neko_live_reply_output(
+            text_clean,
+            is_first_chunk=is_first_chunk,
+            turn_id=effective_turn_id,
+            metadata=shaped_metadata,
+        )
+        if suppressed:
+            return False
         # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
         # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
-        if track_ai_turn:
+        track_conversation_turn = bool(track_ai_turn) and not _is_neko_live_reply_metadata(outgoing_metadata)
+        if track_conversation_turn:
             self._current_ai_turn_text += text_clean
-            if remember_voice_echo:
-                self._remember_recent_ai_voice_echo(text_clean)
-        effective_turn_id = turn_id or self.current_speech_id
+        if remember_voice_echo:
+            self._remember_recent_ai_voice_echo(text_clean)
         effective_request_id = (
             self._active_text_request_id
             if request_id is _REQUEST_ID_UNSET
@@ -4079,8 +4706,8 @@ class LLMSessionManager:
             "turn_id": effective_turn_id,
             "request_id": effective_request_id,
         }
-        if metadata:
-            message["metadata"] = metadata
+        if outgoing_metadata:
+            message["metadata"] = outgoing_metadata
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
@@ -4091,7 +4718,11 @@ class LLMSessionManager:
             # so this is a no-op on regular / proactive turns that never lit it.
             await self._push_focus_thinking(False)
         self.sync_message_queue.put({"type": "json", "data": message})
-        if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
+        should_cache_for_new_session = (
+            cache_for_new_session
+            and not _is_neko_live_reply_metadata(outgoing_metadata)
+        )
+        if should_cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
@@ -4209,7 +4840,7 @@ class LLMSessionManager:
             return {"ok": False, "reason": "missing_line", "mirrored": False}
 
         effective_turn_id = turn_id or request_id or str(uuid4())
-        await self.send_lanlan_response(
+        mirrored = await self.send_lanlan_response(
             clean,
             is_first_chunk=True,
             turn_id=effective_turn_id,
@@ -4218,9 +4849,21 @@ class LLMSessionManager:
             track_ai_turn=False,
             cache_for_new_session=False,
         )
+        if not mirrored and getattr(self, "_last_neko_live_reply_suppressed", False):
+            tracked_metadata = self._last_tracked_neko_live_reply_metadata(metadata)
+            return {
+                "ok": False,
+                "reason": "repeated_live_reply",
+                "mirrored": False,
+                "turn_id": effective_turn_id,
+                "request_id": request_id or "",
+                "metadata": tracked_metadata,
+                "turn_finalized": False,
+            }
+        tracked_metadata = self._last_tracked_neko_live_reply_metadata(metadata)
         if finalize_turn:
             await self.emit_mirror_turn_end(
-                metadata=metadata,
+                metadata=tracked_metadata,
                 request_id=request_id,
                 log_context="mirror assistant",
             )
@@ -4229,7 +4872,7 @@ class LLMSessionManager:
             "mirrored": True,
             "turn_id": effective_turn_id,
             "request_id": request_id or "",
-            "metadata": metadata if isinstance(metadata, dict) else {},
+            "metadata": tracked_metadata,
             "turn_finalized": bool(finalize_turn),
         }
 
@@ -4346,6 +4989,7 @@ class LLMSessionManager:
         clean = str(line or "").strip()
         if not clean:
             return {"ok": False, "reason": "missing_line", "audio_sent": False}
+        clean, metadata = _shape_neko_live_reply_text(clean, metadata)
 
         interrupted_speech_id = None
         if interrupt_audio:
@@ -4380,8 +5024,40 @@ class LLMSessionManager:
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
 
+        if not mirror_text:
+            tracked_metadata, suppressed = self._track_neko_live_reply_output(
+                clean,
+                is_first_chunk=True,
+                turn_id=turn_id,
+                metadata=metadata,
+            )
+            if suppressed:
+                tracked_metadata = self._last_tracked_neko_live_reply_metadata(tracked_metadata)
+                if emit_turn_end_after:
+                    await self.emit_mirror_turn_end(
+                        metadata=tracked_metadata,
+                        request_id=request_id,
+                        log_context="mirror speech suppressed",
+                    )
+                return {
+                    "ok": False,
+                    "reason": "repeated_live_reply",
+                    "method": "project_tts",
+                    "speech_id": turn_id,
+                    "audio_sent": False,
+                    "audio_queued": False,
+                    "metadata": tracked_metadata,
+                    "turn_end_emitted": bool(emit_turn_end_after),
+                    "interrupt_audio": bool(interrupt_audio),
+                    "voice_source": {
+                        "provider": "project_tts",
+                        "method": "project_tts",
+                        "use_existing_send_speech": True,
+                    },
+                }
+
         if mirror_text:
-            await self.send_lanlan_response(
+            mirrored = await self.send_lanlan_response(
                 clean,
                 is_first_chunk=True,
                 turn_id=turn_id,
@@ -4390,9 +5066,34 @@ class LLMSessionManager:
                 track_ai_turn=False,
                 cache_for_new_session=False,
             )
+            if not mirrored and getattr(self, "_last_neko_live_reply_suppressed", False):
+                tracked_metadata = self._last_tracked_neko_live_reply_metadata(metadata)
+                if emit_turn_end_after:
+                    await self.emit_mirror_turn_end(
+                        metadata=tracked_metadata,
+                        request_id=request_id,
+                        log_context="mirror speech suppressed",
+                    )
+                return {
+                    "ok": False,
+                    "reason": "repeated_live_reply",
+                    "method": "project_tts",
+                    "speech_id": turn_id,
+                    "audio_sent": False,
+                    "audio_queued": False,
+                    "metadata": tracked_metadata,
+                    "turn_end_emitted": bool(emit_turn_end_after),
+                    "interrupt_audio": bool(interrupt_audio),
+                    "voice_source": {
+                        "provider": "project_tts",
+                        "method": "project_tts",
+                        "use_existing_send_speech": True,
+                    },
+                }
 
         await self.ensure_tts_pipeline_alive()
         audio_queued = False
+        tracked_metadata = self._last_tracked_neko_live_reply_metadata(metadata)
         if self.tts_thread and self.tts_thread.is_alive():
             async with self.tts_cache_lock:
                 if self.tts_ready:
@@ -4403,7 +5104,7 @@ class LLMSessionManager:
                 audio_queued = status in {"queued", "deferred", "already"}
         if emit_turn_end_after:
             await self.emit_mirror_turn_end(
-                metadata=metadata,
+                metadata=tracked_metadata,
                 request_id=request_id,
                 log_context="mirror speech",
             )
@@ -4414,6 +5115,7 @@ class LLMSessionManager:
             "speech_id": turn_id,
             "audio_sent": audio_queued,
             "audio_queued": audio_queued,
+            "metadata": tracked_metadata,
             "turn_end_emitted": bool(emit_turn_end_after),
             "interrupt_audio": bool(interrupt_audio),
             "voice_source": {
@@ -7719,7 +8421,12 @@ class LLMSessionManager:
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
                     passive=False,
+                    recent_live_replies=_coerce_recent_live_reply_values(
+                        getattr(self, "_neko_live_recent_reply_texts", None)
+                    ),
                 )
+                live_reply_metadata = _merge_live_reply_metadata_from_callbacks(voice_snapshot)
+                self._remember_proactive_live_reply_metadata(proactive_sid, live_reply_metadata)
                 delivered_ids = {
                     cb.get("_callback_delivery_id")
                     for cb in voice_snapshot
@@ -7729,6 +8436,7 @@ class LLMSessionManager:
                     extra for extra in voice_extra_snapshot
                     if extra.get("_callback_delivery_id") in delivered_ids
                 ]
+                _live_meta_token = _proactive_live_reply_metadata.set(live_reply_metadata)
                 try:
                     await voice_sess.inject_text_and_request_response(
                         instruction, on_rejected=_on_voice_inject_rejected
@@ -7761,6 +8469,8 @@ class LLMSessionManager:
                         self.lanlan_name, exc,
                     )
                     return False
+                finally:
+                    _proactive_live_reply_metadata.reset(_live_meta_token)
 
                 # If the server rejected asynchronously DURING the await above
                 # (case a — ``_on_voice_inject_rejected`` already fired while
@@ -8014,7 +8724,12 @@ class LLMSessionManager:
                 lanlan_name=self.lanlan_name,
                 master_name=self.master_name,
                 passive=False,
+                recent_live_replies=_coerce_recent_live_reply_values(
+                    getattr(self, "_neko_live_recent_reply_texts", None)
+                ),
             )
+            live_reply_metadata = _merge_live_reply_metadata_from_callbacks(active_callbacks)
+            self._remember_proactive_live_reply_metadata(proactive_sid, live_reply_metadata)
             ack_resolved = False
 
             def _resolve_text_delivery_ack(delivered: bool) -> None:
@@ -8026,6 +8741,7 @@ class LLMSessionManager:
                     resolve_callback_delivery_ack(cb, delivered)
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            _live_meta_token = _proactive_live_reply_metadata.set(live_reply_metadata)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight
@@ -8056,6 +8772,7 @@ class LLMSessionManager:
                         raise
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                _proactive_live_reply_metadata.reset(_live_meta_token)
                 try:
                     self.lifecycle_bus.emit("text_end")
                 except Exception:
@@ -9145,6 +9862,9 @@ class LLMSessionManager:
                 lanlan_name=getattr(self, "lanlan_name", "") or "",
                 master_name=getattr(self, "master_name", "") or "",
                 passive=False,
+                recent_live_replies=_coerce_recent_live_reply_values(
+                    getattr(self, "_neko_live_recent_reply_texts", None)
+                ),
             )
             delivered_to_prompt = True
             return rendered

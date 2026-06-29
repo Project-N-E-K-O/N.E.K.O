@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
-from .contracts import InteractionResult, PipelineStep, ViewerEvent, ViewerProfile
+from .contracts import InteractionRequest, InteractionResult, PipelineStep, ViewerEvent, ViewerIdentity, ViewerProfile
 
 ENTRANCE_ROAST_MIN_INTERVAL_SECONDS = 45.0
 ENTRANCE_ROAST_INTERVAL_BY_ACTIVITY = {
@@ -14,6 +15,13 @@ ENTRANCE_ROAST_INTERVAL_BY_ACTIVITY = {
     "standard": ENTRANCE_ROAST_MIN_INTERVAL_SECONDS,
     "active": 30.0,
 }
+
+
+@dataclass(frozen=True)
+class PipelineRoute:
+    response_module_id: str
+    viewer_gate_reason: str
+    should_mark_roasted: bool
 
 
 class RoastPipeline:
@@ -45,6 +53,68 @@ class RoastPipeline:
     def _record_avatar_roast_sent(self) -> None:
         self._last_avatar_roast_at = self._now()
 
+    @staticmethod
+    def _is_live_danmaku_with_text(event: ViewerEvent) -> bool:
+        return event.source == "live_danmaku" and bool((event.danmaku_text or "").strip())
+
+    @staticmethod
+    def _is_transient_event(event: ViewerEvent) -> bool:
+        return event.source in {"developer_sandbox", "idle_hosting", "active_engagement", "warmup_hosting"}
+
+    @staticmethod
+    def _is_repeat_live_danmaku(event: ViewerEvent, *, has_uid_lock: bool, already_roasted: bool) -> bool:
+        return has_uid_lock and RoastPipeline._is_live_danmaku_with_text(event) and already_roasted
+
+    def _is_entrance_paced_live_danmaku(
+        self,
+        event: ViewerEvent,
+        *,
+        has_uid_lock: bool,
+        already_roasted: bool,
+    ) -> bool:
+        return (
+            has_uid_lock
+            and self._is_live_danmaku_with_text(event)
+            and event.live_mode == "solo_stream"
+            and not already_roasted
+            and self._entrance_pacing_active()
+        )
+
+    def _route_for_event(
+        self,
+        event: ViewerEvent,
+        *,
+        is_transient_event: bool,
+        has_uid_lock: bool,
+        already_roasted: bool,
+    ) -> PipelineRoute:
+        if event.source == "warmup_hosting":
+            return PipelineRoute("warmup_hosting", "warmup_hosting", False)
+        if event.source == "active_engagement":
+            return PipelineRoute("active_engagement", "active_engagement", False)
+        if event.source == "idle_hosting":
+            return PipelineRoute("idle_hosting", "idle_hosting", False)
+        if self._is_repeat_live_danmaku(event, has_uid_lock=has_uid_lock, already_roasted=already_roasted):
+            return PipelineRoute("danmaku_response", "repeat_danmaku", False)
+        if self._is_entrance_paced_live_danmaku(event, has_uid_lock=has_uid_lock, already_roasted=already_roasted):
+            return PipelineRoute("danmaku_response", "entrance_pacing", True)
+        return PipelineRoute("avatar_roast", "", not is_transient_event)
+
+    def _build_request_for_route(
+        self,
+        route: PipelineRoute,
+        event: ViewerEvent,
+        identity: ViewerIdentity,
+        profile: ViewerProfile,
+    ) -> InteractionRequest:
+        if route.response_module_id == "warmup_hosting":
+            return self.ctx.warmup_hosting.build_request(event, identity, profile)
+        if route.response_module_id == "active_engagement":
+            return self.ctx.active_engagement.build_request(event, identity, profile)
+        if route.response_module_id == "danmaku_response":
+            return self.ctx.danmaku_response.build_request(event, identity, profile)
+        return self.ctx.avatar_roast.build_request(event, identity, profile)
+
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
         if not event.uid:
@@ -73,7 +143,7 @@ class RoastPipeline:
             identity = await self.ctx.bili_identity.resolve(event)
             steps.append(PipelineStep("bili_identity", "ok" if not identity.error else "failed", identity.error))
 
-            is_transient_event = event.source in {"developer_sandbox", "idle_hosting", "active_engagement", "warmup_hosting"}
+            is_transient_event = self._is_transient_event(event)
             if is_transient_event:
                 profile = ViewerProfile(uid=identity.uid, nickname=identity.nickname, avatar_url=identity.avatar_url)
                 steps.append(PipelineStep("viewer_profile", "skipped", f"{event.source} uses transient profile"))
@@ -82,68 +152,41 @@ class RoastPipeline:
                 steps.append(PipelineStep("viewer_profile", "ok"))
 
             uid_lock: asyncio.Lock | None = None
-            if self.ctx.config.roast_once_per_uid and not is_transient_event:
+            needs_session_gate = self._is_live_danmaku_with_text(event)
+            if (self.ctx.config.roast_once_per_uid or needs_session_gate) and not is_transient_event:
                 uid_lock = self._uid_locks.setdefault(identity.uid, asyncio.Lock())
                 await uid_lock.acquire()
             try:
                 already_roasted = False
                 if uid_lock is not None:
-                    already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
+                    already_roasted = identity.uid in self._session_roasted_uids
+                    if self.ctx.config.roast_once_per_uid and not already_roasted:
+                        already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
                     if not already_roasted:
                         already_roasted = identity.uid in self._session_roasted_uids
                     if not already_roasted and self.ctx.config.dry_run and event.source == "live_danmaku":
                         already_roasted = identity.uid in self._dry_run_roasted_uids
-                is_repeat_live_danmaku = (
-                    uid_lock is not None
-                    and event.source == "live_danmaku"
-                    and bool((event.danmaku_text or "").strip())
-                    and already_roasted
+                has_uid_lock = uid_lock is not None
+                route = self._route_for_event(
+                    event,
+                    is_transient_event=is_transient_event,
+                    has_uid_lock=has_uid_lock,
+                    already_roasted=already_roasted,
                 )
-                is_entrance_paced_live_danmaku = (
-                    uid_lock is not None
-                    and event.source == "live_danmaku"
-                    and event.live_mode == "solo_stream"
-                    and bool((event.danmaku_text or "").strip())
-                    and not already_roasted
-                    and self._entrance_pacing_active()
-                )
-                if uid_lock is not None and already_roasted and not is_repeat_live_danmaku:
+                if uid_lock is not None and already_roasted and route.response_module_id != "danmaku_response":
                     reason = "uid already roasted"
                     steps.append(PipelineStep("viewer_gate", "skipped", reason))
                     result = InteractionResult(False, "skipped", event, identity=identity, profile=profile, reason=reason, steps=steps)
                     self.ctx.audit.record("pipeline_skipped", reason, level="info", detail={"uid": identity.uid})
                     return result
 
-                if event.source == "warmup_hosting":
-                    steps.append(PipelineStep("viewer_gate", "ok", "warmup_hosting"))
-                    request = self.ctx.warmup_hosting.build_request(event, identity, profile)
-                    should_mark_roasted = False
-                    response_module_id = "warmup_hosting"
-                elif event.source == "active_engagement":
-                    steps.append(PipelineStep("viewer_gate", "ok", "active_engagement"))
-                    request = self.ctx.active_engagement.build_request(event, identity, profile)
-                    should_mark_roasted = False
-                    response_module_id = "active_engagement"
-                elif event.source == "idle_hosting":
-                    steps.append(PipelineStep("viewer_gate", "ok", "idle_hosting"))
-                    request = self.ctx.avatar_roast.build_request(event, identity, profile)
-                    should_mark_roasted = False
-                    response_module_id = "idle_hosting"
-                elif is_repeat_live_danmaku:
-                    steps.append(PipelineStep("viewer_gate", "ok", "repeat_danmaku"))
-                    request = self.ctx.danmaku_response.build_request(event, identity, profile)
-                    should_mark_roasted = False
-                    response_module_id = "danmaku_response"
-                elif is_entrance_paced_live_danmaku:
-                    steps.append(PipelineStep("viewer_gate", "ok", "entrance_pacing"))
-                    request = self.ctx.danmaku_response.build_request(event, identity, profile)
-                    should_mark_roasted = True
-                    response_module_id = "danmaku_response"
+                if route.viewer_gate_reason:
+                    steps.append(PipelineStep("viewer_gate", "ok", route.viewer_gate_reason))
                 else:
                     steps.append(PipelineStep("viewer_gate", "ok"))
-                    request = self.ctx.avatar_roast.build_request(event, identity, profile)
-                    should_mark_roasted = not is_transient_event
-                    response_module_id = "avatar_roast"
+                request = self._build_request_for_route(route, event, identity, profile)
+                should_mark_roasted = route.should_mark_roasted
+                response_module_id = route.response_module_id
                 steps.append(PipelineStep(response_module_id, "ok"))
                 if should_mark_roasted and uid_lock is not None:
                     self._session_roasted_uids.add(identity.uid)

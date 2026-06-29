@@ -73,7 +73,7 @@ Protected Modules include:
 - Pipeline / output: `core/pipeline.py`, `core/safety_guard.py`, `adapters/neko_dispatcher.py`.
 - Runtime: `core/runtime.py`, plugin actions, config persistence, hosted-ui context.
 - Stores / privacy: `stores/viewer_store.py`, `stores/audit_store.py`, `stores/credential_store.py`.
-- Dashboard shell: `ui/panel.tsx` navigation shell, module renderer, error boundary, cross-page state.
+- Dashboard shell: `ui/panel.tsx` navigation shell and cross-page state; `ui/panel_components.tsx` display components; `ui/panel_helpers.ts` labels and formatting helpers.
 
 Open contribution areas include docs, module docs, fixtures, tests, small read-only dashboard display changes, i18n sync, and non-core `config_schema()` changes. New contributors should start there unless a maintainer explicitly scopes a Protected Module change.
 

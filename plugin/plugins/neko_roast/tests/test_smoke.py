@@ -82,10 +82,11 @@ def test_panel_hides_internal_module_ids_from_streamer_module_cards():
 def test_panel_dynamic_labels_have_streamer_facing_fallbacks():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    helper_source = (root / "ui" / "panel_helpers.ts").read_text(encoding="utf-8")
 
-    assert "panelText(" in source
-    assert 'solo_idle: "猫猫独播已冷场，可以冷场陪播。"' in source
-    assert 'waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。"' in source
+    assert "panelText(" in helper_source
+    assert 'solo_idle: "猫猫独播已冷场，可以冷场陪播。"' in helper_source
+    assert 'waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。"' in helper_source
     assert "t(`panel.liveDirector.reason.${liveDirectorReason}`)" not in source
     assert "t(`panel.speechExplanation.reason.${speechReason}`)" not in source
 
@@ -93,18 +94,20 @@ def test_panel_dynamic_labels_have_streamer_facing_fallbacks():
 def test_panel_recent_results_show_route_and_signal_labels():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    helper_source = (root / "ui" / "panel_helpers.ts").read_text(encoding="utf-8")
 
     assert "panel.columns.responseModule" in source
     assert "panel.columns.eventSignal" in source
     assert "eventSignalLabel" in source
-    assert "panel.eventSignal.gift_signal" in source
-    assert "panel.eventSignal.super_chat_signal" in source
-    assert "panel.eventSignal.danmaku_signal" in source
+    assert "panel.eventSignal.gift_signal" in helper_source
+    assert "panel.eventSignal.super_chat_signal" in helper_source
+    assert "panel.eventSignal.danmaku_signal" in helper_source
 
 
 def test_panel_shows_independent_pacing_and_active_topic_observability():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    helper_source = (root / "ui" / "panel_helpers.ts").read_text(encoding="utf-8")
 
     assert "last_viewer_activity_age_sec" in source
     assert "last_output_age_sec" in source
@@ -118,8 +121,8 @@ def test_panel_shows_independent_pacing_and_active_topic_observability():
     assert "topic_reply_affordance" in source
     assert "activeTopicIntentLabel" in source
     assert "activeTopicReplyAffordanceLabel" in source
-    assert "panel.activeEngagementIntent.quickVote" in source
-    assert "panel.activeEngagementReplyAffordance.oneSide" in source
+    assert "panel.activeEngagementIntent.quickVote" in helper_source
+    assert "panel.activeEngagementReplyAffordance.oneSide" in helper_source
     assert "panel.interaction.currentDecision.topic" in source
     assert "host_beat_shape" in source
     assert "idleHostBeatShapeLabel" in source

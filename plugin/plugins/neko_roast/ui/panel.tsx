@@ -24,6 +24,33 @@ import {
   useToast,
 } from "@neko/plugin-ui"
 import type { PluginSurfaceProps } from "@neko/plugin-ui"
+import {
+  ModuleHealthBadge,
+  ModuleRenderBoundary,
+} from "./panel_components"
+import {
+  activeTopicIntentLabel,
+  activeTopicReplyAffordanceLabel,
+  activeTopicShapeLabel,
+  activeTopicSourceLabel,
+  eventSignalLabel,
+  eventSignalTone,
+  formatAgeSec,
+  formatLatencyMs,
+  idleHostBeatShapeLabel,
+  interactionRoute,
+  interactionRouteLabel,
+  interactionRouteTone,
+  labelFallback,
+  latestEventLabel,
+  liveStateTone,
+  liveStatusTone,
+  panelText,
+  soloReadinessItemTone,
+  soloReadinessTone,
+  speechExplanationTone,
+  statusTone,
+} from "./panel_helpers"
 
 type RoastConfig = {
   live_room_id?: number
@@ -87,341 +114,6 @@ const presetViewer = {
   uid: "9000000000000001",
   nickname: "Demo viewer",
   danmaku_text: "First time here, can you roast my avatar?",
-}
-
-function statusTone(status: string): "success" | "warning" | "danger" | "default" {
-  if (status === "running") return "success"
-  if (status === "paused" || status === "degraded" || status === "disconnected") return "warning"
-  if (status === "tripped") return "danger"
-  return "default"
-}
-
-function liveStatusTone(summary: string): "success" | "warning" | "danger" | "default" {
-  if (summary === "ready_to_stream") return "success"
-  if (summary === "test_only" || summary === "temporarily_not_speaking") return "warning"
-  if (summary === "cannot_stream") return "danger"
-  return "default"
-}
-
-function liveStateTone(state: string): "success" | "warning" | "danger" | "default" {
-  if (state === "engaged" || state === "warmup") return "success"
-  if (state === "quiet" || state === "idle" || state === "paused") return "warning"
-  if (state === "blocked") return "danger"
-  return "default"
-}
-
-function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
-  if (summary === "ready" || summary === "recently_spoke") return "success"
-  if (summary === "cannot_stream" || summary === "failed") return "danger"
-  if (summary === "test_only" || summary === "temporarily_not_speaking" || summary === "waiting_for_activity" || summary === "recently_skipped") return "warning"
-  return "default"
-}
-
-function soloReadinessTone(ready: boolean, summary: string): "success" | "warning" | "danger" | "default" {
-  if (ready) return "success"
-  if (summary === "not_solo_stream") return "default"
-  return "warning"
-}
-
-function soloReadinessItemTone(status: string): "success" | "warning" | "danger" | "default" {
-  if (status === "observed") return "success"
-  if (status === "ready") return "success"
-  if (status === "warning") return "warning"
-  if (status === "blocked") return "warning"
-  return "default"
-}
-
-function panelText(t: (key: string) => string, key: string, fallback: string): string {
-  const value = t(key)
-  if (!value || value === key || value.startsWith("panel.") || value.startsWith("entries.")) return fallback
-  return value
-}
-
-function labelFallback(group: string, value: string): string {
-  const labels: Record<string, Record<string, string>> = {
-    liveStatusSummary: {
-      ready_to_stream: "可以开播",
-      test_only: "当前只能测试",
-      temporarily_not_speaking: "暂时不会说话",
-      cannot_stream: "不能开播",
-    },
-    liveStatusReason: {
-      ready: "开播检查已就绪。",
-      dry_run: "测试模式已开启，不会真实输出。",
-      manual_paused: "猫猫已暂停。",
-      room_not_configured: "还没有配置直播间。",
-      live_disabled: "NEKO Live 尚未启用。",
-      live_ingest_disconnected: "直播接收还没有连接。",
-      cooldown: "猫猫正在等待冷却结束。",
-      safety_tripped: "安全门已停止输出。",
-      safety_degraded: "安全门处于降级状态。",
-      output_channel_unavailable: "输出通道当前不可用。",
-      all_ready: "所有检查都已就绪。",
-    },
-    liveModeRole: {
-      co_stream: "人猫同播",
-      solo_stream: "猫猫独播",
-    },
-    liveModeRoleHint: {
-      companion: "人猫同播：NEKO 是搭档，低打断补位。",
-      solo_host: "猫猫独播：NEKO 正在独自接待观众。",
-    },
-    liveState: {
-      engaged: "互动中",
-      warmup: "开场中",
-      quiet: "安静中",
-      idle: "冷场中",
-      paused: "已暂停",
-      blocked: "被阻断",
-    },
-    liveStateReason: {
-      recent_activity: "最近有互动，优先接话。",
-      solo_stream_warmup: "猫猫独播刚开始，适合开场接待。",
-      quiet_activity_gap: "直播间已经安静了一小会。",
-      low_activity: "互动较少。",
-      no_recent_activity: "最近没有新的互动。",
-      manual_paused: "猫猫已暂停。",
-      blocked_by_live_status: "当前开播状态还不允许输出。",
-    },
-    idleHostingCandidate: {
-      true: "适合冷场陪播",
-      false: "还没到冷场陪播时机",
-    },
-    idleHostingEligible: {
-      true: "可以补位",
-      false: "暂不能补位",
-    },
-    idleHostingReason: {
-      eligible: "猫猫独播处于冷场状态，可以准备补位。",
-      not_candidate: "还不是候选时机。",
-      minimum_interval: "正在等待最小间隔。",
-      auto_disabled: "多次失败后已自动停用。",
-      solo_idle_ready: "猫猫独播已进入冷场候选，可以准备补位。",
-    },
-    speechSummary: {
-      ready: "NEKO 现在可以说话",
-      test_only: "当前只能测试",
-      temporarily_not_speaking: "NEKO 暂时不会说话",
-      cannot_stream: "NEKO 还不能开播",
-      waiting_for_activity: "正在等合适的开口时机",
-      recently_spoke: "NEKO 刚刚说过话",
-      recently_skipped: "最近事件没有输出",
-      failed: "最近输出失败",
-      waiting: "正在等待合适时机",
-    },
-    speechReason: {
-      ready: "开播检查已就绪。",
-      dry_run: "测试模式已开启，不会真实输出。",
-      manual_paused: "NEKO 被手动暂停了。",
-      room_not_configured: "还没有配置直播间。",
-      live_ingest_disconnected: "直播接收还没有连接。",
-      cooldown: "NEKO 正在等待冷却结束。",
-      safety_tripped: "安全门已停止输出。",
-      safety_degraded: "安全门处于降级状态。",
-      output_channel_unavailable: "输出通道当前不可用。",
-      solo_stream_warmup: "猫猫独播刚开始，可以先说一句开场话。",
-      idle_hosting_candidate: "猫猫独播已空闲，可以进入冷场陪播。",
-      quiet_activity_gap: "直播间已经安静了一小会。",
-      no_recent_activity: "最近没有新的互动。",
-      waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。",
-      recent_output: "NEKO 刚刚已经输出过。",
-      recently_skipped: "最近事件被策略跳过。",
-      failed: "最近输出链路失败。",
-      "dispatcher.dry_run": "Dispatcher 以 dry_run 完成。",
-    },
-    liveDirectorAction: {
-      none: "暂无",
-      warmup_hosting: "开场接待",
-      active_engagement: "主动营业",
-      idle_hosting: "冷场陪播",
-    },
-    liveDirectorReason: {
-      waiting_for_viewer: "正在等待观众互动。",
-      companion_mode: "人猫同播不自动抢话。",
-      paused: "猫猫已暂停。",
-      blocked: "直播输出被阻断。",
-      recent_activity: "最近互动足够，猫猫应该接话而不是强行抛话题。",
-      solo_quiet: "猫猫独播较安静，可以轻主动营业。",
-      solo_warmup: "猫猫独播刚开始，可以先开场接待。",
-      solo_idle: "猫猫独播已冷场，可以冷场陪播。",
-      solo_idle_ready: "猫猫独播已冷场，可以冷场陪播。",
-      minimum_interval: "正在等待最小间隔。",
-      recent_danmaku_output: "猫猫刚接过弹幕，主动营业先等一下。",
-      not_candidate: "还不是候选时机。",
-      auto_disabled: "多次失败后已自动停用。",
-      active_engagement_not_ready: "主动营业暂未就绪。",
-      warmup_hosting_not_ready: "开场接待暂时还没准备好。",
-      idle_hosting_not_ready: "冷场陪播暂未就绪。",
-    },
-    activeEngagementCandidate: {
-      true: "适合轻主动营业",
-      false: "现在不适合主动营业",
-    },
-    activeEngagementReason: {
-      eligible: "猫猫独播处于安静状态，可以抛一个小话题。",
-      deferred: "主动营业暂缓，先验证接弹幕和冷场陪播。",
-      not_solo_stream: "主动营业 v0 只服务猫猫独播。",
-      paused: "猫猫已暂停。",
-      blocked: "直播输出被阻断。",
-      not_quiet: "主动营业等待安静状态，不在热聊或完全冷场时触发。",
-      cooldown: "输出冷却还在生效。",
-      minimum_interval: "主动营业正在等待最小间隔。",
-      live_status_not_ready: "当前直播状态还不能输出。",
-    },
-    warmupHostingCandidate: {
-      true: "适合开场",
-      false: "开场已过",
-    },
-    soloReadinessSummary: {
-      ready_for_test: "可以开始测试独播",
-      ready_for_live_test: "可以开始真实独播测试",
-      ready: "独播检查已就绪",
-      not_solo_stream: "请先切到猫猫独播",
-      live_not_ready: "直播间还没准备好",
-    },
-    soloReadinessStatus: {
-      ready: "可用",
-      blocked: "等待",
-      observed: "已触发",
-    },
-    soloReadinessItem: {
-      preflight: "开播检查",
-      warmup_hosting: "开场接待",
-      avatar_roast: "首次出场锐评",
-      danmaku_response: "后续弹幕接话",
-      active_engagement: "轻主动营业",
-      idle_hosting: "冷场陪播",
-      pacing_control: "节奏控制",
-    },
-    safety: {
-      running: "运行中",
-      paused: "已暂停",
-      tripped: "已急停",
-      degraded: "降级中",
-      unknown: "未知",
-    },
-  }
-  return labels[group]?.[value] || value.replace(/_/g, " ")
-}
-
-function formatLatencyMs(value: any): string {
-  const ms = Number(value)
-  if (!Number.isFinite(ms) || ms < 0) return "-"
-  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.round(ms / 1000)}s`
-}
-
-function formatAgeSec(value: any): string {
-  if (value === null || value === undefined) return "-"
-  const seconds = Number(value)
-  if (!Number.isFinite(seconds) || seconds < 0) return "-"
-  return `${seconds.toFixed(1)}s`
-}
-
-function interactionRoute(result: any): string {
-  const responseModule = String((result && result.response_module) || "")
-  if (responseModule) return responseModule
-  const source = String((result && result.event && result.event.source) || "")
-  if (source === "warmup_hosting") return "warmup_hosting"
-  if (source === "idle_hosting") return "idle_hosting"
-  if (source === "active_engagement") return "active_engagement"
-  const steps = Array.isArray(result && result.steps) ? result.steps : []
-  const routeStep = [...steps].reverse().find((step: any) => {
-    const id = String((step && step.id) || "")
-    return id === "danmaku_response" || id === "avatar_roast" || id === "warmup_hosting" || id === "idle_hosting" || id === "active_engagement"
-  })
-  if (routeStep && routeStep.id) return String(routeStep.id)
-  return source || "-"
-}
-
-function interactionRouteTone(route: string): "success" | "warning" | "danger" | "default" {
-  if (route === "avatar_roast" || route === "danmaku_response") return "success"
-  if (route === "warmup_hosting" || route === "idle_hosting") return "warning"
-  if (route === "active_engagement") return "default"
-  return "default"
-}
-
-function interactionRouteLabel(route: string, t: (key: string) => string): string {
-  if (route === "avatar_roast") return panelText(t, "panel.interaction.module.avatarRoast.title", "首次出场锐评")
-  if (route === "danmaku_response") return panelText(t, "panel.interaction.module.danmakuResponse.title", "后续弹幕接话")
-  if (route === "warmup_hosting") return panelText(t, "panel.interaction.module.warmupHosting.title", "开场接待")
-  if (route === "idle_hosting") return panelText(t, "panel.interaction.module.idleHosting.title", "冷场陪播")
-  if (route === "active_engagement") return panelText(t, "panel.interaction.module.activeEngagement.title", "主动营业")
-  return route
-}
-
-function activeTopicIntentLabel(value: any, t: (key: string) => string): string {
-  const intent = String(value || "").trim()
-  if (!intent) return ""
-  if (intent === "quick_vote") return panelText(t, "panel.activeEngagementIntent.quickVote", "Quick vote")
-  if (intent === "agree_or_pushback") return panelText(t, "panel.activeEngagementIntent.agreeOrPushback", "Agree or push back")
-  if (intent === "tease_back") return panelText(t, "panel.activeEngagementIntent.teaseBack", "Tease back")
-  if (intent === "tiny_answer") return panelText(t, "panel.activeEngagementIntent.tinyAnswer", "Tiny answer")
-  if (intent === "quick_reply") return panelText(t, "panel.activeEngagementIntent.quickReply", "Quick reply")
-  return intent
-}
-
-function activeTopicSourceLabel(value: any, t: (key: string) => string): string {
-  const source = String(value || "").trim()
-  if (!source) return ""
-  if (source === "fallback") return panelText(t, "panel.activeEngagementSource.fallback", "Built-in topic")
-  if (source === "bili_trending") return panelText(t, "panel.activeEngagementSource.biliTrending", "Bili trending")
-  if (source === "recent_danmaku") return panelText(t, "panel.activeEngagementSource.recentDanmaku", "Recent danmaku")
-  return source.replace(/_/g, " ")
-}
-
-function activeTopicShapeLabel(value: any, t: (key: string) => string): string {
-  const shape = String(value || "").trim()
-  if (!shape) return ""
-  if (shape === "either_or") return panelText(t, "panel.activeEngagementShape.eitherOr", "A/B choice")
-  if (shape === "light_stance") return panelText(t, "panel.activeEngagementShape.lightStance", "Light stance")
-  if (shape === "tiny_tease") return panelText(t, "panel.activeEngagementShape.tinyTease", "Tiny tease")
-  if (shape === "small_challenge") return panelText(t, "panel.activeEngagementShape.smallChallenge", "Small challenge")
-  return shape
-}
-
-function activeTopicReplyAffordanceLabel(value: any, t: (key: string) => string): string {
-  const affordance = String(value || "").trim().toLowerCase()
-  if (!affordance) return ""
-  if (affordance === "viewer can answer with one side") return panelText(t, "panel.activeEngagementReplyAffordance.oneSide", "Viewer picks one side")
-  if (affordance === "viewer can agree or push back") return panelText(t, "panel.activeEngagementReplyAffordance.agreeOrPushback", "Viewer agrees or pushes back")
-  if (affordance === "viewer can tease neko back") return panelText(t, "panel.activeEngagementReplyAffordance.teaseBack", "Viewer teases NEKO back")
-  if (affordance === "viewer can answer in a few words") return panelText(t, "panel.activeEngagementReplyAffordance.fewWords", "Viewer answers in a few words")
-  if (affordance === "viewer can reply quickly") return panelText(t, "panel.activeEngagementReplyAffordance.quickReply", "Viewer replies quickly")
-  return String(value || "")
-}
-
-function idleHostBeatShapeLabel(value: any, t: (key: string) => string): string {
-  const shape = String(value || "").trim()
-  if (!shape) return ""
-  if (shape === "soft_observation") return panelText(t, "panel.idleHostingBeatShape.softObservation", "Soft observation")
-  if (shape === "tiny_choice") return panelText(t, "panel.idleHostingBeatShape.tinyChoice", "Tiny choice")
-  if (shape === "light_tease") return panelText(t, "panel.idleHostingBeatShape.lightTease", "Light tease")
-  if (shape === "small_mood") return panelText(t, "panel.idleHostingBeatShape.smallMood", "Small mood")
-  return shape.replace(/_/g, " ")
-}
-
-function eventSignalTone(signal: string): "success" | "warning" | "danger" | "default" {
-  if (signal === "gift_signal") return "warning"
-  if (signal === "super_chat_signal") return "success"
-  if (signal === "danmaku_signal") return "default"
-  return "default"
-}
-
-function eventSignalLabel(signal: string, t: (key: string) => string): string {
-  if (signal === "gift_signal") return t("panel.eventSignal.gift_signal")
-  if (signal === "super_chat_signal") return t("panel.eventSignal.super_chat_signal")
-  if (signal === "danmaku_signal") return t("panel.eventSignal.danmaku_signal")
-  return t("panel.eventSignal.unknown")
-}
-
-function latestEventLabel(result: any): string {
-  const event = (result && result.event) || {}
-  const identity = (result && result.identity) || {}
-  const who = String(identity.nickname || event.nickname || event.uid || "-")
-  const text = String(event.danmaku_text || "").trim()
-  if (text) return `${who}: ${text}`
-  return who
 }
 
 function ToggleSwitch(props: { checked: boolean; label?: any; disabled?: boolean; tone?: string; onChange: (value: boolean) => void }) {
@@ -597,7 +289,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
     const timer = window.setInterval(() => {
       props.api.refresh().catch(() => {
-        /* 鐘舵€佽疆璇㈠け璐ヤ笉鎵撴柇闈㈡澘鎿嶄綔锛涗笅涓€杞户缁皾璇?*/
+        /* Status polling failures should not interrupt panel actions; the next poll will retry. */
       })
     }, 3000)
     return () => window.clearInterval(timer)
@@ -607,7 +299,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     try {
       await props.api.call("update_config", {
         live_enabled: configForm.values.live_enabled,
-        live_room_id: configForm.values.live_room_id.trim(),  // 鎴垮彿鎴栫洿鎾棿閾炬帴锛屽悗绔?parse_room_id 褰掍竴
+        live_room_id: configForm.values.live_room_id.trim(),  // Room id or live URL; backend parse_room_id normalizes it.
         developer_tools_enabled: configForm.values.developer_tools_enabled,
         live_mode: configForm.values.live_mode,
         activity_level: configForm.values.activity_level,
@@ -649,7 +341,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function connectRoom() {
-    const roomId = (configForm.values.live_room_id || String(config.live_room_id || "")).trim()  // 鎴垮彿鎴栫洿鎾棿閾炬帴
+    const roomId = (configForm.values.live_room_id || String(config.live_room_id || "")).trim()  // Room id or live URL.
     if (!roomId) {
       toast.error(t("panel.messages.roomRequired"))
       return
@@ -708,7 +400,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       try {
         setLoginState(unwrapActionResult(await props.api.call("bili_login_status")))
       } catch {
-        /* 鐧诲綍鎬佹媺鍙栧け璐ヤ笉褰卞搷闈㈡澘 */
+        /* Login status fetch failures should not block the panel. */
       }
     })()
   }, [])
@@ -905,7 +597,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             </Grid>
             {loginState?.qrcode_image && !loginLoggedIn ? (
               <Stack>
-                {/* 瀹夸富 hosted-ui runtime 鐨?isSafeUrl 浼氬墺鎺?<img src> 閲岀殑 data: URL锛?                    鎵€浠ヤ簩缁寸爜鏀圭敤 CSS background-image 娉ㄥ叆锛坰tyle 涓嶈 sanitize锛夈€?                    鐐瑰嚮鍥剧墖閲嶆柊璋冪敤 bili_login 鍒锋柊浜岀淮鐮侊紙杩囨湡/鎯虫崲鐮佹椂鐢級銆?*/}
+                {/* hosted-ui strips data: URLs from img src, so the QR code uses a CSS background image. */}
                 <div
                   onClick={biliLogin}
                   role="button"
@@ -1112,14 +804,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // Module status badge.
-  const moduleBadge = (m: any) => {
-    if (m && m.degraded) return <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
-    const reserved = !!(m && m.status && m.status.reserved)
-    const on = !!(m && m.enabled)
-    return <StatusBadge tone={on ? "success" : (reserved ? "default" : "warning")} label={on ? t("panel.modules.online") : (reserved ? t("panel.modules.soon") : t("panel.modules.off"))} />
-  }
-
   // Render module-declared config fields.
   const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
@@ -1291,7 +975,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Stack gap={12}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
           <StatusBadge tone={m ? "success" : "warning"} label={m ? t("panel.interaction.module.danmakuResponse.badge") : t("panel.modules.soon")} />
-          {m ? moduleBadge(m) : null}
+          {m ? <ModuleHealthBadge module={m} t={t} /> : null}
         </div>
         <Text>{t("panel.interaction.module.danmakuResponse.desc")}</Text>
         {renderTagRow([
@@ -1393,34 +1077,14 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Card>
   )
 
-
-  // 鍏滃簳灞傗懀 UI 閿欒杈圭晫锛堣 docs/ui-architecture.md 搂4锛夛細鍗曞紶妯″潡鍗℃覆鏌撴姏閿欏彧濉岃繖涓€寮?  // 锛堥檷绾у崱锛夛紝缁濅笉杩炵疮鏁寸洏闈㈡澘銆俬osted-ui runtime 鏃?class 缁勪欢 / componentDidCatch锛屾晠鐢?  // try/catch 鍖呭悓姝ユ覆鏌撹皟鐢ㄢ€斺€攔enderRoastCard/renderGenericModuleCard 鏄悓姝ユ瀯閫?JSX锛屽潖
-  // Guard module-card rendering so one bad module cannot blank the panel.
-  const safeModuleCard = (key: string, title: any, render: () => any) => {
-    try {
-      return render()
-    } catch (err) {
-      const msg = err && (err as any).message ? String((err as any).message) : ""
-      return (
-        <Card title={title}>
-          <Stack gap={8}>
-            <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
-            <Alert tone="danger">{t("panel.modules.renderError")}</Alert>
-            {msg ? <Text>{msg}</Text> : null}
-          </Stack>
-        </Card>
-      )
-    }
-  }
-
   const modulesSection = (
     <Stack>
       {currentDecisionCard}
-      {safeModuleCard("avatar_roast", t("panel.interaction.module.avatarRoast.title"), () => renderAvatarRoastCard(interactionModuleById.avatar_roast))}
-      {safeModuleCard("danmaku_response", t("panel.interaction.module.danmakuResponse.title"), () => renderDanmakuResponseCard(interactionModuleById.danmaku_response))}
-      {safeModuleCard("warmup_hosting", t("panel.interaction.module.warmupHosting.title"), renderWarmupHostingCard)}
-      {safeModuleCard("idle_hosting", t("panel.interaction.module.idleHosting.title"), renderIdleHostingCard)}
-      {safeModuleCard("active_engagement", t("panel.interaction.module.activeEngagement.title"), renderActiveEngagementCard)}
+      <ModuleRenderBoundary title={t("panel.interaction.module.avatarRoast.title")} render={() => renderAvatarRoastCard(interactionModuleById.avatar_roast)} t={t} />
+      <ModuleRenderBoundary title={t("panel.interaction.module.danmakuResponse.title")} render={() => renderDanmakuResponseCard(interactionModuleById.danmaku_response)} t={t} />
+      <ModuleRenderBoundary title={t("panel.interaction.module.warmupHosting.title")} render={renderWarmupHostingCard} t={t} />
+      <ModuleRenderBoundary title={t("panel.interaction.module.idleHosting.title")} render={renderIdleHostingCard} t={t} />
+      <ModuleRenderBoundary title={t("panel.interaction.module.activeEngagement.title")} render={renderActiveEngagementCard} t={t} />
     </Stack>
   )
 
@@ -1433,7 +1097,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           rowKey="id"
           columns={[
             { key: "title", label: t("panel.modules.name"), render: (row: any) => row.title || row.id || "-" },
-            { key: "status", label: t("panel.modules.status"), render: (row: any) => moduleBadge(row) },
+            { key: "status", label: t("panel.modules.status"), render: (row: any) => <ModuleHealthBadge module={row} t={t} /> },
             { key: "id", label: "ID", render: (row: any) => row.id || "-" },
           ]}
         />
@@ -1448,7 +1112,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     <Stack>
       <Card title={t("panel.control.title")}>
         <Stack>
-          {/* 寮€鍚尗濞橀攼璇?live_enabled)鏄姛鑳界骇寮€鍏筹紝宸叉槸銆岀洿鎾棿浜掑姩銆嶅脊骞曢攼璇勫崱鐨勭豢鑹插崱澶村紑鍏?鏀瑰嵆瀛?锛?              杩欓噷涓嶅啀閲嶅锛岄伩鍏嶅弻寮€鍏炽€俤ry_run/鎬ュ仠/鍐峰嵈/闃熷垪鏄钩鍙扮骇锛岀暀璁剧疆銆傝 docs/ui-architecture.md銆屼竴寮犲槾銆嶃€?*/}
+          {/* live_enabled is owned by the interaction module card; settings keep platform-level controls only. */}
           <Grid cols={2}>
             <ToggleSwitch checked={!!configForm.values.dry_run} label={t("panel.fields.dryRun")} onChange={(value) => configForm.setField("dry_run", value)} />
             <ToggleSwitch checked={!!configForm.values.safety_auto_stop_enabled} label={t("panel.fields.autoStop")} onChange={(value) => configForm.setField("safety_auto_stop_enabled", value)} />
@@ -1469,7 +1133,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       </Card>
       <Card title={t("panel.storage.title")}>
         <Stack>
-          {/* 褰撳墠鐢熸晥鐩綍锛堢粰涓绘挱鐪嬬殑鏄枃浠跺す锛屼笉鏄枃浠惰矾寰勶級+ 榛樿/鑷畾涔?鏍囩銆傜┖ input=鐢ㄩ粯璁ゃ€?              璺緞澶嶇敤 ui-kit 鐨?CodeBlock锛堢瓑瀹?+ 涓婚杈规妗嗭級锛屽埆鐢?StatCard锛堝叾 value 鏄ぇ绮椾綋锛岄暱璺緞婧㈠嚭/鎴柇锛夈€?*/}
+          {/* Show the effective profile directory as code text so long paths remain readable. */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ color: "var(--muted)", fontSize: "13px", fontWeight: 650 }}>{t("panel.storage.current")}</span>
             <StatusBadge tone={viewerStore.using_custom ? "info" : "success"} label={viewerStore.using_custom ? t("panel.storage.isCustom") : t("panel.storage.isDefault")} />
@@ -1692,7 +1356,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </Stack>
   )
 
-  // 鐢熷懡鍛ㄦ湡-鍩熷鑸紙鎭掑畾 6 涓竴绾ч〉 + 寮€鍙戣€呮寜 dev 妯″紡鏉′欢杩藉姞锛夛細
+  // Lifecycle/domain tabs: six stable pages plus developer sandbox when dev mode is enabled.
   // Top-level dashboard tabs.
   const tabItems = [
     { id: "console", label: t("panel.tabs.console"), content: consoleSection },

@@ -161,10 +161,13 @@ class ViewerEvent:
                     ("shape", "topic_shape"),
                     ("title", "topic_title"),
                     ("key", "topic_key"),
+                    ("family", "topic_family"),
                     ("fun_axis", "topic_fun_axis"),
                     ("hook", "topic_hook"),
                     ("pattern", "topic_pattern"),
                     ("intent", "topic_intent"),
+                    ("live_column", "topic_live_column"),
+                    ("topic_pack", "topic_pack"),
                     ("reply_affordance", "topic_reply_affordance"),
                     ("recent_topic_skip_reason", "topic_recent_skip_reason"),
                 ):
@@ -176,9 +179,12 @@ class ViewerEvent:
                 for raw_key, public_key in (
                     ("key", "host_beat_key"),
                     ("shape", "host_beat_shape"),
+                    ("family", "host_beat_family"),
                     ("fun_axis", "host_beat_fun_axis"),
                     ("title", "host_beat_title"),
                     ("hint", "host_beat_hint"),
+                    ("live_column", "host_beat_live_column"),
+                    ("idle_stage", "host_beat_idle_stage"),
                     ("reply_affordance", "host_beat_reply_affordance"),
                 ):
                     value = str(host_beat.get(raw_key) or "").strip()
@@ -292,6 +298,7 @@ class InteractionRequest:
     dry_run: bool = False
     allow_avatar_image: bool = False
     reason: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -304,6 +311,7 @@ class InteractionRequest:
             "dry_run": self.dry_run,
             "allow_avatar_image": self.allow_avatar_image,
             "reason": self.reason,
+            "metadata": dict(self.metadata),
         }
 
 

@@ -6,18 +6,17 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import recent_context_block, short_reply_rules
+from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules, viewer_session_context_block
 
 
 class AvatarRoastModule(BaseModule):
     id = "avatar_roast"
-    title = "弹幕锐评"
+    title = "首次出场锐评"
     domain = "interaction"
 
     def config_schema(self) -> list[dict[str, Any]]:
-        # 弹幕锐评这个功能自己的参数（功能级，跟功能走；平台级如节奏/队列/急停在「设置」）。
-        # name 直接绑现有 RoastConfig 顶层字段（锐评是核心切片，参数本就是顶层）；
-        # 未来新功能模块用 config.<id>.* 命名空间，见 docs/ui-architecture.md。
+        # Module-level controls for first-appearance roasting. Platform-level
+        # controls such as pacing and pause stay in the Settings tab.
         return [
             {
                 "name": "roast_strength",
@@ -50,7 +49,13 @@ class AvatarRoastModule(BaseModule):
         prompt_text = (
             self._build_idle_hosting_prompt(event, strength, activity_level, recent_context_block(self.ctx))
             if event.source == "idle_hosting"
-            else self._build_prompt(event, identity, strength)
+            else self._build_prompt(
+                event,
+                identity,
+                strength,
+                recent_context_block(self.ctx),
+                viewer_session_context_block(self.ctx, identity.uid),
+            )
         )
         return InteractionRequest(
             event=event,
@@ -63,7 +68,13 @@ class AvatarRoastModule(BaseModule):
             allow_avatar_image=event.source != "idle_hosting",
         )
 
-    def _build_idle_hosting_prompt(self, event: ViewerEvent, strength: str, activity_level: str = "standard", recent_context: str = "") -> str:
+    def _build_idle_hosting_prompt(
+        self,
+        event: ViewerEvent,
+        strength: str,
+        activity_level: str = "standard",
+        recent_context: str = "",
+    ) -> str:
         strength_hint = {
             "gentle": "warm and soft",
             "sharp": "playfully sharp, but still easy to answer",
@@ -87,6 +98,7 @@ class AvatarRoastModule(BaseModule):
             "Say exactly one short live-host line as NEKO.",
             "Create one tiny live-room topic: a small observation, a light tease, or an easy question that a quiet viewer can answer.",
             "Use the host beat material as direction, but make the final line sound natural.",
+            "If a NEKO live column is provided, use it as the tiny host format without announcing a formal segment.",
             "Add a low-pressure reply hook: one concrete choice, tiny stance, or small playful prompt.",
             "Use the host beat reply_affordance as the only reply hook; do not add a second question.",
             "Use the host beat fun_axis as the line's purpose; do not drift into generic hosting.",
@@ -97,6 +109,7 @@ class AvatarRoastModule(BaseModule):
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
+            *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
             "Output only the line NEKO should say.",
         ]
@@ -116,43 +129,63 @@ class AvatarRoastModule(BaseModule):
             return ""
         shape = str(host_beat.get("shape") or "").strip()
         fun_axis = str(host_beat.get("fun_axis") or "").strip()
+        family = str(host_beat.get("family") or "").strip()
         title = str(host_beat.get("title") or "").strip()
         hint = str(host_beat.get("hint") or "").strip()
+        live_column = str(host_beat.get("live_column") or "").strip()
+        idle_stage = str(host_beat.get("idle_stage") or "").strip()
         reply_affordance = str(host_beat.get("reply_affordance") or "").strip()
-        if not any((shape, fun_axis, title, hint, reply_affordance)):
+        if not any((shape, fun_axis, family, title, hint, live_column, idle_stage, reply_affordance)):
             return ""
         lines = ["Host beat material:"]
         if shape:
             lines.append(f"- shape: {shape}")
         if fun_axis:
             lines.append(f"- fun_axis: {fun_axis}")
+        if family:
+            lines.append(f"- content_family: {family}")
         if title:
             lines.append(f"- title: {title}")
         if hint:
             lines.append(f"- hint: {hint}")
+        if live_column:
+            lines.append(f"- NEKO live column: {live_column}")
+        if idle_stage:
+            lines.append(f"- idle_stage: {idle_stage}")
         if reply_affordance:
             lines.append(f"- reply_affordance: {reply_affordance}")
         return "\n" + "\n".join(lines) + "\n\n"
 
-    def _build_prompt(self, event: ViewerEvent, identity: ViewerIdentity, strength: str) -> str:
-        nickname = identity.nickname or identity.uid or "这位观众"
+    def _build_prompt(
+        self,
+        event: ViewerEvent,
+        identity: ViewerIdentity,
+        strength: str,
+        recent_context: str = "",
+        viewer_context: str = "",
+    ) -> str:
+        nickname = identity.nickname or identity.uid or "this viewer"
         danmaku = (event.danmaku_text or "").strip()
         avatar_line, avatar_rule = self._avatar_guidance(identity)
         mode_contract = self._mode_contract(event.live_mode)
         pace = (
-            "你在独播、由你撑全场，可以更主动鲜活，别冷场"
+            "solo_stream: NEKO is the only host on stage; answer the current danmaku first, then stop after one compact line."
             if event.live_mode == "solo_stream"
-            else "人猫同播、低打断，自然接一句就好"
+            else "co_stream: NEKO is a low-interrupt partner; catch one point and leave room for the human streamer."
         )
-        strength_zh = {"gentle": "轻一点、偏宠溺", "sharp": "可以犀利", "normal": "适中"}.get(strength, "适中")
+        strength_hint = {
+            "gentle": "soft and warm",
+            "sharp": "playfully sharp, but never hostile",
+            "normal": "natural, lightly playful, and concise",
+        }.get(strength, "natural, lightly playful, and concise")
 
-        facts = [f"观众昵称：{nickname}（UID {identity.uid}）"]
+        facts = [f"viewer: {nickname} (UID {identity.uid})"]
         facts.append(f"mode_contract: {mode_contract}")
         if danmaku:
-            facts.append(f"刚发的弹幕：{danmaku}")
-        facts.append(f"头像：{avatar_line}")
+            facts.append(f"current danmaku: {danmaku}")
+        facts.append(f"avatar: {avatar_line}")
         if identity.pendant:
-            facts.append(f"头像挂件/装扮：{identity.pendant}")
+            facts.append(f"avatar pendant / decoration: {identity.pendant}")
 
         solo_danmaku_priority_rules = (
             [
@@ -164,22 +197,27 @@ class AvatarRoastModule(BaseModule):
             else []
         )
         rules = [
-            "自适应焦点：昵称和头像哪个更有梗就主打哪个；两个都有料就抓它们之间的反差或呼应；都平淡就拿这条弹幕、进场时机或当前直播节奏发挥，别硬尬夸。",
-            "抓一个具体细节切入并给个有依据的小判断，别泛泛说“好可爱”，别逐字复述上面的字段。",
+            "Adapt the focus: nickname, avatar, or current danmaku can be the hook; use whichever has the clearest live-room material.",
+            "If the viewer sent danmaku, answer that line first, then optionally add one tiny avatar or nickname accent.",
+            "Make one evidence-based small judgment from a concrete detail; do not vaguely say cute, cool, abstract, or repeat the facts back.",
             *solo_danmaku_priority_rules,
             avatar_rule,
             *short_reply_rules(),
-            "别和你最近几条锐评用同样的开头和句式。",
+            "Do not use the same opening, sentence shape, punchline, or host beat as recent live replies.",
+            *anti_repeat_rules(),
             "Current danmaku wins over any previous reply.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
-            f"一句话，短、有包袱、能直接 TTS 播出；强度{strength_zh}；{pace}。",
-            "只输出这一句锐评本身，不要解释、不要加前后缀、不要复述这些规则。",
+            f"Tone: {strength_hint}. Pacing: {pace}",
+            "Output only NEKO's one-line first-appearance roast. No explanation, no prefix, no suffix, no rule recap.",
         ]
         return (
-            "【直播观众锐评】请按当前人设，对这位新观众即兴说一句直播锐评。\n"
+            "[NEKO Live first-appearance roast]\n"
             + "\n".join(facts)
-            + "\n\n要求：\n"
-            + "\n".join(f"- {r}" for r in rules)
+            + "\n\n"
+            + recent_context
+            + viewer_context
+            + "Rules:\n"
+            + "\n".join(f"- {rule}" for rule in rules)
         )
 
     @staticmethod
@@ -196,20 +234,20 @@ class AvatarRoastModule(BaseModule):
 
     @staticmethod
     def _avatar_guidance(identity: ViewerIdentity) -> tuple[str, str]:
-        """返回 (头像情况描述, 头像锐评规则)。看不到的一律禁止脑补。"""
+        """Return avatar facts and guidance. Never invent details for unseen avatars."""
         if not identity.avatar_vision_ok:
-            extra = "（疑似动图/特殊头像）" if identity.is_animated_avatar else ""
+            extra = " (animated or special avatar suspected)" if identity.is_animated_avatar else ""
             return (
-                f"没取到或识别不了{extra}",
-                "你看不到这张头像的画面，绝对不要脑补描述它；只能就“头像没换/会动/带挂件”这类事实或昵称发挥。",
+                f"not fetched or not visible{extra}",
+                "You cannot see this avatar image; never invent visual details. Only use the fact that the avatar was not available, may be animated, has a pendant, or use the nickname/current danmaku instead.",
             )
         if identity.is_default_avatar:
             return (
-                "B站默认头像（根本没换过）",
-                "这是默认头像、没有可锐评的画面，别假装看到了什么；从“懒得换头像”或昵称切入。",
+                "Bilibili default avatar",
+                "This is the default avatar; do not pretend to see specific visual details. You may tease the default-avatar choice or pivot to nickname/current danmaku.",
             )
-        kind = "会动的动图头像" if identity.is_animated_avatar else "能看到的头像图"
+        kind = "animated avatar image" if identity.is_animated_avatar else "visible avatar image"
         return (
-            f"{kind}（图片会一起发给你看）",
-            "你能看到这张头像，可以锐评它的具体内容；但只评你真看到的，别编。",
+            f"{kind} (image will be provided to the model)",
+            "You may roast concrete details that are actually visible in the avatar, but never invent details.",
         )

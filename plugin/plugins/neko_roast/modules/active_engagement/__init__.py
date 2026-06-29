@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import recent_context_block, short_reply_rules
+from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules
 
 
 class ActiveEngagementModule(BaseModule):
@@ -58,6 +58,7 @@ class ActiveEngagementModule(BaseModule):
             "Create exactly one small live-room engagement beat as NEKO.",
             "Make it specific enough that a viewer can naturally reply, without begging for comments.",
             "Use the topic material as raw material only; transform it into NEKO's own live-room line.",
+            "If a NEKO live column is provided, use it as the tiny engagement format without announcing a formal segment.",
             "Follow the requested topic shape when present: either_or, light_stance, tiny_tease, or small_challenge.",
             "Every active engagement line must give viewers one concrete reply handle.",
             "Use the provided viewer reply path as the only reply handle; do not add a second question.",
@@ -76,6 +77,7 @@ class ActiveEngagementModule(BaseModule):
             "Do not pretend a viewer sent a message.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep one short TTS-friendly line.",
+            *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
             "Output only NEKO's line.",
         ]
@@ -99,9 +101,12 @@ class ActiveEngagementModule(BaseModule):
         shape = str(topic_material.get("shape") or "").strip()
         title = str(topic_material.get("title") or "").strip()
         fun_axis = str(topic_material.get("fun_axis") or "").strip()
+        family = str(topic_material.get("family") or "").strip()
         hook = str(topic_material.get("hook") or "").strip()
         pattern = str(topic_material.get("pattern") or "").strip()
         intent = str(topic_material.get("intent") or "").strip()
+        live_column = str(topic_material.get("live_column") or "").strip()
+        topic_pack = str(topic_material.get("topic_pack") or "").strip()
         reply_affordance = str(topic_material.get("reply_affordance") or "").strip()
         hint = str(topic_material.get("hint") or "").strip()
         lines = [
@@ -116,10 +121,16 @@ class ActiveEngagementModule(BaseModule):
             lines.append(f"- title: {title}")
         if fun_axis:
             lines.append(f"- fun axis: {fun_axis}")
+        if family:
+            lines.append(f"- content family: {family}")
         if hook:
             lines.append(f"- hook: {hook}")
         if intent:
             lines.append(f"- intent: {intent}")
+        if live_column:
+            lines.append(f"- NEKO live column: {live_column}")
+        if topic_pack:
+            lines.append(f"- topic pack: {topic_pack}")
         if reply_affordance:
             lines.append(f"- viewer reply path: {reply_affordance}")
         if hint:
