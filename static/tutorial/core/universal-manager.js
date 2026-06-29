@@ -661,7 +661,7 @@ class UniversalTutorialManager {
     getNextAvatarFloatingGuideAutoRound() {
         const state = loadAvatarFloatingGuideState();
         const today = getTodayLocalDateForAvatarFloatingGuide();
-        const pendingManualRound = state.pendingRound || state.manualResetRound;
+        const pendingManualRound = state.manualResetRound;
         if (pendingManualRound) {
             return pendingManualRound;
         }
@@ -2998,6 +2998,10 @@ class UniversalTutorialManager {
             yuiGuideSceneId: 'avatar_floating_day' + round,
         }];
         this.activeAvatarFloatingGuideRound = round;
+        if (source === 'auto') {
+            // Reserve the daily auto start before long narration so refreshes cannot replay it.
+            this.markAvatarFloatingGuideRoundAutoShown(round);
+        }
         this.setAvatarFloatingGuideCurrentRound(round);
         this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');
         this.isTutorialRunning = true;
