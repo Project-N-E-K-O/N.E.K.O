@@ -29,7 +29,8 @@ def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     day = scripts["days"][day_key]
 
-    assert len(day["nodes"]) == 31
+    expected_node_counts = {"1": 7}
+    assert len(day["nodes"]) == expected_node_counts.get(day_key, 31)
 
     for node_id, node in day["nodes"].items():
         assert node.get("voiceKey"), node_id
@@ -224,9 +225,10 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     redirect = locale["day1.fallback.redirect"]
 
-    assert "眼前" in redirect
-    assert "选项" in redirect
-    assert "刚才那些好玩的功能" not in redirect
+    assert "小路" in redirect
+    assert "追得上" in redirect
+    assert "选项" not in redirect
+    assert "功能" not in redirect
 
 
 def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
