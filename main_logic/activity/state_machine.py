@@ -583,6 +583,44 @@ class ActivityStateMachine:
             self._current_window_started_at = ts
             self._window_history.append(_WindowEntry(timestamp=ts, observation=obs))
 
+    def recent_window_trail(
+        self, *, now: float, limit: int = 3, max_age_seconds: float | None = None,
+    ) -> list[tuple[str, float]]:
+        """Recent foreground windows as ``(canonical_name, dwell_seconds)``, oldest
+        first and the still-active current window last.
+
+        Built from ``_window_history`` (one entry per genuine window change). Each
+        window's dwell is the time until the *next* change, or ``now`` for the
+        current window. Lets a caller describe activity FLOW ("coded, then
+        browsed, now chatting") instead of only the instantaneous window.
+
+        Two kinds of window are excluded from the OUTPUT: those with no canonical
+        name, and ``private``-category ones. The loop's private-mode bail is
+        downstream of ``update_window``, so private windows still land in the
+        history and would otherwise resurface here after the user leaves private
+        mode. App names only — never window titles — so the sensitive surface is
+        no wider than the single ``active_window`` already exposes.
+
+        Dwell boundaries come from the RAW history order, computed *before* those
+        exclusions: a skipped window in the middle of the sequence drops its own
+        time instead of folding it into the previous app's dwell.
+        """
+        # max_age trims old switches off the front (which never affects a newer
+        # window's boundary); then walk the raw history in order so each kept
+        # window's dwell stops at the next RAW switch, not the next *kept* one.
+        raw_entries = list(self._window_history)
+        if max_age_seconds is not None:
+            raw_entries = [e for e in raw_entries if now - e.timestamp <= max_age_seconds]
+        if limit <= 0:
+            return []
+        trail: list[tuple[str, float]] = []
+        for i, entry in enumerate(raw_entries):
+            end = raw_entries[i + 1].timestamp if i + 1 < len(raw_entries) else now
+            obs = entry.observation
+            if obs is not None and obs.canonical and obs.category != 'private':
+                trail.append((obs.canonical, max(0.0, end - entry.timestamp)))
+        return trail[-limit:]
+
     def update_system(self, sys_snap: SystemSnapshot) -> None:
         """Cache the latest system snapshot (idle / CPU)."""
         self._latest_system = sys_snap
