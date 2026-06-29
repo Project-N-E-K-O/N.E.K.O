@@ -2954,6 +2954,14 @@ async def drawing_guess_ai_draw(request: Request):
 
 
 async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str, Any], locale: str) -> dict[str, Any]:
+    if session.get("phase") != "ai_drawing":
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "not_ai_drawing",
+            "phase": session.get("phase"),
+            "state": _public_round_state(session, locale),
+        }
     word = _WORD_BY_ID[str(session["ai_word_id"])]
     lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
     drawing = await _generate_model_drawing(word, locale, lanlan_name)
@@ -3248,7 +3256,7 @@ async def handle_external_drawing_guess_transcript(
     if round_token is not None:
         data["client_round_token"] = round_token
     phase = str(last_state.get("phase") or state.get("phase") or "")
-    image_data_url = str(state.get("last_canvas_image_data_url") or "")
+    image_data_url = str(state.get("_last_canvas_image_data_url") or state.get("last_canvas_image_data_url") or "")
     if image_data_url and phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         data["image_data_url"] = image_data_url
     return await _handle_drawing_guess_input_payload(data)

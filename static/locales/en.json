@@ -5164,7 +5164,9 @@
                     "This round is unreal."
                 ],
                 "clutch": "...This has to go in.",
-                "excuse": "Ow, my arm is a little tired."
+                "excuse": [
+                    "Ow, my arm is a little tired."
+                ]
             },
             "fallback": [
                 "Run it back."
@@ -5266,6 +5268,26 @@
             "saveUserPng": "Save my drawing"
         },
         "debug": {
+            "title": "Debug panel",
+            "currentCharacter": "Current page character",
+            "loadingCharacters": "Loading character list",
+            "roundControls": "Round controls",
+            "aiRound": "Neko round",
+            "userRound": "Player round",
+            "rotateRounds": "Rotate rounds",
+            "randomGuessPoint": "Random guess point",
+            "triggerAiGuess": "Trigger Neko guess now",
+            "locked": "Locked",
+            "available": "Available",
+            "requestLocked": "Request locked",
+            "requestUnlocked": "Unlocked",
+            "waitingForChat": "Waiting for chat",
+            "guessing": "Guessing",
+            "attemptsExhausted": "No attempts left",
+            "notScheduled": "Not scheduled",
+            "switchedCharacter": "Debug: switched to {{name}}.",
+            "switchedCharacterContinue": "Debug: switched to {{name}}, continuing the current test round.",
+            "holdAiRound": "Debug: keeping Neko round, preparing the next word.",
             "wordPoolsStatus": "Word pool status",
             "wordPool1": "Word pool 1",
             "wordPool2": "Word pool 2",

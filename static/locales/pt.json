@@ -5164,7 +5164,9 @@
                     "Vinte seguidas? Incrível."
                 ],
                 "clutch": "...Este precisa entrar.",
-                "excuse": "Ai, meu braço está cansado."
+                "excuse": [
+                    "Ai, meu braço está cansado."
+                ]
             },
             "fallback": [
                 "Mais uma."
@@ -5223,7 +5225,7 @@
             "canvasWaitingTitle": "Tela sendo preparada",
             "canvasWaiting": "Ao começar, ela desenha primeiro e você tenta adivinhar. Depois você tem 5 minutos para desenhar para ela.",
             "actions": "Ações do jogo",
-            "sideResize": "Ajustar proporcao entre modelo e chat",
+            "sideResize": "Ajustar proporção entre modelo e chat",
             "modelTitle": "Neko está presente",
             "modelFallbackTitle": "Espaço do modelo reservado",
             "modelFallback": "Depois, o Live2D ou VRM da personagem atual será carregado aqui. Se falhar, este mesmo espaço mantém um fallback.",
@@ -5266,6 +5268,26 @@
             "saveUserPng": "Salvar meu desenho"
         },
         "debug": {
+            "title": "Painel de depuração",
+            "currentCharacter": "Personagem desta página",
+            "loadingCharacters": "Carregando lista de personagens",
+            "roundControls": "Controles de rodada",
+            "aiRound": "Rodada da Neko",
+            "userRound": "Rodada do jogador",
+            "rotateRounds": "Alternar rodadas",
+            "randomGuessPoint": "Ponto de palpite aleatório",
+            "triggerAiGuess": "Acionar palpite da Neko agora",
+            "locked": "Bloqueado",
+            "available": "Disponível",
+            "requestLocked": "Solicitação bloqueada",
+            "requestUnlocked": "Desbloqueado",
+            "waitingForChat": "Aguardando o chat",
+            "guessing": "Adivinhando",
+            "attemptsExhausted": "Sem tentativas restantes",
+            "notScheduled": "Não agendado",
+            "switchedCharacter": "Depuração: mudou para {{name}}.",
+            "switchedCharacterContinue": "Depuração: mudou para {{name}} e continuará a rodada de teste atual.",
+            "holdAiRound": "Depuração: mantendo a rodada da Neko e preparando a próxima palavra.",
             "wordPoolsStatus": "Estado do banco de palavras",
             "wordPool1": "Banco 1",
             "wordPool2": "Banco 2",
@@ -5313,11 +5335,11 @@
             "happy": "Feliz"
         },
         "modelControls": {
-            "group": "Controles de visualizacao do modelo",
+            "group": "Controles de visualização do modelo",
             "scale": "Tamanho do modelo",
-            "x": "Posicao horizontal",
-            "y": "Posicao vertical",
-            "reset": "Redefinir visualizacao do modelo"
+            "x": "Posição horizontal",
+            "y": "Posição vertical",
+            "reset": "Redefinir visualização do modelo"
         },
         "messages": {
             "welcome": "Quando estiver pronto, vamos confirmar a personagem atual e assumir a rota do minijogo.",

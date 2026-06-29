@@ -772,9 +772,17 @@
     }
     if (field === 'lock') {
       if (!wordCycle.active_pool) return '--';
-      return data.locked ? '锁定' : '可用';
+      return data.locked
+        ? t('drawingGuess.debug.locked', 'Locked')
+        : t('drawingGuess.debug.available', 'Available');
     }
     return '--';
+  }
+
+  function isDebugPoolLocked(pool) {
+    var wordCycle = state.debugWordCycle || {};
+    var pools = wordCycle.pools || {};
+    return !!wordCycle.active_pool && !!((pools[pool] || {}).locked);
   }
 
   function updateDebugWordCycle() {
@@ -782,17 +790,19 @@
     if (els.debugWordPool1Lock) {
       var pool1Lock = debugPoolLabel('pool1', 'lock');
       els.debugWordPool1Lock.textContent = pool1Lock;
-      els.debugWordPool1Lock.dataset.locked = String(pool1Lock === '锁定');
+      els.debugWordPool1Lock.dataset.locked = String(isDebugPoolLocked('pool1'));
     }
     if (els.debugWordPool2Count) els.debugWordPool2Count.textContent = debugPoolLabel('pool2', 'count');
     if (els.debugWordPool2Lock) {
       var pool2Lock = debugPoolLabel('pool2', 'lock');
       els.debugWordPool2Lock.textContent = pool2Lock;
-      els.debugWordPool2Lock.dataset.locked = String(pool2Lock === '锁定');
+      els.debugWordPool2Lock.dataset.locked = String(isDebugPoolLocked('pool2'));
     }
     if (els.debugSessionLock) {
       var locked = !!(state.debugWordCycle && state.debugWordCycle.request_locked);
-      els.debugSessionLock.textContent = locked ? '请求锁定中' : '未锁定';
+      els.debugSessionLock.textContent = locked
+        ? t('drawingGuess.debug.requestLocked', 'Request locked')
+        : t('drawingGuess.debug.requestUnlocked', 'Unlocked');
       els.debugSessionLock.dataset.locked = String(locked);
     }
   }
@@ -802,15 +812,15 @@
     var text = '--';
     if (state.phase === 'ai_guess_feedback') {
       if (state.pendingAutoGuess && state.chatInFlight) {
-        text = '等待聊天结束';
+        text = t('drawingGuess.debug.waitingForChat', 'Waiting for chat');
       } else if (state.aiGuessInFlight) {
-        text = '猜测中';
+        text = t('drawingGuess.debug.guessing', 'Guessing');
       } else if (state.aiGuessTimer && state.aiGuessNextAt) {
         text = formatDebugCountdown(state.aiGuessNextAt - Date.now());
       } else if (state.aiGuessAttempts >= state.maxAiGuessAttempts) {
-        text = '次数已用完';
+        text = t('drawingGuess.debug.attemptsExhausted', 'No attempts left');
       } else {
-        text = '未安排';
+        text = t('drawingGuess.debug.notScheduled', 'Not scheduled');
       }
     }
     els.debugAiGuessCountdown.textContent = text;
@@ -1060,9 +1070,13 @@
       initModelSlotForCurrentCharacter(nextName).catch(function () {});
       showPlaceholder();
       setPhase('loading_round');
-      addEventMessage('', shouldContinueRound
-        ? '调试：已切换为 ' + nextName + '，继续当前测试回合。'
-        : '调试：已切换为 ' + nextName + '。');
+      addEventMessage(
+        shouldContinueRound ? 'drawingGuess.debug.switchedCharacterContinue' : 'drawingGuess.debug.switchedCharacter',
+        shouldContinueRound
+          ? 'Debug: switched to {{name}}, continuing the current test round.'
+          : 'Debug: switched to {{name}}.',
+        { name: nextName }
+      );
       return startRoute().then(function (ok) {
         if (!ok || !shouldContinueRound) return ok;
         if (!state.debugRotateRounds && state.debugRoundMode === 'user') return startDebugUserRound(true);
@@ -2458,6 +2472,9 @@
       .then(function (res) {
         ensureCurrentRoundFlow(flowToken);
         if (!res || !res.ok) throw new Error((res && res.reason) || 'ai_draw_failed');
+        if (res.skipped && res.reason === 'not_ai_drawing') {
+          return;
+        }
         state.aiSvg = (res.drawing && res.drawing.svg) || '';
         showAiDrawing(state.aiSvg);
         setPhase('user_guessing');
@@ -2481,7 +2498,10 @@
   function continueAfterAiDrawingHalf(res) {
     if (shouldStayOnDebugAiRound()) {
       stopCountdown();
-      addEventMessage('', '调试：保持猫娘回合，准备下一题。');
+      addEventMessage(
+        'drawingGuess.debug.holdAiRound',
+        'Debug: keeping Neko round, preparing the next word.'
+      );
       setTimeout(function () {
         startDebugAiRound(true);
       }, 450);

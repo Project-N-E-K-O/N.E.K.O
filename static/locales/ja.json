@@ -5164,7 +5164,9 @@
                     "20連続？信じられない。"
                 ],
                 "clutch": "……これは決めなきゃ。",
-                "excuse": "ああ、少し腕が疲れた。"
+                "excuse": [
+                    "ああ、少し腕が疲れた。"
+                ]
             },
             "fallback": [
                 "もう一回やろう。"
@@ -5266,6 +5268,26 @@
             "saveUserPng": "自分の絵を保存"
         },
         "debug": {
+            "title": "デバッグパネル",
+            "currentCharacter": "現在のページのキャラクター",
+            "loadingCharacters": "キャラクター一覧を読み込み中",
+            "roundControls": "ラウンド操作",
+            "aiRound": "猫娘のラウンド",
+            "userRound": "プレイヤーのラウンド",
+            "rotateRounds": "ラウンドを交代",
+            "randomGuessPoint": "ランダム推測タイミング",
+            "triggerAiGuess": "今すぐ猫娘に推測させる",
+            "locked": "ロック中",
+            "available": "利用可能",
+            "requestLocked": "リクエストロック中",
+            "requestUnlocked": "未ロック",
+            "waitingForChat": "チャット終了待ち",
+            "guessing": "推測中",
+            "attemptsExhausted": "試行回数なし",
+            "notScheduled": "未設定",
+            "switchedCharacter": "デバッグ: {{name}} に切り替えました。",
+            "switchedCharacterContinue": "デバッグ: {{name}} に切り替え、現在のテストラウンドを続行します。",
+            "holdAiRound": "デバッグ: 猫娘のラウンドを維持し、次のお題を準備します。",
             "wordPoolsStatus": "単語プールの状態",
             "wordPool1": "単語プール 1",
             "wordPool2": "単語プール 2",

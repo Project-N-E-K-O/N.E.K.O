@@ -10349,8 +10349,10 @@ class LLMSessionManager:
             try:
                 result = callback(tts_audio, speech_id)
                 if hasattr(result, "__await__"):
-                    result = await result
+                    result = await asyncio.wait_for(result, timeout=1.0)
                 delivered = bool(result) or delivered
+            except asyncio.TimeoutError:
+                logger.warning("[%s] speech tap timed out: key=%s", self.lanlan_name, key)
             except Exception as e:
                 logger.warning("[%s] speech tap failed: key=%s err=%s", self.lanlan_name, key, e)
         return delivered
@@ -10378,11 +10380,18 @@ class LLMSessionManager:
                 and self.websocket.client_state == self.websocket.client_state.CONNECTED
             ):
                 try:
-                    await self.websocket.send_json({
-                        "type": "audio_chunk",
-                        "speech_id": effective_speech_id
-                    })
-                    await self.websocket.send_bytes(tts_audio)
+                    async def _send_primary_audio() -> None:
+                        await self.websocket.send_json({
+                            "type": "audio_chunk",
+                            "speech_id": effective_speech_id
+                        })
+                        await self.websocket.send_bytes(tts_audio)
+
+                    if self.websocket_lock:
+                        async with self.websocket_lock:
+                            await _send_primary_audio()
+                    else:
+                        await _send_primary_audio()
                     delivered = True
                     try:
                         self.sync_message_queue.put({"type": "binary", "data": tts_audio})

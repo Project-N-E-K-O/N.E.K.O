@@ -5164,7 +5164,9 @@
                     "這回合徹底瘋了"
                 ],
                 "clutch": "……這球必須進",
-                "excuse": "哎，手有點痠了"
+                "excuse": [
+                    "哎，手有點痠了"
+                ]
             },
             "fallback": [
                 "再來一次喵"
@@ -5266,6 +5268,26 @@
             "saveUserPng": "儲存我的畫"
         },
         "debug": {
+            "title": "除錯面板",
+            "currentCharacter": "目前頁面角色",
+            "loadingCharacters": "正在讀取角色列表",
+            "roundControls": "回合除錯",
+            "aiRound": "貓娘回合",
+            "userRound": "玩家回合",
+            "rotateRounds": "輪換回合",
+            "randomGuessPoint": "隨機猜測點",
+            "triggerAiGuess": "立即觸發貓娘猜測",
+            "locked": "鎖定",
+            "available": "可用",
+            "requestLocked": "請求鎖定中",
+            "requestUnlocked": "未鎖定",
+            "waitingForChat": "等待聊天結束",
+            "guessing": "猜測中",
+            "attemptsExhausted": "次數已用完",
+            "notScheduled": "未安排",
+            "switchedCharacter": "除錯：已切換為 {{name}}。",
+            "switchedCharacterContinue": "除錯：已切換為 {{name}}，繼續目前測試回合。",
+            "holdAiRound": "除錯：保持貓娘回合，準備下一題。",
             "wordPoolsStatus": "詞庫狀態",
             "wordPool1": "詞庫 1",
             "wordPool2": "詞庫 2",
@@ -5291,7 +5313,7 @@
             "summaryShort": "概要"
         },
         "phases": {
-            "tutorial": "教程",
+            "tutorial": "教學",
             "loading_round": "載入中",
             "ended": "已結束",
             "ai_drawing": "貓娘作畫中",

@@ -5164,7 +5164,9 @@
                     "20연속? 믿기 힘들어."
                 ],
                 "clutch": "……이건 꼭 넣어야 해.",
-                "excuse": "아, 팔이 조금 피곤해."
+                "excuse": [
+                    "아, 팔이 조금 피곤해."
+                ]
             },
             "fallback": [
                 "한 판 더 하자."
@@ -5266,6 +5268,26 @@
             "saveUserPng": "내 그림 저장"
         },
         "debug": {
+            "title": "디버그 패널",
+            "currentCharacter": "현재 페이지 캐릭터",
+            "loadingCharacters": "캐릭터 목록 불러오는 중",
+            "roundControls": "라운드 제어",
+            "aiRound": "고양이 소녀 라운드",
+            "userRound": "플레이어 라운드",
+            "rotateRounds": "라운드 교대",
+            "randomGuessPoint": "무작위 추측 지점",
+            "triggerAiGuess": "지금 고양이 소녀 추측 실행",
+            "locked": "잠김",
+            "available": "사용 가능",
+            "requestLocked": "요청 잠김",
+            "requestUnlocked": "잠금 없음",
+            "waitingForChat": "채팅 종료 대기",
+            "guessing": "추측 중",
+            "attemptsExhausted": "남은 시도 없음",
+            "notScheduled": "예약 없음",
+            "switchedCharacter": "디버그: {{name}}(으)로 전환했습니다.",
+            "switchedCharacterContinue": "디버그: {{name}}(으)로 전환하고 현재 테스트 라운드를 계속합니다.",
+            "holdAiRound": "디버그: 고양이 소녀 라운드를 유지하고 다음 단어를 준비합니다.",
             "wordPoolsStatus": "단어 풀 상태",
             "wordPool1": "단어 풀 1",
             "wordPool2": "단어 풀 2",

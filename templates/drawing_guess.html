@@ -2266,28 +2266,28 @@
   </section>
   <button id="exit-reopen-button" class="dg-exit-reopen" type="button" data-i18n="drawingGuess.exitConfirm.reopen" hidden>离开？</button>
 
-  <section id="debug-panel" class="dg-debug-panel" aria-label="调试面板" hidden>
+  <section id="debug-panel" class="dg-debug-panel" aria-label="调试面板" data-i18n-aria="drawingGuess.debug.title" hidden>
     <div id="debug-panel-handle" class="dg-debug-header">
-      <span>调试面板</span>
-      <button id="debug-close" class="dg-debug-close" type="button" aria-label="关闭调试面板">×</button>
+      <span data-i18n="drawingGuess.debug.title">调试面板</span>
+      <button id="debug-close" class="dg-debug-close" type="button" aria-label="关闭调试面板" data-i18n-aria="common.close" data-i18n-title="common.close">×</button>
     </div>
     <div class="dg-debug-body">
       <label class="dg-debug-field">
-        <span>当前页面角色</span>
+        <span data-i18n="drawingGuess.debug.currentCharacter">当前页面角色</span>
         <select id="debug-character-select">
-          <option value="">正在读取角色列表</option>
+          <option value="" data-i18n="drawingGuess.debug.loadingCharacters">正在读取角色列表</option>
         </select>
       </label>
-      <div class="dg-debug-actions" aria-label="回合调试">
-        <button id="debug-ai-round" class="dg-debug-button" type="button">猫娘回合</button>
-        <button id="debug-user-round" class="dg-debug-button" type="button">玩家回合</button>
+      <div class="dg-debug-actions" aria-label="回合调试" data-i18n-aria="drawingGuess.debug.roundControls">
+        <button id="debug-ai-round" class="dg-debug-button" type="button" data-i18n="drawingGuess.debug.aiRound">猫娘回合</button>
+        <button id="debug-user-round" class="dg-debug-button" type="button" data-i18n="drawingGuess.debug.userRound">玩家回合</button>
       </div>
       <label class="dg-debug-switch">
-        <span>轮换回合</span>
+        <span data-i18n="drawingGuess.debug.rotateRounds">轮换回合</span>
         <input id="debug-rotate-rounds" type="checkbox" checked>
       </label>
       <div class="dg-debug-meter">
-        <span>随机猜测点</span>
+        <span data-i18n="drawingGuess.debug.randomGuessPoint">随机猜测点</span>
         <strong id="debug-ai-guess-countdown">--</strong>
       </div>
       <div class="dg-debug-pools" aria-label="词库状态" data-i18n-aria="drawingGuess.debug.wordPoolsStatus">
@@ -2307,7 +2307,7 @@
           <span id="debug-session-lock" class="dg-debug-lock" data-locked="false">--</span>
         </div>
       </div>
-      <button id="debug-trigger-ai-guess" class="dg-debug-button" type="button" disabled>立即触发猫娘猜测</button>
+      <button id="debug-trigger-ai-guess" class="dg-debug-button" type="button" disabled data-i18n="drawingGuess.debug.triggerAiGuess">立即触发猫娘猜测</button>
     </div>
   </section>
 

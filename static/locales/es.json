@@ -5164,7 +5164,9 @@
                     "¿Veinte seguidas? Increíble."
                 ],
                 "clutch": "...Este tiene que entrar.",
-                "excuse": "Ay, el brazo está algo cansado."
+                "excuse": [
+                    "Ay, el brazo está algo cansado."
+                ]
             },
             "fallback": [
                 "Otra vez."
@@ -5266,6 +5268,26 @@
             "saveUserPng": "Guardar mi dibujo"
         },
         "debug": {
+            "title": "Panel de depuración",
+            "currentCharacter": "Personaje de esta página",
+            "loadingCharacters": "Cargando lista de personajes",
+            "roundControls": "Controles de ronda",
+            "aiRound": "Ronda de Neko",
+            "userRound": "Ronda del jugador",
+            "rotateRounds": "Alternar rondas",
+            "randomGuessPoint": "Punto de conjetura aleatorio",
+            "triggerAiGuess": "Activar conjetura de Neko ahora",
+            "locked": "Bloqueado",
+            "available": "Disponible",
+            "requestLocked": "Solicitud bloqueada",
+            "requestUnlocked": "Sin bloqueo",
+            "waitingForChat": "Esperando el chat",
+            "guessing": "Adivinando",
+            "attemptsExhausted": "Sin intentos restantes",
+            "notScheduled": "No programado",
+            "switchedCharacter": "Depuración: se cambió a {{name}}.",
+            "switchedCharacterContinue": "Depuración: se cambió a {{name}} y continúa la ronda de prueba actual.",
+            "holdAiRound": "Depuración: se mantiene la ronda de Neko y se prepara la siguiente palabra.",
             "wordPoolsStatus": "Estado del banco de palabras",
             "wordPool1": "Banco 1",
             "wordPool2": "Banco 2",

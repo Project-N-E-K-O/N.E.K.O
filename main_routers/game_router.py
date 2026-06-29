@@ -7265,11 +7265,11 @@ def _store_route_canvas_context(state: dict, data: dict, game_type: str) -> None
     if game_type != "drawing_guess":
         return
     if data.get("canvas_context_clear"):
-        state.pop("last_canvas_image_data_url", None)
+        state.pop("_last_canvas_image_data_url", None)
         return
     image_data_url = str(data.get("canvas_image_data_url") or "")
     if image_data_url.startswith("data:image/") and len(image_data_url) <= 1_800_000:
-        state["last_canvas_image_data_url"] = image_data_url
+        state["_last_canvas_image_data_url"] = image_data_url
 
 
 @router.post("/{game_type}/route/drain")

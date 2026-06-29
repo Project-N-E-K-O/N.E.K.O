@@ -5164,7 +5164,9 @@
                     "这回合彻底疯了"
                 ],
                 "clutch": "……这球必须进",
-                "excuse": "哎，手有点酸了"
+                "excuse": [
+                    "哎，手有点酸了"
+                ]
             },
             "fallback": [
                 "再来一次喵"
@@ -5266,6 +5268,26 @@
             "saveUserPng": "保存我的画"
         },
         "debug": {
+            "title": "调试面板",
+            "currentCharacter": "当前页面角色",
+            "loadingCharacters": "正在读取角色列表",
+            "roundControls": "回合调试",
+            "aiRound": "猫娘回合",
+            "userRound": "玩家回合",
+            "rotateRounds": "轮换回合",
+            "randomGuessPoint": "随机猜测点",
+            "triggerAiGuess": "立即触发猫娘猜测",
+            "locked": "锁定",
+            "available": "可用",
+            "requestLocked": "请求锁定中",
+            "requestUnlocked": "未锁定",
+            "waitingForChat": "等待聊天结束",
+            "guessing": "猜测中",
+            "attemptsExhausted": "次数已用完",
+            "notScheduled": "未安排",
+            "switchedCharacter": "调试：已切换为 {{name}}。",
+            "switchedCharacterContinue": "调试：已切换为 {{name}}，继续当前测试回合。",
+            "holdAiRound": "调试：保持猫娘回合，准备下一题。",
             "wordPoolsStatus": "词库状态",
             "wordPool1": "词库 1",
             "wordPool2": "词库 2",
