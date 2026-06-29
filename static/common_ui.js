@@ -582,8 +582,8 @@ if (toggleBtn) {
             } else {
                 // 刚刚还原展开，显示最小化图标（减号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
-                    iconImg.removeAttribute('srcset');
-                    iconImg.style.imageRendering = '';
+                iconImg.removeAttribute('srcset');
+                iconImg.style.imageRendering = '';
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 iconImg.style.width = '32px';
@@ -1120,8 +1120,8 @@ async function initCommonUiAfterStorageBarrier() {
         } else {
             // 展开状态，显示最小化图标（减号）
             iconImg.src = '/static/icons/expand_icon_off.png';
-                    iconImg.removeAttribute('srcset');
-                    iconImg.style.imageRendering = '';
+            iconImg.removeAttribute('srcset');
+            iconImg.style.imageRendering = '';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             scrollToBottom(); // 初始加载时滚动一次
