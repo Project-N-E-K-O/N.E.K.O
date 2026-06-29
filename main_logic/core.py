@@ -7977,6 +7977,25 @@ class LLMSessionManager:
                 for cb in active_callbacks
             ):
                 topic_hint_sent = await self.send_topic_hint(turn_id=proactive_sid)
+                # send_topic_hint awaits a WS write — a NEW yield point past the
+                # last preempt check. If the user grabbed the turn during that
+                # await, abort before prompt_ephemeral (whose output would be
+                # SID-dropped yet could still ack as committed and leave the
+                # teaser/history as if the opener landed): retract the teaser and
+                # requeue, mirroring the preempt handling above.
+                async with self.lock:
+                    preempted_after_hint = (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                if preempted_after_hint:
+                    logger.info("[%s] trigger_agent_callbacks: preempted during topic hint send, aborting before prompt", self.lanlan_name)
+                    if topic_hint_sent:
+                        await self.send_cancel_topic_hint(turn_id=proactive_sid)
+                    self.pending_agent_callbacks.extend(active_callbacks)
+                    callbacks_snapshot[:] = []
+                    self.proactive_manager.release_inflight_noop()
+                    return False
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend

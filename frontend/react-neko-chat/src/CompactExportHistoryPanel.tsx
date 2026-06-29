@@ -14,6 +14,7 @@ import {
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
 import ThinkingDots from './ThinkingDots';
+import { isTopicHintMessage } from './TopicHintBubble';
 import { type ChatMessage, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
@@ -214,7 +215,7 @@ function getCompactHistoryBubbleTone(
 }
 
 export default function CompactExportHistoryPanel({
-  messages,
+  messages: allMessages,
   selectedIds,
   selectedCount,
   selectableCount,
@@ -243,6 +244,13 @@ export default function CompactExportHistoryPanel({
   onHistoryResizePointerUp,
   onHistoryResizePointerCancel,
 }: CompactExportHistoryPanelProps) {
+  // Frontend-only topic-hint teasers live in the host message list so they can
+  // render, but they carry no real history — exclude them from the history view,
+  // selection, and export so they can't show up as blank rows / empty entries.
+  const messages = useMemo(
+    () => allMessages.filter((message) => !isTopicHintMessage(message)),
+    [allMessages],
+  );
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollToBottomRef = useRef(autoScrollToBottom);
   autoScrollToBottomRef.current = autoScrollToBottom;
