@@ -57,10 +57,6 @@ _UNANSWERED_TOPIC_WEIGHT = 1.0 / 3.0
 _TOPIC_RESPONSE_WINDOW_SECONDS = 10 * 60
 # Tolerance for the daily weight-sum quota comparison (weight units).
 _QUOTA_WEIGHT_EPSILON = 1e-6
-# Separate tolerance for matching a used record by its used_at timestamp
-# (seconds). Kept distinct from the weight epsilon so tuning one never silently
-# widens the other — they share a value today but mean different things.
-_USED_AT_MATCH_EPSILON = 1e-6
 
 
 def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
@@ -960,13 +956,18 @@ class TopicHookPool:
 
         The record is persisted at the unanswered weight by ``_mark_topic_used``;
         a user turn inside the window upgrades it to full via
-        ``_maybe_upgrade_topic_response``. Keyed by ``used_at`` so the upgrade
-        targets exactly this delivery's record.
+        ``_maybe_upgrade_topic_response``. We hold a direct reference to the
+        just-appended record rather than keying on ``used_at`` — coarse clock
+        resolution (e.g. ~15 ms on Windows) can give two close deliveries the
+        same timestamp, and a value match would then upgrade the wrong record.
         """
         used_at = float(material.get("used_at") or time.time())
+        with self._used_topics_lock:
+            records = self._used_topics.get(name) or []
+            record = records[-1] if records else None
         self._awaiting_response[name] = {
-            "used_at": used_at,
             "deadline": used_at + _TOPIC_RESPONSE_WINDOW_SECONDS,
+            "record": record,
         }
 
     def _maybe_upgrade_topic_response(self, name: str, *, now: float | None = None) -> None:
@@ -979,22 +980,16 @@ class TopicHookPool:
         self._awaiting_response.pop(name, None)
         if current > float(pending.get("deadline") or 0.0):
             return
-        if self._upgrade_used_weight(
-            name,
-            used_at=float(pending.get("used_at") or 0.0),
-            weight=1.0,
-        ):
-            logger.info("[%s] topic response within window: quota weight upgraded to full", name)
-            self._request_used_topics_persist()
-
-    def _upgrade_used_weight(self, name: str, *, used_at: float, weight: float) -> bool:
-        clamped = max(0.0, min(1.0, float(weight)))
+        record = pending.get("record")
+        if record is None:
+            return
         with self._used_topics_lock:
-            for record in self._used_topics.get(name, []):
-                if abs(float(record.get("used_at") or 0.0) - used_at) <= _USED_AT_MATCH_EPSILON:
-                    record["weight"] = clamped
-                    return True
-        return False
+            # Guard against the record having been pruned out of the live list.
+            if record not in self._used_topics.get(name, ()):
+                return
+            record["weight"] = 1.0
+        logger.info("[%s] topic response within window: quota weight upgraded to full", name)
+        self._request_used_topics_persist()
 
     def _mark_topic_used(
         self,

@@ -1789,12 +1789,27 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
     )
 
     for idx in range(3):
+        prev_delivered = len(delivered)
         pool.note_user_message("妮可", f"第{idx}轮认真聊一个新方向，信息量足够做深话题", lang="zh-CN")
         await pool.process_now("妮可")
-        for _ in range(20):
-            if len(delivered) >= min(idx + 1, 2):
-                break
-            await asyncio.sleep(0.01)
+        if idx < 2:
+            # Wait until this round's delivery is fully booked: the record is
+            # marked AND the response window is armed. Only then will the NEXT
+            # round's user turn deterministically upgrade it to full weight —
+            # without this the weight-based quota check races the async booking
+            # (fake_trigger appends to `delivered` BEFORE _arm runs).
+            for _ in range(200):
+                if len(delivered) > prev_delivered and pool._awaiting_response.get("妮可"):
+                    break
+                await asyncio.sleep(0.01)
+        else:
+            # Round 2 must stay blocked by the daily quota (two full-weight
+            # successes). Give the would-be trigger a chance to run and confirm
+            # it does not deliver a third time.
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if len(delivered) > prev_delivered:
+                    break
 
     assert delivered == ["凯迪拉克预算压力", "周末海边旅行计划"]
     ready = pool.get_ready_materials("妮可")
@@ -1913,7 +1928,7 @@ def test_used_topic_weight_survives_persist_load_roundtrip(tmp_path):
     used_at = time.time()
     material = {"used_at": used_at, "interest": "持久化话题", "keywords": ["持久化"]}
     pool._mark_topic_used("妮可", material)
-    pool._upgrade_used_weight("妮可", used_at=used_at, weight=1.0)
+    pool._used_topics["妮可"][0]["weight"] = 1.0
     pool._persist_used_topics()
 
     reloaded = TopicHookPool(
@@ -1924,6 +1939,53 @@ def test_used_topic_weight_survives_persist_load_roundtrip(tmp_path):
         signal_store_path=signal_path,
     )
     assert _record_weight(reloaded._used_topics["妮可"][0]) == pytest.approx(1.0)
+
+
+def test_legacy_used_topic_without_weight_loads_as_full(tmp_path):
+    # Backward-compat guarantee: records persisted before the weight field
+    # existed must load as a full 1.0 (they were full successes under the old
+    # count-based quota), never silently demoted to the unanswered 1/3.
+    signal_path = tmp_path / "topic_signals.json"
+    used_path = signal_path.with_name(f"{signal_path.stem}.used_topics.json")
+    used_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "characters": {
+                    "妮可": [
+                        {
+                            "used_at": time.time(),
+                            "hook_id_hash": "",
+                            "interest_hash": "",
+                            "keyword_hashes": [],
+                            "bigram_hashes": [],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+        signal_store_path=signal_path,
+    )
+    records = pool._used_topics["妮可"]
+    assert len(records) == 1
+    # The legacy record reads as a full success, not the unanswered 1/3.
+    assert _record_weight(records[0]) == pytest.approx(1.0)
+    # One full legacy unit is under the limit of 2; a second full delivery fills it.
+    assert pool._daily_quota_reached("妮可") is False
+    pool._mark_topic_used(
+        "妮可",
+        {"used_at": time.time(), "interest": "新", "keywords": ["新"]},
+    )
+    pool._used_topics["妮可"][-1]["weight"] = 1.0
+    assert pool._daily_quota_reached("妮可") is True
 
 
 def test_topic_pool_daily_topic_limit_resets_on_calendar_day():
