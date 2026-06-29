@@ -1,0 +1,38 @@
+{
+  "id": "qwen_expression_patch",
+  "name": "Qwen Expression Patch",
+  "stage": "expression_generation",
+  "status": "planned",
+  "description": "Use Qwen Image Edit to create mouth-open, blink, and expression variants while preserving the selected character.",
+  "tags": ["qwen", "image_edit", "mouth", "blink", "expression"],
+  "engine": "comfyui",
+  "graph_template": "qwen_expression_patch.prompt.json",
+  "depends_on": ["remove_background"],
+  "inputs": [
+    {
+      "id": "idle_rgba",
+      "type": "image",
+      "required": true
+    },
+    {
+      "id": "edit_target",
+      "type": "enum",
+      "default": "mouth_open",
+      "values": ["mouth_open", "blink", "happy", "sad", "angry", "surprised"]
+    }
+  ],
+  "outputs": [
+    {
+      "id": "variant_image",
+      "type": "image",
+      "role": "state_variant"
+    }
+  ],
+  "quality_gates": [
+    "identity_preserved",
+    "local_edit_only",
+    "transparent_background_preserved",
+    "state_recognizable"
+  ],
+  "next": ["package_native"]
+}

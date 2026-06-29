@@ -1,0 +1,56 @@
+{
+  "id": "base_reference_transfer",
+  "name": "Base Reference Transfer",
+  "stage": "base_generation",
+  "status": "ready",
+  "description": "Generate standard-pose candidates from a reference image, combining BiRefNet cleanup, IPAdapter identity/style transfer, and OpenPose pose control.",
+  "tags": ["base", "reference", "transfer", "birefnet", "ipadapter", "openpose", "illustrious"],
+  "engine": "comfyui",
+  "graph_template": "base_reference_transfer.prompt.json",
+  "inputs": [
+    {
+      "id": "reference_image",
+      "type": "image",
+      "required": true,
+      "description": "Uploaded source character image. Defaults to the job reference image."
+    },
+    {
+      "id": "positive_prompt",
+      "type": "text",
+      "required": true,
+      "description": "Character identity, outfit, style, and target standard pose prompt."
+    },
+    {
+      "id": "negative_prompt",
+      "type": "text",
+      "required": true,
+      "description": "Things to avoid, especially bad hands, background, dynamic pose, and source-image scene residue."
+    },
+    {
+      "id": "pose_image",
+      "type": "image",
+      "required": false,
+      "description": "OpenPose-style standard pose guide. Defaults to the plugin bundled pose."
+    },
+    {
+      "id": "batch_size",
+      "type": "integer",
+      "default": 1
+    }
+  ],
+  "outputs": [
+    {
+      "id": "candidate_images",
+      "type": "image_batch",
+      "role": "base_candidate"
+    }
+  ],
+  "quality_gates": [
+    "single_character",
+    "front_view",
+    "reference_features_preserved",
+    "clean_silhouette",
+    "plain_background"
+  ],
+  "next": ["remove_background", "qwen_expression_patch"]
+}

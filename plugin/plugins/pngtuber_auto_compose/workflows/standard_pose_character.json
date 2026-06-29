@@ -1,0 +1,50 @@
+{
+  "id": "standard_pose_character",
+  "name": "Standard Pose Character",
+  "stage": "base_generation",
+  "status": "ready",
+  "description": "Generate standard front-facing character candidates with Illustrious XL and OpenPose ControlNet.",
+  "tags": ["base", "character", "openpose", "illustrious"],
+  "engine": "comfyui",
+  "graph_template": "standard_pose_character.prompt.json",
+  "inputs": [
+    {
+      "id": "positive_prompt",
+      "type": "text",
+      "required": true,
+      "description": "Character identity and outfit prompt."
+    },
+    {
+      "id": "negative_prompt",
+      "type": "text",
+      "required": true,
+      "description": "Things to avoid, especially bad hands, background, and dynamic poses."
+    },
+    {
+      "id": "pose_image",
+      "type": "image",
+      "required": true,
+      "description": "OpenPose-style standard pose guide."
+    },
+    {
+      "id": "batch_size",
+      "type": "integer",
+      "default": 4
+    }
+  ],
+  "outputs": [
+    {
+      "id": "candidate_images",
+      "type": "image_batch",
+      "role": "base_candidate"
+    }
+  ],
+  "quality_gates": [
+    "single_character",
+    "front_view",
+    "clean_silhouette",
+    "hands_visible",
+    "plain_background"
+  ],
+  "next": ["remove_background", "qwen_expression_patch"]
+}

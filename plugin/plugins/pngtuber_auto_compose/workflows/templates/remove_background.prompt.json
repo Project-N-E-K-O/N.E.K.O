@@ -1,0 +1,52 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__SOURCE_IMAGE__"
+    }
+  },
+  "2": {
+    "class_type": "LoadRembgByBiRefNetModel",
+    "inputs": {
+      "model": "General.safetensors",
+      "device": "AUTO",
+      "use_weight": false,
+      "dtype": "float32"
+    }
+  },
+  "3": {
+    "class_type": "RembgByBiRefNetAdvanced",
+    "inputs": {
+      "model": ["2", 0],
+      "images": ["1", 0],
+      "width": 1536,
+      "height": 1536,
+      "upscale_method": "bilinear",
+      "blur_size": 90,
+      "blur_size_two": 6,
+      "fill_color": false,
+      "color": 0,
+      "mask_threshold": 0.0
+    }
+  },
+  "4": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["3", 0],
+      "filename_prefix": "__FILENAME_PREFIX__/idle_rgba"
+    }
+  },
+  "5": {
+    "class_type": "MaskToImage",
+    "inputs": {
+      "mask": ["3", 1]
+    }
+  },
+  "6": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["5", 0],
+      "filename_prefix": "__FILENAME_PREFIX__/character_mask"
+    }
+  }
+}
