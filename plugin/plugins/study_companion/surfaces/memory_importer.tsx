@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
-import { ensureBrandCSS } from './study_surface_utils';
+import { deckTypeLabel, ensureBrandCSS, exportFormatLabel } from './study_surface_utils';
 
 type MemoryDeck = {
   id: string;
@@ -62,14 +62,14 @@ export default function MemoryImporter(props: PluginSurfaceProps) {
         <label>
           <span>{text(props, 'ui.memory.deck', 'Deck')}</span>
           <select value={deckId} disabled={busy} onChange={(event) => setDeckId(event.target.value)}>
-            {decks.map((deck) => <option key={deck.id} value={deck.id}>{deck.name} / {deck.deck_type}</option>)}
+            {decks.map((deck) => <option key={deck.id} value={deck.id}>{deck.name} / {deckTypeLabel(props, deck.deck_type)}</option>)}
           </select>
         </label>
         <label>
           <span>{text(props, 'ui.label.format', 'Format')}</span>
           <select value={fmt} disabled={busy} onChange={(event) => setFmt(event.target.value)}>
-            <option value="csv">CSV</option>
-            <option value="json">JSON</option>
+            <option value="csv">{exportFormatLabel(props, 'csv')}</option>
+            <option value="json">{exportFormatLabel(props, 'json')}</option>
           </select>
         </label>
       </section>

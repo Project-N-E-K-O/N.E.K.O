@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
@@ -52,6 +53,31 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def test_index_game_window_state_pauses_hidden_avatar_rendering():
+    source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+    block = source.split("var pngtuberHiddenForGameWindow = false;", 1)[1].split(
+        "window.addEventListener('neko-game-window-state-change'",
+        1,
+    )[0]
+
+    assert "var pngtuberHiddenForGameWindow = false;" in source
+    assert "function applyGameWindowRenderingState(paused) {" in block
+    assert "window.live2dManager" in block
+    assert "window.vrmManager" in block
+    assert "window.mmdManager" in block
+    assert "var manager = window.pngtuberManager;" in block
+    assert "manager.hide();" in block
+    assert "manager.show();" in block
+    assert "var method = paused ? 'pauseRendering' : 'resumeRendering';" in block
+    assert "manager[method]();" in block
+    assert "applyGameWindowRenderingState(true);" in block
+    assert "document.body.classList.add('neko-game-active');" in block
+    assert block.index("applyGameWindowRenderingState(true);") < block.index("document.body.classList.add('neko-game-active');")
+    assert "document.body.classList.remove('neko-game-active');" in block
+    assert "if (!window.__nekoPetInteracting__) {" in block
+    assert "applyGameWindowRenderingState(false);" in block
 
 
 def css_z_index(block: str) -> int:
@@ -291,6 +317,20 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "'web_chat_compact'" in source
     assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
     assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_chat_full_skips_startup_prominent_notice_queue():
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    load_block = source.split("window.addEventListener('load'", 1)[1].split(
+        "// 监听 voice_id",
+        1,
+    )[0]
+
+    assert "window.location.pathname === '/chat'" in load_block
+    assert "window.location.pathname === '/chat/'" in load_block
+    assert "window.location.pathname === '/chat_full'" in load_block
+    assert "window.location.pathname === '/chat_full/'" in load_block
+    assert "if (_isChatPage) return;" in load_block
 
 
 def test_web_chat_compact_is_allowed_during_main_limited_mode():
@@ -604,8 +644,19 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-preview-min-height: 360px;" in anchor_block
+    assert "--compact-export-preview-max-height: 78vh;" in anchor_block
+    assert "--compact-export-preview-region-height: min(" in anchor_block
+    assert "max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height))" in anchor_block
+    assert "var(--compact-export-preview-max-height)" in anchor_block
+    assert "max-height: var(--compact-export-preview-max-height);" in anchor_block
+    assert "\n  max-height: 78vh;" not in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "--compact-export-preview-max-height: min(" in desktop_history_block
+    assert "calc(var(--compact-export-surface-width) * 1.46)" in desktop_history_block
+    assert "calc(var(--compact-desktop-workarea-height, 900px) * 0.78)" in desktop_history_block
+    assert "max-height: var(--compact-export-preview-max-height);" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
@@ -745,6 +796,30 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
     assert "right: auto;" in mobile_compact_block
     assert ".chat-window.chat-surface-mode-compact" in mobile_compact_overflow_block
     assert "overflow: visible;" in mobile_compact_overflow_block
+
+
+def test_yui_guide_fixed_compact_chat_uses_400_width_and_left_middle_lower_position():
+    styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    fixed_block = css_block(
+        styles,
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+    )
+    choice_anchor_block = css_block(
+        styles,
+        'body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.neko-electron-runtime) > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+        '/* Agent HUD 空状态折叠按钮样式 */',
+    )
+
+    assert "body.yui-guide-compact-chat-fixed.subtitle-web-host:not(.electron-chat-window)" not in styles
+    assert "left: clamp(24px, 6vw, 72px) !important;" in fixed_block
+    assert "top: min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) !important;" in fixed_block
+    assert "width: min(400px, calc(100vw - 32px)) !important;" in fixed_block
+    assert "bottom: auto !important;" in fixed_block
+    assert "left: calc(clamp(24px, 6vw, 72px) + 200px);" in choice_anchor_block
+    assert "top: calc(min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + var(--compact-surface-height, 58px) + 16px);" in choice_anchor_block
+    assert "bottom: calc(100vh - min(62vh, calc(100vh - var(--compact-surface-height, 58px) - 24px)) + 16px);" in choice_anchor_block
 
 
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
@@ -1040,6 +1115,23 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "nativeRect: scrollbarRect" in scrollbar_block
 
 
+def test_compact_meme_close_hit_region_is_collected_as_native_extra_island():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    composite_block = script.split("function collectCompactCompositeGeometryItems(element, kind)", 1)[1].split(
+        "function collectCompactSurfaceGeometryItems()",
+        1,
+    )[0]
+
+    assert 'data-compact-geometry-item="meme"' in app_source
+    assert 'data-compact-geometry-hit-scope="children"' in app_source
+    assert 'data-compact-hit-region-id="meme:close"' in app_source
+    assert "kind === 'musicPlayer' || kind === 'meme'" in composite_block
+    assert "id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index)" in composite_block
+    assert "nativeRect: clippedRect" in composite_block
+
+
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1111,7 +1203,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
     assert "function renderYuiGuideChatSpotlight" not in script
 
 
-def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
+def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
@@ -1122,9 +1214,10 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "message && message.bypassDedup === true" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_drag_chat_cursor'" in bypass_block
-    assert "action === 'yui_guide_arc_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_drag_chat_cursor'" not in bypass_block
+    assert "action === 'yui_guide_arc_chat_cursor'" not in bypass_block
     assert "action === 'yui_guide_set_compact_history_open'" in bypass_block
+    assert "action === 'yui_guide_set_compact_chat_fixed_layout'" in bypass_block
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
@@ -1133,7 +1226,7 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "case 'yui_guide_set_chat_cursor':" in script
     assert "case 'yui_guide_drag_chat_cursor':" in script
     assert "case 'yui_guide_arc_chat_cursor':" in script
-    assert "relayYuiGuideChatCommand(event.data);" in script
+    assert "relayYuiGuideChatCommand(Object.assign({}, event.data," in script
     assert "neko:tutorial-overlay-relay" in script
     assert "__nekoTutorialOverlayRelay" in script
 
@@ -1148,6 +1241,36 @@ def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     assert "case 'yui_guide_set_compact_history_open'" in interpage
     assert "function applyYuiGuideCompactHistoryOpen(open, reason)" in interpage
     assert "host.setCompactHistoryOpen(open === true, reason || 'external-yui-guide');" in interpage
+
+
+def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body():
+    interpage = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    relayed_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
+        "function ensureYuiGuideStandaloneInteractionShield",
+        1,
+    )[0]
+    broadcast_block = interpage.split("nekoBroadcastChannel.onmessage = async function (event)", 1)[1].split(
+        "console.log('[BroadcastChannel] 初始化失败",
+        1,
+    )[0]
+    scoped_block = interpage.split("function isYuiGuideLifecycleScopedAction(action)", 1)[1].split(
+        "function resetYuiGuidePcOverlayRunForRetry()",
+        1,
+    )[0]
+    cleanup_block = interpage.split("function clearYuiGuidePcOverlayBridgeState(reason", 1)[1].split(
+        "function cleanupAppInterpageTransientResources()",
+        1,
+    )[0]
+
+    assert "function applyYuiGuideCompactChatFixedLayout(fixed)" in interpage
+    assert "document.body.classList.toggle('yui-guide-compact-chat-fixed', fixed === true);" in interpage
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in relayed_block
+    assert "applyYuiGuideCompactChatFixedLayout(message.fixed === true);" in relayed_block
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
+    assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
+    assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
+    assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
 
 
 def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
@@ -1181,6 +1304,48 @@ def test_new_user_icebreaker_prompt_is_exposed_by_react_host():
     assert "function setChoicePrompt(payload)" in react_host
     assert "setChoicePrompt: setChoicePrompt" in react_host
     assert "setNewUserIcebreakerPrompt: setNewUserIcebreakerPrompt" in react_host
+    # 揭示延迟「只扣视觉」：prompt 立刻入 state（绑定输入路由），按 revealDelayMs
+    # 记下 revealAt 并交给计时器延后露出按钮。
+    assert "var revealDelayMs = Number(payload.revealDelayMs) || 0;" in prompt_block
+    assert "revealAt: revealDelayMs > 0 ? Date.now() + revealDelayMs : 0" in prompt_block
+    assert "scheduleChoicePromptReveal();" in prompt_block
+
+
+def test_icebreaker_choice_prompt_reveal_delay_hides_buttons_not_state():
+    # 揭示延迟必须只藏按钮、不扣 state.choicePrompt——否则间隙内的自由文本会绕过
+    # icebreaker free-text 路由落到普通聊天。
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    # 渲染层走 getRevealedChoicePrompt（揭示未到点返回 null 藏按钮）；输入路由仍直接
+    # 读 state.choicePrompt，所以间隙内打字会被判为 icebreaker free-text。
+    assert "function getRevealedChoicePrompt()" in react_host
+    assert "choicePrompt: getRevealedChoicePrompt()," in react_host
+    reveal_block = react_host.split("function getRevealedChoicePrompt()", 1)[1].split(
+        "function setNewUserIcebreakerPrompt",
+        1,
+    )[0]
+    assert "if (prompt.revealAt && Date.now() < prompt.revealAt) return null;" in reveal_block
+
+    submit_block = react_host.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+    assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker')" in submit_block
+
+    # 计时器只在同一个 prompt 仍在台上时才揭示，避免延迟期间被覆盖/清空后揭示过期选项。
+    schedule_block = react_host.split("function scheduleChoicePromptReveal()", 1)[1].split(
+        "function getRevealedChoicePrompt",
+        1,
+    )[0]
+    assert "if (state.choicePrompt === prompt)" in schedule_block
+
+    # galgame 选项拉取必须在 icebreaker prompt 激活（含揭示延迟内已就位但未露出）时让位，
+    # 否则 turn-end 会把 galgame A/B/C 挤进尚未露出 icebreaker 选项的同一槽位（Codex P2）。
+    galgame_fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
+        "function ",
+        1,
+    )[0]
+    assert "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') return;" in galgame_fetch_block
 
 
 def test_new_user_icebreaker_choice_listener_posts_context():
@@ -1197,7 +1362,7 @@ def test_new_user_icebreaker_choice_listener_posts_context():
     assert "completed: contextSynced" in choice_block
     assert "contextSyncPending: !contextSynced" in choice_block
     assert "activeSession = null;" in choice_block
-    assert "fetch('/api/game/new_user_icebreaker/context'" in script
+    assert "fetch('/api/icebreaker/context'" in script
     assert "return !!(body && body.ok === true);" in script
 
 
@@ -1679,6 +1844,10 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
 
     assert "height: calc(var(--compact-export-history-region-height)" in scroll_block
     assert "max-height: calc(var(--compact-export-history-region-height)" in scroll_block
+    assert "height: var(--compact-export-preview-region-height);" in preview_block
+    assert "max-height: var(--compact-export-preview-region-height);" in preview_block
+    assert "height: var(--compact-export-history-region-height);" not in preview_block
+    assert "max-height: var(--compact-export-history-region-height);" not in preview_block
     assert "max-height: inherit;" in panel_block
 
 
@@ -1973,6 +2142,19 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: none;\n"
         "}"
     )
+    meme_passthrough_rule = (
+        f'{compact_surface_prefix} .compact-meme-overlay,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay img,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay-frame,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay-close-icon {{\n'
+        "    pointer-events: none;\n"
+        "}"
+    )
+    meme_close_interactive_rule = (
+        f'{compact_surface_prefix} .compact-meme-overlay-close {{\n'
+        "    pointer-events: auto;\n"
+        "}"
+    )
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
@@ -1985,11 +2167,15 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     assert compact_music_interactive_rule in styles
     assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
+    assert meme_passthrough_rule in styles
+    assert meme_close_interactive_rule in styles
     assert history_interactive_rule in styles
     assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
     assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
     assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
-    assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
+    assert styles.index(history_passthrough_rule) < styles.index(meme_passthrough_rule)
+    assert styles.index(meme_passthrough_rule) < styles.index(meme_close_interactive_rule)
+    assert styles.index(meme_close_interactive_rule) < styles.index(history_interactive_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 

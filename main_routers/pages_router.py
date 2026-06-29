@@ -54,15 +54,19 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day6-agent-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day7-graduation-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/steps.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/yui-standin.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
-    _PROJECT_ROOT / "static/tutorial/yui-guide/avatar-standin.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
+    _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/round-prelude-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/universal-manager.js",
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
+    _PROJECT_ROOT / "static/live2d-interaction.js",
+    _PROJECT_ROOT / "static/live2d-init.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app-interpage.js",
@@ -72,8 +76,11 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-export.js",
     _PROJECT_ROOT / "static/avatar-ui-buttons.js",
+    _PROJECT_ROOT / "static/subtitle.js",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-eat.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-play-1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",
@@ -98,6 +105,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice2.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice3.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-eat.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-funny.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep2.mp3",
@@ -240,11 +248,11 @@ async def soccer_demo(request: Request):
     })
 
 
-@router.get("/basketball_demo", response_class=HTMLResponse)
-async def basketball_demo(request: Request):
-    """Basketball shooting challenge mini-game."""
+@router.get("/badminton_demo", response_class=HTMLResponse)
+async def badminton_demo(request: Request):
+    """Badminton challenge mini-game."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/basketball_demo.html", {
+    return templates.TemplateResponse("templates/badminton_demo.html", {
         "request": request,
         **_static_assets_ctx(),
     })

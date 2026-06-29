@@ -2,22 +2,24 @@
 
 ```
 N.E.K.O/
-├── main_server.py              # メインサーバーエントリーポイント（ポート48911）
-├── memory_server.py            # メモリサーバーエントリーポイント（ポート48912）
-├── agent_server.py             # エージェントサーバーエントリーポイント（ポート48915）
 ├── launcher.py                 # デスクトップランチャー（Steam/exe）
-├── monitor.py                  # モニターサービス
+│
+├── app/                        # サーバーエントリーポイント
+│   ├── main_server.py          # メインサーバーエントリーポイント（ポート48911）
+│   ├── memory_server.py        # メモリサーバーエントリーポイント（ポート48912）
+│   ├── agent_server.py         # エージェントサーバーエントリーポイント（ポート48915）
+│   └── monitor.py              # モニターサービス
 │
 ├── brain/                      # エージェント＆タスク実行
 │   ├── task_executor.py        # メインタスク実行エンジン
 │   ├── computer_use.py         # コンピュータビジョン/インタラクション
 │   ├── browser_use_adapter.py  # ブラウザ自動化アダプター
-│   ├── mcp_client.py           # Model Context Protocolクライアント
-│   ├── planner.py              # タスク計画＆分解
-│   ├── analyzer.py             # 結果分析
+│   ├── openclaw_adapter.py     # OpenClawアダプター
+│   ├── openfang_adapter.py     # OpenFangアダプター
+│   ├── plugin_filter.py        # エージェントツール向けプラグインフィルタリング
 │   ├── deduper.py              # 重複検出
-│   ├── processor.py            # タスク処理パイプライン
-│   └── agent_session.py        # エージェントセッション管理
+│   ├── agent_session.py        # エージェントセッション管理
+│   └── cua/                    # コンピュータ操作エージェントのサブパッケージ
 │
 ├── config/                     # 設定
 │   ├── __init__.py             # 定数、デフォルト値、ポート定義
@@ -30,7 +32,7 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager（中央セッションハンドラー）
 │   ├── omni_realtime_client.py # Realtime API WebSocketクライアント
 │   ├── omni_offline_client.py  # テキスト/レスポンスAPIクライアント（オフラインフォールバック）
-│   ├── tts_client.py           # TTSエンジンアダプター（CosyVoice、GPT-SoVITS）
+│   ├── tts_client/             # TTSエンジンアダプターパッケージ（CosyVoice、GPT-SoVITS など）
 │   ├── cross_server.py         # サーバー間通信
 │   └── agent_event_bus.py      # ZeroMQイベントブリッジ（Main ↔ Agent）
 │
@@ -67,7 +69,6 @@ N.E.K.O/
 │   ├── frontend_utils.py       # モデル検出、テキストユーティリティ
 │   ├── api_config_loader.py    # APIプロバイダー解決
 │   ├── logger_config.py        # レート制限付きロギングセットアップ
-│   ├── translation_service.py  # LLMベースの翻訳
 │   ├── workshop_utils.py       # Steam Workshopヘルパー
 │   ├── web_scraper.py          # Webコンテンツスクレイピング＆フィルタリング
 │   └── screenshot_utils.py     # ビジョンAPI用スクリーンショット処理
@@ -108,6 +109,6 @@ N.E.K.O/
 |---------|------|------|
 | `main_logic/core.py` | 約2300 | 中央セッションマネージャー — システムの心臓部 |
 | `utils/config_manager.py` | 約1500 | 設定の読み込み、検証、永続化 |
-| `main_logic/tts_client.py` | 約2300 | マルチプロバイダー対応TTS合成 |
+| `main_logic/tts_client/` | 約1300 | マルチプロバイダー対応TTS合成パッケージ |
 | `brain/task_executor.py` | 約1600 | エージェントのタスク計画と実行 |
 | `utils/web_scraper.py` | 約1900 | プロアクティブチャット用Webコンテンツスクレイピング |

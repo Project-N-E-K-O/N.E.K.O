@@ -1297,7 +1297,7 @@ def test_maybe_apply_keyword_noop_when_no_pending():
     """Ordinary chat text must not launch games without a pending invite."""
     for text in (
         '好啊',
-        '来玩一句投篮',
+        '来玩一局羽毛球',
         '来一局足球',
         'please play badminton',
         'play badminton',
@@ -1553,15 +1553,13 @@ def test_keywords_cover_all_native_locales():
             )
 
 
-def test_badminton_invite_copy_staged_but_not_enabled_until_page_lands():
+def test_badminton_invite_config_and_i18n_complete():
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
     from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
-    assert 'basketball' not in MINI_GAME_INVITE_AVAILABLE_GAMES
-    assert 'basketball' not in MINI_GAME_LAUNCH_URL_BY_GAME
-    assert 'badminton' not in MINI_GAME_INVITE_AVAILABLE_GAMES
-    assert 'badminton' not in MINI_GAME_LAUNCH_URL_BY_GAME
+    assert 'badminton' in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert MINI_GAME_LAUNCH_URL_BY_GAME['badminton'] == '/badminton_demo'
     for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
         assert MINI_GAME_INVITE_LINES_BY_GAME['badminton'][lang].strip()
         work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['badminton'][lang]
@@ -1571,7 +1569,7 @@ def test_badminton_invite_copy_staged_but_not_enabled_until_page_lands():
         assert '{minutes}' in work_break_prompt
 
 
-def test_accept_staged_badminton_invite_falls_back_until_page_lands():
+def test_accept_badminton_invite_returns_badminton_url():
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 3
     state['responded_at'] = None
@@ -1581,7 +1579,7 @@ def test_accept_staged_badminton_invite_falls_back_until_page_lands():
     result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
 
     assert result['action'] == 'open_game'
-    assert result['game_type'] == 'soccer'
-    assert result['game_url'].startswith('/soccer_demo?')
+    assert result['game_type'] == 'badminton'
+    assert result['game_url'].startswith('/badminton_demo?')
     assert 'mode=duel' not in result['game_url']
     assert 'session_id=bd-sess' in result['game_url']

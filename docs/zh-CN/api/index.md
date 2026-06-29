@@ -23,7 +23,19 @@ http://localhost:48911
 | [记忆](/zh-CN/api/rest/memory) | `/api/memory` | 记忆文件、回顾配置 |
 | [智能体](/zh-CN/api/rest/agent) | `/api/agent` | 智能体标志位、任务、健康检查 |
 | [创意工坊](/zh-CN/api/rest/workshop) | `/api/steam/workshop` | Steam 创意工坊物品、发布 |
+| [MMD](/zh-CN/api/rest/mmd) | `/api/model/mmd` | MMD 模型管理 |
+| [PNGTuber](/zh-CN/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber 模型管理 |
+| [音乐](/zh-CN/api/rest/music) | `/api/music` | 音乐搜索与播放代理 |
+| [点歌台](/zh-CN/api/rest/jukebox) | `/api/jukebox` | 歌曲与动作库 |
+| [游戏](/zh-CN/api/rest/game) | `/api/game` | 小游戏后端 |
+| [Galgame](/zh-CN/api/rest/galgame) | `/api/galgame` | Galgame 回复选项 |
+| [破冰引导](/zh-CN/api/rest/icebreaker) | `/api/icebreaker` | 新用户引导 |
+| [主动搭话](/zh-CN/api/rest/proactive) | `/api/proactive` | 主动搭话模式与设置 |
 | [系统](/zh-CN/api/rest/system) | `/api` | 情感分析、截图、实用工具 |
+
+### 其他 / 内部路由
+
+以下路由已上线，但未在此处单独提供文档：`capture`（`/api/capture`）、`cloudsave`（`/api/cloudsave`）、`storage-location`（`/api/storage/location`）、`avatar-drop`（`/api/avatar-drop`）、`card-assist`（`/api/card-assist`）、`auth`/cookies（`/api/auth`）、`tool`（`/api/tools`）以及 `debug`（`/api/debug`）。
 
 ## WebSocket
 

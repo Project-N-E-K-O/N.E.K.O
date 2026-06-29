@@ -263,7 +263,10 @@ async function waitForStorageLocationStartupBarrierInternal() {
 window.addEventListener('load', async () => {
     await waitForStorageLocationStartupBarrierInternal();
 
-    const _isChatPage = window.location.pathname === '/chat';
+    const _isChatPage = window.location.pathname === '/chat'
+        || window.location.pathname === '/chat/'
+        || window.location.pathname === '/chat_full'
+        || window.location.pathname === '/chat_full/';
 
     setTimeout(() => {
         if (_isChatPage) return;
@@ -307,13 +310,58 @@ window.addEventListener('load', async () => {
             }
         } catch (_) { }
 
+        // 更新日志/问卷要把 UI 语言传给后端做本地化下发。坑：本启动流程可能早于 i18next
+        // init 完成就跑到这（init 内部要先 await 一次 Steam 语言查询），此时 window.i18next
+        // .language 还是空 → 传 lang='' → 后端按中文原文下发（更新日志早读易踩；问卷在用户
+        // 点完 changelog 弹窗后才读所以躲过，造成"更新日志中文、问卷正常"）。所以先 await
+        // i18next ready 再取语言，拿到解析后的权威值（含 getInitialLanguage 不落盘的手动
+        // uiLanguage 覆盖）；只有 init 彻底失败/超时才回退 localStorage。
+        // ready 信号：i18next.isInitialized（已就绪直接过）或 i18n-i18next.js 在**所有终态**都会
+        // 派发的 localechange 事件（finalizeInit 成功 / 无 backend 手动加载 / 初始化失败
+        // exportFallbackFunctions 都派发），所以信号一定会来。超时给 12s 是为覆盖 i18n-i18next.js
+        // 自身 bootstrap 的完整窗口：依赖轮询最多 5s + getInitialLanguage 的 Steam 语言查询最多
+        // 2s，外加它 10s 硬安全网强制 init。5s 太短会在 i18next 尚未就绪时提前超时回退（Codex P2），
+        // 12s 覆盖整段窗口后超时只兜「i18n 模块自身彻底卡死」这种极端情况。
+        const _ensureI18nReady = (timeoutMs = 12000) => new Promise((resolve) => {
+            if (window.i18next && window.i18next.isInitialized) { resolve(); return; }
+            let done = false;
+            let timerId;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timerId);
+                window.removeEventListener('localechange', finish);
+                resolve();
+            };
+            window.addEventListener('localechange', finish);
+            timerId = setTimeout(finish, timeoutMs);
+        });
+        // i18next ready 后 language 即权威值；万一 init 失败/超时，localStorage 的 i18nextLng
+        // （getInitialLanguage 在 init 前对 query/steam 值落过盘）作末位兜底，仍比空 lang 强。
+        // 与 app-websocket / app-proactive 等处的取法保持一致。
+        const _resolveUiLang = () => {
+            const live = (window.i18next && typeof window.i18next.language === 'string')
+                ? window.i18next.language : '';
+            return live || localStorage.getItem('i18nextLng') || '';
+        };
+        await _ensureI18nReady();
+
         // 1) 版本更新日志（先讲背景）
         try {
             const lastVer = localStorage.getItem('neko_last_notified_version') || '';
-            const lang = (window.i18next && window.i18next.language) || '';
+            const lang = _resolveUiLang();
             const cr = await fetch(`/api/changelog?since=${encodeURIComponent(lastVer)}&lang=${encodeURIComponent(lang)}`);
             const cdata = await cr.json();
             let entries = cdata.entries || [];
+            // 问卷资格：在 step 1 改写 neko_last_notified_version 之前，把"本次是从旧版
+            // 升上来的老玩家"持久化成独立 marker。不能从 neko_last_notified_version 现推
+            // ——它马上会被改成当前版，一旦 step 1.5 的 /api/survey 这次失败/暂时非 steam
+            // 没弹出，下次启动就分不清是升级老玩家还是首装本版，资格永久丢失。
+            // 排除：全新用户(lastVer 空)、首装本版第二次启动(lastVer === 当前版)。
+            // marker 落了之后只在问卷被真正处理（提交/跳过成功）时清除。
+            if (lastVer && cdata.current_version && lastVer !== cdata.current_version) {
+                localStorage.setItem('neko_survey_eligible_for', cdata.current_version);
+            }
             // 全新用户（无历史记录）跳过版本更新弹窗，直接记录当前版本
             if (!lastVer) {
                 if (cdata.current_version) {
@@ -342,6 +390,60 @@ window.addEventListener('load', async () => {
                 await Promise.all(changelogPromises);
                 if (cdata.current_version) {
                     localStorage.setItem('neko_last_notified_version', cdata.current_version);
+                }
+            }
+        } catch (_) { }
+
+        // 1.5) 版本问卷（changelog 确认后，对老玩家追加）
+        // 仅老玩家、当前版本有问卷、且这一版还没填过/跳过过时弹出。后端 /api/survey
+        // 还会再做一道 DNT 门禁（关了被动统计的用户拿到 has_survey:false）。
+        try {
+            const _surveyEligibleFor = localStorage.getItem('neko_survey_eligible_for') || '';
+            if (_surveyEligibleFor && typeof window.showSurveyModal === 'function') {
+                const surveyLang = _resolveUiLang();
+                const sr = await fetch(`/api/survey?lang=${encodeURIComponent(surveyLang)}`);
+                const sdata = await sr.json();
+                if (sdata && sdata.has_survey && sdata.survey) {
+                    const surveyVer = sdata.survey_version || sdata.survey.survey_version || '';
+                    const doneVer = localStorage.getItem('neko_last_survey_version') || '';
+                    // 资格走持久化 marker（step 1 落的）：本次升级会话就算 /api/survey 失败，
+                    // marker 仍在，下次启动重试，不会因 last_notified 已推进而漏掉老玩家。
+                    if (surveyVer && _surveyEligibleFor === surveyVer && doneVer !== surveyVer) {
+                        const result = await window.showSurveyModal(sdata.survey);
+                        const submitHeaders = { 'Content-Type': 'application/json' };
+                        const sec = window.nekoLocalMutationSecurity;
+                        if (sec && typeof sec.getMutationHeaders === 'function') {
+                            try { Object.assign(submitHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                        }
+                        // 只有后端成功受理（resp.ok）才记本地完成标记；本地 POST 失败
+                        // （CSRF token 没就绪 / 后端错误）时不标记，下次启动重弹一次，
+                        // 避免把用户填好的答卷直接丢掉。后端已是 best-effort（远程上报
+                        // 失败也回 ok:true），所以 resp.ok = 后端已受理即可视为完成。
+                        let submitted = false;
+                        try {
+                            const sresp = await fetch('/api/survey/submit', {
+                                method: 'POST',
+                                headers: submitHeaders,
+                                body: JSON.stringify({
+                                    survey_version: surveyVer,
+                                    action: (result && result.action) || 'skip',
+                                    answers: (result && result.answers) || {},
+                                }),
+                            });
+                            submitted = !!(sresp && sresp.ok);
+                            if (!submitted) {
+                                console.warn('[survey/submit] backend rejected with HTTP '
+                                    + (sresp && sresp.status) + '; will re-prompt next launch');
+                            }
+                        } catch (e) {
+                            console.warn('[survey/submit] request failed:', e);
+                        }
+                        if (submitted) {
+                            localStorage.setItem('neko_last_survey_version', surveyVer);
+                            // 真正处理完才清资格 marker；失败则留着下次重试。
+                            localStorage.removeItem('neko_survey_eligible_for');
+                        }
+                    }
                 }
             }
         } catch (_) { }

@@ -581,6 +581,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
+        { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
     ];
 
@@ -769,26 +770,6 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 /**
  * 创建侧边面板菜单项
  */
-// 跟踪所有已打开的模型管理子窗口，只有全部关闭后才恢复主页渲染
-const _activeManagerWindows = new Set();
-let _managerWindowCheckTimer = null;
-
-function _startManagerWindowWatcher() {
-    if (_managerWindowCheckTimer) return;
-    _managerWindowCheckTimer = setInterval(() => {
-        for (const win of _activeManagerWindows) {
-            if (win.closed) _activeManagerWindows.delete(win);
-        }
-        if (_activeManagerWindows.size === 0) {
-            clearInterval(_managerWindowCheckTimer);
-            _managerWindowCheckTimer = null;
-            if (typeof window.handleShowMainUI === 'function') {
-                window.handleShowMainUI();
-            }
-        }
-    }, 1000);
-}
-
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
@@ -849,21 +830,15 @@ function createSidePanelMenuItem(manager, prefix, item) {
 
     let isOpening = false;
 
-    // 打开子窗口并暂停主页渲染，所有管理窗口关闭后自动恢复
-    function openAndPauseMainUI(url, name, feat) {
+    // 打开模型管理子窗口，主页面模型保持原样显示。
+    function openModelManagerWindow(url, name, feat) {
         let childWin;
         if (typeof window.openOrFocusWindow === 'function') {
             childWin = window.openOrFocusWindow(url, name, feat);
         } else {
             childWin = window.open(url, name, feat);
         }
-        // 弹窗被拦截或打开失败时不隐藏主页，避免无法恢复
-        if (!childWin) return;
-        if (typeof window.handleHideMainUI === 'function') {
-            window.handleHideMainUI();
-        }
-        _activeManagerWindows.add(childWin);
-        _startManagerWindowWatcher();
+        return childWin;
     }
 
     menuItem.addEventListener('click', (e) => {
@@ -881,7 +856,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
                 features = buildAvatarFullscreenWindowFeatures();
-                openAndPauseMainUI(finalUrl, windowName, features);
+                openModelManagerWindow(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2166,6 +2141,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'avatar-reaction-bubble' && typeof window.avatarReactionBubbleEnabled !== 'undefined') {
         checkbox.checked = window.avatarReactionBubbleEnabled;
+    } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
+        checkbox.checked = window.focusCognitionEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2265,6 +2242,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                     timestamp: Date.now()
                 }
             }));
+        } else if (toggle.id === 'focus-cognition') {
+            // 凝神（cognition focus）的 per-user 总开关。关掉后端就进不了 focus
+            // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
+            // 思考气泡随之不再出现；master 情绪读不受影响。
+            window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {

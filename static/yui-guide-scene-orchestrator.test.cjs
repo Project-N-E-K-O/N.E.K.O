@@ -200,6 +200,180 @@ test('SceneOrchestrator can execute explicit timeline playback without using gen
     )));
 });
 
+test('SceneOrchestrator plays day1 intro greeting chat without waiting for intro operation completion', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const revealCalls = [];
+    const director = {
+        sceneRunId: 0,
+        currentSceneId: null,
+        scenePausedForResistance: false,
+        getAvatarFloatingInterruptStep() {
+            return null;
+        },
+        shouldPreserveExternalizedChatCursor() {
+            return false;
+        },
+        shouldPreserveIntroExternalizedChatCursor() {
+            return false;
+        },
+        isHomeChatExternalized() {
+            return false;
+        },
+        cursor: {
+            cancel() {
+                calls.push('cursor:cancel');
+            }
+        },
+        cursorAnchorStore: {
+            clear() {
+                calls.push('anchors:clear');
+            }
+        },
+        clearSceneTimers() {},
+        clearSceneExtraSpotlights() {},
+        clearAllVirtualSpotlights() {},
+        clearSpotlightGeometryHints() {},
+        clearSpotlightVariantHints() {},
+        clearExternalizedChatGuideTarget() {},
+        overlay: {
+            setAngry() {}
+        },
+        enableInterrupts() {},
+        resolveAvatarFloatingSceneText(scene) {
+            return scene.text || '';
+        },
+        resolveAvatarFloatingSceneVoiceKey(scene) {
+            return scene.voiceKey || '';
+        },
+        appendGuideChatMessage(text, options) {
+            calls.push(['chat', text, options.voiceKey]);
+        },
+        speakGuideLine(text, options) {
+            calls.push(['speak', text, options.voiceKey]);
+            return Promise.resolve();
+        },
+        applyGuideEmotion(emotion) {
+            calls.push(['emotion', emotion]);
+        },
+        prepareAvatarFloatingScene() {
+            calls.push('scene:prepare');
+            return Promise.resolve(true);
+        },
+        resolveAvatarFloatingSelector(target) {
+            return { id: target };
+        },
+        setSpotlightGeometryHint() {},
+        applyGuideHighlights() {},
+        runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext) {
+            calls.push([
+                'operation',
+                scene.operation,
+                operationContext && operationContext.isFirstDailyScene,
+                typeof (operationContext && operationContext.revealPrepared)
+            ]);
+            if (operationContext && typeof operationContext.revealPrepared === 'function') {
+                operationContext.revealPrepared('test-reveal');
+            }
+            calls.push('operation:pending');
+            return new Promise(() => {});
+        },
+        waitForSceneDelay() {
+            return Promise.resolve();
+        },
+        getGuideVoiceDurationMs() {
+            return 1000;
+        },
+        isStopping() {
+            return false;
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const keepGoingPromise = orchestrator.playScene({
+        id: 'day1_intro_greeting',
+        text: '微风、阳光、还有刚刚好...',
+        voiceKey: 'intro_greeting_reply',
+        emotion: 'happy',
+        timelinePlayback: true,
+        timeline: [
+            { at: 0, command: 'operation.run', operation: 'day1-intro-greeting-performance', blocking: false },
+            { at: 0, command: 'chat.message' },
+            { at: 0, command: 'emotion.set' }
+        ],
+        completion: {
+            afterSceneDelayMs: 0
+        }
+    }, 1, 1, 9, {
+        revealPrepared: (reason) => revealCalls.push(reason)
+    });
+    const keepGoing = await Promise.race([
+        keepGoingPromise,
+        new Promise((resolve) => setTimeout(() => resolve('blocked-by-operation'), 30))
+    ]);
+
+    assert.equal(keepGoing, true);
+    assert.deepEqual(revealCalls, ['test-reveal']);
+    assert.ok(calls.indexOf('operation:pending') !== -1);
+    assert.ok(calls.findIndex((entry) => Array.isArray(entry) && entry[0] === 'chat') > calls.indexOf('operation:pending'));
+    assert.deepEqual(calls.filter((entry) => Array.isArray(entry) && entry[0] === 'operation'), [
+        ['operation', 'day1-intro-greeting-performance', false, 'function']
+    ]);
+    assert.ok(calls.some((entry) => (
+        Array.isArray(entry)
+        && entry[0] === 'chat'
+        && entry[1] === '微风、阳光、还有刚刚好...'
+        && entry[2] === 'intro_greeting_reply'
+    )));
+    assert.ok(calls.some((entry) => (
+        Array.isArray(entry)
+        && entry[0] === 'speak'
+        && entry[1] === '微风、阳光、还有刚刚好...'
+        && entry[2] === 'intro_greeting_reply'
+    )));
+});
+
+test('SceneOrchestrator timeline audio uses director-resolved narration', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = {
+        id: 'day2_intro_context',
+        text: '昨天默认台词',
+        voiceKey: 'avatar_floating_day2_intro'
+    };
+    const timelineScene = {
+        audio: {
+            text: '昨天默认台词',
+            voiceKey: 'avatar_floating_day2_intro'
+        }
+    };
+    const director = {
+        resolveAvatarFloatingSceneText(inputScene) {
+            calls.push(['text', inputScene.id]);
+            return '嘿嘿分支台词';
+        },
+        resolveAvatarFloatingSceneVoiceKey(inputScene) {
+            calls.push(['voice', inputScene.id]);
+            return 'avatar_floating_day2_intro_voice_used';
+        },
+        speakGuideLine(text, options) {
+            calls.push(['speak', text, options.voiceKey]);
+            return Promise.resolve();
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+    const audioRuntime = orchestrator.createTimelineAudioRuntime(scene, timelineScene, {});
+
+    audioRuntime.play('avatar_floating_day2_intro', timelineScene.audio);
+    await audioRuntime.waitForEnd();
+
+    assert.deepEqual(calls, [
+        ['text', 'day2_intro_context'],
+        ['voice', 'day2_intro_context'],
+        ['speak', '嘿嘿分支台词', 'avatar_floating_day2_intro_voice_used']
+    ]);
+});
+
 test('SceneOrchestrator can execute legacy scene fields through timeline playback normalizer', async () => {
     const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
     const calls = [];
@@ -248,9 +422,6 @@ test('SceneOrchestrator can execute legacy scene fields through timeline playbac
         },
         clearSpotlightVariantHints() {
             calls.push('variant-hints:clear');
-        },
-        scheduleAvatarStandInForScene(scene, day, sceneRunId) {
-            calls.push(['standin:schedule', scene.id, day, sceneRunId]);
         },
         prepareAvatarFloatingScene(scene) {
             calls.push(['prepare', scene.id, scene.operation]);
@@ -381,9 +552,6 @@ test('SceneOrchestrator routes timeline graduation wrap through the petal cue ha
         },
         clearSpotlightVariantHints() {
             calls.push('variant-hints:clear');
-        },
-        scheduleAvatarStandInForScene(scene, day, sceneRunId) {
-            calls.push(['standin:schedule', scene.id, day, sceneRunId]);
         },
         prepareAvatarFloatingScene(scene) {
             calls.push(['prepare', scene.id, scene.operation]);
@@ -1201,18 +1369,19 @@ test('director delegates avatar floating round playback to SceneOrchestrator', (
 
 test('director delegates avatar floating scene playback to SceneOrchestrator', () => {
     const orchestratorSource = fs.readFileSync(orchestratorPath, 'utf8');
-    const playSceneBlock = directorSource.split('        async playAvatarFloatingScene(scene, day, index, total) {')[1].split(
+    const playSceneBlock = directorSource.split('        async playAvatarFloatingScene(scene, day, index, total, roundContext) {')[1].split(
         '        async playAvatarFloatingRound(round, options) {',
         1
     )[0];
-    const orchestratorPlaySceneBlock = orchestratorSource.split('        async playScene(scene, day, index, total) {')[1].split(
+    const orchestratorPlaySceneBlock = orchestratorSource.split('        async playScene(scene, day, index, total, roundContext = {}) {')[1].split(
         '        async prepareGenericSceneSurface(scene, context) {',
         1
     )[0];
 
-    assert.match(playSceneBlock, /return this\.sceneOrchestrator\.playScene\(scene,\s*day,\s*index,\s*total\);/);
+    assert.match(playSceneBlock, /return this\.sceneOrchestrator\.playScene\(scene,\s*day,\s*index,\s*total,\s*roundContext\);/);
     assert.doesNotMatch(playSceneBlock, /const sceneRunId = \+\+this\.sceneRunId;/);
     assert.doesNotMatch(playSceneBlock, /scheduleAvatarStandInForScene/);
+    assert.match(orchestratorSource, /director\.scheduleAvatarStandInForScene\(scene,\s*context\.day,\s*sceneRunId\);/);
     assert.match(orchestratorPlaySceneBlock, /director\.settingsTourFlow\.canHandle\(scene\)/);
     assert.match(orchestratorPlaySceneBlock, /director\.settingsTourFlow\.play\(scene,\s*\{/);
     assert.doesNotMatch(orchestratorPlaySceneBlock, /day4_chat_settings/);
@@ -1223,7 +1392,7 @@ test('director delegates avatar floating scene playback to SceneOrchestrator', (
 test('SceneOrchestrator owns generic scene core instead of Director', () => {
     const orchestratorSource = fs.readFileSync(orchestratorPath, 'utf8');
     assert.match(orchestratorSource, /async playGenericScene\(scene, day, index, total, context\)/);
-    const playSceneBlock = orchestratorSource.split('        async playScene(scene, day, index, total) {')[1].split(
+    const playSceneBlock = orchestratorSource.split('        async playScene(scene, day, index, total, roundContext = {}) {')[1].split(
         '        async playGenericScene(scene, day, index, total, context) {',
         1
     )[0];

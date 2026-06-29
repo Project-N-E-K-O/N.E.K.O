@@ -51,11 +51,7 @@
     <!-- 主题管理器（尽早加载以避免闪烁） -->
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
-    <!-- Driver.js 新手引导库 (本地实现 - 无需 CDN) -->
-    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
     <!-- 教程样式定制 -->
-    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <!-- APlayer 库（本地） -->
     <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
@@ -442,7 +438,7 @@
     <script src="/static/tutorial/yui-guide/days/day6-agent-guide.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/days/day7-graduation-guide.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/steps.js?v={{ static_asset_version }}"></script>
-    <script src="/static/tutorial/yui-guide/avatar-standin.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/avatar/yui-standin.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/visual/overlay-renderer.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/page-handoff.js?v={{ static_asset_version }}"></script>
@@ -487,12 +483,52 @@
     <script>
     (function() {
         'use strict';
+        var pngtuberHiddenForGameWindow = false;
+        function applyPngtuberGameWindowState(paused) {
+            var manager = window.pngtuberManager;
+            if (!manager) return;
+            if (paused) {
+                var container = document.getElementById('pngtuber-container');
+                var visible = container && container.style.display !== 'none' && !container.classList.contains('hidden');
+                if (visible && typeof manager.hide === 'function') {
+                    try {
+                        manager.hide();
+                        pngtuberHiddenForGameWindow = true;
+                    } catch (_) {}
+                }
+                return;
+            }
+            if (pngtuberHiddenForGameWindow && typeof manager.show === 'function') {
+                try {
+                    manager.show();
+                    pngtuberHiddenForGameWindow = false;
+                } catch (_) {}
+            }
+        }
+        function applyGameWindowRenderingState(paused) {
+            var managers = [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager
+            ];
+            var method = paused ? 'pauseRendering' : 'resumeRendering';
+            managers.forEach(function(manager) {
+                if (manager && typeof manager[method] === 'function') {
+                    try { manager[method](); } catch (_) {}
+                }
+            });
+            applyPngtuberGameWindowState(paused);
+        }
         function applyGameWindowState(action) {
             if (!document.body || !document.body.classList) return;
             if (action === 'opened') {
+                applyGameWindowRenderingState(true);
                 document.body.classList.add('neko-game-active');
             } else if (action === 'closed') {
                 document.body.classList.remove('neko-game-active');
+                if (!window.__nekoPetInteracting__) {
+                    applyGameWindowRenderingState(false);
+                }
             }
         }
         window.addEventListener('neko-game-window-state-change', function(ev) {

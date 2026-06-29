@@ -62,6 +62,29 @@ emotion_pattern = re.compile('<(.*?)>')
 async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
+        # Optional optimization hint: the cheap pre-gate signal the master-emotion
+        # call produced at input-time, matched to THIS turn's latest user message.
+        # It must NEVER block or abort the publish — wrapped in its own try so any
+        # lazy-import/read failure degrades to None (the agent gate then fails open
+        # and runs its assessment). turn_end also never blocks on the emotion call,
+        # so this only reads an already-cached value. Cache miss / disabled / stale
+        # (different turn) / no-signal → None.
+        external_intent = None
+        try:
+            from main_logic.activity.master_emotion import gate_signal_for
+            _latest_user_msg = next(
+                (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
+                None,
+            )
+            # Skip the gate hint when the latest user turn carries attachments:
+            # the actionable intent may live in the image, which the text-only
+            # signal never saw → leave external_intent None so the agent fails open
+            # and assesses the turn (never drop an image-driven task).
+            if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
+                _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
+                external_intent = gate_signal_for(lanlan_name, _latest_user_text)
+        except Exception:
+            external_intent = None
         sent = await publish_analyze_request_reliably(
             lanlan_name=lanlan_name,
             trigger=trigger,
@@ -69,6 +92,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
+            external_intent=external_intent,
         )
         if sent:
             logger.debug(
@@ -110,6 +134,7 @@ from main_logic.mirror_meta import (
 )
 
 _USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
+AVATAR_DROP_SOURCE = "avatar-drop"
 
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
@@ -206,19 +231,96 @@ def _should_persist_avatar_interaction_memory(
     return True
 
 
+def _iter_source_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        source = value.strip()
+        return [source] if source else []
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_iter_source_values(item))
+        return values
+    return []
+
+
+def _message_has_source(message: dict, source: str) -> bool:
+    if not isinstance(message, dict):
+        return False
+    expected = str(source or "").strip()
+    if not expected:
+        return False
+
+    if expected in _iter_source_values(message.get("source")):
+        return True
+
+    for metadata_key in ("metadata", "meta"):
+        metadata = message.get(metadata_key)
+        if not isinstance(metadata, dict):
+            continue
+        if expected in _iter_source_values(metadata.get("source")):
+            return True
+        if expected in _iter_source_values(metadata.get("sources")):
+            return True
+
+    attachments = message.get("attachments")
+    if isinstance(attachments, list):
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            if expected in _iter_source_values(attachment.get("source")):
+                return True
+            if expected == AVATAR_DROP_SOURCE and str(attachment.get("input_type") or "") == "avatar_drop_image":
+                return True
+
+    return False
+
+
+def _latest_user_message_has_source(messages: list[dict], source: str) -> bool:
+    for message in reversed(messages or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return _message_has_source(message, source)
+    return False
+
+
+def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str]) -> bool:
+    user_text = str(text or "")
+    if not user_text:
+        sources.clear()
+        return False
+
+    item = {'role': 'user', 'content': [{"type": "text", "text": user_text}]}
+    normalized_sources = sorted({source for source in sources if source})
+    if normalized_sources:
+        item["metadata"] = {"sources": normalized_sources}
+        if len(normalized_sources) == 1:
+            item["source"] = normalized_sources[0]
+    chat_history.append(item)
+    sources.clear()
+    return True
+
+
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
     attachments = []
     for raw in pending_user_images or []:
+        input_type = ""
+        source = ""
         if isinstance(raw, dict):
             url = str(raw.get("data") or raw.get("url") or "").strip()
+            input_type = str(raw.get("input_type") or "").strip()
+            source = str(raw.get("source") or "").strip()
         else:
             url = str(raw or "").strip()
         if not url:
             continue
-        attachments.append({
+        attachment = {
             "type": "image_url",
             "url": url,
-        })
+        }
+        if input_type:
+            attachment["input_type"] = input_type
+        if source:
+            attachment["source"] = source
+        attachments.append(attachment)
     return attachments
 
 
@@ -227,6 +329,8 @@ def _append_pending_user_image(
     data: object,
     request_id: object,
     input_type: object = None,
+    *,
+    source: object = None,
 ) -> bool:
     """Append a real user image entry and return whether one was queued.
 
@@ -241,6 +345,9 @@ def _append_pending_user_image(
     }
     if input_type:
         entry["input_type"] = input_type
+    source_value = str(source or "").strip()
+    if source_value:
+        entry["source"] = source_value
     pending_user_images.append(entry)
     if len(pending_user_images) > PENDING_USER_IMAGES_MAX:
         del pending_user_images[:-PENDING_USER_IMAGES_MAX]
@@ -323,7 +430,12 @@ def _build_recent_analyze_messages(
         txt = str(txt or '')
         if txt == '':
             continue
-        recent.append({'role': item.get('role'), 'content': txt})
+        recent_item = {'role': item.get('role'), 'content': txt}
+        if item.get("source"):
+            recent_item["source"] = item.get("source")
+        if isinstance(item.get("metadata"), dict) and item.get("metadata"):
+            recent_item["metadata"] = item.get("metadata").copy()
+        recent.append(recent_item)
         if item.get('role') == 'user':
             last_user_idx = len(recent) - 1
             last_user_source_idx = source_idx
@@ -665,6 +777,7 @@ async def run_sync_connector(
         )
 
     user_input_cache = ''
+    user_input_sources: set[str] = set()
     text_output_cache = ''  # lanlan的当前消息
     text_output_request_id = None
     current_turn = 'user'
@@ -703,7 +816,7 @@ async def run_sync_connector(
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
-                                    chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
                                     user_input_cache = ''
                                 current_turn = 'assistant'
                                 text_output_request_id = message["data"].get("request_id")
@@ -745,6 +858,14 @@ async def run_sync_connector(
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
+                            for source_value in _iter_source_values(message["data"].get("source")):
+                                user_input_sources.add(source_value)
+                            transcript_metadata = message["data"].get("metadata")
+                            if isinstance(transcript_metadata, dict):
+                                for source_value in _iter_source_values(transcript_metadata.get("source")):
+                                    user_input_sources.add(source_value)
+                                for source_value in _iter_source_values(transcript_metadata.get("sources")):
+                                    user_input_sources.add(source_value)
                             if user_input_cache == '':
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
                             user_input_cache += data
@@ -769,6 +890,7 @@ async def run_sync_connector(
                                 data,
                                 message["data"].get("request_id") or "",
                                 input_type,
+                                source=message["data"].get("source"),
                             )
                             if not appended_image and message["data"].get("has_image"):
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})
@@ -795,7 +917,7 @@ async def run_sync_connector(
                                 
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
-                                    chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
                                     user_input_cache = ''
                                 
                                 # 再处理未完成的输出缓存（如果有）
@@ -1006,13 +1128,20 @@ async def run_sync_connector(
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
+                                        latest_user_is_avatar_drop = _latest_user_message_has_source(
+                                            recent,
+                                            AVATAR_DROP_SOURCE,
+                                        )
                                         logger.info(
                                             f"[{lanlan_name}] turn_end analyze check: "
                                             f"history={len(chat_history)} recent={len(recent)} "
                                             f"has_user={has_user} had_input={had_user_input_this_turn} "
-                                            f"agent_callback_turn={is_agent_callback_turn_end}"
+                                            f"agent_callback_turn={is_agent_callback_turn_end} "
+                                            f"avatar_drop_turn={latest_user_is_avatar_drop}"
                                         )
-                                        if recent and not is_agent_callback_turn_end:
+                                        if recent and has_user and latest_user_is_avatar_drop:
+                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop turn_end), messages={len(recent)}")
+                                        elif recent and not is_agent_callback_turn_end:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
@@ -1076,7 +1205,7 @@ async def run_sync_connector(
                                 
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
-                                    chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
                                     user_input_cache = ''
                                 
                                 # 再处理未完成的输出缓存（如果有）
@@ -1105,7 +1234,13 @@ async def run_sync_connector(
                                             allow_attach_to_last_user=had_user_input_this_turn,
                                         )
                                         has_user = any(m.get('role') == 'user' for m in recent)
-                                        if recent and has_user:
+                                        latest_user_is_avatar_drop = _latest_user_message_has_source(
+                                            recent,
+                                            AVATAR_DROP_SOURCE,
+                                        )
+                                        if recent and has_user and latest_user_is_avatar_drop:
+                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop session_end), messages={len(recent)}")
+                                        elif recent and has_user:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="session_end",

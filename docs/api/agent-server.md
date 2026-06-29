@@ -47,12 +47,15 @@ Published when the main server detects an actionable conversation context.
 
 ## Execution adapters
 
-The agent server uses three adapters for task execution:
+The agent server uses the following execution adapters for task execution:
 
 | Adapter | Module | Capabilities |
 |---------|--------|-------------|
-| MCP Client | `brain/mcp_client.py` | External tool calls via Model Context Protocol |
 | Computer Use | `brain/computer_use.py` | Screenshot analysis, mouse/keyboard automation |
 | Browser Use | `brain/browser_use_adapter.py` | Web browsing, form filling, content extraction |
+| OpenClaw | `brain/openclaw_adapter.py` | Delegates a task to the OpenClaw standalone agent channel |
+| OpenFang | `brain/openfang_adapter.py` | Delegates a task to the OpenFang standalone agent channel |
+
+MCP (Model Context Protocol) tool calls have been removed from the `brain/` layer and are now provided by the user-installable plugin `plugin/plugins/mcp_adapter/` (`MCPClient` / `MCPPluginInvoker`).
 
 See [Agent System](/architecture/agent-system) for the detailed architecture.

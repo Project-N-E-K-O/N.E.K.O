@@ -15,7 +15,8 @@
 
 import sys, os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _repo_root not in sys.path:
+# Force project root to sys.path[0] — see agent_server.py top for rationale.
+if sys.path[0:1] != [_repo_root]:
     sys.path.insert(0, _repo_root)
 
 # Wire DI bindings explicitly — direct script invocation

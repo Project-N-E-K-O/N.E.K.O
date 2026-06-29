@@ -21,17 +21,17 @@ N.E.K.O. runs as multiple cooperating servers. At minimum, you need the **main s
 
 ```bash
 # Terminal 1 — Memory server
-uv run python memory_server.py
+uv run python app/memory_server.py
 
 # Terminal 2 — Main server
-uv run python main_server.py
+uv run python app/main_server.py
 ```
 
 Optionally, start the agent server for background task execution:
 
 ```bash
 # Terminal 3 — Agent server (optional)
-uv run python agent_server.py
+uv run python app/agent_server.py
 ```
 
 ## Configure API keys

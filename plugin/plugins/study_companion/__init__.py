@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime
 import json
 import math
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 import time
 from typing import Any
@@ -20,8 +22,10 @@ from plugin.sdk.plugin import (
     Err,
     NekoPluginBase,
     Ok,
+    OsActivitySnapshot,
     SdkError,
     custom_event,
+    get_os_activity_snapshot,
     lifecycle,
     neko_plugin,
     plugin_entry,
@@ -43,12 +47,13 @@ from .awareness_buffer import ActivityBuffer
 from .checkin_manager import CheckinManager
 from ._event_bus import StudyEvent, StudyEventBus
 from .pomodoro_timer import PomodoroTimer
-from .screen_classifier import classify_screen_from_ocr
+from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
+    ActivitySnapshot,
     ActivitySummary,
     StudyConfig,
     StudyState,
@@ -81,10 +86,25 @@ from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
 from .tutor_llm_agent import TutorLLMAgent
 from .tutor_llm_agent import diagnostic_code_for_exception
-from .ui_api import build_open_ui_payload
+from .ui_api import STUDY_PANEL_SURFACE_ID, build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_contracts import (
+    VOICE_TRANSCRIPT_EVENT_ID,
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+    voice_transcript_cancel_response,
+    voice_transcript_noop,
+    voice_transcript_prime_context,
+)
 from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
+
+
+_OS_CATEGORY_TO_APP_TYPE: dict[str, str] = {
+    "gaming": "game",
+    "work": "work",
+    "entertainment": "entertainment",
+    "communication": "communication",
+}
 
 
 def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
@@ -122,9 +142,56 @@ def _register_install_routes() -> None:
     )
 
 
+_USER_PLUGIN_SERVER_DEFAULT_PORT = 48916
+_LOCALHOST = "127.0.0.1"
+
+
 def _static_plugin_ui_url(*, plugin_id: str, port: str) -> str:
     safe_plugin_id = quote(plugin_id, safe="")
     return f"http://127.0.0.1:{port}/plugin/{safe_plugin_id}/ui/"
+
+
+def _coerce_local_port(value: object, *, default: int) -> str:
+    raw = str(value or default).strip()
+    try:
+        port_num = int(raw)
+    except ValueError:
+        port_num = default
+    if not (1 <= port_num <= 65535):
+        port_num = default
+    return str(port_num)
+
+
+def _plugin_manager_base_url() -> str:
+    configured_url = str(
+        os.getenv("NEKO_STUDY_COMPANION_PANEL_URL")
+        or os.getenv("NEKO_PLUGIN_MANAGER_URL")
+        or os.getenv("NEKO_PLUGIN_MANAGER_BASE_URL")
+        or ""
+    ).strip()
+    if configured_url:
+        return configured_url.rstrip("/")
+
+    backend_port = _coerce_local_port(
+        os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(_USER_PLUGIN_SERVER_DEFAULT_PORT)),
+        default=_USER_PLUGIN_SERVER_DEFAULT_PORT,
+    )
+    return f"http://{_LOCALHOST}:{backend_port}"
+
+
+def _plugin_manager_study_panel_url(*, plugin_id: str) -> str:
+    safe_plugin_id = quote(plugin_id, safe="")
+    base_url = _plugin_manager_base_url()
+    if base_url.endswith("/ui/plugins"):
+        base_url = base_url[: -len("/ui/plugins")]
+    elif base_url.endswith("/ui"):
+        base_url = base_url[: -len("/ui")]
+    return f"{base_url}/plugin/{safe_plugin_id}/ui/"
+
+
+def _auto_open_ui_disabled_by_env() -> bool:
+    value = str(os.getenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 try:
@@ -216,6 +283,7 @@ class StudyCompanionPlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
+        self._targeted_context_lock = threading.Lock()
         self._install_in_progress = False
         self._rapidocr_models_in_progress = False
         self._cfg = StudyConfig()
@@ -252,7 +320,8 @@ class StudyCompanionPlugin(
         self._awareness_task: asyncio.Task[None] | None = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
-        self._voice_filter = VoiceFilter()
+        self._consecutive_os_read_failures = 0
+        self._voice_filter = VoiceFilter(logger=self.logger)
         self._review_due_task: asyncio.Task[None] | None = None
         self._review_due_payload_future: asyncio.Future[dict[str, Any]] | None = None
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
@@ -270,7 +339,8 @@ class StudyCompanionPlugin(
             raw = await self.config.dump(timeout=5.0)
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
             self._voice_filter = VoiceFilter(
-                plugin_config=raw if isinstance(raw, dict) else {}
+                plugin_config=raw if isinstance(raw, dict) else {},
+                logger=self.logger,
             )
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
@@ -343,7 +413,7 @@ class StudyCompanionPlugin(
                     {
                         "id": "open_ui",
                         "kind": "ui",
-                        "target": f"/plugin/{self.plugin_id}/ui/",
+                        "target": f"/plugin/{quote(self.plugin_id, safe='')}/ui/",
                         "open_in": "new_tab",
                     }
                 ]
@@ -370,17 +440,11 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _auto_open_ui_if_enabled(self) -> None:
-        if not self._cfg.auto_open_ui:
+        if not bool(self._cfg.auto_open_ui):
             return
-        raw_port = str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916") or "48916").strip()
-        try:
-            port_num = int(raw_port)
-        except ValueError:
-            port_num = 48916
-        if not (1 <= port_num <= 65535):
-            port_num = 48916
-        port = str(port_num)
-        url = _static_plugin_ui_url(plugin_id=self.plugin_id, port=port)
+        if _auto_open_ui_disabled_by_env():
+            return
+        url = _plugin_manager_study_panel_url(plugin_id=self.plugin_id)
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(_open_url_in_browser, url),
@@ -501,6 +565,7 @@ class StudyCompanionPlugin(
         )
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
+        self._consecutive_os_read_failures = 0
         self._awareness_task = asyncio.create_task(self._run_awareness_loop())
         self._awareness_task.add_done_callback(self._on_awareness_task_done)
 
@@ -509,6 +574,7 @@ class StudyCompanionPlugin(
         self._buffer = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
+        self._consecutive_os_read_failures = 0
         if task is not None and not task.done():
             task.cancel()
 
@@ -525,7 +591,8 @@ class StudyCompanionPlugin(
             self.logger.warning("study awareness task cleanup failed: {}", exc)
 
     def is_awareness_active(self) -> bool:
-        return self._buffer is not None
+        task = self._awareness_task
+        return self._buffer is not None and task is not None and not task.done()
 
     def _start_command_worker(self) -> None:
         if self._event_bus is None:
@@ -742,31 +809,156 @@ class StudyCompanionPlugin(
             return max(base, 15.0)
         return base
 
+    async def _read_awareness_activity_snapshot(
+        self,
+        *,
+        now: float,
+    ) -> OsActivitySnapshot | None:
+        if not self._cfg.awareness.os_signals_enabled:
+            return None
+        return await get_os_activity_snapshot(self.plugin_id, now=now)
+
+    async def _read_awareness_os_activity(self, *, now: float):
+        activity_snap = None
+        foreground_category = None
+        os_signals_available = False
+        if not self._cfg.awareness.os_signals_enabled:
+            return activity_snap, foreground_category, os_signals_available
+        try:
+            activity_snap = await self._read_awareness_activity_snapshot(now=now)
+            os_signals_available = activity_snap is not None and activity_snap.os_signals_available
+            if os_signals_available:
+                foreground_category = activity_snap.foreground_category
+        except Exception:
+            fails = self._consecutive_os_read_failures + 1
+            self._consecutive_os_read_failures = fails
+            log = self.logger.warning if fails <= 3 else self.logger.error
+            log(
+                "study awareness activity snapshot failed (consecutive={})",
+                fails,
+                exc_info=True,
+            )
+        else:
+            self._consecutive_os_read_failures = 0
+        return activity_snap, foreground_category, os_signals_available
+
+    async def _record_private_awareness_activity(
+        self,
+        buffer: ActivityBuffer,
+        *,
+        timestamp: float,
+    ) -> None:
+        await buffer.add(
+            ActivitySnapshot(
+                timestamp=timestamp,
+                first_seen_at=timestamp,
+                app_type="private",
+                activity_type="private",
+                classify_method="os_signal",
+                ocr_text_snippet="",
+                window_title="",
+                has_content_change=False,
+            )
+        )
+        self._awareness_idle_ticks += 1
+
+    async def _capture_awareness_lightweight(self, pipeline: Any):
+        try:
+            return await asyncio.to_thread(pipeline.capture_lightweight)
+        except Exception:
+            self.logger.warning("awareness_tick capture failed", exc_info=True)
+            return None
+
+    @staticmethod
+    def _classify_awareness_snapshot(snapshot: Any, foreground_category: str | None):
+        if not hasattr(snapshot, "app_type"):
+            return snapshot
+        mapped = _OS_CATEGORY_TO_APP_TYPE.get(str(foreground_category or ""))
+        if mapped is not None:
+            return replace(snapshot, app_type=mapped)
+        if getattr(snapshot, "app_type", "") != "unknown":
+            return snapshot
+        return replace(
+            snapshot,
+            app_type=classify_app_from_title(
+                getattr(snapshot, "window_title", ""),
+                default="unknown",
+            ),
+        )
+
+    def _observe_awareness_supervision(
+        self,
+        snapshot: Any,
+        *,
+        activity_snap: Any | None,
+        os_signals_available: bool,
+        foreground_category: str | None,
+    ) -> None:
+        if self._supervision is None:
+            return
+        supervision_category = foreground_category
+        if supervision_category == "own_app" or not self._cfg.awareness.distraction_detection:
+            supervision_category = None
+        self._supervision.observe_activity(
+            ocr_text=getattr(snapshot, "ocr_text_snippet", ""),
+            sensor_available=getattr(snapshot, "status", "") in {"ok", "empty"},
+            idle_seconds=(
+                getattr(activity_snap, "system_idle_seconds", None)
+                if activity_snap is not None and os_signals_available
+                else None
+            ),
+            foreground_category=supervision_category,
+        )
+
+    async def _record_awareness_snapshot(
+        self,
+        buffer: ActivityBuffer,
+        snapshot: Any,
+    ) -> None:
+        activity = snapshot.to_activity_snapshot()
+        if activity is None:
+            self._awareness_idle_ticks += 1
+            return
+        await buffer.add(activity)
+        if activity.app_type in ("other", "unknown") and activity.activity_type in (
+            "idle",
+            "",
+        ):
+            self._awareness_idle_ticks += 1
+        else:
+            self._awareness_idle_ticks = 0
+
     async def awareness_tick(self) -> None:
         buffer = self._buffer
         pipeline = self._ocr_pipeline
         if buffer is None or pipeline is None:
             return
-        try:
-            snapshot = await asyncio.to_thread(pipeline.capture_lightweight)
-        except Exception:
-            self._awareness_idle_ticks += 1
-            self.logger.warning("awareness_tick capture failed", exc_info=True)
+
+        ts = time.time()
+        activity_snap, foreground_category, os_signals_available = (
+            await self._read_awareness_os_activity(now=ts)
+        )
+        if activity_snap is not None and (
+            getattr(activity_snap, "privacy_state", "") == "private"
+            or foreground_category == "private"
+        ):
+            await self._record_private_awareness_activity(buffer, timestamp=ts)
             return
+
+        snapshot = await self._capture_awareness_lightweight(pipeline)
 
         if snapshot is None or snapshot.status == "capture_failed":
             self._awareness_idle_ticks += 1
             return
 
-        activity = snapshot.to_activity_snapshot()
-        if activity is not None:
-            await buffer.add(activity)
-            if activity.app_type == "other" and activity.activity_type in ("idle", ""):
-                self._awareness_idle_ticks += 1
-            else:
-                self._awareness_idle_ticks = 0
-        else:
-            self._awareness_idle_ticks += 1
+        snapshot = self._classify_awareness_snapshot(snapshot, foreground_category)
+        self._observe_awareness_supervision(
+            snapshot,
+            activity_snap=activity_snap,
+            os_signals_available=os_signals_available,
+            foreground_category=foreground_category,
+        )
+        await self._record_awareness_snapshot(buffer, snapshot)
 
         if self._should_push_context():
             summary = await buffer.summarize()
@@ -781,22 +973,29 @@ class StudyCompanionPlugin(
 
     async def _push_awareness_context(self, summary: ActivitySummary) -> None:
         mode = self._cfg.awareness.push_to_llm_mode
+        try:
+            self.push_message(
+                visibility=[],
+                ai_behavior="read" if mode == "read" else "respond",
+                parts=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "[环境感知] "
+                            + json.dumps(
+                                self._summary_for_llm(summary),
+                                ensure_ascii=False,
+                            )
+                        ),
+                    }
+                ],
+                source="awareness",
+                priority=0,
+            )
+        except Exception:
+            self.logger.warning("study awareness context push failed", exc_info=True)
+            return
         self._last_awareness_push_at = time.monotonic()
-        self.push_message(
-            visibility=[],
-            ai_behavior="read" if mode == "read" else "respond",
-            parts=[
-                {
-                    "type": "text",
-                    "text": (
-                        "[环境感知] "
-                        + json.dumps(self._summary_for_llm(summary), ensure_ascii=False)
-                    ),
-                }
-            ],
-            source="awareness",
-            priority=0,
-        )
 
     @staticmethod
     def _summary_for_llm(
@@ -966,8 +1165,8 @@ class StudyCompanionPlugin(
         return dict(self._state.last_screen_classification)
 
     @custom_event(
-        event_type="voice_transcript",
-        id="handle_transcript",
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        id=VOICE_TRANSCRIPT_EVENT_ID,
         name="Handle study voice transcript",
         description="Filter realtime study voice transcripts and return a voice-session action.",
         input_schema={
@@ -994,7 +1193,12 @@ class StudyCompanionPlugin(
             if original_method and original_method != reason:
                 filter_payload["source_method"] = original_method
             filter_payload["method"] = reason
-            return Ok({"action": "noop", "reason": reason, "filter": filter_payload})
+            return Ok(
+                voice_transcript_noop(
+                    reason,
+                    filter=filter_payload,
+                )
+            )
 
         text = str(transcript or "").strip()
         if not text:
@@ -1038,7 +1242,11 @@ class StudyCompanionPlugin(
         if filter_result is None:
             return voice_noop("not_matched")
         if not bool(filter_result.get("should_relay")):
-            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+            return Ok(
+                voice_transcript_cancel_response(
+                    filter_payload=filter_result,
+                )
+            )
 
         state_snapshot = SimpleNamespace(**state_snapshot_payload)
         context_text = build_context_for_catgirl(
@@ -1050,13 +1258,12 @@ class StudyCompanionPlugin(
         if not context_text:
             return voice_noop("empty_context", filter_result)
         return Ok(
-            {
-                "action": "prime_context",
-                "context": context_text,
-                "skipped": True,
-                "filter": dict(filter_result),
-                "lanlan_name": str(lanlan_name or ""),
-            }
+            voice_transcript_prime_context(
+                context_text,
+                skipped=True,
+                filter_payload=filter_result,
+                lanlan_name=str(lanlan_name or ""),
+            )
         )
 
     async def _update_screen_classification(

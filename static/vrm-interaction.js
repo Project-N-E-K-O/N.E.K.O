@@ -149,7 +149,7 @@ class VRMInteraction {
         const isYuiGuideDragLocked = () => {
             const body = document.body;
             return !!(body && (
-                body.classList.contains('yui-guide-home-driver-hidden')
+                body.classList.contains('yui-guide-home-ui-suppressed')
                 || body.classList.contains('yui-taking-over')
             ));
         };
@@ -397,6 +397,10 @@ class VRMInteraction {
             // 只有当事件发生在 canvas 或其子元素上时，才拦截事件
             if (!isCanvasOrDescendant) {
                 return; // 不拦截，允许事件继续传播到聊天区域
+            }
+
+            if (!this._hitTestModel(e.clientX, e.clientY)) {
+                return;
             }
 
             e.preventDefault();

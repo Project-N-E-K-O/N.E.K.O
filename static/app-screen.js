@@ -635,6 +635,31 @@
     }
     mod.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
 
+    // ======================== buildStreamDataMessage ========================
+    /**
+     * 构造屏幕/相机分享的 stream_data 消息，并在适用时附带 Avatar 位置元数据。
+     * 与主动搭话截图（app-proactive.js）口径保持一致：仅桌面/全屏分享叠加注解，
+     * 窗口分享 / 移动相机不含 Avatar（captureType 为 null → 不附带）。
+     */
+    function buildStreamDataMessage(dataUrl, input_type) {
+        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
+        // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
+        if (input_type === 'screen') {
+            // 有前端流时按流/源判定；无前端流即 pyautogui 全屏兜底（后端截整屏），
+            // 此时忽略可能残留的 selectedScreenSourceId（窗口源捕获失败才会进兜底，
+            // 若仍读旧的 window:* 源会被判为 null 而漏标）
+            var captureType = S.screenCaptureStream
+                ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+                : 'screen';
+            var avatarPos = getAvatarScreenPosition(captureType);
+            if (avatarPos) {
+                msg.avatar_position = avatarPos;
+            }
+        }
+        return msg;
+    }
+    mod.buildStreamDataMessage = buildStreamDataMessage;
+
     // ======================== startScreenVideoStreaming ========================
     function startScreenVideoStreaming(stream, input_type) {
         // 更新最后使用时间并调度闲置检查
@@ -663,11 +688,7 @@
             S.videoSenderInterval = setInterval(function () {
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: frame.dataUrl,
-                        input_type: input_type,
-                    }));
+                    S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
                     if (stream === S.screenCaptureStream) {
@@ -919,7 +940,7 @@
 
                 // 立即发送第一帧
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({ action: 'stream_data', data: backendTest, input_type: 'screen' }));
+                    S.socket.send(JSON.stringify(buildStreamDataMessage(backendTest, 'screen')));
                 }
 
                 // 复用 videoSenderInterval，stopScreening() 可统一清理
@@ -928,7 +949,7 @@
                         var r = await fetchBackendScreenshot();
                         var frame = r.dataUrl;
                         if (frame && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                            S.socket.send(JSON.stringify({ action: 'stream_data', data: frame, input_type: 'screen' }));
+                            S.socket.send(JSON.stringify(buildStreamDataMessage(frame, 'screen')));
                         }
                     } catch (e) {
                         console.warn('[屏幕源] 后端轮询帧失败:', e);

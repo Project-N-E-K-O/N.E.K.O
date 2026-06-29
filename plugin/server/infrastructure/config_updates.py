@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -22,6 +23,14 @@ from plugin.server.infrastructure.config_toml import (
 logger = get_logger("server.infrastructure.config_updates")
 
 _CONFIG_UPDATE_RUNTIME_ERRORS = (OSError, RuntimeError, ValueError, TypeError)
+
+
+@contextmanager
+def _config_write_lock(config_path: Path) -> Iterator[None]:
+    lock_path = config_path.with_name(f"{config_path.name}.lock")
+    with lock_path.open("a+b") as lock_file:
+        with file_lock(lock_file):
+            yield
 
 
 def _ensure_string_key_mapping(value: object, *, field: str) -> dict[str, object]:
@@ -171,29 +180,30 @@ def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:
-            with config_path.open("r+b") as file_obj:
-                stage = "lock"
-                with file_lock(file_obj):
-                    stage = "read"
-                    current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
-                    stage = "validate"
-                    validate_protected_fields_unchanged(
-                        current_config=current_config,
-                        new_config=normalized_new_config,
-                    )
-                    stage = "fill_protected_fields"
-                    completed_config = _fill_plugin_protected_fields(
-                        current_config=current_config,
-                        incoming_config=normalized_new_config,
-                    )
-                    stage = "serialize"
-                    payload = dump_toml_bytes(completed_config)
-                    stage = "atomic_write"
-                    atomic_write_bytes(
-                        target=config_path,
-                        payload=payload,
-                        prefix=".plugin_config_",
-                    )
+            with _config_write_lock(config_path):
+                with config_path.open("r+b") as file_obj:
+                    stage = "lock"
+                    with file_lock(file_obj):
+                        stage = "read"
+                        current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
+                        stage = "validate"
+                        validate_protected_fields_unchanged(
+                            current_config=current_config,
+                            new_config=normalized_new_config,
+                        )
+                        stage = "fill_protected_fields"
+                        completed_config = _fill_plugin_protected_fields(
+                            current_config=current_config,
+                            incoming_config=normalized_new_config,
+                        )
+                        stage = "serialize"
+                        payload = dump_toml_bytes(completed_config)
+                stage = "atomic_write"
+                atomic_write_bytes(
+                    target=config_path,
+                    payload=payload,
+                    prefix=".plugin_config_",
+                )
             _log_config_update_success(operation=operation, plugin_id=plugin_id, config_path=config_path)
         except HTTPException as exc:
             _log_config_update_failure(
@@ -265,26 +275,27 @@ def update_plugin_config(plugin_id: str, updates: dict[str, object]) -> dict[str
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:
-            with config_path.open("r+b") as file_obj:
-                stage = "lock"
-                with file_lock(file_obj):
-                    stage = "read"
-                    current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
-                    stage = "merge"
-                    merged = deep_merge(current_config, normalized_updates)
-                    stage = "validate"
-                    validate_protected_fields_unchanged(
-                        current_config=current_config,
-                        new_config=merged,
-                    )
-                    stage = "serialize"
-                    payload = dump_toml_bytes(merged)
-                    stage = "atomic_write"
-                    atomic_write_bytes(
-                        target=config_path,
-                        payload=payload,
-                        prefix=".plugin_config_",
-                    )
+            with _config_write_lock(config_path):
+                with config_path.open("r+b") as file_obj:
+                    stage = "lock"
+                    with file_lock(file_obj):
+                        stage = "read"
+                        current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
+                        stage = "merge"
+                        merged = deep_merge(current_config, normalized_updates)
+                        stage = "validate"
+                        validate_protected_fields_unchanged(
+                            current_config=current_config,
+                            new_config=merged,
+                        )
+                        stage = "serialize"
+                        payload = dump_toml_bytes(merged)
+                stage = "atomic_write"
+                atomic_write_bytes(
+                    target=config_path,
+                    payload=payload,
+                    prefix=".plugin_config_",
+                )
             _log_config_update_success(operation=operation, plugin_id=plugin_id, config_path=config_path)
         except HTTPException as exc:
             _log_config_update_failure(
@@ -359,22 +370,23 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> dict[str, objec
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:
-            with config_path.open("r+b") as file_obj:
-                stage = "lock"
-                with file_lock(file_obj):
-                    stage = "read"
-                    current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
-                    stage = "validate"
-                    validate_protected_fields_unchanged(
-                        current_config=current_config,
-                        new_config=parsed_new,
-                    )
-                    stage = "atomic_write"
-                    atomic_write_text(
-                        target=config_path,
-                        text=toml_text,
-                        prefix=".plugin_config_",
-                    )
+            with _config_write_lock(config_path):
+                with config_path.open("r+b") as file_obj:
+                    stage = "lock"
+                    with file_lock(file_obj):
+                        stage = "read"
+                        current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
+                        stage = "validate"
+                        validate_protected_fields_unchanged(
+                            current_config=current_config,
+                            new_config=parsed_new,
+                        )
+                stage = "atomic_write"
+                atomic_write_text(
+                    target=config_path,
+                    text=toml_text,
+                    prefix=".plugin_config_",
+                )
             _log_config_update_success(operation=operation, plugin_id=plugin_id, config_path=config_path)
         except HTTPException as exc:
             _log_config_update_failure(

@@ -17,7 +17,7 @@ Browser                    Main Server                   LLM Provider
   │──── stream_data ──────────>│──── send_audio ─────────────>│
   │     {audio chunks}         │                              │
   │                            │<──── on_text_delta ──────────│
-  │<──── {type: "text"} ──────│                              │
+  │<─ {type: "gemini_response"} │                              │
   │                            │<──── on_audio_delta ─────────│
   │<──── {type: "audio"} ─────│     (resampled 24→48kHz)     │
   │                            │                              │
@@ -41,7 +41,7 @@ Browser                    Main Server                   LLM Provider
 **サーバー → クライアント（JSONテキストフレーム）：**
 
 ```json
-{ "type": "text", "text": "Hi there!" }
+{ "type": "gemini_response", "text": "Hi there!" }
 { "type": "audio", "audio_data": "<base64 PCM 48kHz>" }
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
@@ -66,14 +66,16 @@ Browser ──── GET /api/characters/ ────> FastAPI Router
 ```
 LLMSessionManager                  Agent Server
   │                                    │
-  │── ZMQ PUB (analyze request) ──────>│
+  │── HTTP REST control (:48915) ─────>│   タスクのディスパッチ / ライフサイクル
+  │── ZMQ PUB session events (:48961) >│   Main → Agent（PUB/SUB）
+  │── ZMQ PUSH analyze queue (:48963) >│   Main → Agent（PUSH/PULL）
   │                                    │── Planner: タスクプランを作成
   │                                    │── Executor: アクションを実行
   │                                    │   ├── MCP tool calls
   │                                    │   ├── Computer Use
   │                                    │   └── Browser Use
   │                                    │── Analyzer: 結果を評価
-  │<── ZMQ PUSH (task_result) ────────│
+  │<── ZMQ PUSH task_result (:48962) ──│   Agent → Main（PUSH/PULL）
   │                                    │
   │── 次のLLMターンに注入 ──>         │
 ```

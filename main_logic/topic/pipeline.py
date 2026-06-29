@@ -42,6 +42,7 @@ DeliveryAvailable = Callable[..., bool]
 _MAX_TEXT_TOKENS = 1000
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _TRIGGER_RETRY_DELAY_SECONDS = 60.0
+_CANDIDATE_MATURE_SECONDS = 60.0
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
@@ -440,7 +441,7 @@ class TopicHookPool:
         seen_seq = self._seq.get(name, 0)
         seen_purge_generation = self._purge_generation.get(name, 0)
         if any(item.get("status") == "pending" for item in self._materials.get(name, [])):
-            logger.info("[%s] topic collection deferred: pending material is in delivery phase", name)
+            logger.debug("[%s] topic collection deferred: pending material is in delivery phase", name)
             return
         if not self._signal_store.is_ready(name):
             logger.info(
@@ -526,6 +527,9 @@ class TopicHookPool:
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
                 self._dirty.discard(name)
+                continue
+            current_time = time.time() if now is None else float(now)
+            if current_time - float(last_turn_at) < _CANDIDATE_MATURE_SECONDS:
                 continue
             try:
                 await self.process_now(name, lang=lang)
@@ -647,7 +651,7 @@ class TopicHookPool:
             if current_material.get("status") != "pending":
                 return
             if self._daily_quota_reached(name):
-                logger.info("[%s] topic material trigger waiting: daily quota reached", name)
+                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             if self._topic_was_recently_used(name, current_material):
@@ -669,12 +673,12 @@ class TopicHookPool:
             # prepare a deeper online lead off the user hot path. A later gate
             # close just keeps the prepared material pending for the next retry.
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
             if not self._delivery_available_now(name):
-                logger.info("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
+                logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             delivery_material = deepcopy(current_material)

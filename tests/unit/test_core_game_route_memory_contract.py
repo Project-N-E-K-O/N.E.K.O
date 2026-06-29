@@ -32,12 +32,27 @@ class _FakeState:
     def __init__(self):
         self.preempt_marked = False
         self.events = []
+        self.mode = core_module.CognitionMode.REGULAR
 
     def mark_user_input_preempt(self):
         self.preempt_marked = True
 
     async def fire(self, event, **kwargs):
         self.events.append((event, kwargs))
+
+    async def update_focus(self, *_args, **_kwargs):
+        self.mode = core_module.CognitionMode.REGULAR
+        return self.mode
+
+    async def clear_focus(self):
+        self.mode = core_module.CognitionMode.REGULAR
+
+    def snapshot(self):
+        return {
+            "focus_charge": 0.0,
+            "focus_charge_at": 0.0,
+            "focus_episode_id": None,
+        }
 
 
 class _FakeQueue:
@@ -131,6 +146,11 @@ def _make_manager():
     mgr._magic_command_image_drop_request_order = deque()
     mgr._pending_turn_meta = None
     mgr._current_ai_turn_text = ""
+    mgr._focus_indicator_active = False
+    mgr._focus_thinking_active = False
+    mgr._focus_artifacts_pending = False
+    mgr._focus_artifacts_history_start = None
+    mgr._focus_emotion_reading = None
     mgr._recent_ai_voice_echo_text = ""
     mgr._recent_ai_voice_echo_at = 0.0
     mgr._pending_ai_voice_echo_text = ""
@@ -667,7 +687,12 @@ async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(mo
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "avatar_drop_image", "data": "raw-image", "request_id": "req-img"},
+        {
+            "input_type": "avatar_drop_image",
+            "data": "raw-image",
+            "request_id": "req-img",
+            "source": "avatar-drop",
+        },
     )
 
     mgr.session.stream_image.assert_awaited_once_with("img-b64")
@@ -679,6 +704,32 @@ async def test_text_mode_avatar_drop_image_is_metadata_only_in_analyzer_queue(mo
             "has_image": True,
             "mime_type": "image/jpeg",
             "request_id": "req-img",
+            "source": "avatar-drop",
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_non_voice_transcript_reuse_preserves_avatar_drop_source():
+    """Text-mode Avatar Drop memory summaries must keep their source tag."""
+    mgr = _make_transcript_manager()
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "Handed over: note.txt",
+        is_voice_source=False,
+        source="avatar-drop",
+        metadata={"source": "avatar-drop"},
+    )
+
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "transcript",
+            "data": "Handed over: note.txt",
+            "source": "avatar-drop",
+            "metadata": {"source": "avatar-drop"},
         },
     }]
 
@@ -1078,6 +1129,64 @@ def test_cross_server_avatar_drop_image_queue_skips_metadata_only_entries():
         "request_id": "req-current",
         "input_type": "user_image",
     }]
+
+
+@pytest.mark.unit
+def test_avatar_drop_recent_message_marks_latest_user_for_analyzer_skip():
+    """Avatar Drop handoff turns are chat content, not Agent task requests."""
+    metadata = {"sources": [cross_server_module.AVATAR_DROP_SOURCE]}
+    recent = cross_server_module._build_recent_analyze_messages(
+        [{
+            "role": "user",
+            "content": [{"type": "text", "text": "Handed over: note.txt"}],
+            "source": cross_server_module.AVATAR_DROP_SOURCE,
+            "metadata": metadata,
+        }],
+        [{
+            "data": "data:image/png;base64,current",
+            "request_id": "req-current",
+            "input_type": "avatar_drop_image",
+            "source": cross_server_module.AVATAR_DROP_SOURCE,
+        }],
+        allow_attach_to_last_user=True,
+    )
+
+    assert recent == [{
+        "role": "user",
+        "content": "Handed over: note.txt",
+        "source": cross_server_module.AVATAR_DROP_SOURCE,
+        "metadata": {"sources": [cross_server_module.AVATAR_DROP_SOURCE]},
+        "attachments": [{
+            "type": "image_url",
+            "url": "data:image/png;base64,current",
+            "input_type": "avatar_drop_image",
+            "source": cross_server_module.AVATAR_DROP_SOURCE,
+        }],
+    }]
+    assert recent[0]["metadata"] is not metadata
+    assert cross_server_module._latest_user_message_has_source(
+        recent,
+        cross_server_module.AVATAR_DROP_SOURCE,
+    ) is True
+
+
+@pytest.mark.unit
+def test_avatar_drop_source_on_older_user_message_does_not_skip_latest_normal_user():
+    """Only the latest user turn controls the analyzer skip decision."""
+    recent = [
+        {
+            "role": "user",
+            "content": "Handed over: note.txt",
+            "source": cross_server_module.AVATAR_DROP_SOURCE,
+        },
+        {"role": "assistant", "content": "Got it."},
+        {"role": "user", "content": "Now help me open settings."},
+    ]
+
+    assert cross_server_module._latest_user_message_has_source(
+        recent,
+        cross_server_module.AVATAR_DROP_SOURCE,
+    ) is False
 
 
 @pytest.mark.unit

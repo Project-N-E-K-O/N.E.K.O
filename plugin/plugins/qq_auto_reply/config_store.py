@@ -9,6 +9,7 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 
 class QQAutoReplyConfigStore:
     FILE_NAME = "business_config.json"
+    VALID_REPLY_MODES = {"text", "voice", "both"}
 
     def __init__(self, base_dir: Path):
         self._path = Path(base_dir) / self.FILE_NAME
@@ -62,6 +63,11 @@ class QQAutoReplyConfigStore:
             seen_ids.add(label_id)
         return normalized
 
+    @classmethod
+    def normalize_reply_mode(cls, value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        return mode if mode in cls.VALID_REPLY_MODES else "text"
+
     def default_config(self) -> dict[str, Any]:
         return {
             "onebot_url": "ws://127.0.0.1:3001",
@@ -80,6 +86,7 @@ class QQAutoReplyConfigStore:
             "handler_shutdown_timeout_seconds": 10.0,
             "napcat_directory": "",
             "show_napcat_window": True,
+            "reply_mode": "text",
             "backlog_retention_limit": 200,
             "backlog_summary_threshold": 10,
             "backlog_notify_cooldown_seconds": 900,
@@ -101,6 +108,14 @@ class QQAutoReplyConfigStore:
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
+        reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
+        if reply_mode != "text" or "reply_mode" in payload:
+            merged["reply_mode"] = reply_mode
+        elif payload.get("audio_reply_enabled") is True:
+            merged["reply_mode"] = "voice"
+        else:
+            merged["reply_mode"] = "text"
+        merged.pop("audio_reply_enabled", None)
         return merged
 
     async def create_empty(self) -> dict[str, Any]:
@@ -115,5 +130,7 @@ class QQAutoReplyConfigStore:
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
+            normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
+            normalized.pop("audio_reply_enabled", None)
             await atomic_write_json_async(self._path, normalized)
             return normalized

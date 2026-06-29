@@ -228,7 +228,7 @@ def _topic_proactive_switch_open(lanlan_name: str) -> bool:
         logger.debug("[%s] topic hook proactive switch check failed closed: %s", lanlan_name, exc)
         return False
     if not enabled:
-        logger.info("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
+        logger.debug("[%s] topic hook delivery skipped: proactive chat is disabled", lanlan_name)
     return enabled
 
 

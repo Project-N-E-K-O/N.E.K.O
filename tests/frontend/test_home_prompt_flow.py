@@ -22,6 +22,7 @@ _YUI_DIRECTOR_DEPENDENCIES = (
     "tutorial/visual/overlay-renderer.js",
     "tutorial/yui-guide/overlay.js",
     "tutorial/core/interaction-takeover.js",
+    "tutorial/avatar/yui-standin.js",
     "tutorial/avatar/standin-controller.js",
     "tutorial/visual/spotlight-controller.js",
     "tutorial/visual/ghost-cursor-controller.js",
@@ -224,7 +225,7 @@ def _has_playwright_browser() -> bool:
 
 
 @pytest.mark.frontend
-def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
+def test_yui_intro_activation_targets_compact_chat_input_shell_without_click_whitelist(mock_page: Page):
     _bootstrap_page(
         mock_page,
         script_names=("tutorial/yui-guide/director.js",),
@@ -256,15 +257,17 @@ def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
 
                 const shellDirector = buildDirector('shell');
                 const shell = document.querySelector('#react-chat-window-root .composer-input-shell');
-                window.__activationResults.shell.allowed =
-                    shellDirector.isAllowedTutorialInteractionTarget(shell, new MouseEvent('click'));
-                window.__activationResults.shell.awaiting = shellDirector.awaitingIntroActivation;
+                window.__activationResults.shell.target =
+                    shellDirector.isIntroActivationTarget(shell);
+                window.__activationResults.shell.hasClickWhitelist =
+                    typeof shellDirector.isAllowedTutorialInteractionTarget === 'function';
 
                 const panelDirector = buildDirector('panel');
                 const panel = document.querySelector('#react-chat-window-root .composer-panel');
-                window.__activationResults.panel.allowed =
-                    panelDirector.isAllowedTutorialInteractionTarget(panel, new MouseEvent('click'));
-                window.__activationResults.panel.awaiting = panelDirector.awaitingIntroActivation;
+                window.__activationResults.panel.target =
+                    panelDirector.isIntroActivationTarget(panel);
+                window.__activationResults.panel.hasClickWhitelist =
+                    typeof panelDirector.isAllowedTutorialInteractionTarget === 'function';
             }
         """,
     )
@@ -272,8 +275,8 @@ def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
     result = mock_page.evaluate("window.__activationResults")
 
     assert result == {
-        "shell": {"resolved": True, "allowed": True, "awaiting": False},
-        "panel": {"resolved": True, "allowed": True, "awaiting": False},
+        "shell": {"resolved": False, "target": True, "hasClickWhitelist": False},
+        "panel": {"resolved": False, "target": True, "hasClickWhitelist": False},
     }
 
 
@@ -2576,6 +2579,48 @@ def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
 
 
 @pytest.mark.frontend
+def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_event(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day1');
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day1-complete');
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
 def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
     mock_page: Page,
 ):
@@ -3079,7 +3124,10 @@ def test_avatar_floating_daily_scenes_keep_persistent_cursor_look_at_enabled(
 ):
     _bootstrap_page(
         mock_page,
-        setup_js="window.history.pushState({}, '', '/');",
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = '<button id="live2d-btn-agent" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>';
+        """,
         script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
     )
 
@@ -3296,10 +3344,31 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                 });
                 return true;
             };
+            director.moveCursorToTrackedElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'trackedMove',
+                    id: element && element.id,
+                    durationMs,
+                    exactDuration: !!(options && options.exactDuration),
+                    recheckDelayMs: options && options.recheckDelayMs,
+                    settleDelayMs: options && options.settleDelayMs,
+                });
+                return true;
+            };
+            director.waitForStableElementRect = async (element, timeoutMs) => {
+                calls.push({
+                    type: 'stableRect',
+                    id: element && element.id,
+                    timeoutMs,
+                });
+                return element;
+            };
+            director.isCursorAlignedWithElement = () => true;
             director.cursor = {
                 hasPosition: () => true,
                 showAt: () => {},
                 moveToRect: async () => true,
+                moveToPoint: async () => true,
                 click: (visibleMs) => calls.push({ type: 'click', visibleMs }),
                 wobble: () => calls.push({ type: 'wobble' }),
                 cancel: () => {},
@@ -3404,13 +3473,27 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         {"type": "move", "id": "live2d-btn-agent", "durationMs": 760, "exactDuration": False},
         {"type": "click", "visibleMs": 420},
         {"type": "api:openAgentPanel"},
+        {"type": "stableRect", "id": "live2d-toggle-agent-user-plugin", "timeoutMs": 760},
         {
             "type": "highlight",
             "key": "day6_plugin_side_panel-user-plugin",
             "primaryId": "live2d-toggle-agent-user-plugin",
             "persistentId": None,
         },
-        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 420, "exactDuration": True},
+        {
+            "type": "trackedMove",
+            "id": "live2d-toggle-agent-user-plugin",
+            "durationMs": 420,
+            "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
+        },
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-user-plugin",
+            "primaryId": "live2d-toggle-agent-user-plugin",
+            "persistentId": None,
+        },
         {"type": "click", "visibleMs": 320},
         {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
         {
@@ -3418,6 +3501,12 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "toggleId": "agent-user-plugin",
             "actionId": "management-panel",
         },
+        {
+            "type": "stableRect",
+            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "timeoutMs": 760,
+        },
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
         {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
         {
             "type": "highlight",
@@ -3426,10 +3515,20 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "persistentId": None,
         },
         {
-            "type": "move",
+            "type": "trackedMove",
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
             "durationMs": 420,
             "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
+        },
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
+        {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-management-panel",
+            "primaryId": "",
+            "persistentId": None,
         },
         {"type": "click", "visibleMs": 320},
         {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},
@@ -4745,9 +4844,6 @@ def test_day2_personalization_detail_clicks_character_settings_then_ellipses_sid
                 hasPosition: () => true,
                 runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
                     calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
-                    if (releaseNarration) {
-                        releaseNarration();
-                    }
                     return true;
                 },
                 cancel: () => calls.push({ type: 'cancel' }),
@@ -6027,7 +6123,7 @@ def test_home_spotlight_refresh_does_not_replay_stale_cursor_while_externalized_
 
 
 @pytest.mark.frontend
-def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_externalized_chat_owns_cursor(
+def test_home_petal_update_does_not_replay_stale_cursor_while_externalized_chat_owns_cursor(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -6061,12 +6157,7 @@ def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_external
             director.cursor.showAt(680, 100);
             await new Promise((resolve) => setTimeout(resolve, 0));
             director.overlay.setPcCursorOutputSuppressed(true);
-            director.overlay.showAvatarStandIn({
-                url: '/static/assets/tutorial/avatar-standins/peek-head.png',
-                resource: 'peek-head',
-                position: 'bottom-right',
-                durationMs: 5000,
-            });
+            director.overlay.playPetalTransition({ x: 320, y: 240 }, { durationMs: 500 });
             await new Promise((resolve) => setTimeout(resolve, 0));
             return window.__pcOverlayUpdates.map((update) => update.payload);
         }
@@ -6076,7 +6167,7 @@ def test_home_avatar_stand_in_update_does_not_replay_stale_cursor_while_external
     assert result[0]["cursor"]["visible"] is True
     assert result[0]["cursor"]["x"] == 780
     assert result[0]["cursor"]["y"] == 150
-    assert result[-1]["avatarStandIn"]["resource"] == "peek-head"
+    assert result[-1]["petal"]["durationMs"] == 500
     assert "cursor" not in result[-1]
 
 
@@ -7299,7 +7390,12 @@ def test_managed_scene_cursor_start_uses_previous_scene_anchor_when_position_los
             director.avatarFloatingSceneCursorAnchorPoints = {
                 previous_scene: { x: 680, y: 460 },
             };
-            await director.playManagedScene('next_scene', { source: 'test' });
+            await director.playAvatarFloatingScene({
+                id: 'next_scene',
+                target: '#target',
+                cursorTarget: '#target',
+                cursorAction: 'move',
+            }, 1, 1, 2);
             return calls;
         }
         """
@@ -11209,7 +11305,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
 
 
 @pytest.mark.frontend
-def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
+def test_day1_takeover_operation_uses_round_operation_registry(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -11226,16 +11322,20 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
             director.sceneRunId = 42;
             director.getAgentSwitchSnapshot = async () => ({ agent: false });
             director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
-            director.playManagedScene = async (sceneId, options) => {
-                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
-                events.push('previous:' + String(options && options.previousSceneId || ''));
-                director.sceneRunId += 1;
+            director.runTakeoverKeyboardControlSequence = async (step, performance, runId) => {
+                events.push('keyboard:' + String(step && step.anchor || ''));
+                events.push('voice:' + String(performance && performance.voiceKey || ''));
+                events.push('run:' + String(runId));
+                return true;
             };
 
-            const keepGoing = await director.playDay1AvatarFloatingScene({
+            const keepGoing = await director.runAvatarFloatingSceneOperation({
                 id: 'day1_takeover_capture_cursor',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                voiceKey: 'takeover_capture_cursor',
                 operation: 'day1-managed-scene:takeover_capture_cursor',
-            }, 42, 'day1_screen_entry_invite', 6, 8);
+            }, null, Date.now(), Promise.resolve());
 
             return {
                 keepGoing,
@@ -11249,8 +11349,9 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
     assert result["keepGoing"] is True
     assert result["sceneRunId"] == 43
     assert result["events"] == [
-        "managed:takeover_capture_cursor:avatar-floating-day1-round",
-        "previous:day1_screen_entry_invite",
+        "keyboard:#live2d-btn-agent",
+        "voice:takeover_capture_cursor",
+        "run:42",
     ]
 
 
@@ -11317,9 +11418,16 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
             director.clearVirtualSpotlight = (key) => events.push('clear-virtual:' + key);
             director.highlightChatWindow = () => events.push('highlight-chat-window');
 
-            await director.playManagedScene('takeover_capture_cursor', {
-                source: 'avatar-floating-day1-round',
-            });
+            await director.playAvatarFloatingScene({
+                id: 'day1_takeover_capture_cursor',
+                text: '超级魔法开关出现！',
+                voiceKey: 'takeover_capture_cursor',
+                emotion: 'happy',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                cursorAction: 'click',
+                operation: 'day1-managed-scene:takeover_capture_cursor',
+            }, 1, 7, 9);
 
             return { events, persistentSpotlights };
         }
@@ -11497,15 +11605,21 @@ def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mo
             director.sceneRunId = 42;
             director.getAgentSwitchSnapshot = async () => ({ agent: false });
             director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
-            director.playManagedScene = async (sceneId, options) => {
-                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
-                events.push('previous:' + String(options && options.previousSceneId || ''));
+            director.runTakeoverKeyboardControlSequence = async (step, performance, runId) => {
+                events.push('keyboard:' + String(step && step.anchor || ''));
+                events.push('voice:' + String(performance && performance.voiceKey || ''));
+                events.push('run:' + String(runId));
+                return true;
             };
 
-            await director.playDay1AvatarFloatingScene({
+            await director.playAvatarFloatingScene({
                 id: 'day1_takeover_capture_cursor',
+                target: '#live2d-btn-agent',
+                cursorTarget: '#live2d-btn-agent',
+                cursorAction: 'click',
+                voiceKey: 'takeover_capture_cursor',
                 operation: 'day1-managed-scene:takeover_capture_cursor',
-            }, 42, 'day1_screen_entry_invite', 6, 8);
+            }, 1, 7, 9);
 
             return events;
         }
@@ -11513,8 +11627,9 @@ def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mo
     )
 
     assert result == [
-        "managed:takeover_capture_cursor:avatar-floating-day1-round",
-        "previous:day1_screen_entry_invite",
+        "keyboard:#live2d-btn-agent",
+        "voice:takeover_capture_cursor",
+        "run:43",
     ]
 
 

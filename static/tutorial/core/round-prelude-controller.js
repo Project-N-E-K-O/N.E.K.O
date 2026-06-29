@@ -30,6 +30,7 @@
             this.beginAvatarOverride = normalizedOptions.beginAvatarOverride || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
             this.ensureVisible = normalizedOptions.ensureVisible || noop;
+            this.waitForAvatarReady = normalizedOptions.waitForAvatarReady || noop;
             this.sleep = normalizedOptions.sleep || noop;
             this.beginTakingOver = normalizedOptions.beginTakingOver || noop;
             this.setLifecycleActive = normalizedOptions.setLifecycleActive || noop;
@@ -48,19 +49,32 @@
                 ? Math.max(0, Math.round(normalizedOptions.delayMs))
                 : this.defaultDelayMs;
             const sceneId = 'avatar_floating_day' + day;
+            const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
 
-            await toPromise(() => this.beginAvatarOverride()).catch((error) => {
+            await toPromise(() => this.beginAvatarOverride({
+                deferRevealPrepared
+            })).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，中止教程:', error);
-                throw error;
-            }).finally(() => {
-                return toPromise(() => this.revealPrepared());
+                return toPromise(() => this.revealPrepared()).then(() => {
+                    throw error;
+                });
             });
+            if (!deferRevealPrepared) {
+                await toPromise(() => this.revealPrepared());
+            }
 
-            await toPromise(() => this.ensureVisible(sceneId)).catch((error) => {
+            await toPromise(() => this.ensureVisible(sceneId, {
+                deferRevealPrepared
+            })).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，中止教程:', error);
                 return toPromise(() => this.revealPrepared()).then(() => {
                     throw error;
                 });
+            });
+            await toPromise(() => this.waitForAvatarReady(sceneId, {
+                deferRevealPrepared
+            })).catch((error) => {
+                this.warn('[Tutorial] 等待 YUI 模型视觉就绪失败，继续启动教程:', error);
             });
 
             await toPromise(() => this.sleep(delayMs));

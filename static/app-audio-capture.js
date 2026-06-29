@@ -979,20 +979,23 @@
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
-            // 失败时恢复文本输入区
-            S.voiceChatActive = false;
-            const textInputArea = document.getElementById('text-input-area');
-            if (textInputArea) {
-                textInputArea.classList.remove('hidden');
-            }
-            if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                window.syncVoiceChatComposerHidden(false);
-            }
+            const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
-            // 失败时移除录音状态类
             if (_mic) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
+            }
+            if (!hasOuterVoiceStartLifecycle) {
+                S.isRecording = false;
+                window.isRecording = false;
+                S.voiceChatActive = false;
+                const textInputArea = document.getElementById('text-input-area');
+                if (textInputArea) {
+                    textInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;

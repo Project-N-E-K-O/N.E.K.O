@@ -1,7 +1,7 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS, formatError, text } from './study_surface_utils';
+import { callPlugin, ensureBrandCSS, formatError, pomodoroModeLabel, pomodoroStateLabel, text } from './study_surface_utils';
 
 function formatSeconds(value: number) {
   const seconds = Math.max(0, Number(value) || 0);
@@ -51,14 +51,14 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.pomodoro_panel', 'Pomodoro')}</h1>
-          <span>{status.state || 'idle'}</span>
+          <span>{pomodoroStateLabel(props, status.state)}</span>
         </div>
       </header>
       {error ? <pre>{error}</pre> : null}
       <section className="study-panel__state">
         <div><span>{text(props, 'ui.label.remaining', 'Remaining')}</span><strong>{formatSeconds(status.remaining_seconds)}</strong></div>
         <div><span>{text(props, 'ui.label.sessions', 'Sessions')}</span><strong>{status.session_count || 0}</strong></div>
-        <div><span>{text(props, 'ui.label.mode', 'Mode')}</span><strong>{status.mode || 'focus'}</strong></div>
+        <div><span>{text(props, 'ui.label.mode', 'Mode')}</span><strong>{pomodoroModeLabel(props, status.mode)}</strong></div>
       </section>
       <div className="pomodoro-ring" data-mode={status.mode || 'focus'}>{formatSeconds(status.remaining_seconds)}</div>
       <div className="study-panel__actions">

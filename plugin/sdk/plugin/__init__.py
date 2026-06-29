@@ -13,6 +13,7 @@ from . import decorators as _decorators
 # 避免 `from . import llm_tool as _llm_tool` 在 importlib.reload 时被外部 `llm_tool` 函数名
 # 遮蔽（第一次加载后本模块的 `llm_tool` 属性变成函数，导致下次 `from . import llm_tool` 拿回函数而非子模块）喵
 _llm_tool = _sys.modules.get("plugin.sdk.plugin.llm_tool") or _import_module("plugin.sdk.plugin.llm_tool")
+from . import activity as _activity
 from . import runtime as _runtime
 from . import settings as _settings
 from . import ui as ui
@@ -44,6 +45,10 @@ quick_action = _decorators.quick_action
 # --- LLM tool ---
 llm_tool = _llm_tool.llm_tool
 LlmToolMeta = _llm_tool.LlmToolMeta
+
+# --- Activity ---
+OsActivitySnapshot = _activity.OsActivitySnapshot
+get_os_activity_snapshot = _activity.get_os_activity_snapshot
 
 # --- Result ---
 Ok = _runtime.Ok
@@ -97,6 +102,9 @@ __all__ = [
     # LLM tool
     "llm_tool",
     "LlmToolMeta",
+    # Activity
+    "OsActivitySnapshot",
+    "get_os_activity_snapshot",
     "PluginI18n",
     "tr",
     # Result

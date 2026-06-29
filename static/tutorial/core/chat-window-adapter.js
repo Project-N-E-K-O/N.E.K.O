@@ -109,9 +109,39 @@
         const resolveLocalTarget = typeof normalizedOptions.resolveLocalTarget === 'function'
             ? normalizedOptions.resolveLocalTarget
             : () => null;
+        const beforeExternalizedSpotlight = typeof normalizedOptions.beforeExternalizedSpotlight === 'function'
+            ? normalizedOptions.beforeExternalizedSpotlight
+            : null;
 
         function getExternalKind(targetKey) {
             return registry.getExternalKind(targetKey) || targetKey || '';
+        }
+
+        function getExternalizedRunMeta() {
+            if (
+                interactionTakeover
+                && typeof interactionTakeover.getExternalizedChatTutorialRunId === 'function'
+            ) {
+                const tutorialRunId = interactionTakeover.getExternalizedChatTutorialRunId();
+                if (tutorialRunId) {
+                    return {
+                        tutorialRunId,
+                        pcOverlayRunId: tutorialRunId
+                    };
+                }
+            }
+            return {};
+        }
+
+        function notifyBeforeExternalizedSpotlight(kind) {
+            if (!beforeExternalizedSpotlight) {
+                return;
+            }
+            try {
+                beforeExternalizedSpotlight(kind, getExternalizedRunMeta());
+            } catch (error) {
+                console.warn('[YuiGuideChatWindowAdapter] beforeExternalizedSpotlight failed:', error);
+            }
         }
 
         return {
@@ -134,7 +164,9 @@
                     interactionTakeover
                     && typeof interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
-                    interactionTakeover.setExternalizedChatSpotlight(getExternalKind(targetKey));
+                    const externalKind = getExternalKind(targetKey);
+                    notifyBeforeExternalizedSpotlight(externalKind);
+                    interactionTakeover.setExternalizedChatSpotlight(externalKind);
                     return true;
                 }
                 return false;

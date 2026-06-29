@@ -1,0 +1,63 @@
+# /etc/systemd/system/neko-survey.service
+#
+# 安装步骤：
+#   1. 把项目放到服务器上，比如 /opt/neko-survey/
+#   2. cd /opt/neko-survey && pip install -r requirements.txt
+#   3. cp deploy/neko-survey.service /etc/systemd/system/
+#   4. 编辑 /etc/systemd/system/neko-survey.service，修改路径和 token
+#   5. systemctl daemon-reload
+#   6. systemctl enable --now neko-survey
+#
+# 常用命令：
+#   systemctl status neko-survey    # 查看状态
+#   journalctl -u neko-survey -f    # 实时日志
+#   systemctl restart neko-survey   # 重启
+#
+# 与 telemetry 互不依赖，可同机部署（不同端口 8100）也可单独一台。
+
+[Unit]
+Description=N.E.K.O Survey Collection Server
+After=network.target
+
+[Service]
+Type=simple
+# 不写 Group=：让 systemd 用 nobody 的默认主组。Debian 是 nogroup、RHEL/CentOS
+# 是 nobody——硬写 nogroup 会在 RHEL 上让 systemd 直接拒绝本 unit。
+User=nobody
+
+# ★ 修改为实际路径
+WorkingDirectory=/opt/neko-survey
+
+# 起服务前确保数据目录存在且归服务用户所有：手动 copy 本 unit 时该目录可能不存在
+# 或仍属 root，而服务以 nobody 运行写不进 SQLite（ReadWritePaths 只放开 systemd
+# 的只读挂载，不改 Unix 属主）。+ 前缀让这两步以 root 执行，绕过 User=nobody。
+ExecStartPre=+/bin/mkdir -p /opt/neko-survey/data
+ExecStartPre=+/bin/chown nobody /opt/neko-survey/data
+
+ExecStart=/usr/bin/python3 server.py --port 8100
+
+# ★ 启用管理端（查询/导出）请取消注释并改成强随机 token。默认不设：
+# require_admin 在 token 为空时返回 503，admin API 全程禁用——避免直接 copy 本
+# unit 没改就把含 device_id/steam_user_id 的接口用公开 token 暴露出去。
+# Environment=SURVEY_ADMIN_TOKEN=please-change-me
+
+# 数据目录（默认 ./data/）
+Environment=SURVEY_DB_PATH=/opt/neko-survey/data/survey.db
+
+# 自动重启
+Restart=always
+RestartSec=5
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# 允许写入数据目录
+ReadWritePaths=/opt/neko-survey/data
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

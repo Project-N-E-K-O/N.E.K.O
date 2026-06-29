@@ -80,7 +80,7 @@ class ActivityBuffer:
             window_start = current.timestamp - self.window_seconds
             active_seconds = 0.0
             for snapshot in self.snapshots:
-                if snapshot.app_type in ("other",) or snapshot.activity_type in (
+                if snapshot.app_type in ("other", "unknown", "private") or snapshot.activity_type in (
                     "idle",
                     "",
                 ):
@@ -110,7 +110,7 @@ class ActivityBuffer:
             for snapshot in reversed(self.snapshots):
                 if snapshot.timestamp < recent_threshold:
                     return False
-                if snapshot.app_type not in ("other",) and snapshot.activity_type not in (
+                if snapshot.app_type not in ("other", "unknown", "private") and snapshot.activity_type not in (
                     "idle",
                     "",
                 ):

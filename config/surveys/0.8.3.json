@@ -1,0 +1,40 @@
+{
+  "survey_version": "0.8.3",
+  "title": "一路陪伴到现在，开发猫猫想听听你的想法",
+  "intro": "用一分钟帮我们做得更好吧，全部选填，随时可以跳过。",
+  "questions": [
+    {
+      "id": "keep_one",
+      "type": "single",
+      "label": "如果接下来开发组只能集中精力打磨一个功能，你最希望是哪个？",
+      "options": [
+        { "value": "chat", "label": "文本对话" },
+        { "value": "voice", "label": "语音对话" },
+        { "value": "proactive", "label": "主动搭话" },
+        { "value": "games", "label": "小游戏 / 互动" },
+        { "value": "appearance", "label": "形象 / 换装" }
+      ]
+    },
+    {
+      "id": "drop_one",
+      "type": "single",
+      "label": "如果精力实在有限、必须暂停一个功能的更新，哪个对你影响最小？",
+      "options": [
+        { "value": "chat", "label": "文本对话" },
+        { "value": "voice", "label": "语音对话" },
+        { "value": "proactive", "label": "主动搭话" },
+        { "value": "games", "label": "小游戏 / 互动" },
+        { "value": "appearance", "label": "形象 / 换装" }
+      ]
+    },
+    {
+      "id": "suggestion",
+      "type": "text",
+      "label": "还有什么想对我们说的？吐槽或许愿都行。",
+      "placeholder": "比如最近哪里让你想关掉、或者最希望优化的功能，或者只是想对开发猫猫说句话……（选填）",
+      "placeholder_from": "keep_one",
+      "placeholder_template": "你最希望「{label}」往哪个方向打磨呢？也欢迎说点别的～（选填）",
+      "max_length": 500
+    }
+  ]
+}

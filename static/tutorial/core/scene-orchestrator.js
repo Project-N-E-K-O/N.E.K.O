@@ -100,14 +100,26 @@
             let narrationPromise = Promise.resolve();
             const legacyScene = scene || {};
             const audio = timelineScene && timelineScene.audio ? timelineScene.audio : {};
+            const resolveText = () => {
+                if (typeof director.resolveAvatarFloatingSceneText === 'function') {
+                    return director.resolveAvatarFloatingSceneText(legacyScene) || audio.text || legacyScene.text || '';
+                }
+                return audio.text || legacyScene.text || '';
+            };
+            const resolveVoiceKey = (fallbackVoiceKey) => {
+                if (typeof director.resolveAvatarFloatingSceneVoiceKey === 'function') {
+                    return director.resolveAvatarFloatingSceneVoiceKey(legacyScene)
+                        || fallbackVoiceKey
+                        || audio.voiceKey
+                        || legacyScene.voiceKey
+                        || '';
+                }
+                return fallbackVoiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+            };
             return {
                 play: (voiceKey, audioOptions) => {
-                    const text = audio.text || (
-                        typeof director.resolveAvatarFloatingSceneText === 'function'
-                            ? director.resolveAvatarFloatingSceneText(legacyScene)
-                            : ''
-                    );
-                    const resolvedVoiceKey = voiceKey || audio.voiceKey || legacyScene.voiceKey || '';
+                    const text = resolveText();
+                    const resolvedVoiceKey = resolveVoiceKey(voiceKey);
                     if (typeof director.speakGuideLine === 'function' && (text || resolvedVoiceKey)) {
                         narrationPromise = Promise.resolve(director.speakGuideLine(text, {
                             voiceKey: resolvedVoiceKey,
@@ -125,7 +137,7 @@
                 waitForEnd: () => narrationPromise,
                 getDurationMs: (voiceKey) => {
                     if (typeof director.getGuideVoiceDurationMs === 'function') {
-                        return director.getGuideVoiceDurationMs(voiceKey || audio.voiceKey || '', '');
+                        return director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '');
                     }
                     if (Number.isFinite(audio.durationMs)) {
                         return audio.durationMs;
@@ -135,10 +147,10 @@
                 resolveCueMs: (voiceKey, cueName) => {
                     if (typeof director.resolveGuideVoiceCueTargetMs === 'function') {
                         return director.resolveGuideVoiceCueTargetMs(
-                            voiceKey || audio.voiceKey || '',
+                            resolveVoiceKey(voiceKey || audio.voiceKey),
                             cueName,
                             0,
-                            audio.text || legacyScene.text || ''
+                            resolveText()
                         );
                     }
                     return 0;
@@ -228,7 +240,7 @@
             };
         }
 
-        async playScene(scene, day, index, total) {
+        async playScene(scene, day, index, total, roundContext = {}) {
             const director = this.director;
             if (
                 director.scenePausedForResistance
@@ -282,7 +294,8 @@
                     previousSceneId,
                     isFirstDailyScene,
                     preserveExternalizedChatGuideTarget,
-                    preserveIntroExternalizedChatGuideTarget
+                    preserveIntroExternalizedChatGuideTarget,
+                    revealPrepared: roundContext.revealPrepared
                 });
             }
 
@@ -306,7 +319,8 @@
                 previousSceneId,
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
-                preserveIntroExternalizedChatGuideTarget
+                preserveIntroExternalizedChatGuideTarget,
+                revealPrepared: roundContext.revealPrepared
             });
         }
 
@@ -424,6 +438,9 @@
             let primaryTarget = null;
             let secondaryTarget = null;
             if (introExternalizedChatSpotlightKind) {
+                if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                    director.clearHomeSpotlightsForExternalizedChat();
+                }
                 director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
@@ -495,6 +512,9 @@
                         director.interactionTakeover
                         && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
                     ) {
+                        if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                            director.clearHomeSpotlightsForExternalizedChat();
+                        }
                         director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
                     }
                 } else {
@@ -856,21 +876,50 @@
             } else {
                 director.highlightChatWindow();
             }
-            return await director.withLookAt({
-                isCancelled: () => director.isStopping(),
-                completeReason: roundId + '_complete',
-                startFailureMessage: '[YuiGuide] Avatar floating cursor look-at startup failed:'
-            }, async () => {
+            let day1LookAtHandle = null;
+            let day1LookAtPromise = null;
+            const startDay1LookAt = () => {
+                if (!isDay1Round || day1LookAtPromise || day1LookAtHandle) {
+                    return;
+                }
+                day1LookAtPromise = director.ensurePersistentGhostCursorLookAtPerformance({
+                    isCancelled: () => director.isStopping()
+                }).then((handle) => {
+                    day1LookAtHandle = handle || null;
+                    return day1LookAtHandle;
+                }).catch((error) => {
+                    console.warn('[YuiGuide] Avatar floating cursor look-at startup failed:', error);
+                    return null;
+                });
+            };
+            const stopDay1LookAt = async () => {
+                if (!day1LookAtPromise && !day1LookAtHandle) {
+                    return;
+                }
+                if (day1LookAtPromise && !day1LookAtHandle) {
+                    day1LookAtHandle = await day1LookAtPromise;
+                }
+                if (day1LookAtHandle) {
+                    await director.stopIntroVoiceCursorLookAtPerformance(day1LookAtHandle, roundId + '_complete');
+                } else {
+                    await director.stopPersistentGhostCursorLookAtPerformance(roundId + '_complete');
+                }
+            };
+            const playScenes = async () => {
                 try {
                     for (let index = 0; index < config.scenes.length; index += 1) {
                         if (director.isStopping()) {
                             return false;
                         }
+                        if (isDay1Round && config.scenes[index].id === 'day1_capsule_drag_hint') {
+                            startDay1LookAt();
+                        }
                         const keepGoing = await director.playAvatarFloatingScene(
                             config.scenes[index],
                             roundNumber,
                             index,
-                            config.scenes.length
+                            config.scenes.length,
+                            options || {}
                         );
                         if (!keepGoing) {
                             return false;
@@ -888,6 +937,7 @@
                     ) {
                         await director.waitForAngryExitPresentationCompletion();
                     }
+                    await stopDay1LookAt();
                     director.disableInterrupts();
                     director.clearAvatarStandIn({ clearPending: true, restoreModel: true });
                     director.setGuideChatInputLocked(false, 'avatar-floating-guide-day' + roundNumber + '-complete');
@@ -907,7 +957,15 @@
                     director.currentSceneId = null;
                     director.currentStep = null;
                 }
-            });
+            };
+            if (isDay1Round) {
+                return await playScenes();
+            }
+            return await director.withLookAt({
+                isCancelled: () => director.isStopping(),
+                completeReason: roundId + '_complete',
+                startFailureMessage: '[YuiGuide] Avatar floating cursor look-at startup failed:'
+            }, playScenes);
         }
     }
 

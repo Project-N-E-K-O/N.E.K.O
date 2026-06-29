@@ -300,7 +300,7 @@ test('day5 round scenes use timeline playback after settings and panic delegate 
     assert.equal(timelineSceneIds[3], 'day5_wrap');
 });
 
-test('day5 settings scenes delegate narration, stand-in timing and panic performance to SettingsTourFlow from timeline', () => {
+test('day5 settings scenes delegate narration and panic performance to SettingsTourFlow from timeline', () => {
     const guides = loadGuides();
     const sceneIds = ['day5_character_settings', 'day5_character_panic'];
 
@@ -315,7 +315,7 @@ test('day5 settings scenes delegate narration, stand-in timing and panic perform
         assert.equal(scene.timeline[0].at, 0);
         assert.equal(scene.timeline[0].command, 'settingsTour.play');
         assert.equal(scene.timeline[0].blocking, true);
-        assert.notEqual(scene.avatarStandIn, false);
+        assert.equal(Object.prototype.hasOwnProperty.call(scene, 'avatarStandIn'), false);
     }
 });
 
@@ -359,6 +359,7 @@ test('day6 plugin side panel opens management preview through timeline operation
     assert.equal(operationCommand.at, 1);
     assert.equal(operationCommand.operation, 'day6-plugin-open-management-panel-flow');
     assert.equal(operationCommand.blocking, true);
+    assert.equal(scene.afterSceneDelayMs, 0);
 });
 
 test('day6 plugin dashboard handoff runs through timeline operation after narration starts', () => {

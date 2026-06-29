@@ -32,7 +32,7 @@ def _make_mgr(session=None):
 async def _append_icebreaker(mgr, role, text):
     return await LLMSessionManager.append_context(
         mgr,
-        source="game.icebreaker",
+        source="icebreaker",
         role=role,
         text=text,
         audience="model",

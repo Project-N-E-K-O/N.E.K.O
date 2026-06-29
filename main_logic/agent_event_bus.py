@@ -481,8 +481,16 @@ async def publish_analyze_request_reliably(
     ack_timeout_s: float = 0.8,
     retries: int = 1,
     conversation_id: Optional[str] = None,
+    external_intent: Optional[float] = None,
 ) -> bool:
-    """Reliably publish analyze_request: carries event_id + ack, with short retries."""
+    """Reliably publish analyze_request: carries event_id + ack, with short retries.
+
+    ``external_intent`` (0..1, or ``None``) is the cheap pre-gate hint produced by
+    the master-emotion call that already ran at input-time. It rides this same
+    payload so the agent can cheaply decide whether to skip its expensive
+    assessment. ``None`` (reading unavailable / no usable signal) is omitted from
+    the event → the agent gate fails open (runs the assessment).
+    """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 
@@ -496,6 +504,9 @@ async def publish_analyze_request_reliably(
         }
         if conversation_id:
             event["conversation_id"] = conversation_id
+        # Only an optimization hint; omitted when None so the agent fails open.
+        if external_intent is not None:
+            event["external_intent"] = external_intent
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()

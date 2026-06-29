@@ -79,6 +79,14 @@
                 },
                 {
                     id: 'day1_intro_greeting',
+                    timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'day1-intro-greeting-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day1_intro_greeting', target: 'chat-input' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-capsule-input', durationMs: 760 }
+                    ],
                     afterSceneDelayMs: 0,
                     textKey: 'tutorial.yuiGuide.lines.introGreetingReply',
                     voiceKey: 'intro_greeting_reply',
@@ -87,6 +95,9 @@
                     cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
                     operation: 'day1-intro-greeting-performance',
+                    introAvatarPerformance: {
+                        preset: 'wave-zoom'
+                    },
                     spotlightVariant: 'plain-capsule'
                 },
                 {

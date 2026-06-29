@@ -60,8 +60,14 @@
             this.registerOperation('day1-intro-greeting-flow', () => (
                 this.runDay1IntroGreetingFlow()
             ));
-            this.registerOperation('day1-intro-greeting-performance', () => (
-                this.runDay1IntroGreetingPerformance()
+            this.registerOperation('day1-intro-greeting-performance', (context) => (
+                this.runDay1IntroGreetingPerformance(context)
+            ));
+            this.registerOperation('daily-intro-greeting-performance', (context) => (
+                this.runDailyIntroGreetingPerformance(context.scene, context)
+            ));
+            this.registerOperation('daily-intro-avatar-performance', (context) => (
+                this.runDailyIntroAvatarPerformance(context.scene, context)
             ));
             this.registerOperation('day1-intro-basic-voice-showcase', (context) => (
                 this.runDay1IntroBasicVoiceShowcase(
@@ -94,7 +100,7 @@
                 && context.scene
                 && context.scene.activateSecondaryAction === true
             ), (context) => this.runShowAgentSidePanelAction(context.scene, context.operation));
-            this.registerOperation('cleanup', () => true);
+            this.registerOperation('cleanup', (context) => this.runCleanup(context.scene));
             this.registerOperation((context) => (
                 !context.operation
                 || context.operation === 'show-task-hud'
@@ -186,22 +192,47 @@
             return await director.playDay1IntroGreetingRoundScene(director.sceneRunId);
         }
 
-        async runDay1IntroGreetingPerformance() {
+        async runDailyIntroGreetingPerformance(scene, context) {
+            const director = this.director;
+            if (!director || typeof director.runDailyIntroGreetingPerformance !== 'function') {
+                return false;
+            }
+            return await director.runDailyIntroGreetingPerformance(scene, undefined, context);
+        }
+
+        async runDailyIntroAvatarPerformance(scene, context) {
+            const director = this.director;
+            if (!director || typeof director.runDailyIntroAvatarPerformance !== 'function') {
+                return false;
+            }
+            return await director.runDailyIntroAvatarPerformance(scene, undefined, context);
+        }
+
+        async runDay1IntroGreetingPerformance(context) {
             const director = this.director;
             if (!director) {
                 return false;
             }
-            await Promise.all([
-                typeof director.runIntroGreetingHugPerformance === 'function'
-                    ? director.runIntroGreetingHugPerformance().catch((error) => {
+            const avatarPerformancePromise = typeof director.runDailyIntroAvatarPerformance === 'function'
+                ? director.runDailyIntroAvatarPerformance({
+                        id: 'day1_intro_greeting',
+                        introAvatarPerformance: { preset: 'wave-zoom' }
+                    }, undefined, context).catch((error) => {
                         console.warn('[YuiGuide] intro greeting hug performance failed:', error);
                     })
-                    : Promise.resolve(),
-                typeof director.runIntroGiftHeartPerformance === 'function'
-                    ? director.runIntroGiftHeartPerformance().catch((error) => {
-                        console.warn('[YuiGuide] intro gift heart performance failed:', error);
-                    })
-                    : Promise.resolve()
+                : Promise.resolve();
+            const giftHeartPromise = typeof director.runIntroGiftHeartPerformance === 'function'
+                ? director.runIntroGiftHeartPerformance().catch((error) => {
+                    console.warn('[YuiGuide] intro gift heart performance failed:', error);
+                })
+                : Promise.resolve();
+            if (context && context.isFirstDailyScene === true) {
+                giftHeartPromise.catch(() => {});
+                return await avatarPerformancePromise;
+            }
+            await Promise.all([
+                avatarPerformancePromise,
+                giftHeartPromise
             ]);
             return true;
         }
@@ -255,6 +286,9 @@
 
         async runDay1TakeoverCaptureCursor(scene) {
             const director = this.director;
+            if (typeof director.captureDay1TakeoverAgentSwitches === 'function') {
+                await director.captureDay1TakeoverAgentSwitches();
+            }
             const step = director.getStep('takeover_capture_cursor') || {
                 anchor: scene.target || '',
                 performance: {}
@@ -264,10 +298,19 @@
                 voiceKey: scene.voiceKey || (step.performance && step.performance.voiceKey) || '',
                 emotion: scene.emotion || (step.performance && step.performance.emotion) || ''
             });
-            if (!director.takeoverOriginalAgentSwitches) {
-                director.takeoverOriginalAgentSwitches = await director.getAgentSwitchSnapshot();
-            }
             return await director.runTakeoverKeyboardControlSequence(step, performance, director.sceneRunId);
+        }
+
+        async runCleanup(scene) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            if (
+                sceneId === 'day1_takeover_return_control'
+                && this.director
+                && typeof this.director.restoreDay1TakeoverAgentSwitches === 'function'
+            ) {
+                return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');
+            }
+            return true;
         }
 
         async runDay6PluginOpenAgentPanelFlow(scene) {
@@ -464,6 +507,9 @@
                     director.interactionTakeover
                     && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
                 ) {
+                    if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
+                        director.clearHomeSpotlightsForExternalizedChat();
+                    }
                     director.interactionTakeover.setExternalizedChatSpotlight(
                         this.getExternalKind(scene && scene.persistent || '')
                         || director.getExternalizedChatTargetKind(scene && scene.persistent || '', scene)
@@ -551,15 +597,15 @@
             return true;
         }
 
-        run(scene, primaryTarget, narrationStartedAt, narrationPromise) {
+        run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext) {
             const operation = scene && typeof scene.operation === 'string' ? scene.operation : '';
-            const context = {
+            const context = Object.assign({}, operationContext || {}, {
                 scene,
                 primaryTarget,
                 narrationStartedAt,
                 narrationPromise,
                 operation
-            };
+            });
             for (let index = 0; index < this.operationHandlers.length; index += 1) {
                 const entry = this.operationHandlers[index];
                 if (entry.matches(context)) {

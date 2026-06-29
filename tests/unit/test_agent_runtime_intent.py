@@ -206,6 +206,119 @@ def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: py
     assert cu_module._PYAUTOGUI_IMPORT_ERROR is None
 
 
+def test_scaled_pyautogui_accepts_normalized_float_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0.097, 0.336)
+
+    assert backend.calls[-1] == ("click", (186, 363), {})
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (186, 363)
+
+
+def test_scaled_pyautogui_accepts_mixed_positional_keyword_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0.5, y=0.5)
+
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (960, 540)
+    assert backend.calls[-1] == ("click", (960,), {"y": 540})
+
+
+def test_scaled_pyautogui_clamps_model_coordinates_away_from_failsafe_corner():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(0, 0)
+    gui.click(999, 999)
+
+    assert backend.calls[1] == ("click", (4, 4), {})
+    assert backend.calls[3] == ("click", (1915, 1075), {})
+
+
+def test_scaled_pyautogui_does_not_treat_mixed_int_float_as_unit_coordinates():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(1, 0.5)
+
+    assert backend.calls[1] == ("click", (4, 4), {})
+
+
+def test_scaled_pyautogui_preserves_absolute_edge_pixels():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, *args, **kwargs):
+            self.calls.append(("click", args, kwargs))
+
+        def moveTo(self, *args, **kwargs):
+            self.calls.append(("moveTo", args, kwargs))
+
+    backend = FakeBackend()
+    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+
+    gui.click(1919, 1079)
+
+    assert backend.calls[0][0] == "moveTo"
+    assert backend.calls[0][1][:2] == (1919, 1079)
+    assert backend.calls[1] == ("click", (1919, 1079), {})
+
+
 def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.MonkeyPatch):
     """If base_url/model not configured, must return ``(False, 'AGENT_ENDPOINT_NOT_CONFIGURED')``
     immediately without trying to construct an LLM client."""
@@ -257,6 +370,122 @@ def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.Mon
     assert ok is True
     assert reason == ""
     assert adapter.init_ok is True
+
+
+def test_check_connectivity_accepts_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    class TextBlock:
+        type = "text"
+        text = "ok"
+
+    class AnthropicMessage:
+        content = [TextBlock()]
+
+    fake_llm = MagicMock()
+    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
+
+    monkeypatch.setattr(cu_module, "create_chat_llm", lambda **kwargs: fake_llm)
+
+    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
+    adapter._config_manager = MagicMock()
+    adapter._config_manager.get_model_api_config = MagicMock(return_value={
+        "api_key": "sk-test",
+        "base_url": "https://api.kimi.com/coding",
+        "model": "kimi-for-coding",
+    })
+    adapter._llm_client = None
+    adapter._llm_client_sig = None
+    adapter.init_ok = False
+    adapter.last_error = "stale"
+
+    ok, reason = adapter.check_connectivity(timeout_s=4.0)
+    assert ok is True
+    assert reason == ""
+    assert adapter.init_ok is True
+
+
+def test_extract_raw_llm_text_reads_anthropic_thinking_blocks():
+    from brain.computer_use import _extract_raw_llm_text
+
+    class ThinkingBlock:
+        type = "thinking"
+        thinking = "inspect the screen"
+
+    class TextBlock:
+        type = "text"
+        text = "done"
+
+    class AnthropicMessage:
+        content = [ThinkingBlock(), TextBlock()]
+
+    text, reasoning = _extract_raw_llm_text(AnthropicMessage())
+    assert text == "done"
+    assert reasoning == "inspect the screen"
+
+
+def test_call_llm_parses_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    class TextBlock:
+        type = "text"
+        text = """## Observation
+Ready.
+
+## Thought
+Use a special action.
+
+## Action
+Finish.
+
+## Code
+```python
+computer.terminate(status="success", answer="done")
+```"""
+
+    class AnthropicMessage:
+        content = [TextBlock()]
+
+    fake_llm = MagicMock()
+    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
+
+    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
+    adapter._cancelled = False
+    adapter._llm_client = fake_llm
+    adapter._agent_model_cfg = {"model": "kimi-for-coding"}
+    adapter.max_completion_tokens = 128
+    adapter.thinking = False
+    adapter._config_manager = MagicMock()
+    adapter._config_manager.consume_agent_daily_quota = MagicMock(return_value=(True, {}))
+    adapter._interruptible_sleep = MagicMock()
+
+    parsed = adapter._call_llm([{"role": "user", "content": "finish"}])
+    assert parsed["action"] == "Finish."
+    assert parsed["code"] == 'computer.terminate(status="success", answer="done")'
+
+
+def test_scaled_pyautogui_write_accepts_keyword_aliases():
+    from brain.computer_use import _ScaledPyAutoGUI
+
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def write(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    backend = Backend()
+    gui = _ScaledPyAutoGUI(backend, screen_w=1920, screen_h=1080)
+
+    gui.write(message="notepad", interval=0.01)
+    gui.typewrite(text="calc")
+    gui.write(string="cmd")
+
+    assert backend.calls == [
+        (("notepad",), {"interval": 0.01}),
+        (("calc",), {}),
+        (("cmd",), {}),
+    ]
 
 
 # ---------------------------------------------------------------------------

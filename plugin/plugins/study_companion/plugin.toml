@@ -46,6 +46,7 @@ allow_custom_duration = true
 enabled = true
 remind_interval_minutes = 10
 inactivity_timeout_minutes = 5
+idle_away_seconds = 900
 allow_disable_by_chat = true
 
 [study.checkin]
@@ -58,9 +59,11 @@ enabled = false
 snapshot_interval_seconds = 5
 context_window_minutes = 5
 classify_mode = "title_first"
-image_max_bytes = 204800
-push_to_llm_interval_seconds = 30
+image_max_bytes = 65536
+push_to_llm_interval_seconds = 300
 push_to_llm_mode = "read"
+os_signals_enabled = true
+distraction_detection = true
 
 [study_companion.communication]
 enabled = true
@@ -109,112 +112,112 @@ xmind_enabled = false
 [plugin.ui]
 enabled = true
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "knowledge-map"
 title = "Knowledge Map"
 entry = "surfaces/knowledge_map.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "knowledge-contribution-settings"
 title = "Knowledge Contribution Settings"
 entry = "surfaces/knowledge_contribution_settings.tsx"
 context = "study"
 permissions = ["state:read", "action:call", "config:write"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "memory-deck-list"
 title = "Memory Decks"
 entry = "surfaces/memory_deck_list.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "word-review"
 title = "Word Review"
 entry = "surfaces/word_review.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "passage-recitation"
 title = "Passage Recitation"
 entry = "surfaces/passage_recitation.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "memory-importer"
 title = "Memory Importer"
 entry = "surfaces/memory_importer.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "due-review-panel"
 title = "Due Reviews"
 entry = "surfaces/due_review_panel.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "note-exporter"
 title = "Note Exporter"
 entry = "surfaces/note_exporter.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "habit-dashboard"
 title = "Habit Dashboard"
 entry = "surfaces/habit_dashboard.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "pomodoro-panel"
 title = "Pomodoro Panel"
 entry = "surfaces/pomodoro_panel.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "daily-goal-editor"
 title = "Daily Goal Editor"
 entry = "surfaces/daily_goal_editor.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "session-summary"
 title = "Session Summary"
 entry = "surfaces/session_summary.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "notebook-panel"
 title = "Study Notebook"
 entry = "surfaces/notebook_panel.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "note-editor"
 title = "Note Editor"
 entry = "surfaces/note_editor.tsx"
 context = "study"
 permissions = ["state:read", "action:call"]
 
-[[plugin.ui.guide]]
+[[plugin.ui.panel]]
 id = "note-search"
 title = "Study Search"
 entry = "surfaces/note_search.tsx"
