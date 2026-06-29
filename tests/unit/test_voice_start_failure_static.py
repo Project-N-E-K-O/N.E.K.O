@@ -292,7 +292,7 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
 def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     render_start = source.index("window.renderFloatingMicList = async function")
-    render_end = source.index("/** 轻量级更新：仅更新选中状态 */", render_start)
+    render_end = source.index("function updateMicListSelection()", render_start)
     render = source[render_start:render_end]
 
     assert "var hasMicrophoneDevices = audioInputs.length > 0;" in render
