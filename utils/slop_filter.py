@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prompt-side slop reduction — stripping the "AI tell" from dialog history.
+r"""Prompt-side slop reduction — stripping the "AI tell" from dialog history.
 
 LLMs imitate the style of the conversation they are shown. When the cat's own
 past replies are full of stock phrases — "his heart pounded wildly", "a smirk

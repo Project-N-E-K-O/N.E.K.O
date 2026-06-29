@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Static slop-reduction rule tables (per language).
+r"""Static slop-reduction rule tables (per language).
 
 Consumed by ``utils.slop_filter``. Each short language code (matching
 ``config.prompts.prompts_sys._loc``: zh / en / ja / ko / ru / es / pt) maps to a
@@ -350,7 +350,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_017',
             "name": 'the corner of the eye glimpsing (眼角的余光)',
-            "find": '(?:用)?眼角(?:的)?余光(?:瞥|扫|瞟|看)(?:了|向|到)?',
+            "find": '(?:用)?眼角(?:的)?余光(?:瞥|扫|瞟|看)(?:了|向|到)?(?:一眼)?(?:他|她|它|我|你)?',
             "replace": [
                 '斜眼瞟到',
                 '眼梢一扫，瞧见',
@@ -445,7 +445,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'ZH_022',
             "name": 'stroking the head / touching the head fondly',
-            "find": '(?:伸手|抬手|(?:揉|摸|拍)了(?:揉|摸|拍)|(?:揉|摸|拍)了?(?:他|她|它|我|你)的)(?:他|她|它|我|你)?(?:的)?(?:头|脑袋|发顶|头顶)',
+            "find": r"(?:(?:伸手|抬手)\s*)?(?:伸手|抬手|(?:揉|摸|拍)了(?:揉|摸|拍)|(?:揉|摸|拍)了?(?:他|她|它|我|你)的)(?:他|她|它|我|你)?(?:的)?(?:头|脑袋|发顶|头顶)",
             "replace": [
                 '抬手把头发揉乱了',
                 '在发顶轻轻拍了两下',
@@ -960,7 +960,7 @@ SLOP_RULES: dict[str, list[dict]] = {
         {
             "id": 'EN_019',
             "name": 'vice-like / iron grip',
-            "find": r"\b(?:[Aa]|[Aa]n|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Yy]our)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b",
+            "find": r"\b(?:[Aa]|[Aa]n|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Yy]our)\s+(?:vice|vise|vice-like|vise-like|iron|crushing|bruising|bone-crushing)(?:\s*-?\s*like)?\s+grip\b(?=\s*[.,;:!?]|\s*$)",
             "replace": [
                 "a grip that wouldn't give",
                 'a hold hard enough to bruise',
