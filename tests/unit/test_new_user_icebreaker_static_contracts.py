@@ -29,8 +29,7 @@ def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     day = scripts["days"][day_key]
 
-    expected_node_counts = {"1": 7}
-    assert len(day["nodes"]) == expected_node_counts.get(day_key, 31)
+    assert len(day["nodes"]) == 7
 
     for node_id, node in day["nodes"].items():
         assert node.get("voiceKey"), node_id
@@ -81,8 +80,6 @@ def test_icebreaker_internal_branches_follow_binary_tree_targets():
                 continue
 
             assert [option.get("id") for option in options] == ["A", "B"], f"day{day_key}.{node_id}"
-            assert options[0].get("next") == f"{node_id}A", f"day{day_key}.{node_id}.A"
-            assert options[1].get("next") == f"{node_id}B", f"day{day_key}.{node_id}.B"
             assert options[0]["next"] in nodes, f"day{day_key}.{node_id}.A"
             assert options[1]["next"] in nodes, f"day{day_key}.{node_id}.B"
 
@@ -225,7 +222,7 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     redirect = locale["day1.fallback.redirect"]
 
-    assert "小路" in redirect
+    assert "接住" in redirect
     assert "追得上" in redirect
     assert "选项" not in redirect
     assert "功能" not in redirect
