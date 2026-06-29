@@ -869,13 +869,6 @@
             handoff: true
         }).then(function () {
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
-            markDay(day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                sessionId: sessionId,
-                nodeId: nodeId
-            });
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
@@ -887,6 +880,13 @@
         }).then(function () {
             return Promise.resolve(handoffSpeechPromise).catch(function () {});
         }).then(function () {
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                sessionId: sessionId,
+                nodeId: nodeId
+            });
             if (activeSession === session) {
                 activeSession = null;
             }
@@ -1007,19 +1007,19 @@
             }).then(function () {
                 var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');
                 if (isRelease) {
-                    markDay(day, {
-                        started: true,
-                        completed: true,
-                        completedAt: Date.now(),
-                        sessionId: sessionId,
-                        nodeId: nodeId,
-                        releasedByFreeText: true
-                    });
                     var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');
                     return Promise.all([
                         Promise.resolve(routeEndPromise),
                         Promise.resolve(fallbackSpeechPromise).catch(function () {})
                     ]).then(function () {
+                        markDay(day, {
+                            started: true,
+                            completed: true,
+                            completedAt: Date.now(),
+                            sessionId: sessionId,
+                            nodeId: nodeId,
+                            releasedByFreeText: true
+                        });
                         if (activeSession === session) {
                             activeSession = null;
                         }

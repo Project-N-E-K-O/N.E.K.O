@@ -594,6 +594,10 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "dispatchIcebreakerEnded('handoff');"
     )
+    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
+        "completed: true"
+    )
+    assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
@@ -912,6 +916,12 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
         "dispatchIcebreakerEnded('free_text_release');"
     )
     assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
+    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
+        "completed: true"
+    )
+    assert continuation_block.index("completed: true") < continuation_block.index(
         "dispatchIcebreakerEnded('free_text_release');"
     )
     assert "activeSession.localeData" not in continuation_block
