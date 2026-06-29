@@ -705,8 +705,7 @@
     }
 
     function speakLine(text, voiceKey) {
-        speakViaProjectTts(text, voiceKey).then(function (ok) {
-            if (ok) return;
+        return speakViaProjectTts(text, voiceKey).then(function () {
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, estimateSpeechDurationMs(text));
             });
@@ -860,6 +859,7 @@
         var day = session.day;
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
+        var handoffSpeechPromise = Promise.resolve(false);
         applyAssistantTextEmotion(text);
         clearChoicePrompt();
         return appendChatMessage('assistant', text, {
@@ -868,7 +868,7 @@
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
         }).then(function () {
-            speakLine(text, option.handoffVoiceKey || '');
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
             markDay(day, {
                 started: true,
                 completed: true,
@@ -884,6 +884,8 @@
             return Promise.all(pendingWrites).then(function () {
                 return endIcebreakerRoute(session, 'icebreaker_handoff');
             });
+        }).then(function () {
+            return Promise.resolve(handoffSpeechPromise).catch(function () {});
         }).then(function () {
             if (activeSession === session) {
                 activeSession = null;

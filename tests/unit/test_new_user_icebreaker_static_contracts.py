@@ -518,6 +518,18 @@ def test_icebreaker_project_tts_uses_local_mutation_headers():
     assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
+def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
+        "function applyAssistantTextEmotion(text)",
+        1,
+    )[0]
+
+    assert "return speakViaProjectTts(text, voiceKey).then(function () {" in speak_line_block
+    assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
+    assert "if (ok) return;" not in speak_line_block
+
+
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(
@@ -569,9 +581,18 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
 
     assert "var session = activeSession;" in handoff_block
     assert "return appendChatMessage('assistant', text" in handoff_block
+    assert "return speakViaProjectTts(text, voiceKey)" in runtime
+    assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
+    assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
     assert handoff_block.index("return appendChatMessage('assistant', text") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
+        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
+        "dispatchIcebreakerEnded('handoff');"
     )
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
