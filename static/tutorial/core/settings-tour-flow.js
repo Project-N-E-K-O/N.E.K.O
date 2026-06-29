@@ -453,9 +453,12 @@
             if (!hasVisibleCharacterPanel) {
                 characterSettingsPanel = await director.ensureAvatarFloatingSettingsSidePanel('character-settings')
                     || characterSettingsPanel;
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
             }
             const characterSettingsButton = director.getDay5CharacterSettingsButtonTarget();
-            if (typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
+            if (characterSettingsPanel && typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
                 director.refreshAvatarFloatingSettingsPanelLayout(characterSettingsPanel);
             }
             if (characterSettingsPanel) {

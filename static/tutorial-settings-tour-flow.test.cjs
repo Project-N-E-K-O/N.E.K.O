@@ -424,6 +424,57 @@ test('SettingsTourFlow refreshes visible day five character panel before panic n
     assert.equal(calls.some((call) => call[0] === 'ensure-panel'), false);
 });
 
+test('SettingsTourFlow stops day five panic scene after stale async panel ensure', async () => {
+    const calls = [];
+    const characterSettingsPanel = { id: 'character-settings-panel' };
+    const director = {
+        sceneRunId: 17,
+        destroyed: false,
+        angryExitTriggered: false,
+        currentStep: 'day5-panic',
+        prepareNarration(scene) {
+            calls.push(['prepare', scene.id]);
+            return { text: 'line', voiceKey: 'voice', canHandleSceneButtons: false, actionWaitPromise: null };
+        },
+        getCharacterSettingsSidePanel() {
+            calls.push(['get-panel']);
+            return null;
+        },
+        ensureAvatarFloatingSettingsSidePanel(panelId) {
+            calls.push(['ensure-panel', panelId]);
+            this.sceneRunId = 18;
+            return Promise.resolve(characterSettingsPanel);
+        },
+        getDay5CharacterSettingsButtonTarget() {
+            calls.push(['get-button']);
+            return { id: 'character-settings-button' };
+        },
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            calls.push(['refresh-layout', panel && panel.id]);
+        },
+        applyGuideHighlights(config) {
+            calls.push(['highlight', config.key]);
+        },
+        isStopping() {
+            return false;
+        }
+    };
+    const flow = new SettingsTourFlow(director);
+
+    const result = await flow.play({ id: 'day5_character_panic' }, {
+        sceneRunId: 17,
+        index: 2,
+        total: 4
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(calls, [
+        ['prepare', 'day5_character_panic'],
+        ['get-panel'],
+        ['ensure-panel', 'character-settings']
+    ]);
+});
+
 test('SettingsTourFlow delegates narration and finalize to the director', async () => {
     const calls = [];
     const director = {
