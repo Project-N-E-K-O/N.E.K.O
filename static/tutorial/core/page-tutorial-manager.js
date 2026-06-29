@@ -188,6 +188,13 @@
         }
 
         shouldManageCurrentPage() {
+            // Honor the same mobile bailout as the homepage tutorial: at mobile
+            // widths initUniversalTutorialManager() deliberately disables tutorials
+            // to avoid masks / interaction takeovers, so page tutorials must not
+            // re-enable the Driver overlay there. Gating here covers every start
+            // path (auto-init, reset/manual intent, model-manager mode listener),
+            // since checkAndStartTutorial() and startTutorial() both funnel through it.
+            if (window.innerWidth <= 768) return false;
             return SUPPORTED_PAGES.includes(this.currentPage);
         }
 
@@ -506,7 +513,13 @@
                 },
                 {
                     element: '#emotion-config',
-                    requiresVisible: true,
+                    // #emotion-config / #reset-btn start hidden (display:none) until a
+                    // model is picked in the step above. Filtering on current visibility
+                    // would drop these steps before the user ever selects a model, so the
+                    // restored tutorial would end right after the model picker and never
+                    // cover the actual config area. Keep them (the elements exist in the
+                    // DOM) and let Driver highlight them once selection reveals them.
+                    requiresVisible: false,
                     popover: {
                         title: this.t('tutorial.emotion_manager.step2.title', '情感配置区域'),
                         description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。')
@@ -514,7 +527,7 @@
                 },
                 {
                     element: '#reset-btn',
-                    requiresVisible: true,
+                    requiresVisible: false,
                     popover: {
                         title: this.t('tutorial.emotion_manager.step3.title', '重置配置'),
                         description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。')

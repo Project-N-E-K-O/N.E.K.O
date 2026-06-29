@@ -152,6 +152,41 @@ def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
     assert "return isActiveYuiHandoffTokenForPage(token, this.currentPage);" in handoff_block
 
 
+def test_page_tutorial_manager_honors_mobile_viewport_bailout():
+    page_source = _read_page_manager()
+
+    manage_block = page_source.split("        shouldManageCurrentPage() {", 1)[1].split(
+        "        }",
+        1,
+    )[0]
+    # Mirror initUniversalTutorialManager()'s mobile disable guard so page
+    # tutorials don't re-enable the Driver overlay at mobile widths. The check
+    # must gate before the SUPPORTED_PAGES return, since both checkAndStartTutorial()
+    # and startTutorial() funnel through this method.
+    assert "window.innerWidth <= 768" in manage_block
+    assert manage_block.index("window.innerWidth <= 768") < manage_block.index(
+        "return SUPPORTED_PAGES.includes(this.currentPage);"
+    )
+
+
+def test_emotion_manager_config_steps_survive_until_model_selected():
+    page_source = _read_page_manager()
+
+    emotion_block = page_source.split("        getEmotionManagerSteps() {", 1)[1].split(
+        "        getCharaManagerSteps() {",
+        1,
+    )[0]
+    # #emotion-config / #reset-btn start display:none until a model is picked, so
+    # they must not be visibility-filtered out before the tutorial begins; otherwise
+    # the restored tutorial ends right after the model picker and never covers the
+    # config area. requiresVisible:false keeps them (the elements exist in the DOM).
+    config_step = emotion_block.split("element: '#emotion-config',", 1)[1].split("popover:", 1)[0]
+    reset_step = emotion_block.split("element: '#reset-btn',", 1)[1].split("popover:", 1)[0]
+    assert "requiresVisible: false" in config_step
+    assert "requiresVisible: false" in reset_step
+    assert "requiresVisible: true" not in emotion_block
+
+
 def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
     source = _read_driver()
 

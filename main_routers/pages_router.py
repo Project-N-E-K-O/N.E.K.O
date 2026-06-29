@@ -237,7 +237,8 @@ async def live2d_parameter_editor(request: Request):
     """Live2D parameter editor page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -294,7 +295,10 @@ async def mmd_emotion_manager(request: Request):
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/voice_clone.html", {"request": request})
+    return templates.TemplateResponse("templates/voice_clone.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/api_key", response_class=HTMLResponse)

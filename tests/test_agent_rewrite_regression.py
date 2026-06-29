@@ -1146,6 +1146,46 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/live2d-interaction.js" in tracked_paths
 
 
+@pytest.mark.asyncio
+async def test_restored_tutorial_routes_supply_static_asset_version_to_template():
+    """Restored page-tutorial routes must inject ``_static_assets_ctx()``.
+
+    The templates already reference ``?v={{ static_asset_version|default('0', true) }}``
+    for the Driver / page-tutorial runtime, but the version only cache-busts if
+    the route actually supplies it. ``voice_clone`` and ``live2d_parameter_editor``
+    previously rendered with just ``{"request": request}``, so every tutorial
+    asset on those two pages pinned to ``?v=0`` forever while the other restored
+    pages got versioned URLs. Guard the context here so the gap can't reappear.
+    """
+    from types import SimpleNamespace
+
+    from main_routers import pages_router
+    from main_routers.pages_router import live2d_parameter_editor, voice_clone_page
+    from main_routers.shared_state import init_shared_state
+
+    class _DummyTemplates:
+        def TemplateResponse(self, template_name, context):
+            return {"template_name": template_name, "context": context}
+
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=_DummyTemplates(),
+        config_manager=SimpleNamespace(),
+        logger=None,
+        initialize_character_data=None,
+    )
+
+    expected_version = pages_router._static_assets_ctx()["static_asset_version"]
+    request = SimpleNamespace()
+
+    for route in (voice_clone_page, live2d_parameter_editor):
+        rendered = await route(request)
+        context = rendered["context"]
+        assert "static_asset_version" in context, route.__name__
+        assert context["static_asset_version"] == expected_version, route.__name__
+
+
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     react_version = "{{ react_chat_asset_version }}"
     static_version = "{{ static_asset_version }}"
