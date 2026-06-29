@@ -153,6 +153,10 @@ class _KnowledgeEntriesMixin:
                         "examples": payload.get("examples")
                         if isinstance(payload.get("examples"), list)
                         else [],
+                        "course_family": str(payload.get("course_family") or "").strip(),
+                        "aliases": payload.get("aliases")
+                        if isinstance(payload.get("aliases"), list)
+                        else [],
                         "source": "seed",
                     }
                 )

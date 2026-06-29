@@ -63,31 +63,30 @@ def _knowledge_edge_payload(
     relation: str,
     ref: Any,
 ) -> dict[str, Any]:
+    ref_payload = ref if isinstance(ref, dict) else {}
     edge: dict[str, Any] = {
         "from": source_id,
         "to": target_id,
         "relation": relation,
     }
-    if not isinstance(ref, dict):
-        return edge
-    typed_relation = str(ref.get("relation") or "").strip()
+    typed_relation = str(ref_payload.get("relation") or "").strip()
     if typed_relation:
         edge["relation"] = typed_relation
     relation = str(edge["relation"])
-    reason = str(ref.get("reason") or "").strip()
+    reason = str(ref_payload.get("reason") or "").strip()
     if reason:
         edge["reason"] = reason
     use_case_items: list[str] = []
-    use_cases = ref.get("use_cases")
+    use_cases = ref_payload.get("use_cases")
     if isinstance(use_cases, list):
         use_case_items = [str(item).strip() for item in use_cases if str(item).strip()]
         edge["use_cases"] = use_case_items
-    if ref.get("required_mastery") is not None:
-        edge["required_mastery"] = ref.get("required_mastery")
-    edge["priority"] = _knowledge_edge_priority(relation, ref)
-    edge["context"] = _knowledge_edge_context(relation, ref)
+    if ref_payload.get("required_mastery") is not None:
+        edge["required_mastery"] = ref_payload.get("required_mastery")
+    edge["priority"] = _knowledge_edge_priority(relation, ref_payload)
+    edge["context"] = _knowledge_edge_context(relation, ref_payload)
     edge["confidence"] = _knowledge_edge_confidence(
-        ref,
+        ref_payload,
         reason=reason,
         use_cases=use_case_items,
     )

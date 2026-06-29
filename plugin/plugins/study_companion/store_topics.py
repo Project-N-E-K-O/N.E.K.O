@@ -9,10 +9,20 @@ from .store_common import (
 )
 
 
-def load_knowledge_seed(self, path: Path | str | None = None) -> int:
+def load_knowledge_seed(
+    self, path: Path | str | None = None, _visited: set[str] | None = None
+) -> int:
     seed_path = Path(path) if path is not None else self.knowledge_seed_json_path
     if seed_path is None or not seed_path.is_file():
         return 0
+    visited = _visited if _visited is not None else set()
+    try:
+        normalized_seed_path = str(seed_path.resolve())
+    except OSError:
+        normalized_seed_path = str(seed_path.absolute())
+    if normalized_seed_path in visited:
+        return 0
+    visited.add(normalized_seed_path)
     try:
         payload = json.loads(seed_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError) as exc:
@@ -32,7 +42,7 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
             child_path = Path(child_name)
             if not child_path.is_absolute():
                 child_path = seed_path.parent / child_path
-            count += self.load_knowledge_seed(child_path)
+            count += self.load_knowledge_seed(child_path, visited)
         return count
     topics = payload.get("topics") if isinstance(payload, dict) else None
     if not isinstance(topics, list):
@@ -53,7 +63,7 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
             topic_id = str(item.get("id") or "").strip()
             name = str(item.get("name") or "").strip()
             subject = str(item.get("subject") or default_subject).strip()
-            chapter = str(item.get("chapter") or "").strip()
+            chapter = str(item.get("chapter") or item.get("unit") or "general").strip()
             unit = str(
                 item.get("unit")
                 or item.get("section")

@@ -520,6 +520,7 @@ def _validate_typed_edge(
     use_cases = ref.get("use_cases")
     if use_cases is not None and not (
         isinstance(use_cases, list)
+        and bool(use_cases)
         and all(str(item).strip() for item in use_cases)
     ):
         issues.append(

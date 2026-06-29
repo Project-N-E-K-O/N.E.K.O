@@ -21,6 +21,12 @@ from .knowledge_graph_guidance import build_knowledge_guidance_payload
 from .models import public_current_question_payload
 
 
+def _warn(logger: Any, message: str, *args: Any) -> None:
+    warning = getattr(logger, "warning", None)
+    if callable(warning):
+        warning(message, *args)
+
+
 class _LearningContext(dict[str, Any]):
     def __init__(
         self,
@@ -63,16 +69,28 @@ class _TutorContextSupportMixin:
         if not query and not topic_id:
             return {}
         try:
-            topics = await asyncio.to_thread(self._store.list_topics, 5000, None, None)
+            cache_key = "all:5000"
+            cache = getattr(self, "_knowledge_guidance_topics_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                setattr(self, "_knowledge_guidance_topics_cache", cache)
+            topics = cache.get(cache_key)
+            if topics is None:
+                topics = await asyncio.to_thread(self._store.list_topics, 5000, None, None)
+                cache[cache_key] = list(topics or [])
             return build_knowledge_guidance_payload(
-                topics=topics,
+                topics=list(topics or []),
                 topic_id=topic_id,
                 query=query,
                 max_depth=3,
                 match_limit=5,
             )
         except Exception as exc:
-            self.logger.warning("study knowledge graph guidance failed: {}", exc)
+            _warn(
+                getattr(self, "logger", None),
+                "study knowledge graph guidance failed: {}",
+                exc,
+            )
             return {}
 
     def _merge_session_summary_seed(

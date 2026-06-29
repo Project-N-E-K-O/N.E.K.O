@@ -118,9 +118,20 @@ def _ref_id(value: Any) -> str:
     return _text(value)
 
 
+def _normalized_relation(relation: Any) -> str:
+    normalized = _text(relation)
+    if normalized == "supports":
+        return "prerequisite"
+    if normalized == "next":
+        return "extends"
+    if normalized == "nearby":
+        return "co_occurs"
+    return normalized
+
+
 def _edge_relation(field: str, value: Any) -> str:
     if isinstance(value, dict):
-        relation = _text(value.get("relation"))
+        relation = _normalized_relation(value.get("relation"))
         if relation:
             return relation
     return "prerequisite" if field == "prerequisites" else "co_occurs"
@@ -178,7 +189,7 @@ def _edge_confidence_value(ref: Any, *, reason: str, use_cases: list[str]) -> fl
 
 
 def _relation_priority(edge: dict[str, Any]) -> int:
-    return RELATION_PRIORITY.get(_text(edge.get("relation")), 99)
+    return RELATION_PRIORITY.get(_normalized_relation(edge.get("relation")), 99)
 
 
 def _edge_payload(
@@ -475,11 +486,11 @@ def _build_relation_groups(
         relation: [] for relation in RELATION_GROUP_ORDER
     }
     for edge in candidates:
-        relation = _text(edge.get("relation"))
-        if relation == "supports":
-            relation = "prerequisite"
+        relation = _normalized_relation(edge.get("relation"))
         if relation in grouped:
-            grouped[relation].append(edge)
+            normalized_edge = dict(edge)
+            normalized_edge["relation"] = relation
+            grouped[relation].append(normalized_edge)
     return {
         relation: {
             "relation": relation,
@@ -551,7 +562,7 @@ def _build_diagnosis_questions(
         questions.append(payload)
 
     for edge in sorted(learning_path, key=lambda item: (_relation_priority(item), int(item.get("depth") or 0))):
-        relation = _text(edge.get("relation"))
+        relation = _normalized_relation(edge.get("relation"))
         if relation not in {"prerequisite", "application", "procedure_step"}:
             continue
         topic_id, topic_label = _other_topic_for_edge(edge, selected_id)
@@ -617,7 +628,7 @@ def _build_diagnosis_questions(
             break
 
     for edge in next_practice:
-        relation = _text(edge.get("relation"))
+        relation = _normalized_relation(edge.get("relation"))
         topic_id, topic_label = _other_topic_for_edge(edge, selected_id)
         if not topic_id or topic_id == selected_id:
             continue
@@ -772,20 +783,20 @@ def build_knowledge_guidance_payload(
     )
     outgoing_edges = outgoing.get(selected_id, [])
     applications = [
-        edge for edge in outgoing_edges if _text(edge.get("relation")) in APPLICATION_RELATIONS
+        edge for edge in outgoing_edges if _normalized_relation(edge.get("relation")) in APPLICATION_RELATIONS
     ]
     incoming_edges = incoming.get(selected_id, [])
     confusions = _dedupe_edges(
         [
             edge
             for edge in [*outgoing_edges, *incoming_edges]
-            if _text(edge.get("relation")) in CONFUSION_RELATIONS
+            if _normalized_relation(edge.get("relation")) in CONFUSION_RELATIONS
         ]
     )
     next_practice = [
         edge
         for edge in outgoing_edges
-        if _text(edge.get("relation")) in NEXT_PRACTICE_RELATIONS
+        if _normalized_relation(edge.get("relation")) in NEXT_PRACTICE_RELATIONS
     ]
     diagnosis_questions = _build_diagnosis_questions(
         selected_id=selected_id,

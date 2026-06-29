@@ -331,7 +331,13 @@ def _init_db(self) -> None:
     self._ensure_column(conn, "topics", "stage", "TEXT NOT NULL DEFAULT ''")
     conn.execute("UPDATE topics SET stage = '' WHERE stage IS NULL")
     self._ensure_column(conn, "topics", "unit", "TEXT NOT NULL DEFAULT ''")
-    conn.execute("UPDATE topics SET unit = chapter WHERE unit IS NULL OR unit = ''")
+    conn.execute(
+        """
+        UPDATE topics
+        SET unit = COALESCE(NULLIF(chapter, ''), 'general')
+        WHERE unit IS NULL OR unit = ''
+        """
+    )
     self._ensure_column(conn, "topics", "skills", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("UPDATE topics SET skills = '[]' WHERE skills IS NULL OR skills = ''")
     self._ensure_column(conn, "topics", "question_types", "TEXT NOT NULL DEFAULT '[]'")
@@ -343,6 +349,13 @@ def _init_db(self) -> None:
     self._ensure_column(conn, "topics", "aliases", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("UPDATE topics SET aliases = '[]' WHERE aliases IS NULL OR aliases = ''")
     self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
+    expected_idx_topics_stage = ["stage", "subject", "chapter", "unit", "depth", "id"]
+    current_idx_topics_stage = [
+        row["name"] if isinstance(row, sqlite3.Row) else row[2]
+        for row in conn.execute("PRAGMA index_info(idx_topics_stage)").fetchall()
+    ]
+    if current_idx_topics_stage and current_idx_topics_stage != expected_idx_topics_stage:
+        conn.execute("DROP INDEX IF EXISTS idx_topics_stage")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage, subject, chapter, unit, depth, id)"
     )

@@ -199,9 +199,14 @@ def evaluate_knowledge_retrieval_queries(
 
     for case in cases:
         query = _text(case.get("query") if isinstance(case, dict) else "")
+        topic_id = _text(case.get("topic_id") if isinstance(case, dict) else "")
         expected_topic_ids = _string_set(case.get("expected_topic_ids"))
         expect_cross_subject = bool(case.get("expect_cross_subject"))
-        payload = build_knowledge_guidance_payload(topics=topics, query=query)
+        payload = build_knowledge_guidance_payload(
+            topics=topics,
+            topic_id=topic_id,
+            query=query,
+        )
         focus_topic = payload.get("topic") if isinstance(payload, dict) else {}
         focus_topic_id = (
             _text(focus_topic.get("id")) if isinstance(focus_topic, dict) else ""
