@@ -56,6 +56,8 @@ VRMManager.prototype.setupFloatingButtons = function() {
             buttonsContainer.style.opacity = '0';
             return;
         }
+        buttonsContainer.style.removeProperty('visibility');
+        buttonsContainer.style.removeProperty('opacity');
         if (this._isInReturnState) {
             buttonsContainer.style.display = 'none';
             return;
@@ -462,6 +464,25 @@ VRMManager.prototype.setupFloatingButtons = function() {
     };
     lockIcon.addEventListener('mousedown', toggleLock);
     lockIcon.addEventListener('touchstart', toggleLock, { passive: false });
+
+    const suppressionChangeHandler = () => {
+        requestAnimationFrame(() => {
+            applyResponsiveFloatingLayout();
+            const currentLockIcon = this._vrmLockIcon;
+            if (currentLockIcon && !this._isInReturnState) {
+                const shouldShowLock = !!(this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon());
+                currentLockIcon.style.display = shouldShowLock ? 'block' : 'none';
+                currentLockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
+                currentLockIcon.style.opacity = shouldShowLock ? '' : '0';
+            }
+        });
+    };
+    this._uiWindowHandlers.push({
+        event: 'neko:yui-guide-floating-toolbar-suppression-change',
+        handler: suppressionChangeHandler,
+        target: window
+    });
+    window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', suppressionChangeHandler);
 
     // 启动 UI 更新循环
     this._startUIUpdateLoop();

@@ -66,17 +66,12 @@ function restoreYuiGuideLive2DPreparingButtonStyles(buttonsContainer) {
         return;
     }
     const forcedHidden = buttonsContainer.dataset.yuiGuideForcedHidden === 'true';
-    const forcedProperties = ['display', 'visibility', 'opacity', 'pointer-events'];
-    const hasImportantForcedStyle = forcedProperties.some((property) => (
-        buttonsContainer.style.getPropertyPriority(property) === 'important'
-    ));
-    if (!forcedHidden && !hasImportantForcedStyle) {
+    if (!forcedHidden) {
         return;
     }
+    const forcedProperties = ['display', 'visibility', 'opacity', 'pointer-events'];
     forcedProperties.forEach((property) => {
-        if (forcedHidden || buttonsContainer.style.getPropertyPriority(property) === 'important') {
-            buttonsContainer.style.removeProperty(property);
-        }
+        buttonsContainer.style.removeProperty(property);
     });
     delete buttonsContainer.dataset.yuiGuideForcedHidden;
 }
