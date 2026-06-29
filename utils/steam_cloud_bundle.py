@@ -26,6 +26,7 @@ import zipfile
 import ctypes
 from contextlib import contextmanager
 from ctypes import POINTER, c_bool, c_char_p, c_int32, c_void_p, create_string_buffer
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -129,6 +130,39 @@ def _cloudsave_manifest_matches_local_files(config_manager, manifest_fingerprint
     return config_manager.cloudsave_manifest_path.is_file()
 
 
+def _parse_manifest_export_time(value: object) -> datetime | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+    if raw_value.endswith("Z"):
+        raw_value = f"{raw_value[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _local_cloudsave_snapshot_is_newer_or_equal(config_manager, remote_manifest_like: dict[str, Any]) -> bool:
+    local_manifest = _load_json_if_exists(config_manager.cloudsave_manifest_path)
+    if not isinstance(local_manifest, dict) or not isinstance(remote_manifest_like, dict):
+        return False
+    local_fingerprint = str(local_manifest.get("fingerprint") or "")
+    remote_fingerprint = str(
+        remote_manifest_like.get("manifest_fingerprint") or remote_manifest_like.get("fingerprint") or ""
+    )
+    if local_fingerprint and remote_fingerprint and local_fingerprint == remote_fingerprint:
+        return _cloudsave_manifest_matches_local_files(config_manager, remote_fingerprint)
+
+    local_exported_at = _parse_manifest_export_time(local_manifest.get("exported_at_utc"))
+    remote_exported_at = _parse_manifest_export_time(remote_manifest_like.get("exported_at_utc"))
+    if local_exported_at is None or remote_exported_at is None:
+        return False
+    return local_exported_at >= remote_exported_at
+
+
 def _write_remote_bundle(
     stage_bundle_path: Path,
     config_manager,
@@ -230,6 +264,7 @@ def _apply_bundle_to_local_cloudsave(
     meta_payload: dict[str, Any] | None,
     *,
     deadline_monotonic: float | None = None,
+    preserve_newer_local: bool = False,
 ) -> dict[str, Any]:
     _assert_deadline_not_exceeded(
         deadline_monotonic,
@@ -267,6 +302,14 @@ def _apply_bundle_to_local_cloudsave(
         staged_file = stage_cloudsave_root / relative_path
         if not staged_file.is_file():
             raise FileNotFoundError(f"remote cloudsave bundle is missing {relative_path}")
+
+    if preserve_newer_local and _local_cloudsave_snapshot_is_newer_or_equal(config_manager, stage_manifest):
+        return {
+            "manifest_fingerprint": remote_fingerprint,
+            "downloaded_file_count": 0,
+            "skipped": True,
+            "reason": "local_snapshot_newer_or_equal",
+        }
 
     stage_replacement_root = stage_root / "cloudsave-replacement"
     stage_replacement_root.mkdir(parents=True, exist_ok=True)
@@ -544,6 +587,13 @@ def download_cloudsave_bundle_from_steam(
                 "reason": "already_synced",
                 "meta": meta_payload,
             }
+        if isinstance(meta_payload, dict) and _local_cloudsave_snapshot_is_newer_or_equal(config_manager, meta_payload):
+            return {
+                "success": True,
+                "action": "skipped",
+                "reason": "local_snapshot_newer_or_equal",
+                "meta": meta_payload,
+            }
 
         _assert_deadline_not_exceeded(
             deadline_monotonic,
@@ -556,7 +606,16 @@ def download_cloudsave_bundle_from_steam(
             bundle_bytes,
             meta_payload,
             deadline_monotonic=deadline_monotonic,
+            preserve_newer_local=True,
         )
+        if apply_result.get("skipped"):
+            return {
+                "success": True,
+                "action": "skipped",
+                "reason": str(apply_result.get("reason") or "local_snapshot_newer_or_equal"),
+                "meta": meta_payload,
+                "result": apply_result,
+            }
         return {
             "success": True,
             "action": "downloaded",
@@ -664,6 +723,8 @@ def upload_cloudsave_bundle_to_steam(
             finally:
                 if batch_started and callable(end_batch):
                     try:
+                        # Steam's batch must be closed once opened, even if the
+                        # first write failed or rollback writes happened inside it.
                         end_batch()
                     except Exception as exc:
                         logger.warning("steam_cloud_bundle: failed to end remote write batch: %s", exc)
