@@ -2,6 +2,7 @@ import io
 import json
 import shutil
 import contextlib
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -166,15 +167,31 @@ def test_download_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform
 
 
 @pytest.mark.unit
-def test_download_cloudsave_bundle_skips_on_windows_frozen_launch():
+def test_download_cloudsave_bundle_uses_bridge_on_windows_packaged_launch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
         "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch.object(sys, "frozen", True, create=True), patch(
+        "utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge
     ):
-        result = download_cloudsave_bundle_from_steam(object())
+        result = download_cloudsave_bundle_from_steam(cm)
 
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "not_source_launch"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit
@@ -276,20 +293,89 @@ def test_upload_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_n
 
 
 @pytest.mark.unit
-def test_upload_cloudsave_bundle_skips_on_windows_frozen_launch(tmp_path):
+def test_upload_cloudsave_bundle_wraps_bundle_and_meta_writes_in_batch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="批量上传角色", recent_message="batch")
+    export_local_cloudsave_snapshot(cm)
+
+    class _BatchBridge:
+        def __init__(self):
+            self.storage = {}
+            self.events = []
+
+        def cloud_enabled(self):
+            return True
+
+        def begin_file_write_batch(self):
+            self.events.append("begin")
+            return True
+
+        def end_file_write_batch(self):
+            self.events.append("end")
+            return True
+
+        def file_exists(self, remote_name):
+            return remote_name in self.storage
+
+        def read_file(self, remote_name):
+            return self.storage[remote_name]
+
+        def write_file(self, remote_name, payload):
+            self.events.append(f"write:{remote_name}")
+            self.storage[remote_name] = payload
+
+        def delete_file(self, remote_name):
+            self.events.append(f"delete:{remote_name}")
+            self.storage.pop(remote_name, None)
+            return True
+
+    bridge = _BatchBridge()
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield bridge
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = upload_cloudsave_bundle_to_steam(cm)
+
+    assert result["action"] == "uploaded"
+    assert bridge.events[0] == "begin"
+    assert bridge.events[-1] == "end"
+    assert f"write:{REMOTE_BUNDLE_FILENAME}" in bridge.events
+    assert f"write:{REMOTE_META_FILENAME}" in bridge.events
+
+
+@pytest.mark.unit
+def test_upload_cloudsave_bundle_uses_bridge_on_windows_packaged_launch(tmp_path):
     cm = _make_config_manager(tmp_path / "target")
     bootstrap_local_cloudsave_environment(cm)
     _write_runtime_state(cm, character_name="冻结上传角色", recent_message="hello")
     export_local_cloudsave_snapshot(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
 
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
         "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch.object(sys, "frozen", True, create=True), patch(
+        "utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge
     ):
         result = upload_cloudsave_bundle_to_steam(cm)
 
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "not_source_launch"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit

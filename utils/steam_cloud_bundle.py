@@ -58,6 +58,22 @@ def is_source_launch() -> bool:
     return not getattr(sys, "frozen", False) and Path(sys.argv[0]).suffix.lower() in _SOURCE_SCRIPT_SUFFIXES
 
 
+def _is_packaged_launch() -> bool:
+    if getattr(sys, "frozen", False):
+        return True
+    if "__compiled__" in globals() or "__nuitka_binary_dir" in globals():
+        return True
+    main_mod = sys.modules.get("__main__")
+    return bool(
+        main_mod is not None
+        and (hasattr(main_mod, "__compiled__") or hasattr(main_mod, "__nuitka_binary_dir"))
+    )
+
+
+def _steam_remote_bundle_launch_allowed() -> bool:
+    return bool(is_source_launch() or _is_packaged_launch())
+
+
 def _managed_cloudsave_relative_paths(config_manager) -> list[str]:
     manifest = load_cloudsave_manifest(config_manager)
     manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
@@ -380,6 +396,15 @@ class SteamCloudBundleBridge:
         self._api.SteamAPI_ISteamRemoteStorage_FileDelete.restype = c_bool
         self._api.SteamAPI_ISteamRemoteStorage_FileWrite.argtypes = [c_void_p, c_char_p, c_void_p, c_int32]
         self._api.SteamAPI_ISteamRemoteStorage_FileWrite.restype = c_bool
+        self._batch_api_available = False
+        try:
+            self._api.SteamAPI_ISteamRemoteStorage_BeginFileWriteBatch.argtypes = [c_void_p]
+            self._api.SteamAPI_ISteamRemoteStorage_BeginFileWriteBatch.restype = c_bool
+            self._api.SteamAPI_ISteamRemoteStorage_EndFileWriteBatch.argtypes = [c_void_p]
+            self._api.SteamAPI_ISteamRemoteStorage_EndFileWriteBatch.restype = c_bool
+            self._batch_api_available = True
+        except AttributeError:
+            self._batch_api_available = False
         self._api.SteamAPI_ISteamRemoteStorage_FileRead.argtypes = [c_void_p, c_char_p, c_void_p, c_int32]
         self._api.SteamAPI_ISteamRemoteStorage_FileRead.restype = c_int32
         self._api.SteamAPI_ISteamRemoteStorage_GetFileSize.argtypes = [c_void_p, c_char_p]
@@ -435,6 +460,16 @@ class SteamCloudBundleBridge:
         if not success:
             raise RuntimeError(f"failed to write remote storage file: {remote_name}")
 
+    def begin_file_write_batch(self) -> bool:
+        if not self._batch_api_available:
+            return False
+        return bool(self._api.SteamAPI_ISteamRemoteStorage_BeginFileWriteBatch(self._remote))
+
+    def end_file_write_batch(self) -> bool:
+        if not self._batch_api_available:
+            return False
+        return bool(self._api.SteamAPI_ISteamRemoteStorage_EndFileWriteBatch(self._remote))
+
     def delete_file(self, remote_name: str) -> bool:
         return bool(self._api.SteamAPI_ISteamRemoteStorage_FileDelete(self._remote, remote_name.encode("ascii")))
 
@@ -454,7 +489,7 @@ def download_cloudsave_bundle_from_steam(
     steamworks=None,
     deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    if not is_source_launch():
+    if not _steam_remote_bundle_launch_allowed():
         return {
             "success": True,
             "action": "skipped",
@@ -536,7 +571,7 @@ def upload_cloudsave_bundle_to_steam(
     steamworks=None,
     deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    if not is_source_launch():
+    if not _steam_remote_bundle_launch_allowed():
         return {
             "success": True,
             "action": "skipped",
@@ -592,31 +627,46 @@ def upload_cloudsave_bundle_to_steam(
             if bridge.file_exists(REMOTE_META_FILENAME):
                 previous_meta_bytes = bridge.read_file(REMOTE_META_FILENAME)
 
-            bridge.write_file(REMOTE_BUNDLE_FILENAME, bundle_bytes)
+            batch_started = False
+            begin_batch = getattr(bridge, "begin_file_write_batch", None)
+            end_batch = getattr(bridge, "end_file_write_batch", None)
+            if callable(begin_batch) and callable(end_batch):
+                try:
+                    batch_started = bool(begin_batch())
+                except Exception as exc:
+                    logger.warning("steam_cloud_bundle: failed to begin remote write batch; continuing: %s", exc)
             try:
-                bridge.write_file(REMOTE_META_FILENAME, meta_bytes)
-            except Exception as exc:
-                rollback_errors: list[str] = []
+                bridge.write_file(REMOTE_BUNDLE_FILENAME, bundle_bytes)
                 try:
-                    if previous_bundle_bytes is None:
-                        bridge.delete_file(REMOTE_BUNDLE_FILENAME)
-                    else:
-                        bridge.write_file(REMOTE_BUNDLE_FILENAME, previous_bundle_bytes)
-                except Exception as restore_bundle_error:
-                    rollback_errors.append(f"restore bundle failed: {restore_bundle_error}")
-                try:
-                    if previous_meta_bytes is None:
-                        bridge.delete_file(REMOTE_META_FILENAME)
-                    else:
-                        bridge.write_file(REMOTE_META_FILENAME, previous_meta_bytes)
-                except Exception as restore_meta_error:
-                    rollback_errors.append(f"restore meta failed: {restore_meta_error}")
-                if rollback_errors:
-                    raise RuntimeError(
-                        "failed to write remote cloudsave meta and rollback previous remote bundle state: "
-                        + "; ".join(rollback_errors)
-                    ) from exc
-                raise
+                    bridge.write_file(REMOTE_META_FILENAME, meta_bytes)
+                except Exception as exc:
+                    rollback_errors: list[str] = []
+                    try:
+                        if previous_bundle_bytes is None:
+                            bridge.delete_file(REMOTE_BUNDLE_FILENAME)
+                        else:
+                            bridge.write_file(REMOTE_BUNDLE_FILENAME, previous_bundle_bytes)
+                    except Exception as restore_bundle_error:
+                        rollback_errors.append(f"restore bundle failed: {restore_bundle_error}")
+                    try:
+                        if previous_meta_bytes is None:
+                            bridge.delete_file(REMOTE_META_FILENAME)
+                        else:
+                            bridge.write_file(REMOTE_META_FILENAME, previous_meta_bytes)
+                    except Exception as restore_meta_error:
+                        rollback_errors.append(f"restore meta failed: {restore_meta_error}")
+                    if rollback_errors:
+                        raise RuntimeError(
+                            "failed to write remote cloudsave meta and rollback previous remote bundle state: "
+                            + "; ".join(rollback_errors)
+                        ) from exc
+                    raise
+            finally:
+                if batch_started and callable(end_batch):
+                    try:
+                        end_batch()
+                    except Exception as exc:
+                        logger.warning("steam_cloud_bundle: failed to end remote write batch: %s", exc)
             return {
                 "success": True,
                 "action": "uploaded",
