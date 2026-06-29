@@ -1749,6 +1749,7 @@
                 gainSlider.disabled = true;
                 gainSlider.style.cursor = 'not-allowed';
                 gainSlider.style.opacity = '0.55';
+                gainLabel.style.color = 'var(--neko-popup-text-sub)';
                 gainValueEl.style.color = 'var(--neko-popup-text-sub)';
             }
 
