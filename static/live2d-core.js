@@ -593,7 +593,13 @@ class Live2DManager {
         // 启动即视为活动（加载/入场动画期间保持满帧），随后自动衰减。
         this.boostInteractiveFPS();
         this._idleFpsGovernorTimer = setInterval(() => {
-            if (!this.pixi_app || !this.pixi_app.ticker) return;
+            // 自终止：任何 teardown 路径（切 VRM/MMD、model_manager 销毁、manager.destroy 等）
+            // 销毁/置空 pixi_app 后，governor 在下一拍自动停掉并释放对 manager 的闭包引用——
+            // 不必每条销毁路径都手动清，避免遗漏与内存泄漏。
+            if (!this.pixi_app || !this.pixi_app.ticker) {
+                this._stopIdleFpsGovernor();
+                return;
+            }
             if (this._hasRenderActivity()) {
                 this.boostInteractiveFPS();
             }
