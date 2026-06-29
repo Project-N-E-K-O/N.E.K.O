@@ -1513,6 +1513,7 @@
             "title": "感情マッピング管理",
             "description": "異なる感情に対するモーションと表情を設定",
             "happy": "嬉しい (Happy)",
+            "shy": "照れ (Shy)",
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",
             "neutral": "平静 (Neutral)",
@@ -3584,6 +3585,7 @@
         "configReset": "設定をリセットしました",
         "emotions": {
             "happy": "嬉しい (Happy)",
+            "shy": "照れ (Shy)",
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",
             "neutral": "平常 (Neutral)",
@@ -3623,6 +3625,7 @@
         "emotions": {
             "neutral": "平常 (Neutral)",
             "happy": "嬉しい (Happy)",
+            "shy": "照れ (Shy)",
             "relaxed": "リラックス (Relaxed)",
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",
@@ -3662,6 +3665,7 @@
         "emotions": {
             "neutral": "平常 (Neutral)",
             "happy": "嬉しい (Happy)",
+            "shy": "照れ (Shy)",
             "relaxed": "リラックス (Relaxed)",
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",

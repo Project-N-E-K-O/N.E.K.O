@@ -1513,6 +1513,7 @@
             "title": "Emotion Mapping Manager",
             "description": "Configure motions and expressions for different emotions",
             "happy": "Happy",
+            "shy": "Shy",
             "sad": "Sad",
             "angry": "Angry",
             "neutral": "Neutral",
@@ -3584,6 +3585,7 @@
         "configReset": "Configuration has been reset",
         "emotions": {
             "happy": "Happy",
+            "shy": "Shy",
             "sad": "Sad",
             "angry": "Angry",
             "neutral": "Neutral",
@@ -3623,6 +3625,7 @@
         "emotions": {
             "neutral": "Neutral",
             "happy": "Happy",
+            "shy": "Shy",
             "relaxed": "Relaxed",
             "sad": "Sad",
             "angry": "Angry",
@@ -3662,6 +3665,7 @@
         "emotions": {
             "neutral": "Neutral",
             "happy": "Happy",
+            "shy": "Shy",
             "relaxed": "Relaxed",
             "sad": "Sad",
             "angry": "Angry",

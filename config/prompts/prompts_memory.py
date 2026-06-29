@@ -834,13 +834,13 @@ history_review_prompt = HISTORY_REVIEW_PROMPT["zh"]
 # =====================================================================
 
 EMOTION_ANALYSIS_PROMPT = {
-    "zh": """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy, sad, angry, neutral, surprised.""",
-    "en": """你是一个情感分析专家. Analyze the emotion of the user's input text and return JSON in the following format: {"emotion": "emotion_type", "confidence": confidence(0-1)}. Emotion types: happy, sad, angry, neutral, surprised.""",
-    "ja": """你是一个情感分析专家。ユーザーの入力テキストの感情を分析し、以下のJSON形式で返してください：{"emotion": "感情タイプ", "confidence": 信頼度(0-1)}。感情タイプ：happy, sad, angry, neutral, surprised.""",
-    "ko": """你是一个情感分析专家. 사용자 입력 텍스트의 감정을 분석하고 다음 JSON 형식으로 반환해 주세요: {"emotion": "감정유형", "confidence": 신뢰도(0-1)}. 감정 유형: happy, sad, angry, neutral, surprised.""",
-    "ru": """你是一个情感分析专家. Проанализируйте эмоцию во вводимом пользователем тексте и верните JSON в следующем формате: {"emotion": "тип_эмоции", "confidence": уверенность(0-1)}. Типы эмоций: happy, sad, angry, neutral, surprised.""",
-    "es": """你是一个情感分析专家. Analiza la emoción del texto de entrada del usuario y devuelve JSON con el formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Los tipos de emoción son: happy, sad, angry, neutral, surprised.""",
-    "pt": """你是一个情感分析专家. Analise a emoção do texto de entrada do usuário e retorne JSON no formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Os tipos de emoção são: happy, sad, angry, neutral, surprised.""",
+    "zh": """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy, shy, sad, angry, neutral, surprised.""",
+    "en": """你是一个情感分析专家. Analyze the emotion of the user's input text and return JSON in the following format: {"emotion": "emotion_type", "confidence": confidence(0-1)}. Emotion types: happy, shy, sad, angry, neutral, surprised.""",
+    "ja": """你是一个情感分析专家。ユーザーの入力テキストの感情を分析し、以下のJSON形式で返してください：{"emotion": "感情タイプ", "confidence": 信頼度(0-1)}。感情タイプ：happy, shy, sad, angry, neutral, surprised.""",
+    "ko": """你是一个情感分析专家. 사용자 입력 텍스트의 감정을 분석하고 다음 JSON 형식으로 반환해 주세요: {"emotion": "감정유형", "confidence": 신뢰도(0-1)}. 감정 유형: happy, shy, sad, angry, neutral, surprised.""",
+    "ru": """你是一个情感分析专家. Проанализируйте эмоцию во вводимом пользователем тексте и верните JSON в следующем формате: {"emotion": "тип_эмоции", "confidence": уверенность(0-1)}. Типы эмоций: happy, shy, sad, angry, neutral, surprised.""",
+    "es": """你是一个情感分析专家. Analiza la emoción del texto de entrada del usuario y devuelve JSON con el formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Los tipos de emoción son: happy, shy, sad, angry, neutral, surprised.""",
+    "pt": """你是一个情感分析专家. Analise a emoção do texto de entrada do usuário e retorne JSON no formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Os tipos de emoção são: happy, shy, sad, angry, neutral, surprised.""",
 }
 
 
