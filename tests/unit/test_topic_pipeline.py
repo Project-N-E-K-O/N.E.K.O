@@ -1947,6 +1947,10 @@ def test_legacy_used_topic_without_weight_loads_as_full(tmp_path):
     # count-based quota), never silently demoted to the unanswered 1/3.
     signal_path = tmp_path / "topic_signals.json"
     used_path = signal_path.with_name(f"{signal_path.stem}.used_topics.json")
+    # Pin a single timestamp for both records and the quota checks so the test
+    # can't straddle a calendar-day boundary (which would drop the legacy record
+    # from "today" and flake the assertions).
+    now = time.time()
     used_path.write_text(
         json.dumps(
             {
@@ -1954,7 +1958,7 @@ def test_legacy_used_topic_without_weight_loads_as_full(tmp_path):
                 "characters": {
                     "妮可": [
                         {
-                            "used_at": time.time(),
+                            "used_at": now,
                             "hook_id_hash": "",
                             "interest_hash": "",
                             "keyword_hashes": [],
@@ -1979,13 +1983,13 @@ def test_legacy_used_topic_without_weight_loads_as_full(tmp_path):
     # The legacy record reads as a full success, not the unanswered 1/3.
     assert _record_weight(records[0]) == pytest.approx(1.0)
     # One full legacy unit is under the limit of 2; a second full delivery fills it.
-    assert pool._daily_quota_reached("妮可") is False
+    assert pool._daily_quota_reached("妮可", now=now) is False
     pool._mark_topic_used(
         "妮可",
-        {"used_at": time.time(), "interest": "新", "keywords": ["新"]},
+        {"used_at": now, "interest": "新", "keywords": ["新"]},
     )
     pool._used_topics["妮可"][-1]["weight"] = 1.0
-    assert pool._daily_quota_reached("妮可") is True
+    assert pool._daily_quota_reached("妮可", now=now) is True
 
 
 def test_topic_pool_daily_topic_limit_resets_on_calendar_day():
