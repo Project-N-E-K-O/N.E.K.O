@@ -1,0 +1,31 @@
+[plugin]
+id = "terminal_agent"
+name = "Terminal Agent"
+description = "终端风格的 Agent 启动器，支持在终端中输入 claude/copilot 等命令来启动不同的 Agent"
+version = "0.1.0"
+entry = "plugin.plugins.terminal_agent:TerminalAgentPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "en"
+locales_dir = "i18n"
+
+[plugin.store]
+enabled = true
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "Terminal"
+entry = "ui/panel.tsx"
+context = "terminal"
+permissions = ["state:read", "action:call"]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
