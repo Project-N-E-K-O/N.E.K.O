@@ -11,6 +11,11 @@ from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
 
 
+def _single_saved_catgirl(saved):
+    catgirl_group = next(value for value in saved.values() if isinstance(value, dict) and value)
+    return next(iter(catgirl_group.values()))
+
+
 class DummyRequest:
     def __init__(self, payload):
         self._payload = payload
@@ -109,6 +114,63 @@ async def _call_update(monkeypatch, payload, characters=None):
 
 
 @pytest.mark.asyncio
+async def test_pngtuber_save_preserves_and_bounds_mobile_layout_fields(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+                'talking_image': '/static/pngtuber/default/talking.png',
+                'scale': 1.4,
+                'offset_x': -42,
+                'offset_y': 84,
+                'mobile_scale': 9,
+                'mobile_offset_x': -7000,
+                'mobile_offset_y': 7000,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert pngtuber['scale'] == 1.4
+    assert pngtuber['offset_x'] == -42
+    assert pngtuber['offset_y'] == 84
+    assert pngtuber['mobile_scale'] == 5
+    assert pngtuber['mobile_offset_x'] == -5000
+    assert pngtuber['mobile_offset_y'] == 5000
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_save_defaults_missing_mobile_layout_fields(monkeypatch):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'pngtuber',
+            'pngtuber': {
+                'idle_image': '/static/pngtuber/default/idle.png',
+                'scale': 2,
+                'offset_x': 12,
+                'offset_y': -34,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    pngtuber = get_reserved(catgirl, 'avatar', 'pngtuber')
+
+    assert pngtuber['mobile_scale'] == 1
+    assert pngtuber['mobile_offset_x'] == 0
+    assert pngtuber['mobile_offset_y'] == 0
+
+
+@pytest.mark.asyncio
 async def test_switching_back_to_live2d_preserves_saved_live3d_configs(monkeypatch):
     response, body, saved = await _call_update(
         monkeypatch,
@@ -184,6 +246,43 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
         assert get_reserved(catgirl, 'avatar', 'mmd', 'model_path') == payload['mmd']
         assert get_reserved(catgirl, 'avatar', 'mmd', 'animation') == payload['mmd_animation']
         assert get_reserved(catgirl, 'avatar', 'mmd', 'idle_animation') == payload['mmd_idle_animation']
+
+
+@pytest.mark.asyncio
+async def test_vrm_save_omitting_animation_preserves_saved_animation(monkeypatch):
+    # 不带 vrm_animation 字段的保存不得动到已存的单动作。
+    # 这是前端动作下拉恢复机制（restore -> 下拉显示已存动作 -> 保存回传原值）依赖的契约：
+    # 若契约破坏，无关保存会静默清空已存动作。
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live3d',
+            'vrm': '/user_vrm/models/hero.vrm',
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    assert get_reserved(catgirl, 'avatar', 'vrm', 'animation') == '/user_vrm/animation/pose.vrma'
+
+
+@pytest.mark.asyncio
+async def test_vrm_save_empty_animation_clears_saved_animation(monkeypatch):
+    # 只有显式传 vrm_animation='' 才清空，对应用户主动选择"无动作"(_no_motion_)。
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live3d',
+            'vrm': '/user_vrm/models/hero.vrm',
+            'vrm_animation': '',
+        },
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    catgirl = _single_saved_catgirl(saved)
+    assert get_reserved(catgirl, 'avatar', 'vrm', 'animation') is None
 
 
 @pytest.mark.asyncio

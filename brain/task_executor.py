@@ -60,7 +60,7 @@ from config.prompts.prompts_agent import (
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
 from config.prompts.prompts_sys import _loc
-from utils.file_utils import robust_json_loads
+from utils.file_utils import atomic_write_json, robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -829,14 +829,9 @@ class DirectTaskExecutor:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-        try:
-            os.chmod(tmp_path, 0o600)
-        except OSError:
-            pass
-        tmp_path.replace(path)
+        # 走统一原子写（tmp + fsync + os.replace）：补齐此前缺的 fsync，断电不留 0
+        # 字节文件；mkstemp 的 tmp 天生 0o600，不经过 umask 决定的可读窗口。
+        atomic_write_json(path, data, ensure_ascii=False, indent=2)
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -908,14 +903,8 @@ class DirectTaskExecutor:
                 os.chmod(path.parent, 0o700)
             except OSError:
                 pass
-            tmp_path = path.with_suffix(path.suffix + ".tmp")
-            with tmp_path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-            try:
-                os.chmod(tmp_path, 0o600)
-            except OSError:
-                pass
-            tmp_path.replace(path)
+            # 统一原子写：tmp + fsync + os.replace，崩溃只丢 .tmp 不破坏原文件。
+            atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             try:
                 os.chmod(path, 0o600)
             except OSError:

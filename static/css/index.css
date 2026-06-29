@@ -497,6 +497,15 @@ button * {
         `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
         命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
         匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */
+#live2d-floating-buttons,
+#vrm-floating-buttons,
+#mmd-floating-buttons,
+#pngtuber-floating-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -512,6 +521,18 @@ body.neko-game-active [id$="-return-button-container"],
 body.neko-game-active [id$="-lock-icon"] {
     display: none !important;
     pointer-events: none !important;
+}
+
+/* 锁图标的 pointer-events 兜底。
+   整页以 html,body{pointer-events:none} 作点击穿透底，锁图标本应自行 opt-in auto。
+   锁创建时（avatar-ui-buttons / live2d-ui-buttons 等）设的是 inline pointer-events:auto，
+   但 showLive2d / restoreYuiGuideLive2DPreparingControls 等「恢复」函数会对它
+   removeProperty('pointer-events') 来清掉 !important 残留，连带把那份 auto 也抹掉，
+   于是锁掉回继承的 none、永久点不动（直到一次 goodbye→return 重新设上 auto）。
+   这条兜底把锁的静止态钉成可点；拖拽屏蔽（body.neko-model-dragging …!important）、
+   游戏态隐藏、教程 preparing 隐藏（均用 !important none）仍能正常压住它。 */
+[id$="-lock-icon"] {
+    pointer-events: auto;
 }
 
 /* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有
@@ -1590,12 +1611,19 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: none;
 }
 
-/* 主动分享表情包 overlay 是纯被动展示挂件，必须全程点击穿透。它注册了 data-compact-geometry-owner="surface"，
-   会被上面那条把 surface 子树重新开成 auto 的通用规则命中；这里用同优先级、靠后定义的规则把它压回 none
-   （否则表情包显示期间会吞掉它矩形区域的点击）。React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
+/* 主动分享表情包 overlay 的图片区域保持点击穿透；关闭叉是唯一可交互 hit region。
+   它注册了 data-compact-geometry-owner="surface"，会被上面那条把 surface 子树重新开成 auto 的通用规则命中；
+   这里用同优先级、靠后定义的规则把透明包装和图片区压回 none，再单独保留关闭按钮 auto。
+   React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay * {
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay img,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-frame,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close-icon {
     pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close {
+    pointer-events: auto;
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,

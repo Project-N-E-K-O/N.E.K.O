@@ -31,8 +31,15 @@ For bugs or feature requests, [opening an Issue](https://github.com/Project-N-E-
 
 **Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/)
 
+> [!IMPORTANT]
+> **⚡ Clone with a partial clone!** This repo has a large history (`.git` ~390 MB) due to old binary assets. Use `--filter=blob:none` so you only download what you actually need — **much smaller and faster**, with zero impact on development:
+> ```bash
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+
 ```bash
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# ⚡ Strongly prefer the partial-clone command above (drop --filter only if you need full history)
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 uv sync
 
@@ -106,8 +113,15 @@ Bug 或功能建议建议先[提交 Issue](https://github.com/Project-N-E-K-O/N.
 
 **要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/)
 
+> [!IMPORTANT]
+> **⚡ 请用「部分克隆」!** 本仓库历史体积较大(`.git` 约 390 MB,源于历史中的旧版二进制资源)。加 `--filter=blob:none` 只下载真正用到的文件,**体积更小、速度更快**,且不影响开发:
+> ```bash
+> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+> ```
+
 ```bash
-git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
+# ⚡ 强烈推荐用上方「部分克隆」命令（确需完整历史再去掉 --filter）
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 uv sync
 

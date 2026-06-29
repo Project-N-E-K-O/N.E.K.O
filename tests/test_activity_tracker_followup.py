@@ -961,6 +961,29 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_activity_guess_gate_wired_with_production_backoff_knobs():
+    """config → tracker → gate wiring carries the user-tuned faster-decay
+    schedule: 4x growth per re-narration, capped at 900s (aligned with the
+    15-min away threshold)."""
+    from main_logic.activity.tracker import UserActivityTracker
+    from config import (
+        ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+        ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
+    )
+
+    tracker = UserActivityTracker('test_lanlan')
+    gate = tracker._activity_guess_gate
+    assert gate._base == ACTIVITY_GUESS_BACKOFF_BASE_SECONDS
+    assert gate._mult == ACTIVITY_GUESS_BACKOFF_MULTIPLIER
+    assert gate._cap == max(
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS, ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    )
+    # Pin the user's headline ask so a silent revert to the old 2x/600s is caught.
+    assert ACTIVITY_GUESS_BACKOFF_MULTIPLIER == 4.0
+    assert ACTIVITY_GUESS_BACKOFF_CAP_SECONDS == 900.0
+
+
 def test_narration_suppressed_check_defaults_and_injection():
     from main_logic.activity.tracker import UserActivityTracker
 
@@ -1008,24 +1031,48 @@ def test_activity_guess_loop_skips_llm_when_narration_suppressed():
 
 
 def test_activity_guess_signature_excludes_idle_bucket():
-    """idle seconds growing must not flip the dedup signature.
+    """The activity_guess gate must not key on monotonically-growing idle time.
 
-    While AFK, system_idle_seconds keeps climbing; the old code folded
-    idle//30 into the signature, flipping it every ~30s, defeating dedup
-    and burning one emotion-tier LLM call every ~40s during pure idle.
-    The signature now keys only on "what the user is doing" (state +
-    window + subcategory); the active->idle->away transition is still
-    caught by state (away bails anyway).
+    While AFK, system_idle_seconds keeps climbing; an earlier version folded
+    idle//30 into the dedup signature, flipping it every ~30s and burning one
+    emotion-tier LLM call every ~40s during pure idle. The gate now keys on a
+    coarse ``(state, window-category)`` signature handed to ActivityGuessGate
+    (per-signature backoff + novelty bypass); idle seconds never enter it. The
+    active->idle->away transition is still caught by state (away bails anyway).
     """
     from main_logic.activity.tracker import UserActivityTracker
 
-    source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    from types import SimpleNamespace
+
+    loop_source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    sig_source = inspect.getsource(UserActivityTracker._coarse_activity_sig)
     # idle_bucket 是旧签名里按 idle 秒数分桶的那个变量名（空烧根因），断言它
     # 不回归即精准守住该行为。不断言 "system_idle_seconds" not in source：那比
     # 约束目标更宽，会误伤将来 loop 里对 idle 秒数的其它无害引用（喂 LLM 的
     # signals 仍在 _snapshot_signals_for_llm 这个独立方法里用到它）。
-    assert "idle_bucket" not in source
-    assert "sig = (" in source
+    assert "idle_bucket" not in loop_source
+    assert "idle_bucket" not in sig_source
+    assert "self._activity_guess_gate.should_fire(" in loop_source
+    # Behaviour (not just the comment): the coarse key is (state, category) —
+    # different category → different key; same category but different
+    # canonical/subcategory → SAME key (coarsening), so window flicker within a
+    # category does not re-narrate.
+    work = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='IDE', subcategory='code'),
+    )
+    chat = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='chat', canonical='IM', subcategory='dm'),
+    )
+    same_bucket = SimpleNamespace(
+        state='focused_work',
+        active_window=SimpleNamespace(category='work', canonical='Browser', subcategory='docs'),
+    )
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            != UserActivityTracker._coarse_activity_sig(chat))
+    assert (UserActivityTracker._coarse_activity_sig(work)
+            == UserActivityTracker._coarse_activity_sig(same_bucket))
 
 
 def test_conversation_turn_dispatcher_does_not_purge_topic_signals_for_redacted_turns():

@@ -4,14 +4,18 @@ N.E.K.O. uses different AI models for different tasks. Each can be individually 
 
 ## Model roles
 
-| Role | Default | Env var | Purpose |
-|------|---------|---------|---------|
-| Conversation | `qwen-max` | - | Character chat (offline mode) |
-| Summary | `qwen-plus` | `NEKO_SUMMARY_MODEL` | Conversation summarization |
-| Correction | `qwen-max` | `NEKO_CORRECTION_MODEL` | Text correction |
-| Emotion | `qwen-flash` | `NEKO_EMOTION_MODEL` | Emotion analysis for expressions |
-| Vision | `qwen3-vl-plus-2025-09-23` | `NEKO_VISION_MODEL` | Image/screenshot understanding |
-| Agent | `qwen3.5-plus` | `NEKO_AGENT_MODEL` | Agent task execution |
+The model for each role is resolved from the **selected assist provider** (`config/api_providers.json` → `assist_api_providers`), so there is no single global default — each provider ships its own per-role models. The columns below show the shipped defaults for the OpenAI, Claude (Anthropic), and Qwen providers. (The `DEFAULT_*_MODEL` constants in `config/__init__.py` are last-resort fallbacks only.)
+
+| Role | Config field | OpenAI | Claude | Qwen |
+|------|--------------|--------|--------|------|
+| Conversation | `conversation_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
+| Summary | `summary_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
+| Correction | `correction_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus` |
+| Emotion | `emotion_model` | `gpt-4.1-nano` | `claude-haiku-4-5-20251001` | `qwen3.6-flash` |
+| Vision | `vision_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
+| Agent | `agent_model` | `glm-5v-turbo` | `claude-opus-4-6` | `qwen3.7-plus` |
+
+> **Note:** `agent_model` is the model used for agent (Computer Use) task grounding. Several providers intentionally ship a strong vision/grounding model here regardless of their own family — e.g. the OpenAI provider's `agent_model` is `glm-5v-turbo` (a GLM vision model). These values are copied verbatim from `config/api_providers.json` and are by design, not typos.
 
 ## Custom model endpoints
 

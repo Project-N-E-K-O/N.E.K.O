@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-06-22-tutorial-i18n-bubblemeta';
+    const LOCALE_VERSION = '2026-06-22-vllm-omni-clone';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {

@@ -4,10 +4,17 @@ from pathlib import Path
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/universal-manager.js"
 )
+ROUND_PRELUDE_CONTROLLER_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/round-prelude-controller.js"
+)
 
 
 def _read_manager() -> str:
     return UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+
+def _read_round_prelude() -> str:
+    return ROUND_PRELUDE_CONTROLLER_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -154,6 +161,19 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
     assert "YUI 临时模型需要重新加载以恢复视觉对象" in visible_block
     assert "&& this.hasTutorialYuiLive2dRenderableModel()" in visible_block
     assert "&& placementReady === true;" in visible_block
+    assert "isTutorialYuiLive2dVisualReady()" in source
+    visual_ready_block = source.split(
+        "    isTutorialYuiLive2dVisualReady() {",
+        1,
+    )[1].split(
+        "    waitForTutorialYuiLive2dVisualReady(reason = '', maxWaitTime = 12000) {",
+        1,
+    )[0]
+    assert "this.isTutorialYuiLive2dActive()" in visual_ready_block
+    assert "this.hasTutorialYuiLive2dRenderableModel(manager)" in visual_ready_block
+    assert "manager._isLoadingModel === true" in visual_ready_block
+    assert "state !== 'ready'" in visual_ready_block
+    assert "manager._isModelReadyForInteraction !== true" in visual_ready_block
 
     restore_block = source.split(
         "    restoreTutorialLive2dDisplayState(reason = '', options = {}) {",
@@ -170,6 +190,24 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
     assert "live2dContainer.style.setProperty('opacity', '1', 'important');" in restore_block
     assert "live2dCanvas.style.removeProperty('opacity');" in restore_block
     assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_block
+
+
+def test_round_prelude_waits_for_yui_visual_ready_before_taking_over():
+    source = _read_round_prelude()
+    play_block = source.split("        async play(day, options) {", 1)[1].split(
+        "    return {",
+        1,
+    )[0]
+
+    assert "this.waitForAvatarReady = normalizedOptions.waitForAvatarReady || noop;" in source
+    assert "await toPromise(() => this.ensureVisible(sceneId, {" in play_block
+    assert "await toPromise(() => this.waitForAvatarReady(sceneId, {" in play_block
+    assert play_block.index("await toPromise(() => this.ensureVisible(sceneId, {") < play_block.index(
+        "await toPromise(() => this.waitForAvatarReady(sceneId, {"
+    )
+    assert play_block.index("await toPromise(() => this.waitForAvatarReady(sceneId, {") < play_block.index(
+        "this.beginTakingOver({"
+    )
 
 
 def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay():
@@ -236,12 +274,86 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
     assert "hideTutorialLive2dRuntimeSurfaceAfterResidueClear()" in source
     assert "await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');" in start_round_block
     assert "async waitForTutorialTeardownSettled(reason = '')" in source
+    assert "waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000)" in source
     assert "if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {" in placement_block
-    assert "deferRevealPrepared: Number(round) === 1" in prelude_block
+    assert "deferRevealPrepared: true" in prelude_block
     assert "const deferRevealPrepared = options && options.deferRevealPrepared === true;" in ensure_visible_block
     assert "if (!deferRevealPrepared) {" in ensure_visible_block
     assert "deferRevealPrepared" in render_active_block
     assert "preservePreparingOpacity: deferRevealPrepared" in render_active_block
+
+
+def test_tutorial_live2d_preparing_hides_model_side_controls():
+    repo_root = Path(__file__).resolve().parents[2]
+    css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
+    app_ui_source = (repo_root / "static/app-ui.js").read_text(encoding="utf-8")
+    live2d_buttons_source = (repo_root / "static/live2d-ui-buttons.js").read_text(encoding="utf-8")
+    manager_source = _read_manager()
+    reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
+
+    assert "body.yui-guide-live2d-preparing #live2d-floating-buttons" in css_source
+    assert "body.yui-guide-live2d-preparing #live2d-lock-icon" in css_source
+    assert "body.yui-guide-live2d-preparing #live2d-return-button-container" in css_source
+
+    assert "hideYuiGuideLive2DPreparingControls()" in app_ui_source
+    restore_controls_block = app_ui_source.split("function restoreYuiGuideLive2DPreparingControls()", 1)[1].split(
+        "function restoreLive2DDisplaySurface",
+        1,
+    )[0]
+    assert "'live2d-floating-buttons'" in restore_controls_block
+    assert "'live2d-lock-icon'" in restore_controls_block
+    assert "'live2d-return-button-container'" not in restore_controls_block
+    assert "if (!preserveYuiGuidePreparing && floatingButtons) {" in app_ui_source
+    assert "if (!preserveYuiGuidePreparing && lockIcon) {" in app_ui_source
+
+    assert "function isYuiGuideLive2DPreparing()" in live2d_buttons_source
+    assert "if (isYuiGuideLive2DPreparing()) {" in live2d_buttons_source
+    assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer)" in live2d_buttons_source
+    assert "buttonsContainer.style.setProperty('display', 'flex', 'important');" in live2d_buttons_source
+    protection_timer_block = live2d_buttons_source.split(
+        "this.tutorialProtectionTimer = setInterval(() => {",
+        1,
+    )[1].split("}, 300);", 1)[0]
+    assert "if (isYuiGuideLive2DPreparing()) {" in protection_timer_block
+    assert "hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);" in protection_timer_block
+    assert protection_timer_block.index(
+        "if (isYuiGuideLive2DPreparing()) {"
+    ) < protection_timer_block.index("const style = window.getComputedStyle(buttonsContainer);")
+
+    assert "hideTutorialLive2dPreparingControls()" in manager_source
+    assert "fadeOutCurrentModel: () => this.fadeOutCurrentTutorialSourceModel()" in manager_source
+    assert "async fadeOutCurrentTutorialSourceModel()" in manager_source
+    assert "const fadeOutMs = 900;" in manager_source
+    assert "opacity 900ms ease-in-out" in manager_source
+    assert "'live2d-floating-buttons'," in manager_source
+    clear_prepare_block = manager_source.split("clearTutorialLive2dPreparingStyles() {", 1)[1].split(
+        "restoreTutorialLive2dDisplayState",
+        1,
+    )[0]
+    display_restore_block = clear_prepare_block.split("element.style.removeProperty('display');", 1)[0]
+    assert "id === 'live2d-floating-buttons'" in display_restore_block
+    assert "id === 'live2d-lock-icon'" in display_restore_block
+    assert "id === 'live2d-return-button-container'" not in display_restore_block
+    assert "if (preparing === true) {" in manager_source
+
+    assert "this.fadeOutCurrentModel = normalizedOptions.fadeOutCurrentModel || noop;" in reload_controller_source
+    assert "await Promise.resolve(this.fadeOutCurrentModel({" in reload_controller_source
+
+
+def test_tutorial_live2d_preparing_does_not_use_intro_loading_mask():
+    repo_root = Path(__file__).resolve().parents[2]
+    css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
+    manager_source = _read_manager()
+
+    assert "YUI_GUIDE_LIVE2D_LOADING_MASK" not in manager_source
+    assert "showTutorialLive2dPreparingMask" not in manager_source
+    assert "hideTutorialLive2dPreparingMask" not in manager_source
+    assert "cat_model_change_slow_" not in manager_source
+    assert "yui-guide-live2d-loading" not in manager_source
+
+    assert "#yui-guide-live2d-loading-mask" not in css_source
+    assert "body.yui-guide-live2d-loading" not in css_source
+    assert "cat_model_change_slow_" not in css_source
 
 
 def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():

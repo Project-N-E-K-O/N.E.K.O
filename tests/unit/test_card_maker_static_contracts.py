@@ -8,6 +8,7 @@ CARD_MAKER_CSS = PROJECT_ROOT / "static" / "css" / "card_maker.css"
 CHARACTER_CARD_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "character_card_manager.js"
 MODEL_MANAGER_JS = PROJECT_ROOT / "static" / "js" / "model_manager.js"
 PNGTUBER_CORE_JS = PROJECT_ROOT / "static" / "pngtuber-core.js"
+MODEL_MANAGER_TEMPLATE = PROJECT_ROOT / "templates" / "model_manager.html"
 WINDOW_CONTROLS_JS = PROJECT_ROOT / "static" / "js" / "window_controls.js"
 CARD_MAKER_TEMPLATE = PROJECT_ROOT / "templates" / "card_maker.html"
 LOCALE_DIR = PROJECT_ROOT / "static" / "locales"
@@ -161,6 +162,24 @@ def test_pngtuber_model_manager_preview_does_not_auto_save():
     assert "if (isModelManagerPage()) return;" in sync_block
     assert "if (isModelManagerPage()) return false;" in save_block
     assert save_block.index("if (isModelManagerPage()) return false;") < save_block.index("fetch(`/api/characters/catgirl/l2d/")
+def test_model_manager_pngtuber_upload_supports_project_file_without_removing_folder_upload():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    template = MODEL_MANAGER_TEMPLATE.read_text(encoding="utf-8")
+
+    assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
+    assert 'id="pngtuber-package-upload" accept=".pngRemix,.pngremix,.save"' in template
+    assert ".veadomini" not in template
+    assert ".veado" not in template
+    assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in script
+    assert "showPNGTuberUploadChoice()" in script
+    assert "uploadPNGTuberFiles(Array.from(e.target.files));" in script
+    assert "menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);" in script
+    assert "menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);" in script
+    assert "event.key === 'Escape'" in script
+    assert "window.t('live2d.pngtuberImportProjectFile')" in script
+    assert "window.t('live2d.pngtuberImportFolder')" in script
+    assert "pngtuberPackageUpload.click();" in script
+    assert "pngtuberModelUpload.click();" in script
 
 
 def test_card_maker_rejects_remote_pngtuber_assets_before_export():

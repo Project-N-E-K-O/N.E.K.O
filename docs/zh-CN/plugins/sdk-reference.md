@@ -223,12 +223,13 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 ## PluginStore（持久化存储）
 
-```python
-from plugin.sdk.plugin import PluginStore
+通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。
 
-store = PluginStore(self.ctx)
-await store.set("key", {"count": 42})
-value = await store.get("key")  # → {"count": 42}
+`PluginStore` 的所有方法都返回 `Result`，需用 `unwrap_or(...)` 解包。
+
+```python
+unwrap_or(await self.store.set("key", {"count": 42}), None)
+value = unwrap_or(await self.store.get("key"), None)  # → {"count": 42}
 ```
 
 ---
@@ -238,18 +239,20 @@ value = await store.get("key")  # → {"count": 42}
 通过 `self.memory` 访问。
 
 ```python
-result = await self.memory.search("keyword")
-result = await self.memory.store("key", "value")
+result = await self.memory.query("default", "keyword")  # 在指定 bucket 中检索
+result = await self.memory.get("default", limit=20)      # 列出该 bucket 中的最近记录
 ```
 
 ---
 
 ## SystemInfo
 
-通过 `self.system_info` 访问。
+通过 `self.system_info` 访问。这些方法都返回 `Result`，需用 `unwrap_or(...)` 解包。
 
 ```python
-info = await self.system_info.get()
+config = unwrap_or(await self.system_info.get_system_config(), {})
+settings = unwrap_or(await self.system_info.get_server_settings(), {})
+python_env = unwrap_or(await self.system_info.get_python_env(), {})
 ```
 
 ---

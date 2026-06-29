@@ -1252,9 +1252,10 @@ async def get_changelog(since: str = "", lang: str = ""):
     The frontend passes the lastNotifiedVersion stored in localStorage; the backend
     returns all changelog entries > since (ascending by version) plus the current
     version number.
-    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW);
-    for non-Chinese locales the matching translation is preferred, falling back to en,
-    then to the original Chinese.
+    The lang parameter is the frontend locale (e.g. zh-CN / en / ja / ko / ru / zh-TW).
+    A concrete locale (including Chinese variants like zh-TW) prefers its own subdir
+    first; non-Chinese locales then fall back to en; everything finally lands on the
+    Simplified Chinese base file. Mirrors the survey loader's fallback chain.
     """
     from config import APP_VERSION
     import glob as _glob
@@ -1273,14 +1274,16 @@ async def get_changelog(since: str = "", lang: str = ""):
     # lang 来自 query string，下面会拼进 os.path.join(changelog_dir, lang, ...)，
     # 先白名单化挡路径穿越（与 survey 下发口共用 _safe_locale）。
     lang = _safe_locale(lang)
-    # 确定 fallback 链：用户语言 -> en -> 中文原文
+    # 确定 fallback 链，与 survey 下发口（_load_survey_for_version）保持一致：
+    # 具体 locale（含 zh-TW 等中文变体）先试自己的子目录 -> 非中文再回退 en ->
+    # 最后都落到简体中文原文（zh_content）。zh-TW 也 startswith("zh")，但简体
+    # base 并无 zh-CN/ 子目录，所以简体请求自然落回原文，不受影响。
     is_chinese = lang.startswith("zh") if lang else True
     fallback_langs: list[str] = []
-    if not is_chinese:
-        if lang:
-            fallback_langs.append(lang)
-        if "en" not in fallback_langs:
-            fallback_langs.append("en")
+    if lang:
+        fallback_langs.append(lang)
+    if not is_chinese and "en" not in fallback_langs:
+        fallback_langs.append("en")
 
     def _read_localized(stem: str, zh_content: str) -> str:
         """Look up the localized version along the fallback chain; returns the original Chinese when not found."""
@@ -1306,7 +1309,7 @@ async def get_changelog(since: str = "", lang: str = ""):
                         zh_content = f.read()
                 except Exception:
                     zh_content = ""
-                content = _read_localized(stem, zh_content) if not is_chinese else zh_content
+                content = _read_localized(stem, zh_content)
                 entries.append({"version": stem, "content": content})
 
     return {"current_version": APP_VERSION, "entries": entries}
@@ -1996,6 +1999,81 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     if legal:
         return leading + rest[legal.end():].lstrip(), legal.group(1).upper()
     return leading + rest, "CHAT"
+
+
+# Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,
+# CJK + ASCII brackets). Stripped from both ends before matching so e.g.
+# "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
+_INTENT_LABEL_DECOR = '*-•◦·#`_~【】「」[]《》（）() \t'
+
+
+def _strip_proactive_intent_label_leak(text: str) -> str:
+    """Strip an internal guidance label echoed as a leading heading.
+
+    Weak models sometimes copy a tone-angle seed or memory-cue label from
+    the proactive Phase 2 prompt and emit the bare label as the first line
+    of the reply; the client then splits it into its own chat bubble. Such
+    labels are pure scaffolding and must never be spoken.
+
+    Removes, from the START of ``text`` only and repeating to peel stacked
+    labels:
+    - a standalone first line that exactly matches a known label (optional
+      decoration / trailing colon), when real content follows on a later
+      line;
+    - a leading ``<label>:`` / ``<label>：`` prefix on the first line,
+      keeping the rest of that line as content.
+
+    Exact (decoration-trimmed, casefolded) matching against the derived
+    label set keeps generic words from being scrubbed out of normal speech.
+    Returns ``text`` unchanged when the leading segment is not a known label.
+    """
+    if not text:
+        return text
+    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
+    labels = get_proactive_intent_leak_labels()
+    if not labels:
+        return text
+
+    def _norm(segment: str) -> str:
+        out = segment.strip().strip(_INTENT_LABEL_DECOR)
+        out = out.rstrip('：:').strip(_INTENT_LABEL_DECOR)
+        return out.strip()
+
+    # Bounded peel — a handful of stacked labels at most; never loop the body.
+    for _ in range(4):
+        body = text.lstrip()
+        if not body:
+            break
+        nl = body.find('\n')
+        first = body if nl == -1 else body[:nl]
+        rest = '' if nl == -1 else body[nl + 1:]
+
+        # Case 1: the whole first line is a label, with real content after it.
+        if rest.strip() and _norm(first).casefold() in labels:
+            text = rest
+            continue
+
+        # Case 2: "<label>：<content>" sharing one line. Take the EARLIEST
+        # colon (full- or half-width), not full-width-first — otherwise a
+        # half-width separator followed by a full-width colon in the body
+        # (e.g. "Memory cues: ...：...") would split on the wrong colon and
+        # leave the leading label unstripped.
+        sep_idx = -1
+        for sep in ('：', ':'):
+            idx = first.find(sep)
+            if idx > 0 and (sep_idx == -1 or idx < sep_idx):
+                sep_idx = idx
+        if sep_idx > 0:
+            cand = _norm(first[:sep_idx]).casefold()
+            after = first[sep_idx + 1:].strip()
+            if cand in labels and (after or rest.strip()):
+                if after:
+                    text = after + ('\n' + rest if rest else '')
+                else:
+                    text = rest
+                continue
+        break
+    return text
 
 
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
@@ -7216,6 +7294,11 @@ async def proactive_chat(request: Request):
         if _leak_tag and not source_tag:
             source_tag = _leak_tag
         response_text = full_text.strip()
+        # 剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成首行小标题
+        # 念出来的泄漏（前端 realistic 模式会按换行切成单独一个气泡）。必须在下方
+        # 重复度 / BM25 防复读判定**之前**剥：否则被泄漏标签做前缀的复读句会因前缀
+        # 稀释相似度而绕过 dedup。这些标签纯脚手架，绝不该进 TTS / 历史。
+        response_text = _strip_proactive_intent_label_leak(response_text)
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
@@ -7410,6 +7493,10 @@ async def proactive_chat(request: Request):
                 _cleaned, _leak_tag = _strip_proactive_screen_tag_leak(_cleaned)
                 if _leak_tag:
                     regen_source_tag = _leak_tag
+            # 同初稿：把泄漏的内部引导标签从 regen 产出里剥掉，且必须在下面两道
+            # regen 复读复判（score_draft / 字面相似度）**之前**剥——否则带标签前缀
+            # 的复读会稀释分数绕过 drop。_cleaned 在此一次性规范化，复判与投递共用。
+            _cleaned = _strip_proactive_intent_label_leak(_cleaned)
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
             # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
@@ -7488,7 +7575,8 @@ async def proactive_chat(request: Request):
                     )
                 selected_music_link = None
                 music_content = None
-            # 采用 regen 文本接着走下游 source_tag / TTS 投递
+            # 采用 regen 文本接着走下游 source_tag / TTS 投递（_cleaned 已在上方
+            # 落定时剥过泄漏标签，复读复判与投递共用同一份干净文本）。
             response_text = _cleaned
             full_text = _cleaned
 
@@ -7603,6 +7691,14 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
+        # 只要本轮后端拿到了截图、且有可用 vision 模型（phase2_use_vision 同时
+        # 蕴含 screenshot_b64_for_phase2 非空），就缓存最后这张主动搭话截图，等
+        # 用户下一条 text 回复时注入——不按最终投递通道筛（哪怕这轮文案落到了
+        # music/web，屏幕仍是这轮看过的画面，留着供用户追问）。截图在
+        # finish_proactive_delivery 内 commit 成功后才真正落 session：新一轮主动
+        # 搭话产生即覆盖/清掉旧缓存（非 vision 轮传 None 清），session 侧再用 2
+        # 分钟 TTL 兜底过期。
+        _stage_vision_screenshot = screenshot_b64_for_phase2 if phase2_use_vision else None
         try:
             await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
             committed = await mgr.finish_proactive_delivery(
@@ -7610,6 +7706,7 @@ async def proactive_chat(request: Request):
                 expected_speech_id=proactive_sid,
                 action_note=action_note,
                 source_tag=_delivered_tag,
+                vision_screenshot_b64=_stage_vision_screenshot,
             )
         except Exception as exc:
             logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)

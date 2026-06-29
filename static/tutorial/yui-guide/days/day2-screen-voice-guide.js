@@ -38,12 +38,25 @@
                 {
                     id: 'day2_intro_context',
                     timelinePlayback: true,
+                    timeline: [
+                        { at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false },
+                        { at: 0, command: 'chat.message' },
+                        { at: 0, command: 'emotion.set' },
+                        { at: 0, command: 'spotlight.show', key: 'day2_intro_context', target: 'chat-window' },
+                        { at: 220, command: 'cursor.move', action: 'move', target: 'chat-window', durationMs: 760 }
+                    ],
                     textKey: 'tutorial.avatarFloating.day2.intro',
                     voiceKey: 'avatar_floating_day2_intro',
                     text: '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'daily-intro-avatar-performance',
+                    introAvatarPerformance: {
+                        preset: 'bottom-rise',
+                        approachMs: 1500,
+                        restore: 'half-body'
+                    }
                 },
                 {
                     id: 'day2_personalization_space',

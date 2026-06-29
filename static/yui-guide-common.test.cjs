@@ -2252,23 +2252,27 @@ test('return petal transition cancels immediately when tutorial is skipped', () 
     assert.doesNotMatch(executeBlock, /await finishTransition\(transition\);/);
 });
 
-test('avatar floating auto-start rechecks pending state before delayed launch', () => {
+test('avatar floating auto-start rechecks current due round before delayed launch', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const maybeAutoBlock = managerSource.split('    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {')[1].split(
         '    ensureTutorialSkipController() {',
         1
     )[0];
-    const pendingCheckMatch = managerSource.match(
-        /    isAvatarFloatingGuideRoundPendingAutoStart\(day\) \{([\s\S]*?)\n    \}\n\n    async maybeStartAvatarFloatingGuideAutoRound/
-    );
-    assert.ok(pendingCheckMatch, 'expected manager to expose stale auto-start pending guard');
-    const pendingCheckBlock = pendingCheckMatch[1];
+    const pendingCheckBlock = managerSource.split(
+        '    isAvatarFloatingGuideRoundPendingAutoStart(day) {'
+    )[1].split(
+        '    isAvatarFloatingGuideRoundRegistered(day) {',
+        1
+    )[0];
+    assert.ok(pendingCheckBlock, 'expected manager to expose stale auto-start pending guard');
 
-    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{\s*return;\s*\}/);
+    assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{[\s\S]*?return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
-    assert.match(pendingCheckBlock, /state\.pendingRound !== round && state\.manualResetRound !== round/);
+    assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownDate === today/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {

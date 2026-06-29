@@ -982,6 +982,10 @@ class CharacterProfileManager:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
                 fh.write("\n")
+                # flush + fsync 后再 os.replace：断电只丢 .tmp 不破坏原档案，
+                # 对齐 memory_reader / ocr_bridge_writer / store 三处同款写法。
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp_name, target)
         except Exception:
             try:

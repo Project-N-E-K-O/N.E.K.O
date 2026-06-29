@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
@@ -318,6 +319,20 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "isReservedPagePath(window.location.pathname)" in source
 
 
+def test_chat_full_skips_startup_prominent_notice_queue():
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    load_block = source.split("window.addEventListener('load'", 1)[1].split(
+        "// 监听 voice_id",
+        1,
+    )[0]
+
+    assert "window.location.pathname === '/chat'" in load_block
+    assert "window.location.pathname === '/chat/'" in load_block
+    assert "window.location.pathname === '/chat_full'" in load_block
+    assert "window.location.pathname === '/chat_full/'" in load_block
+    assert "if (_isChatPage) return;" in load_block
+
+
 def test_web_chat_compact_is_allowed_during_main_limited_mode():
     source = MAIN_SERVER_PATH.read_text(encoding="utf-8")
 
@@ -629,8 +644,19 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-preview-min-height: 360px;" in anchor_block
+    assert "--compact-export-preview-max-height: 78vh;" in anchor_block
+    assert "--compact-export-preview-region-height: min(" in anchor_block
+    assert "max(var(--compact-export-history-region-height), var(--compact-export-preview-min-height))" in anchor_block
+    assert "var(--compact-export-preview-max-height)" in anchor_block
+    assert "max-height: var(--compact-export-preview-max-height);" in anchor_block
+    assert "\n  max-height: 78vh;" not in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "--compact-export-preview-max-height: min(" in desktop_history_block
+    assert "calc(var(--compact-export-surface-width) * 1.46)" in desktop_history_block
+    assert "calc(var(--compact-desktop-workarea-height, 900px) * 0.78)" in desktop_history_block
+    assert "max-height: var(--compact-export-preview-max-height);" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
@@ -1087,6 +1113,23 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "nativeRect: parentRect" in parent_native_block
     scrollbar_block = composite_block.split("id: 'history:scrollbar'", 1)[1].split("hitRegionKind: 'scrollbar'", 1)[0]
     assert "nativeRect: scrollbarRect" in scrollbar_block
+
+
+def test_compact_meme_close_hit_region_is_collected_as_native_extra_island():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    composite_block = script.split("function collectCompactCompositeGeometryItems(element, kind)", 1)[1].split(
+        "function collectCompactSurfaceGeometryItems()",
+        1,
+    )[0]
+
+    assert 'data-compact-geometry-item="meme"' in app_source
+    assert 'data-compact-geometry-hit-scope="children"' in app_source
+    assert 'data-compact-hit-region-id="meme:close"' in app_source
+    assert "kind === 'musicPlayer' || kind === 'meme'" in composite_block
+    assert "id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index)" in composite_block
+    assert "nativeRect: clippedRect" in composite_block
 
 
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
@@ -1801,6 +1844,10 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
 
     assert "height: calc(var(--compact-export-history-region-height)" in scroll_block
     assert "max-height: calc(var(--compact-export-history-region-height)" in scroll_block
+    assert "height: var(--compact-export-preview-region-height);" in preview_block
+    assert "max-height: var(--compact-export-preview-region-height);" in preview_block
+    assert "height: var(--compact-export-history-region-height);" not in preview_block
+    assert "max-height: var(--compact-export-history-region-height);" not in preview_block
     assert "max-height: inherit;" in panel_block
 
 
@@ -2095,6 +2142,19 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: none;\n"
         "}"
     )
+    meme_passthrough_rule = (
+        f'{compact_surface_prefix} .compact-meme-overlay,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay img,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay-frame,\n'
+        f'{compact_surface_prefix} .compact-meme-overlay-close-icon {{\n'
+        "    pointer-events: none;\n"
+        "}"
+    )
+    meme_close_interactive_rule = (
+        f'{compact_surface_prefix} .compact-meme-overlay-close {{\n'
+        "    pointer-events: auto;\n"
+        "}"
+    )
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
@@ -2107,11 +2167,15 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     assert compact_music_interactive_rule in styles
     assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
+    assert meme_passthrough_rule in styles
+    assert meme_close_interactive_rule in styles
     assert history_interactive_rule in styles
     assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
     assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
     assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
-    assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
+    assert styles.index(history_passthrough_rule) < styles.index(meme_passthrough_rule)
+    assert styles.index(meme_passthrough_rule) < styles.index(meme_close_interactive_rule)
+    assert styles.index(meme_close_interactive_rule) < styles.index(history_interactive_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 

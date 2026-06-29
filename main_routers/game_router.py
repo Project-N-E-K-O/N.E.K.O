@@ -51,13 +51,8 @@ _SSML_TAG_PATTERN = re.compile(
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from config.prompts.prompts_game import (
-    PREGAME_CONTEXT_INPUT_WATERMARK,
-    get_badminton_pregame_context_formatter_labels,
-    get_badminton_pregame_context_prompt,
-    get_badminton_quick_lines_prompt,
-    get_badminton_quick_lines_user_prompt,
-    get_badminton_system_prompt,
+from config.prompts.prompts_minigame_common import PREGAME_CONTEXT_INPUT_WATERMARK
+from config.prompts.prompts_soccer import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -67,7 +62,15 @@ from config.prompts.prompts_game import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from config.prompts.prompts_game_route import (
+from config.prompts.prompts_badminton import (
+    get_badminton_pregame_context_formatter_labels,
+    get_badminton_pregame_context_prompt,
+    get_badminton_quick_lines_fallback,
+    get_badminton_quick_lines_prompt,
+    get_badminton_quick_lines_user_prompt,
+    get_badminton_system_prompt,
+)
+from config.prompts.prompts_minigame_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
@@ -302,7 +305,7 @@ _game_sessions: Dict[str, dict] = {}
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _BADMINTON_SCORE_SESSION_TTL_SECONDS = 10 * 60
-_BADMINTON_SCORING_MODES = {"shooter", "duel"}
+_BADMINTON_SCORING_MODES = {"duel"}
 _BADMINTON_GAME_TYPES = {"badminton"}
 _BADMINTON_SHOT_TYPE_ALIASES = {
     "line_in": "line_in",
@@ -322,38 +325,6 @@ _BADMINTON_QUICK_LINE_KEYS = {
     "line_in", "net_touch", "zone_in", "out", "net",
     "shot_missed", "game_over", "long_aim", "close_to_record",
     "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
-}
-_BADMINTON_QUICK_LINES_FALLBACK: Dict[str, list[str]] = {
-    "line_in": ["贴线了，算你准", "这球压得挺好"],
-    "net_touch": ["擦网偷过去了", "这角度有点险"],
-    "zone_in": ["刚好进区", "落点挺会挑"],
-    "out": ["差一点出去了", "这拍有点长"],
-    "net": ["被网挡住了", "拍面再抬一点"],
-    "shot_missed": ["没事，下一拍", "别急，先看准"],
-    "game_over": ["这局到这儿", "还要再打一局吗"],
-    "long_aim": ["再不挥球要落了", "想太久会僵哦"],
-    "close_to_record": ["纪录快到了", "再稳一拍就到"],
-    "new_record": ["好吧，破纪录了", "这球我认了"],
-    "streak_5": ["五拍连住了", "手感开始热了"],
-    "streak_10": ["十连了？有点稳", "别得意，还没完"],
-    "streak_15": ["十五连还不断", "我开始认真看了"],
-    "streak_20": ["二十连也太久了", "这回合还没结束？"],
-}
-_BADMINTON_QUICK_LINES_FALLBACK_EN: Dict[str, list[str]] = {
-    "line_in": ["On the line!", "Nice placement"],
-    "net_touch": ["Net touch counts", "Nice angle"],
-    "zone_in": ["Right in the zone", "Sharp landing"],
-    "out": ["Just out", "A little too long"],
-    "net": ["Caught the net", "Open the racket face"],
-    "shot_missed": ["Still in it", "Settle and swing again"],
-    "game_over": ["One more round?", "I'll remember this one"],
-    "long_aim": ["Swing already", "Still waiting?"],
-    "close_to_record": ["Almost a record", "Just a little more"],
-    "new_record": ["New record!", "That was too far"],
-    "streak_5": ["Five rallies in a row!", "You're heating up"],
-    "streak_10": ["Ten straight rallies?!", "You're unreal"],
-    "streak_15": ["Fifteen is wild", "This run is steady"],
-    "streak_20": ["Twenty?!", "This round is absurd"],
 }
 _badminton_quick_lines_cache: OrderedDict[str, Dict[str, list[str]]] = OrderedDict()
 _BADMINTON_QUICK_LINES_CACHE_MAX = 32
@@ -601,14 +572,14 @@ def _badminton_duel_difficulty_control_prompt(language: str | None = None) -> st
             "\n对战难度控制补充：duel 模式下你可以在台词后另起一行输出 "
             "{\"difficulty\":\"max|lv2|lv3|lv4\"}。"
             "max=最强/认真压制，lv2=强但略慢，lv3=明显放水，lv4=最弱/主要防守。"
-            "只在局势、情绪或 balanceHint 需要时调整；spectator/shooter 不使用 difficulty。\n"
+            "只在局势、情绪或 balanceHint 需要时调整；spectator 不使用 difficulty。\n"
         )
     return (
         "\nDuel difficulty control addendum: in duel mode, you may output "
         "{\"difficulty\":\"max|lv2|lv3|lv4\"} on a separate line after the spoken line. "
         "max=strongest/serious pressure, lv2=strong but slightly slower, "
         "lv3=clear soft play, lv4=weakest/mostly defensive. Adjust only when the "
-        "score, emotion, or balanceHint calls for it; spectator/shooter do not use difficulty.\n"
+        "score, emotion, or balanceHint calls for it; spectator does not use difficulty.\n"
     )
 
 
@@ -663,7 +634,7 @@ def _strip_json_fence(text: str) -> str:
 
 
 def _soccer_random_default_difficulty() -> str:
-    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_game initialDifficulty 对齐；
+    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_soccer initialDifficulty 对齐；
     # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
     return "lv2"
 
@@ -1322,7 +1293,6 @@ def _default_badminton_pregame_context(*, initial_difficulty: str | None = None,
     difficulty = initial_difficulty if initial_difficulty in _SOCCER_DIFFICULTIES else "lv2"
     mode_label = {
         "spectator": "自由练习",
-        "shooter": "挥拍挑战（操控模式）",
         "duel": "羽毛球对拉",
     }.get(normalized_mode, "羽毛球挑战")
     return {
@@ -1340,7 +1310,7 @@ def _default_badminton_pregame_context(*, initial_difficulty: str | None = None,
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "duel 默认 lv2；spectator/shooter 忽略初始 difficulty，由局内事件自然调整。",
+        "difficultyPolicy": "duel 默认 lv2；spectator 忽略初始 difficulty，由局内事件自然调整。",
         "moodPolicy": "沿用普通羽毛球陪玩表现；不引入强情绪惯性。",
         "expressionPolicy": "默认期待/轻吐槽；根据成功、失误、连中和对拉比分自然变化。",
         "softeningSignals": [],
@@ -1487,7 +1457,6 @@ def _format_badminton_pregame_context_for_prompt(
     labels = get_badminton_pregame_context_formatter_labels(language)
     mode_label = {
         "spectator": "羽毛球自由练习",
-        "shooter": "挥拍挑战（操控模式）",
         "duel": "羽毛球对拉",
     }.get(_normalize_badminton_mode(mode), "羽毛球挑战")
     return (
@@ -1861,12 +1830,19 @@ def _normalize_quick_lines(value: Any, allowed_keys: set[str] | None = None) -> 
 
 
 def _get_badminton_quick_lines_fallback(language: str | None = None) -> Dict[str, list[str]]:
+    return get_badminton_quick_lines_fallback(language)
+
+
+def _extract_request_language_full(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    raw = data.get('i18n_language') or data.get('language') or data.get('lang')
+    if not raw or not is_supported_language_code(raw):
+        return None
     try:
-        normalized = normalize_language_code(str(language or ""), format="short") if language else ""
+        return normalize_language_code(str(raw), format='full')
     except Exception:
-        normalized = ""
-    source = _BADMINTON_QUICK_LINES_FALLBACK if normalized == "zh" else _BADMINTON_QUICK_LINES_FALLBACK_EN
-    return {key: list(lines) for key, lines in source.items()}
+        return None
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
@@ -5489,8 +5465,8 @@ def _check_badminton_chat_rate(lanlan_name: str, session_id: str) -> bool:
 
 def _normalize_badminton_mode(value: Any) -> str:
     mode = str(value or "").strip().lower()
-    # timed/time_attack/HORSE modes were removed; unknown modes fall back to spectator.
-    return mode if mode in {"spectator", "shooter", "duel"} else "spectator"
+    # shooter/timed/time_attack/HORSE modes were removed; unknown modes fall back to spectator.
+    return mode if mode in {"spectator", "duel"} else "spectator"
 
 
 def _is_badminton_scoring_mode(value: Any) -> bool:
@@ -5964,124 +5940,6 @@ def _badminton_insert_score(data: dict, *, game_type: Any = "badminton") -> tupl
             conn.rollback()
             raise
     return rank, total_players, personal_best is not None and personal_best.get("rank") == rank and personal_best.get("score") == inserted_score
-
-
-def _get_best_params(distance: Any) -> dict:
-    try:
-        dist = float(distance)
-    except (TypeError, ValueError):
-        dist = 80.0
-    if not math.isfinite(dist):
-        dist = 80.0
-    if dist < 300:
-        angle, sweet = 58.0, (38.0, 44.0)
-    elif dist < 400:
-        angle, sweet = 54.0, (43.0, 49.0)
-    elif dist < 500:
-        angle, sweet = 50.0, (48.0, 54.0)
-    elif dist < 600:
-        angle, sweet = 47.0, (53.0, 59.0)
-    else:
-        angle, sweet = 44.0, (57.0, 64.0)
-    return {"angle": angle, "sweet_power": {"min": sweet[0], "max": sweet[1]}}
-
-
-def _compute_distance_tier(distance: Any) -> str:
-    try:
-        dist = float(distance)
-    except (TypeError, ValueError):
-        dist = 0.0
-    if not math.isfinite(dist):
-        dist = 0.0
-    if dist < 150:
-        return "close"
-    if dist < 300:
-        return "mid"
-    if dist <= 450:
-        return "far"
-    return "deep"
-
-
-def _compute_streak_tier(streak: Any) -> str:
-    try:
-        value = int(float(streak))
-    except (TypeError, ValueError):
-        value = 0
-    if value >= 5:
-        return "on_fire"
-    if value >= 3:
-        return "warming"
-    if value == 2:
-        return "neutral"
-    return "cold"
-
-
-def _compute_shooter_evaluation(event: Any) -> dict:
-    if not isinstance(event, dict):
-        return {}
-    distance = event.get("distance", event.get("current_distance", 80))
-    params = _get_best_params(distance)
-    best_angle = float(params["angle"])
-    sweet = params["sweet_power"]
-    try:
-        shot_angle = float(event.get("shot_angle", best_angle))
-    except (TypeError, ValueError):
-        shot_angle = best_angle
-    if not math.isfinite(shot_angle):
-        shot_angle = best_angle
-    try:
-        shot_power = float(event.get("shot_power", sweet["min"]))
-    except (TypeError, ValueError):
-        shot_power = sweet["min"]
-    if not math.isfinite(shot_power):
-        shot_power = sweet["min"]
-    if shot_power < sweet["min"]:
-        power_deviation = sweet["min"] - shot_power
-    elif shot_power > sweet["max"]:
-        power_deviation = shot_power - sweet["max"]
-    else:
-        power_deviation = 0.0
-    aim_raw = event.get("aim_duration_seconds", event.get("aim_duration", 0))
-    try:
-        aim_duration = float(aim_raw)
-    except (TypeError, ValueError):
-        aim_duration = 0.0
-    if not math.isfinite(aim_duration):
-        aim_duration = 0.0
-    aim_duration = max(0.0, min(aim_duration, 60.0))
-    return {
-        "distance_tier": _compute_distance_tier(distance),
-        "streak_tier": _compute_streak_tier(event.get("streak", event.get("final_streak", 0))),
-        "best_angle": best_angle,
-        "sweet_power": sweet,
-        "angle_deviation": round(abs(shot_angle - best_angle), 2),
-        "angle_deviation_signed": round(shot_angle - best_angle, 2),
-        "power_deviation": round(power_deviation, 2),
-        "power_deviation_signed": round(
-            0.0 if power_deviation == 0.0 else (shot_power - sweet["max"] if shot_power > sweet["max"] else shot_power - sweet["min"]),
-            2,
-        ),
-        "aim_duration_seconds": round(aim_duration, 2),
-        "was_perfect": event.get("was_perfect") is True,
-    }
-
-
-def _compute_shooter_rating(event: Any) -> str:
-    if not isinstance(event, dict):
-        return "D"
-    try:
-        streak = int(float(event.get("final_streak", event.get("streak", 0))))
-    except (TypeError, ValueError):
-        streak = 0
-    if streak >= 15:
-        return "S"
-    if streak >= 10:
-        return "A"
-    if streak >= 5:
-        return "B"
-    if streak >= 2:
-        return "C"
-    return "D"
 
 
 def _sanitize_badminton_duel_state(value: Any) -> dict | None:
@@ -6658,20 +6516,6 @@ async def _run_game_chat(
                         event["mode"] = "duel"
                         event["angerPressureCap"] = anger_pressure_cap
 
-            shooter_evaluation = {}
-            shooter_rating = ""
-            if _is_badminton_game_type(game_type) and isinstance(event, dict):
-                route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-                event_mode = _normalize_badminton_mode(event.get("mode") or (route_state.get("mode") if isinstance(route_state, dict) else ""))
-                if event_mode == "shooter":
-                    event = dict(event)
-                    event["mode"] = "shooter"
-                    shooter_evaluation = _compute_shooter_evaluation(event)
-                    event["shooterEvaluation"] = shooter_evaluation
-                    if event.get("kind") == "game_over":
-                        shooter_rating = _compute_shooter_rating(event)
-                        event["shooterRating"] = shooter_rating
-
             # 格式化事件为文本发送给 LLM
             import json as _json
             llm_visible_event = _build_game_llm_visible_event(game_type, event)
@@ -6741,10 +6585,6 @@ async def _run_game_chat(
         return {"line": "", "control": {}, "skipped": "route_inactive"}
 
     result = _parse_control_instructions(full_reply, game_type=game_type)
-    if _is_badminton_game_type(game_type) and isinstance(event, dict) and event.get("mode") == "shooter":
-        result["shooter_evaluation"] = event.get("shooterEvaluation") or _compute_shooter_evaluation(event)
-        if event.get("kind") == "game_over":
-            result["shooter_rating"] = event.get("shooterRating") or _compute_shooter_rating(event)
     if game_type == "soccer" and isinstance(event, dict):
         result = _apply_soccer_anger_pressure_cap(result, event)
     elif _is_badminton_game_type(game_type) and isinstance(event, dict) and _normalize_badminton_mode(event.get("mode")) == "duel":
@@ -8437,8 +8277,9 @@ async def game_quick_lines(game_type: str, request: Request):
         # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
         # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
         request_language = _absorb_request_language(data, requested_name)
+        request_language_full = _extract_request_language_full(data) if _is_badminton_game_type(game_type) else None
         char_info = _get_character_info(requested_name)
-        language = request_language or char_info.get("user_language")
+        language = request_language_full or request_language or char_info.get("user_language")
         fallback_language = language
         cache_key = ""
         if _is_badminton_game_type(game_type):

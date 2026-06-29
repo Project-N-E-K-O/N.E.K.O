@@ -10,10 +10,6 @@ Manages VRM (3D) models — listing, uploading, animation management, and emotio
 
 List all available VRM models.
 
-### `GET /api/model/vrm/models/{model_name}`
-
-Get details for a specific VRM model.
-
 ### `POST /api/model/vrm/upload`
 
 Upload a new VRM model.
@@ -24,21 +20,25 @@ Upload a new VRM model.
 Maximum file size: **200 MB**. Files are streamed in 1 MB chunks.
 :::
 
-### `DELETE /api/model/vrm/delete/{model_name}`
+### `DELETE /api/model/vrm/model/{model_name}`
 
-Delete a VRM model.
+Delete a user-imported VRM model by name (also removes its associated emotion mapping config when no built-in model of the same name exists). Built-in/static models cannot be deleted (returns 404).
 
 ::: warning
 Path traversal is protected by `safe_vrm_path()` validation.
 :::
 
+### `DELETE /api/model/vrm/model`
+
+Delete a user-imported VRM model by URL. Send a JSON body `{ "url": "/user_vrm/<file>.vrm" }`. Only top-level `.vrm` files under `/user_vrm/` may be deleted.
+
 ## Animations
 
-### `GET /api/model/vrm/animation/list`
+### `GET /api/model/vrm/animations`
 
 List all available VRM animations.
 
-### `POST /api/model/vrm/animation/upload`
+### `POST /api/model/vrm/upload_animation`
 
 Upload a VRM animation file.
 
@@ -46,10 +46,10 @@ Upload a VRM animation file.
 
 ## Emotion mapping
 
-### `GET /api/model/vrm/emotion_mapping`
+### `GET /api/model/vrm/emotion_mapping/{model_name}`
 
-Get emotion-to-animation mappings for VRM models.
+Get emotion-to-animation mappings for a specific VRM model.
 
-### `POST /api/model/vrm/emotion_mapping`
+### `POST /api/model/vrm/emotion_mapping/{model_name}`
 
-Update VRM emotion mappings.
+Update emotion mappings for a specific VRM model.

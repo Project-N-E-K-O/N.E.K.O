@@ -1,4 +1,5 @@
 
+import math
 import os
 import warnings
 from pathlib import Path
@@ -195,6 +196,10 @@ PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 30.0)
 # Env: NEKO_PLUGIN_TRIGGER_TIMEOUT, default=10.0
 # 影响 ``PluginProcessHost.trigger`` 的等待时间，超时后会返回错误。
 PLUGIN_TRIGGER_TIMEOUT = _get_float_env("NEKO_PLUGIN_TRIGGER_TIMEOUT", 10.0)
+
+# Host -> plugin process startup ready wait timeout.
+# Env: NEKO_PLUGIN_STARTUP_TIMEOUT, default=10.0
+PLUGIN_STARTUP_TIMEOUT = _get_float_env("NEKO_PLUGIN_STARTUP_TIMEOUT", 10.0)
 
 # 单个插件优雅关闭的超时时间
 # Env: NEKO_PLUGIN_SHUTDOWN_TIMEOUT, default=1.5
@@ -547,7 +552,12 @@ def validate_config() -> None:
         raise ValueError("PLUGIN_TRIGGER_TIMEOUT must be positive")
     if PLUGIN_TRIGGER_TIMEOUT > 3600:
         raise ValueError("PLUGIN_TRIGGER_TIMEOUT is unreasonably large (max: 3600s)")
-    
+
+    if not math.isfinite(PLUGIN_STARTUP_TIMEOUT) or PLUGIN_STARTUP_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_STARTUP_TIMEOUT must be positive")
+    if PLUGIN_STARTUP_TIMEOUT > 300:
+        raise ValueError("PLUGIN_STARTUP_TIMEOUT is unreasonably large (max: 300s)")
+
     if PLUGIN_SHUTDOWN_TIMEOUT <= 0:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT must be positive")
     if PLUGIN_SHUTDOWN_TIMEOUT > 300:
@@ -646,6 +656,7 @@ __all__ = [
     # 超时配置
     "PLUGIN_EXECUTION_TIMEOUT",
     "PLUGIN_TRIGGER_TIMEOUT",
+    "PLUGIN_STARTUP_TIMEOUT",
     "PLUGIN_SHUTDOWN_TIMEOUT",
     "PLUGIN_SHUTDOWN_TOTAL_TIMEOUT",
     "QUEUE_GET_TIMEOUT",
@@ -725,6 +736,7 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "MESSAGE_QUEUE_MAX",
     "PLUGIN_EXECUTION_TIMEOUT",
     "PLUGIN_TRIGGER_TIMEOUT",
+    "PLUGIN_STARTUP_TIMEOUT",
     "PLUGIN_SHUTDOWN_TIMEOUT",
     "PLUGIN_SHUTDOWN_TOTAL_TIMEOUT",
     "QUEUE_GET_TIMEOUT",

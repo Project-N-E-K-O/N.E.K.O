@@ -776,6 +776,7 @@
         "pendingImagesAriaLabel": "Imágenes pendientes",
         "pendingImageAlt": "Imagen {{index}}",
         "removePendingImage": "Quitar imagen",
+        "closeMemeAriaLabel": "Cerrar imagen",
         "emojiButtonAriaLabel": "emojis",
         "toolIconsAriaLabel": "Iconos de herramientas",
         "toolLollipop": "Chupete",
@@ -943,15 +944,15 @@
         "freeVersionHint": "(No es necesario para la versión gratuita)",
         "coreApiPlaceholder": "Por favor ingrese su clave API",
         "coreApiProvider": "API principal (chat de voz, solo omnimodal)",
-        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto/Voz personalizada)",
+        "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto)",
         "saveSettings": "Guardar configuración",
-        "closeSettings": "Cerca",
+        "closeSettings": "Cerrar",
         "newbieRecommendTitle": "Recomendación de novato",
         "newbieRecommend": "Si aún no tiene una clave API, puede seleccionar \"Versión gratuita\" en las Opciones avanzadas a continuación para comenzar a usarla sin registrar ninguna cuenta.",
         "advancedOptions": "Opciones avanzadas (opcional)",
         "providerDescription": "Descripción del proveedor de API:",
         "coreApiDesc": "API principal: maneja la funcionalidad de conversación",
-        "assistApiDesc": "API de asistencia: maneja la administración de memoria, voz personalizada, chat de texto y modo Agente",
+        "assistApiDesc": "API de asistencia: maneja la administración de memoria, chat de texto y modo Agente",
         "providerFeatures": "Características del proveedor:",
         "aliFeature": "Alibaba: cuota gratuita disponible, funciones más completas",
         "glmFeature": "GLM: Los límites de tarifas son extremadamente estrictos. El modelo de audio/vídeo ha sido descontinuado y no se puede utilizar como API principal.",
@@ -960,19 +961,19 @@
         "siliconFeature": "SiliconFlow: tiene cuota gratuita, buen valor, funciones limitadas, solo para Assist API",
         "geminiFeature": "Géminis: Excelente inteligencia y valor.",
         "configSuggestion": "Sugerencias de configuración:",
-        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (no se admiten voz personalizada ni modo Agente)",
+        "freeVersionSuggestion": "Versión gratuita: Completamente gratuita, no se necesita clave API, adecuada para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestion": "API principal: maneja la funcionalidad de conversación, elige según el presupuesto y las necesidades",
-        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria, voz personalizada y modo Agente, solo Alibaba admite voz personalizada",
+        "assistApiSuggestion": "API de asistencia: maneja chat de texto, administración de memoria y modo Agente",
         "coreApiTitle": "Core API maneja la funcionalidad de chat de voz:",
-        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web, pero no admite voz personalizada ni modo Agente",
+        "freeVersionCore": "Versión gratuita: completamente gratuita, alto nivel de inteligencia, admite búsqueda web",
         "aliCore": "Alibaba: cuota gratuita disponible, funciones completas",
         "glmCore": "GLM: El modelo ha sido descontinuado temporalmente, no disponible",
         "stepCore": "StepFun: Completamente gratis, alto nivel de inteligencia, pero los límites de velocidad son demasiado estrictos, no recomendado",
         "openaiCore": "OpenAI: el nivel de inteligencia más alto, pero caro",
         "geminiCore": "Géminis: Excelente inteligencia y valor.",
-        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto, modo Agente y voz personalizada:",
-        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, pero no se admite voz personalizada",
-        "aliAssist": "Alibaba: opción recomendada, admite voz personalizada y modo Agente",
+        "assistApiTitle": "Assist API maneja la administración de memoria, chat de texto y modo Agente:",
+        "freeVersionAssist": "Versión gratuita: completamente gratuita, no se necesita clave API, el modo Agente cuenta con una cuota gratuita",
+        "aliAssist": "Alibaba: opción recomendada, funciones más completas, admite el modo Agente",
         "glmAssist": "GLM: administración de memoria gratuita, pero los límites de concurrencia/RPM son extremadamente estrictos y no se recomiendan",
         "stepAssist": "StepFun: Barato, pero los límites de concurrencia/RPM son extremadamente estrictos, no recomendados",
         "siliconAssist": "SiliconFlow: buen valor, admite el modo Agente",
@@ -980,7 +981,7 @@
         "geminiAssist": "Géminis: Excelente inteligencia y valor.",
         "kimiAssist": "Kimi: apoya el contexto y la visión a largo plazo",
         "kimiCodeAssist": "Kimi Code: compatible con Anthropic Messages, útil para código y texto largo",
-        "assistApiNote": "Nota: Solo Alibaba admite la funcionalidad de voz personalizada. No se recomiendan GLM y StepFun.",
+        "assistApiNote": "Nota: no se recomiendan GLM y StepFun.",
         "assistApiKeyQwen": "Clave API de asistencia - Alibaba",
         "assistApiKeyOpenai": "Clave API de asistencia: OpenAI",
         "assistApiKeyGlm": "Clave API de asistencia: GLM",
@@ -1082,18 +1083,18 @@
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
         "pleaseEnterApiKey": "Por favor ingrese su clave API",
-        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. No se admiten voz personalizada ni modo Agente",
-        "qwenRecommendation": "Cuando Alibaba es la API principal, se recomienda seleccionar también Alibaba como API de asistencia para obtener la mejor experiencia de voz personalizada.",
-        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu). Se recomienda seleccionar Alibaba como API de asistencia para soporte de voz personalizado.",
-        "openaiRecommendation": "Cuando OpenAI es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "stepRecommendation": "Cuando StepFun es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "geminiRecommendation": "Cuando Gemini es la API principal, se recomienda seleccionar Alibaba como API de asistencia para admitir la funcionalidad de voz personalizada.",
-        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y la voz personalizada:",
+        "freeVersionConfig": "Configuración de la versión gratuita: admite chat de audio/vídeo, chat de texto y gestión de memoria. El modo Agente cuenta con una cuota gratuita",
+        "qwenRecommendation": "Cuando Alibaba es la API principal, también se recomienda Alibaba como API de asistencia por sus funciones más completas.",
+        "glmRecommendation": "Cuando GLM es la API principal, ofrece una cuota gratuita y admite búsquedas web. El audio de voz contiene un pitido de marca de agua de forma predeterminada (se puede desactivar manualmente en la consola Zhipu).",
+        "openaiRecommendation": "Cuando OpenAI es la API principal, el precio es relativamente alto.",
+        "stepRecommendation": "Cuando StepFun es la API principal, el precio es económico pero el nivel de inteligencia es moderado.",
+        "geminiRecommendation": "Cuando Gemini es la API principal, ofrece una excelente relación calidad-precio.",
+        "assistApiTooltipTitle": "Assist API maneja la administración de memoria, el chat de texto y el modo Agente:",
         "currentSuggestion": "Sugerencia actual:",
         "configSuggestionFull": "Sugerencias de configuración:",
-        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (no se admite voz personalizada ni modo Agente)",
+        "freeVersionSuggestionFull": "Completamente gratis, no se necesita clave API, adecuado para principiantes (el modo Agente cuenta con una cuota gratuita)",
         "coreApiSuggestionFull": "Maneja la funcionalidad de conversación (elija según el presupuesto y las necesidades)",
-        "assistApiSuggestionFull": "Maneja la administración de memoria, chat de texto y voz personalizada (solo Alibaba admite voz personalizada)",
+        "assistApiSuggestionFull": "Maneja la administración de memoria, el chat de texto y el modo Agente",
         "assistApiKeyRequiredHint": "Debe completar la API en el cuadro de entrada correspondiente antes de poder seleccionar su proveedor.",
         "mcpRouterToken": "Token de enrutador MCP",
         "mcpRouterTokenDesc": "Descripción del token del enrutador MCP:",
@@ -1373,6 +1374,7 @@
         "vrmAnimation": {
             "title": "Vista previa de la animación VRM:",
             "selectAnimation": "Animación",
+            "addAnimation": "Agregar animación",
             "noAnimations": "No se encontraron archivos de animación",
             "loading": "Cargando lista de animaciones...",
             "animationListLoaded": "Lista de animaciones cargada correctamente.",
@@ -1541,7 +1543,9 @@
         "cannotDeleteBoundModel": "No se puede eliminar el modelo en uso",
         "modelInUse": "En uso",
         "pngtuberTalkPreview": "Probar habla",
-        "pngtuberStatePreview": "Vista previa de estado"
+        "pngtuberStatePreview": "Vista previa de estado",
+        "pngtuberImportProjectFile": "Importar archivo de proyecto",
+        "pngtuberImportFolder": "Importar carpeta"
     },
     "voice": {
         "title": "Registro de voz",
@@ -1554,6 +1558,12 @@
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "mimoApiRequired": "Esta función requiere un modelo MiMo. Guarde su clave API de MiMo en la página de configuración de claves API.",
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
+        "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
+        "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
+        "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
+        "vllmRefTextPlaceholder": "p.ej. Espero que en el futuro puedas hacerlo aún mejor que yo",
+        "vllmRefTextRequired": "Introduzca la transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni)",
+        "vllmRefTextTooLong": "La transcripción del audio de referencia es demasiado larga; manténgala dentro de 100 caracteres",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1561,7 +1571,8 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "vllm_omni": "vLLM-Omni (Clon local)"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",
@@ -1931,6 +1942,10 @@
         "profileName": "Nombre del perfil",
         "profileNameMaxHint": "Máximo 60 caracteres",
         "profileNameTooLong": "El nombre del perfil es demasiado largo.",
+        "profileNameUnsafeDot": "El nombre del perfil no puede estar formado solo por puntos ni terminar con un punto.",
+        "profileNameDotSequence": "El nombre del perfil no puede contener puntos consecutivos (..).",
+        "profileNameReservedDevice": "El nombre del perfil no puede usar un nombre de dispositivo reservado de Windows.",
+        "profileNameInvalid": "El nombre del perfil no es válido.",
         "profileNameContainsSlash": "El nombre del perfil no puede contener separadores de ruta (/ o \\)",
         "profileNameContainsDot": "El nombre del perfil no puede contener puntos (.)",
         "profileNameInvalidChars": "El nombre del perfil solo puede contener letras, números, espacios, guiones bajos, guiones, paréntesis, puntos centrales (·/・) y apóstrofes.",
@@ -1974,7 +1989,7 @@
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",
         "addField": "Agregar campo",
-        "aiAssist": "Asistente de IA",
+        "aiAssist": "Asistente gatuno",
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
@@ -3252,7 +3267,7 @@
             },
             "step5": {
                 "title": "🔧 Proveedor de API auxiliar",
-                "desc": "La API auxiliar maneja la administración de memoria y la voz personalizada.\n\n• Gratis: completamente gratis, sin soporte de voz personalizado\n• Alibaba: recomendado, admite voz personalizada\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: Solo Alibaba admite voz personalizada."
+                "desc": "La API auxiliar maneja la administración de memoria, el chat de texto y el modo Agente.\n\n• Gratis: completamente gratis, sin necesidad de clave API\n• Alibaba: recomendado, funciones más completas\n• Zhipu: admite el modo Agente\n• OpenAI: administración de memoria sólida\n\nNota: para usar la voz personalizada (clonación de voz) solo necesitas guardar la clave del proveedor correspondiente en el Libro de claves, sin cambiar la API principal o auxiliar."
             },
             "step6": {
                 "title": "🔑 Clave API auxiliar",
@@ -4286,10 +4301,7 @@
          "modeSwitcher": "Modo de bádminton",
          "mode": {
              "spectator": "Práctica libre",
-             "shooter": "Desafío de golpe",
-             "duel": "Duelo con Yui",
-             "timed": "Contrarreloj",
-             "horse": "HORSE"
+             "duel": "Duelo contra Yui"
          },
          "hud": {
              "score": "Puntos {{score}}",
@@ -4302,16 +4314,11 @@
              "practice": "Práctica libre",
              "yourTurn": "Tu turno",
              "nekoTurn": "Golpe de Neko",
-             "horseLetters": "Tú {{player}} / Neko {{neko}}",
-             "horseChallenge": "Replica {{distance}} {{angle}}°",
-             "horseSet": "Propón un golpe",
              "unlimitedAttempts": "Ilimitado",
              "chances": "Oportunidades {{count}}",
              "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
              "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
              "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "timedTitle": "Contrarreloj: golpes ilimitados en 60 segundos",
-             "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del golpe acertado",
              "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
              "on": "act.",
              "off": "desact."
@@ -4324,8 +4331,6 @@
              "rating": "Valoración de control: {{rating}}",
              "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
              "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Aciertos: {{made}} | Mejor racha: {{best}}",
-             "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
              "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
              "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
              "attemptsSummary": "Resumen de golpes: {{summary}}",
@@ -4342,7 +4347,6 @@
              "title": "Clasificación",
              "global": "Global",
              "local": "Local",
-            "shooter": "Golpe",
              "duel": "Duelo",
              "empty": "Aún no hay registros",
              "totalPlayers": "Jugadores {{count}}",
@@ -4350,11 +4354,8 @@
              "recent": "Últimas {{count}} partidas",
              "loading": "Cargando...",
              "mode": {
-                 "timed": "Tiempo",
-                 "horse": "HORSE",
-                 "spectator": "Espectador",
-                "shooter": "Golpe",
-                 "duel": "Duelo"
+                 "duel": "Duelo",
+                 "spectator": "Espectador"
              }
          },
          "debug": {
@@ -4375,8 +4376,7 @@
                  "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
                  "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
                  "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
-                 "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
              }
          },
          "stats": {
@@ -4431,6 +4431,8 @@
              "yuiCheatInk": "Yui lanzó tinta",
              "yuiCheatBanana": "Yui lanzó una cáscara de banana",
              "yuiCheatBananaSlip": "Pisaste la cáscara de banana",
+             "playerIcePowerup": "Hielo activado. Yui quedó congelada",
+             "yuiFrozen": "Yui sigue congelada, golpe retrasado",
              "nekoThinking": "Neko está pensando",
              "nekoTurn": "Turno de Neko",
              "copyNeko": "Replica a Neko",
@@ -4520,64 +4522,6 @@
                  ],
                  "net": [
                      "La red la atrap?.",
-                     "Levanta la cara de la raqueta."
-                 ]
-             },
-             "shooter": {
-                 "shot_missed": [
-                     "Reinicia el control.",
-                     "Firme. Yo te sigo."
-                 ],
-                 "game_over": [
-                     "Ese control a?n falta.",
-                     "No me hagas correr en vano."
-                 ],
-                 "long_aim": [
-                     "R?pido, se me endurece la mano.",
-                     "?A?n eliges ?ngulo?"
-                 ],
-                 "close_to_record": [
-                     "El r?cord est? cerca.",
-                     "No tiembles en este golpe."
-                 ],
-                 "new_record": [
-                     "Vale, nuevo r?cord.",
-                     "La coordinaci?n estuvo decente."
-                 ],
-                 "streak_5": [
-                     "Cinco seguidos. No flotes.",
-                     "Este ritmo est? estable."
-                 ],
-                 "streak_10": [
-                     "?Diez seguidos? No presumas.",
-                     "Tienes la mano bastante firme."
-                 ],
-                 "streak_15": [
-                     "?Quince? No te agrandes.",
-                     "Este s? lo sostuviste."
-                 ],
-                 "streak_20": [
-                     "?Veinte? ?A?n seguimos?",
-                     "Esta ronda se puso loca."
-                 ],
-                 "line_in": [
-                     "Vale, fue preciso.",
-                     "Controlaste bien la raqueta."
-                 ],
-                 "net_touch": [
-                     "La rozaste por encima.",
-                     "El ?ngulo arriesgado funcion?."
-                 ],
-                 "zone_in": [
-                     "No sonr?as. Fue suerte.",
-                     "Elegiste bien la ca?da."
-                 ],
-                 "out": [
-                     "Un poco menos de fuerza.",
-                     "Te apuraste en esa."
-                 ],
-                 "net": [
-                     "?A d?nde me llevas?",
                      "Levanta la cara de la raqueta."
                  ]
              },
@@ -4698,10 +4642,6 @@
                  "playerAhead": "No lo haces mal...",
                  "playerBehind": "Aprieta un poco más."
              },
-             "horse": {
-                 "nekoMiss": "No lo replicó. Suma {{letters}}.",
-                 "playerMiss": "Tú también sumas {{letters}}."
-             },
              "mindGame": [
                  "Te tiembla la mano.",
                  "Piénsalo, sin prisa.",
@@ -4738,6 +4678,12 @@
                      "La táctica de tinta funcionó bastante bien."
                  ]
              },
+             "playerIceScore": [
+                 "Mmm, eso no cuenta. ¡Otra vez!",
+                 "Espera, estaba congelada. ¡Ese punto se repite!",
+                 "Ese hielo ayudó demasiado. ¡Otra vez!",
+                 "No vale, no podía moverme."
+             ],
              "easterEgg": {
                  "lateNight": "¿Sigues golpeando tan tarde?",
                  "xmas": "Ya están las campanas, ¿y aún quieres golpear?",

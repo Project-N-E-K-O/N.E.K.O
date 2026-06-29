@@ -2088,6 +2088,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const uploadBtn = document.getElementById('upload-btn');
     const modelUpload = document.getElementById('model-upload');
     const pngtuberModelUpload = document.getElementById('pngtuber-model-upload');
+    const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');
     const pngtuberPreviewGroup = document.getElementById('pngtuber-preview-group');
     const pngtuberBasicPreviewSection = document.getElementById('pngtuber-basic-preview-section');
     const pngtuberTalkPreviewBtn = document.getElementById('pngtuber-talk-preview-btn');
@@ -2283,6 +2284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userModelList = document.getElementById('user-model-list');
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
+    let lastVrmAnimationSelection = '_no_motion_';
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
     let isMmdIdlePlaying = false; // 跟踪MMD待机动画播放状态（与手动预览分离）
@@ -5383,12 +5385,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             vrmAnimations = (data.success && data.animations) ? data.animations : [];
 
             if (vrmAnimationSelect) {
-                // 始终保留"无动作"选项，让用户能清空已保存的动作配置
-                vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
+                const previousValue = vrmAnimationSelect.value;
+                vrmAnimationSelect.innerHTML = '';
                 const noMotionOption = document.createElement('option');
                 noMotionOption.value = '_no_motion_';
                 noMotionOption.textContent = t('live2d.noMotion', '无动作');
                 vrmAnimationSelect.appendChild(noMotionOption);
+
+                const addAnimationOption = document.createElement('option');
+                addAnimationOption.value = '';
+                addAnimationOption.textContent = t('live2d.vrmAnimation.addAnimation', '添加动作');
+                vrmAnimationSelect.appendChild(addAnimationOption);
 
                 if (vrmAnimations.length > 0) {
                     vrmAnimations.forEach(anim => {
@@ -5411,6 +5418,41 @@ document.addEventListener('DOMContentLoaded', async () => {
                         vrmAnimationSelect.appendChild(option);
                     });
                 }
+                // 选中态优先级：会话内用户主动选的真实动作（previousValue）
+                // > 角色已保存的单动作（reserved vrm.animation）> 无动作。
+                // 关键：模板给 select 预置了 value=_no_motion_ 的初始 option（见 model_manager.html），
+                // 首次进页面 previousValue 就是这个 sentinel——必须把它排除在「会话内选择」外，
+                // 否则恢复分支永远走不到，下拉停在 _no_motion_，无关保存又把 vrm_animation 清成 ''
+                // （即本次要修的回归）。不恢复已保存值时，saveModelToCharacter 会把 _no_motion_
+                // 映射成 vrm_animation:''，后端据此清空保留字段。
+                let resolvedValue = '_no_motion_';
+                if (previousValue && previousValue !== '_no_motion_' && Array.from(vrmAnimationSelect.options)
+                        .some(option => option.value === previousValue)) {
+                    resolvedValue = previousValue;
+                } else {
+                    // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
+                    const savedAnimation = await getSavedVrmAnimationUrl();
+                    if (savedAnimation) {
+                        let matched = Array.from(vrmAnimationSelect.options).find(option =>
+                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                        if (!matched) {
+                            // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
+                            // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
+                            // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
+                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
+                            matched = document.createElement('option');
+                            matched.value = savedAnimation;
+                            matched.setAttribute('data-path', savedAnimation);
+                            matched.setAttribute('data-filename', label);
+                            matched.textContent = label;
+                            vrmAnimationSelect.appendChild(matched);
+                        }
+                        resolvedValue = matched.value;
+                    }
+                }
+                vrmAnimationSelect.value = resolvedValue;
+                lastVrmAnimationSelection = vrmAnimationSelect.value || '_no_motion_';
                 vrmAnimationSelect.disabled = false;
                 if (vrmAnimationSelectBtn) {
                     vrmAnimationSelectBtn.disabled = false;
@@ -5483,20 +5525,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmAnimationSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
+            // 如果选择的是"添加动作"入口，触发文件选择器
             if (selectedValue === '') {
                 const vrmAnimationFileUpload = document.getElementById('vrm-animation-file-upload');
                 if (vrmAnimationFileUpload) {
                     vrmAnimationFileUpload.click();
                 }
-                // 重置选择器到第一个选项（保持显示"选择动作"）
-                e.target.value = '';
-                updateVRMAnimationSelectButtonText(); // 更新按钮文字为"选择动作"
+                const restoreValue = Array.from(vrmAnimationSelect.options)
+                    .some(option => option.value === lastVrmAnimationSelection)
+                    ? lastVrmAnimationSelection
+                    : '_no_motion_';
+                e.target.value = restoreValue;
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
             // 无动作选项：停止当前播放的 VRM 动作
             if (selectedValue === '_no_motion_') {
+                lastVrmAnimationSelection = '_no_motion_';
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -5505,9 +5551,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 if (playVrmAnimationBtn) playVrmAnimationBtn.disabled = true;
                 stopIdleRotation('vrm');
+                updateVRMAnimationSelectButtonText();
                 return;
             }
 
+            lastVrmAnimationSelection = selectedValue;
             updateVRMAnimationSelectButtonText();
             const animationPath = e.target.value;
             if (animationPath && playVrmAnimationBtn) {
@@ -5570,7 +5618,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 播放/暂停 VRM 动作（切换功能）
     if (playVrmAnimationBtn) {
         playVrmAnimationBtn.addEventListener('click', async () => {
-            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value) {
+            if (!vrmManager || !vrmAnimationSelect || !vrmAnimationSelect.value || vrmAnimationSelect.value === '_no_motion_') {
                 showStatus(t('live2d.vrmAnimation.selectAnimationFirst', '请先选择动作'), 2000);
                 return;
             }
@@ -6514,7 +6562,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const expressions = vrmManager.expression.getExpressionList();
 
-        vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.selectExpression', '选择表情')}</option>`;
+        vrmExpressionSelect.innerHTML = '';
         const noExpressionOption = document.createElement('option');
         noExpressionOption.value = '_no_expression_';
         noExpressionOption.textContent = t('live2d.noExpression', '无表情');
@@ -6533,6 +6581,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 播放按钮保持禁用，直到用户选择一个表情
             if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
+            vrmExpressionSelect.value = '_no_expression_';
             updateVRMExpressionDropdown();
             updateVRMExpressionSelectButtonText();
         } else {
@@ -6585,12 +6634,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmExpressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
 
-            // 如果选择的是第一个选项（空值，即"选择表情"），显示提示（VRM表情通常是内置的）
+            // 空值仅作为无可用表情/异常状态兜底；正常列表不再提供"选择表情"选项。
             if (selectedValue === '') {
                 showStatus(t('live2d.vrmExpression.builtInOnly', 'VRM表情通常是模型内置的，无法单独上传'), 3000);
-                // 重置选择器到第一个选项（保持显示"选择表情"）
-                e.target.value = '';
-                updateVRMExpressionSelectButtonText(); // 更新按钮文字为"选择表情"
+                e.target.value = '_no_expression_';
+                updateVRMExpressionSelectButtonText();
                 // 禁用播放按钮
                 if (triggerVrmExpressionBtn) {
                     triggerVrmExpressionBtn.disabled = true;
@@ -6657,7 +6705,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (triggerVrmExpressionBtn) {
         triggerVrmExpressionBtn.addEventListener('click', () => {
             const name = vrmExpressionSelect.value;
-            if (!name) {
+            if (!name || name === '_no_expression_') {
                 showStatus(t('live2d.vrmExpression.selectFirst', '请先选择一个表情'));
                 return;
             }
@@ -7514,6 +7562,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnimation);
         } catch (error) {
             console.error('[VRM] 恢复待机动作失败:', error);
+        }
+    }
+
+    // 读取角色已保存的单个 VRM 动作（reserved vrm.animation）。
+    // 与 restoreVrmIdleAnimation 对偶：后者恢复待机动作多选，本函数为 loadVRMAnimations
+    // 提供单动作下拉的恢复值，避免首次进入页面时下拉默认落在 _no_motion_。
+    async function getSavedVrmAnimationUrl() {
+        try {
+            const lanlanName = await getLanlanName();
+            if (!lanlanName) return null;
+
+            const data = await RequestHelper.fetchJson('/api/characters');
+            const charData = data['猫娘']?.[lanlanName];
+            const saved = charData?.vrm_animation;
+            return (typeof saved === 'string' && saved) ? saved : null;
+        } catch (error) {
+            console.error('[VRM] 读取已保存动作失败:', error);
+            return null;
         }
     }
 
@@ -8998,10 +9064,103 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 上传模型功能
+    let pngtuberUploadChoiceMenu = null;
+
+    function closePNGTuberUploadChoice() {
+        if (pngtuberUploadChoiceMenu) {
+            pngtuberUploadChoiceMenu.remove();
+            pngtuberUploadChoiceMenu = null;
+            document.removeEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+        }
+    }
+
+    function handlePNGTuberUploadChoiceOutsideClick(event) {
+        if (!pngtuberUploadChoiceMenu) return;
+        if (pngtuberUploadChoiceMenu.contains(event.target) || uploadBtn.contains(event.target)) return;
+        closePNGTuberUploadChoice();
+    }
+
+    function handlePNGTuberUploadChoiceKeydown(event) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closePNGTuberUploadChoice();
+            if (uploadBtn) uploadBtn.focus();
+        }
+    }
+
+    function handlePNGTuberUploadChoiceFocusout(event) {
+        const nextTarget = event.relatedTarget;
+        if (!pngtuberUploadChoiceMenu) return;
+        if (nextTarget && (pngtuberUploadChoiceMenu.contains(nextTarget) || uploadBtn.contains(nextTarget))) return;
+        closePNGTuberUploadChoice();
+    }
+
+    function createPNGTuberUploadChoiceItem(label, onSelect) {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.setAttribute('role', 'button');
+        item.tabIndex = 0;
+        item.innerHTML = `<span class="dropdown-item-text" data-text="${label}">${label}</span>`;
+        const select = () => {
+            closePNGTuberUploadChoice();
+            onSelect();
+        };
+        item.addEventListener('click', select);
+        item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                select();
+            }
+        });
+        return item;
+    }
+
+    function showPNGTuberUploadChoice() {
+        if (!pngtuberPackageUpload) {
+            pngtuberModelUpload.click();
+            return;
+        }
+        if (pngtuberUploadChoiceMenu) {
+            closePNGTuberUploadChoice();
+            return;
+        }
+
+        const rect = uploadBtn.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'model-type-dropdown';
+        menu.style.display = 'block';
+        menu.style.position = 'absolute';
+        menu.style.left = `${rect.left + window.scrollX}px`;
+        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+        menu.style.minWidth = `${Math.max(rect.width, 270)}px`;
+        menu.style.zIndex = '3000';
+        menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);
+        menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportProjectFile')) || '导入工程文件',
+            () => {
+                pngtuberPackageUpload.click();
+            }
+        ));
+        menu.appendChild(createPNGTuberUploadChoiceItem(
+            (window.t && window.t('live2d.pngtuberImportFolder')) || '导入文件夹',
+            () => {
+                pngtuberModelUpload.click();
+            }
+        ));
+        document.body.appendChild(menu);
+        pngtuberUploadChoiceMenu = menu;
+        const firstItem = menu.querySelector('.dropdown-item');
+        if (firstItem) firstItem.focus({ preventScroll: true });
+        setTimeout(() => {
+            document.addEventListener('mousedown', handlePNGTuberUploadChoiceOutsideClick, true);
+        }, 0);
+    }
+
     uploadBtn.addEventListener('click', () => {
         // 根据当前模型类型选择不同的文件选择器
         if (currentModelType === 'pngtuber') {
-            pngtuberModelUpload.click();
+            showPNGTuberUploadChoice();
         } else if (currentModelType !== 'live2d') {
             vrmFileUpload.click();
         } else {
@@ -9424,56 +9583,74 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    if (pngtuberModelUpload) {
-        pngtuberModelUpload.addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
-            if (files.length === 0) return;
+    async function uploadPNGTuberFiles(files) {
+        if (!files || files.length === 0) return;
 
-            uploadStatus.textContent = '正在上传PNGTuber模型...';
-            uploadStatus.style.color = '#4f8cff';
-            uploadBtn.disabled = true;
+        uploadStatus.textContent = '正在上传PNGTuber模型...';
+        uploadStatus.style.color = '#4f8cff';
+        uploadBtn.disabled = true;
 
-            try {
-                const formData = new FormData();
-                for (const file of files) {
-                    formData.append('files', file, file.webkitRelativePath || file.name);
-                }
+        try {
+            const formData = new FormData();
+            for (const file of files) {
+                formData.append('files', file, file.webkitRelativePath || file.name);
+            }
 
-                const response = await fetch('/api/model/pngtuber/upload_model', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
+            const response = await fetch('/api/model/pngtuber/upload_model', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
 
-                if (result.success) {
-                    uploadStatus.textContent = `✓ ${result.message}`;
-                    uploadStatus.style.color = '#28a745';
-                    await loadPNGTuberModels();
-                    if (result.folder && modelSelect) {
-                        const option = Array.from(modelSelect.options).find(opt =>
-                            opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
-                        );
-                        if (option) {
-                            modelSelect.value = option.value;
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                        } else if (result.pngtuber && window.loadPNGTuberAvatar) {
-                            await window.loadPNGTuberAvatar(result.pngtuber);
-                        }
+            if (result.success) {
+                uploadStatus.textContent = `✓ ${result.message}`;
+                uploadStatus.style.color = '#28a745';
+                await loadPNGTuberModels();
+                if (result.folder && modelSelect) {
+                    const option = Array.from(modelSelect.options).find(opt =>
+                        opt.value === result.folder || opt.getAttribute('data-folder') === result.folder
+                    );
+                    if (option) {
+                        modelSelect.value = option.value;
+                        modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    } else if (result.pngtuber && window.loadPNGTuberAvatar) {
+                        await window.loadPNGTuberAvatar(result.pngtuber);
                     }
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
-                } else {
-                    uploadStatus.textContent = `✗ ${result.error}`;
-                    uploadStatus.style.color = '#dc3545';
-                    setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
                 }
-            } catch (error) {
-                console.error('上传PNGTuber模型失败:', error);
-                uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+                setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
+            } else {
+                uploadStatus.textContent = `✗ ${result.error}`;
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+            }
+        } catch (error) {
+            console.error('上传PNGTuber模型失败:', error);
+            uploadStatus.textContent = `✗ 上传失败: ${error.message}`;
+            uploadStatus.style.color = '#dc3545';
+            setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
+        } finally {
+            uploadBtn.disabled = false;
+        }
+    }
+
+    if (pngtuberModelUpload) {
+        pngtuberModelUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
             } finally {
-                uploadBtn.disabled = false;
                 pngtuberModelUpload.value = '';
+            }
+        });
+    }
+
+    if (pngtuberPackageUpload) {
+        pngtuberPackageUpload.addEventListener('change', async (e) => {
+            if (e.target.files.length === 0) return;
+            try {
+                await uploadPNGTuberFiles(Array.from(e.target.files));
+            } finally {
+                pngtuberPackageUpload.value = '';
             }
         });
     }

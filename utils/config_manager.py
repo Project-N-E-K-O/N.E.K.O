@@ -2891,11 +2891,27 @@ class ConfigManager:
                 result.append(bucket)
         return result
 
+    def _get_vllm_omni_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for vLLM-Omni cloned voices.
+
+        Dual to :meth:`_get_mimo_storage_keys`, with one key difference: vLLM-Omni
+        is a self-hosted local service with **no API key**, so cloned voices live
+        in a single fixed ``__VLLM_OMNI__`` bucket (no key suffix) instead of a
+        per-key ``__MIMO__{suffix}`` bucket. A vLLM-Omni clone is selected by
+        ``voice_meta.provider`` at dispatch (the inline reference-audio model, see
+        ``workers/vllm_omni.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        bucket = '__VLLM_OMNI__'
+        return [bucket] if bucket in voice_storage else []
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """Infer the provider from a voice_storage partition key (only for legacy data compatibility)."""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__VLLM_OMNI__'):
+            return 'vllm_omni'
         if storage_key.startswith('__MIMO__'):
             return 'mimo'
         if storage_key.startswith('__ELEVENLABS__'):
@@ -3022,6 +3038,16 @@ class ConfigManager:
                         vdata['provider'] = 'mimo'
                     result[vid] = vdata
 
+        # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
+        # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
+        for vllm_key in self._get_vllm_omni_storage_keys():
+            vllm_voices = voice_storage.get(vllm_key, {})
+            for vid, vdata in vllm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'vllm_omni'
+                    result[vid] = vdata
+
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
             # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
@@ -3136,7 +3162,7 @@ class ConfigManager:
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查带前缀的独立服务商存储
+        # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
@@ -3144,6 +3170,7 @@ class ConfigManager:
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith('__COSYVOICE_INTL__')
+                or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
                 # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
                 # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
@@ -4210,9 +4237,9 @@ class ConfigManager:
                 # 其他 model type（conversation/summary/correction/emotion/vision/agent）
                 # 走 chat completion REST，没有 'local' 分支；跳 URL 反而会改变它们的
                 # follow_* 路由（详见 PR #1084 review thread），故仅对 omni/tts 跳。
-                # 注：follow_* 下用户填的 modelId 当前在 get_model_api_config fallback
-                # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
-                # 那是另一个层面的问题，下个 PR 跟进。
+                # 注：follow_* 下 omni/tts 仍不能依赖 get_model_api_config fallback
+                # 读取用户填的 modelId（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
+                # 因此这些特殊前缀继续走既有 follow 解析。
                 is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
                 # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
                 # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
@@ -4245,9 +4272,16 @@ class ConfigManager:
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
-                    followed_model = _resolve_game_follow_model_id(prefix, provider)
-                    if followed_model:
-                        config[model_key] = followed_model
+                    if (
+                        prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
+                        and isinstance(cfg_model, str)
+                        and cfg_model.strip()
+                    ):
+                        config[model_key] = cfg_model.strip()
+                    else:
+                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        if followed_model:
+                            config[model_key] = followed_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 
