@@ -1943,6 +1943,26 @@
                         detail: { active: !!response.active },
                     }));
 
+                // -------- topic_hint（深话题预告气泡，仅前端展示，不入上下文）--------
+                } else if (response.type === 'topic_hint') {
+                    if (typeof window.appendReactTopicHint === 'function') {
+                        try {
+                            window.appendReactTopicHint(response.author, response.turn_id);
+                        } catch (topicHintErr) {
+                            console.warn('[topic_hint] append failed', topicHintErr);
+                        }
+                    }
+
+                // -------- cancel_topic_hint（开场白生成失败时撤回孤儿预告气泡）--------
+                } else if (response.type === 'cancel_topic_hint') {
+                    if (typeof window.removeReactTopicHint === 'function') {
+                        try {
+                            window.removeReactTopicHint(response.turn_id);
+                        } catch (cancelHintErr) {
+                            console.warn('[cancel_topic_hint] remove failed', cancelHintErr);
+                        }
+                    }
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
