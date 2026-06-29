@@ -631,8 +631,11 @@ function reportCompactHistoryExperimentExposure(): boolean {
   if (readCompactHistoryExposureReportedThisSession()) return true;
   let sent = false;
   try {
-    sent = (window as unknown as { appTelemetry?: { event?: (n: string, f?: Record<string, unknown>) => boolean } })
-      .appTelemetry?.event?.('experiment_exposure', { experiment: 'compact_history_default', variant }) === true;
+    // 必须走 counter 不是 event：event 只落本地 events.jsonl、不进 instrument.snapshot()，
+    // 永远到不了 TokenTracker 的远程上报通道（见 utils/instrument.py、utils/event_logger.py）。
+    // A/B 曝光要进远程指标必须用 counter，与 session_start / session_end 同范式。
+    sent = (window as unknown as { appTelemetry?: { counter?: (n: string, v?: number, d?: Record<string, unknown>) => boolean } })
+      .appTelemetry?.counter?.('experiment_exposure', 1, { experiment: 'compact_history_default', variant }) === true;
   } catch {
     // 投递本身抛错：留给调用方挂 socket open 重试。
     return false;

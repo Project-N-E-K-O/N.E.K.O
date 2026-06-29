@@ -694,7 +694,7 @@ describe('App', () => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
     window.localStorage.setItem(COMPACT_HISTORY_DEFAULT_EXPERIMENT_KEY, 'closed');
     const telemetry = vi.fn(() => true);
-    (window as unknown as { appTelemetry?: { event: (n: string, f?: Record<string, unknown>) => boolean } }).appTelemetry = { event: telemetry };
+    (window as unknown as { appTelemetry?: { counter: (n: string, v?: number, d?: Record<string, unknown>) => boolean } }).appTelemetry = { counter: telemetry };
     // 只让 sessionStorage.getItem 抛（隐私浏览器/webview），localStorage 仍可读 cohort——
     // 二者共享 Storage.prototype，按 this 区分。
     const realGetItem = Storage.prototype.getItem;
@@ -712,7 +712,7 @@ describe('App', () => {
         window.dispatchEvent(new Event('neko:tutorial-completed'));
       });
       // sessionStorage 去重读失败不能吞掉曝光：有 variant 的用户仍要发出 experiment_exposure。
-      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', expect.objectContaining({
+      expect(telemetry).toHaveBeenCalledWith('experiment_exposure', 1, expect.objectContaining({
         experiment: 'compact_history_default',
         variant: 'closed',
       }));
