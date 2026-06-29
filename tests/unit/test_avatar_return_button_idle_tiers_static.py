@@ -599,6 +599,10 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
         "cat1 playground entry request",
     )
     assert "const detail = event && event.detail ? event.detail : null;" in entry_block
+    assert "if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) {" in entry_block
+    assert "_clearNekoIdleCat1QuestionMark(button);" in entry_block
+    assert "_clearNekoIdleCat1PlaygroundQuestionBlockClone(button);" in entry_block
+    assert "return false;" in entry_block
     assert "_createNekoIdleCat1PlaygroundQuestionBlockCloneFromScreenRect(detail.questionBlockScreenRect, button)" in entry_block
     assert "_startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in entry_block
     assert "_startNekoIdleCat1PlaygroundDrop(button," not in entry_block

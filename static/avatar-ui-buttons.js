@@ -2479,6 +2479,11 @@ function _handleNekoIdleCat1PlaygroundEntryRequest(event) {
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;
     const detail = event && event.detail ? event.detail : null;
+    if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) {
+        _clearNekoIdleCat1QuestionMark(button);
+        _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
+        return false;
+    }
     if (detail && detail.questionBlockScreenRect &&
         !_isNekoIdleCat1PlaygroundEntryOrDropActive(button, 'question-mark-entry')) {
         _storeNekoIdleCat1PlaygroundQuestionBlockClone(
