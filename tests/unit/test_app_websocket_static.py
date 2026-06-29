@@ -108,22 +108,27 @@ def test_greeting_check_defers_until_new_user_icebreaker_ends():
     assert "window.NekoNewUserIcebreakerState" in active_block
     assert "state.isPeriodActive()" in active_block
     assert "window.newUserIcebreaker.getActiveSession()" in active_block
-    assert "var hasRuntimeState = false;" in active_block
-    assert "hasRuntimeState = true;" in active_block
-    assert "if (!hasRuntimeState) return isNewUserIcebreakerStorePeriodActive();" in active_block
+    assert "return isNewUserIcebreakerStorePeriodActive();" in active_block
+    assert "hasRuntimeState" not in active_block
     period_block = source.split("function isNewUserIcebreakerPeriodActive()", 1)[1].split(
         "function isNewUserIcebreakerBlockingGreeting(reason)",
         1,
     )[0]
     assert "isNewUserIcebreakerActiveForGreeting()" in period_block
-    assert "isNewUserIcebreakerStorePeriodActive()" in period_block
+    assert "isNewUserIcebreakerStorePeriodActive()" not in period_block
     assert "readNewUserIcebreakerStore()" not in period_block
     store_block = source.split("function isNewUserIcebreakerStorePeriodActive()", 1)[1].split(
         "function isNewUserIcebreakerActiveForGreeting()",
         1,
     )[0]
     assert "readNewUserIcebreakerStore()" in store_block
-    assert "isRecentNewUserIcebreakerEntry(entry)" in store_block
+    assert "isNewUserIcebreakerEntryBlocking(entry)" in store_block
+    entry_block = source.split("function isNewUserIcebreakerEntryBlocking(entry)", 1)[1].split(
+        "function isNewUserIcebreakerStorePeriodActive()",
+        1,
+    )[0]
+    assert "entry.completed !== true" in entry_block
+    assert "isRecentNewUserIcebreakerEntry(entry)" in entry_block
     assert "return false;" in store_block
     assert "sendHomeTutorialState(" not in defer_block
     assert "_scheduleGreetingCheckRetry();" in defer_block

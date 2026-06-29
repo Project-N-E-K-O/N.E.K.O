@@ -583,6 +583,10 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
+
     function isNewUserIcebreakerStorePeriodActive() {
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
@@ -590,7 +594,7 @@
         if (hasCompletedNewUserIcebreaker()) return false;
         for (var day = 1; day <= 7; day += 1) {
             var entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
@@ -598,9 +602,7 @@
     }
 
     function isNewUserIcebreakerActiveForGreeting() {
-        var hasRuntimeState = false;
         if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-            hasRuntimeState = true;
             try {
                 if (window.newUserIcebreaker.getActiveSession()) return true;
             } catch (_) {}
@@ -608,17 +610,14 @@
         try {
             var state = window.NekoNewUserIcebreakerState;
             if (state && typeof state.isPeriodActive === 'function') {
-                hasRuntimeState = true;
                 if (state.isPeriodActive()) return true;
             }
         } catch (_) {}
-        if (!hasRuntimeState) return isNewUserIcebreakerStorePeriodActive();
-        return false;
+        return isNewUserIcebreakerStorePeriodActive();
     }
 
     function isNewUserIcebreakerPeriodActive() {
-        if (isNewUserIcebreakerActiveForGreeting()) return true;
-        return isNewUserIcebreakerStorePeriodActive();
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {

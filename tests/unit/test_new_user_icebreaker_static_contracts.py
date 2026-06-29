@@ -1014,7 +1014,7 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
         ).group("body")
         if source is app_websocket:
             assert "isNewUserIcebreakerActiveForGreeting()" in period_body
-            assert "isNewUserIcebreakerStorePeriodActive()" in period_body
+            assert "isNewUserIcebreakerStorePeriodActive()" not in period_body
             assert "readNewUserIcebreakerStore()" not in period_body
             store_body = re.search(
                 r"function isNewUserIcebreakerStorePeriodActive\(\) \{(?P<body>.*?)\n    \}",
@@ -1022,25 +1022,51 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
                 flags=re.S,
             ).group("body")
             assert "readNewUserIcebreakerStore()" in store_body
-            assert "isRecentNewUserIcebreakerEntry(entry)" in store_body
+            assert "isNewUserIcebreakerEntryBlocking(entry)" in store_body
             active_body = re.search(
                 r"function isNewUserIcebreakerActiveForGreeting\(\) \{(?P<body>.*?)\n    \}",
                 source,
                 flags=re.S,
             ).group("body")
-            assert "var hasRuntimeState = false;" in active_body
-            assert "if (!hasRuntimeState) return isNewUserIcebreakerStorePeriodActive();" in active_body
-            assert period_body.index("isNewUserIcebreakerActiveForGreeting()") < period_body.index(
-                "isNewUserIcebreakerStorePeriodActive()"
-            )
-            storage_body = store_body
+            assert "return isNewUserIcebreakerStorePeriodActive();" in active_body
+            assert "hasRuntimeState" not in active_body
+            assert "return isNewUserIcebreakerActiveForGreeting();" in period_body
+            entry_body = re.search(
+                r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed !== true" in entry_body
+            assert "isRecentNewUserIcebreakerEntry(entry)" in entry_body
+            storage_body = store_body + entry_body
         else:
             assert "getActiveSession()" in period_body
-            assert period_body.index("readNewUserIcebreakerStore()") > period_body.index("getActiveSession()")
-            storage_body = period_body
+            assert "isNewUserIcebreakerEntryBlocking(entry)" in period_body
+            entry_body = re.search(
+                r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed !== true" in entry_body
+            assert "isRecentNewUserIcebreakerEntry(entry)" in entry_body
+            retry_body = re.search(
+                r"function getNewUserIcebreakerBlockingRetryMs\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed === true" in retry_body
+            delay_body = re.search(
+                r"function getNewUserIcebreakerRetryDelayMs\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed === true" in delay_body
+            assert period_body.index("readNewUserIcebreakerStore()") > period_body.index(
+                "getActiveSession()"
+            )
+            storage_body = period_body + entry_body
         assert "if (!window.newUserIcebreaker" not in period_body
         assert "entry.started === true" not in storage_body
-        assert "entry.completed === true" not in storage_body
         assert "|| entry.triggeredAt" not in storage_body
         assert "|| entry.updatedAt" not in storage_body
 
