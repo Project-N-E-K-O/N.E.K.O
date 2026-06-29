@@ -583,37 +583,45 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
-    function isNewUserIcebreakerPeriodActive() {
-        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-            try {
-                if (window.newUserIcebreaker.getActiveSession()) return true;
-            } catch (_) {}
-        }
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
 
+    function isNewUserIcebreakerStorePeriodActive() {
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
         if (!days) return false;
         if (hasCompletedNewUserIcebreaker()) return false;
         for (var day = 1; day <= 7; day += 1) {
             var entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
         return false;
     }
 
-    function isTutorialReleaseGreetingReason(reason) {
-        var normalizedReason = String(reason || '').trim().toLowerCase();
-        return normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped';
+    function isNewUserIcebreakerActiveForGreeting() {
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
+        try {
+            var state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function') {
+                if (state.isPeriodActive()) return true;
+            }
+        } catch (_) {}
+        return isNewUserIcebreakerStorePeriodActive();
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {
-        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
-        if (isTutorialReleaseGreetingReason(normalizedReason)) {
-            return false;
-        }
-        return isNewUserIcebreakerPeriodActive();
+        return isNewUserIcebreakerActiveForGreeting();
     }
 
     function normalizeAssistantTurnId(turnId) {
@@ -3400,14 +3408,10 @@
         _sendGreetingCheckIfReady();
     }
 
-    function _consumeGreetingCheckForNewUserIcebreaker() {
-        if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;
+    function _deferGreetingCheckForNewUserIcebreaker() {
         if (!isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)) return false;
-        S._greetingCheckPending = false;
-        S._greetingCheckIsSwitch = false;
-        S._greetingCheckReason = '';
-        _resetGreetingCheckRetry(true);
-        console.log('[greeting_check] consumed by new-user icebreaker period');
+        _scheduleGreetingCheckRetry();
+        console.log('[greeting_check] deferred by active new-user icebreaker');
         return true;
     }
     function _sendGreetingCheckIfReady() {
@@ -3418,7 +3422,7 @@
         if (S._startupGreetingReleasePending) {
             return;
         }
-        if (_consumeGreetingCheckForNewUserIcebreaker()) {
+        if (_deferGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
@@ -3522,6 +3526,10 @@
             } catch (_) { /* noop */ }
         });
     }
+
+    window.addEventListener('neko:new-user-icebreaker-ended', function () {
+        _sendGreetingCheckIfReady();
+    });
 
     window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, function (event) {
         var detail = event && event.detail ? event.detail : {};

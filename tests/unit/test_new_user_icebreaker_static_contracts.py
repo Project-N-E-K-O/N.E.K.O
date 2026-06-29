@@ -29,7 +29,18 @@ def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     day = scripts["days"][day_key]
 
-    assert len(day["nodes"]) == 31
+    # All seven days intentionally use the same lightweight 3-round tree:
+    # root -> 2 branches -> 4 handoff leaves.
+    expected_node_counts = {
+        "1": 7,
+        "2": 7,
+        "3": 7,
+        "4": 7,
+        "5": 7,
+        "6": 7,
+        "7": 7,
+    }
+    assert len(day["nodes"]) == expected_node_counts[day_key]
 
     for node_id, node in day["nodes"].items():
         assert node.get("voiceKey"), node_id
@@ -80,8 +91,6 @@ def test_icebreaker_internal_branches_follow_binary_tree_targets():
                 continue
 
             assert [option.get("id") for option in options] == ["A", "B"], f"day{day_key}.{node_id}"
-            assert options[0].get("next") == f"{node_id}A", f"day{day_key}.{node_id}.A"
-            assert options[1].get("next") == f"{node_id}B", f"day{day_key}.{node_id}.B"
             assert options[0]["next"] in nodes, f"day{day_key}.{node_id}.A"
             assert options[1]["next"] in nodes, f"day{day_key}.{node_id}.B"
 
@@ -224,9 +233,10 @@ def test_day1_icebreaker_fallback_redirect_is_node_agnostic():
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     redirect = locale["day1.fallback.redirect"]
 
-    assert "眼前" in redirect
-    assert "选项" in redirect
-    assert "刚才那些好玩的功能" not in redirect
+    assert "接住" in redirect
+    assert "追得上" in redirect
+    assert "选项" not in redirect
+    assert "功能" not in redirect
 
 
 def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
@@ -508,6 +518,18 @@ def test_icebreaker_project_tts_uses_local_mutation_headers():
     assert "headers: { 'Content-Type': 'application/json' }" not in speak_block
 
 
+def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
+        "function applyAssistantTextEmotion(text)",
+        1,
+    )[0]
+
+    assert "return speakViaProjectTts(text, voiceKey).then(function () {" in speak_line_block
+    assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
+    assert "if (ok) return;" not in speak_line_block
+
+
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(
@@ -559,10 +581,23 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
 
     assert "var session = activeSession;" in handoff_block
     assert "return appendChatMessage('assistant', text" in handoff_block
+    assert "return speakViaProjectTts(text, voiceKey)" in runtime
+    assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
+    assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
     assert handoff_block.index("return appendChatMessage('assistant', text") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
     )
+    assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
+        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
+        "dispatchIcebreakerEnded('handoff');"
+    )
+    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
+        "completed: true"
+    )
+    assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
@@ -637,7 +672,13 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     assert match is not None
     body = match.group("body")
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
-    assert "startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType))" in body
+    assert "var endState = resolveLatestEndState(detail, eventType);" in body
+    assert "var pendingDay = markPendingStartFromEndState(endState);" in body
+    assert "startFromEndStateWhenTutorialIdle(endState)" in body
+    assert "clearPendingGuideEndStateDay(pendingDay)" in body
+    assert ".catch(function (error)" in body
+    assert "console.warn('[NewUserIcebreaker] deferred start failed:', error);" in body
+    assert "dispatchIcebreakerEnded('start_failed')" in body
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
@@ -867,6 +908,22 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     # fallback 同 deliverNode：立刻下发带 revealDelayMs 的 choicePrompt 绑定路由，
     # 不再用 waitBeforeChoicePromptReveal 整体延后调用。
     assert "setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(fallbackText))" in continuation_block
+    assert "var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');" in continuation_block
+    assert "var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');" in continuation_block
+    assert "Promise.resolve(routeEndPromise)" in continuation_block
+    assert "Promise.resolve(fallbackSpeechPromise).catch(function () {})" in continuation_block
+    assert continuation_block.index("Promise.resolve(routeEndPromise)") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
+    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
+    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
+        "completed: true"
+    )
+    assert continuation_block.index("completed: true") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block
@@ -949,6 +1006,7 @@ def test_icebreaker_bridge_events_use_monotonic_timestamps_for_deduping():
 def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     app_proactive = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
     for source in (app_websocket, app_proactive):
         assert "NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1'" in source
@@ -964,22 +1022,75 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
             source,
             flags=re.S,
         ).group("body")
-        assert "getActiveSession()" in period_body
+        if source is app_websocket:
+            assert "isNewUserIcebreakerActiveForGreeting()" in period_body
+            assert "isNewUserIcebreakerStorePeriodActive()" not in period_body
+            assert "readNewUserIcebreakerStore()" not in period_body
+            store_body = re.search(
+                r"function isNewUserIcebreakerStorePeriodActive\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "readNewUserIcebreakerStore()" in store_body
+            assert "isNewUserIcebreakerEntryBlocking(entry)" in store_body
+            active_body = re.search(
+                r"function isNewUserIcebreakerActiveForGreeting\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "return isNewUserIcebreakerStorePeriodActive();" in active_body
+            assert "hasRuntimeState" not in active_body
+            assert "return isNewUserIcebreakerActiveForGreeting();" in period_body
+            entry_body = re.search(
+                r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed !== true" in entry_body
+            assert "isRecentNewUserIcebreakerEntry(entry)" in entry_body
+            storage_body = store_body + entry_body
+        else:
+            assert "getActiveSession()" in period_body
+            assert "isNewUserIcebreakerEntryBlocking(entry)" in period_body
+            entry_body = re.search(
+                r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed !== true" in entry_body
+            assert "isRecentNewUserIcebreakerEntry(entry)" in entry_body
+            retry_body = re.search(
+                r"function getNewUserIcebreakerBlockingRetryMs\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed === true" in retry_body
+            delay_body = re.search(
+                r"function getNewUserIcebreakerRetryDelayMs\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "entry.completed === true" in delay_body
+            assert period_body.index("readNewUserIcebreakerStore()") > period_body.index(
+                "getActiveSession()"
+            )
+            storage_body = period_body + entry_body
         assert "if (!window.newUserIcebreaker" not in period_body
-        assert period_body.index("readNewUserIcebreakerStore()") > period_body.index("getActiveSession()")
-        assert "entry.started === true" not in period_body
-        assert "entry.completed === true" not in period_body
-        assert "|| entry.triggeredAt" not in period_body
-        assert "|| entry.updatedAt" not in period_body
+        assert "entry.started === true" not in storage_body
+        assert "|| entry.triggeredAt" not in storage_body
+        assert "|| entry.updatedAt" not in storage_body
 
     assert "isNewUserIcebreakerPeriodActive()" in app_proactive
     assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive
 
     assert "isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)" in app_websocket
-    assert "function isTutorialReleaseGreetingReason(reason)" in app_websocket
-    assert "if (isTutorialReleaseGreetingReason(normalizedReason))" in app_websocket
-    assert "tutorial-completed" in app_websocket
-    assert "tutorial-skipped" in app_websocket
+    assert "function isNewUserIcebreakerActiveForGreeting()" in app_websocket
+    assert "return isNewUserIcebreakerActiveForGreeting();" in app_websocket
+    assert "function isTutorialReleaseGreetingReason(reason)" not in app_websocket
+    assert "function markPendingStartFromEndState(endState)" in runtime
+    assert "pendingGuideEndStateDay" in runtime
+    assert "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);" in runtime
+    assert "window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended'" in runtime
 
 
 def test_react_chat_assets_use_react_chat_cache_version():
