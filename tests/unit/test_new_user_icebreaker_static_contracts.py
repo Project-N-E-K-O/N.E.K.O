@@ -904,6 +904,16 @@ def test_icebreaker_free_text_fallback_uses_session_snapshot_after_async_append(
     # fallback 同 deliverNode：立刻下发带 revealDelayMs 的 choicePrompt 绑定路由，
     # 不再用 waitBeforeChoicePromptReveal 整体延后调用。
     assert "setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(fallbackText))" in continuation_block
+    assert "var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');" in continuation_block
+    assert "var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');" in continuation_block
+    assert "Promise.resolve(routeEndPromise)" in continuation_block
+    assert "Promise.resolve(fallbackSpeechPromise).catch(function () {})" in continuation_block
+    assert continuation_block.index("Promise.resolve(routeEndPromise)") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
+    assert continuation_block.index("Promise.resolve(fallbackSpeechPromise)") < continuation_block.index(
+        "dispatchIcebreakerEnded('free_text_release');"
+    )
     assert "activeSession.localeData" not in continuation_block
     assert "activeSession.day" not in continuation_block
     assert "activeSession.nodeId" not in continuation_block
@@ -1004,15 +1014,35 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
         ).group("body")
         if source is app_websocket:
             assert "isNewUserIcebreakerActiveForGreeting()" in period_body
+            assert "isNewUserIcebreakerStorePeriodActive()" in period_body
+            assert "readNewUserIcebreakerStore()" not in period_body
+            store_body = re.search(
+                r"function isNewUserIcebreakerStorePeriodActive\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "readNewUserIcebreakerStore()" in store_body
+            assert "isRecentNewUserIcebreakerEntry(entry)" in store_body
+            active_body = re.search(
+                r"function isNewUserIcebreakerActiveForGreeting\(\) \{(?P<body>.*?)\n    \}",
+                source,
+                flags=re.S,
+            ).group("body")
+            assert "var hasRuntimeState = false;" in active_body
+            assert "if (!hasRuntimeState) return isNewUserIcebreakerStorePeriodActive();" in active_body
+            assert period_body.index("isNewUserIcebreakerActiveForGreeting()") < period_body.index(
+                "isNewUserIcebreakerStorePeriodActive()"
+            )
+            storage_body = store_body
         else:
             assert "getActiveSession()" in period_body
+            assert period_body.index("readNewUserIcebreakerStore()") > period_body.index("getActiveSession()")
+            storage_body = period_body
         assert "if (!window.newUserIcebreaker" not in period_body
-        active_marker = "isNewUserIcebreakerActiveForGreeting()" if source is app_websocket else "getActiveSession()"
-        assert period_body.index("readNewUserIcebreakerStore()") > period_body.index(active_marker)
-        assert "entry.started === true" not in period_body
-        assert "entry.completed === true" not in period_body
-        assert "|| entry.triggeredAt" not in period_body
-        assert "|| entry.updatedAt" not in period_body
+        assert "entry.started === true" not in storage_body
+        assert "entry.completed === true" not in storage_body
+        assert "|| entry.triggeredAt" not in storage_body
+        assert "|| entry.updatedAt" not in storage_body
 
     assert "isNewUserIcebreakerPeriodActive()" in app_proactive
     assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive

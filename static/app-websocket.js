@@ -583,24 +583,7 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
-    function isNewUserIcebreakerActiveForGreeting() {
-        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
-            try {
-                if (window.newUserIcebreaker.getActiveSession()) return true;
-            } catch (_) {}
-        }
-        try {
-            var state = window.NekoNewUserIcebreakerState;
-            if (state && typeof state.isPeriodActive === 'function' && state.isPeriodActive()) {
-                return true;
-            }
-        } catch (_) {}
-        return false;
-    }
-
-    function isNewUserIcebreakerPeriodActive() {
-        if (isNewUserIcebreakerActiveForGreeting()) return true;
-
+    function isNewUserIcebreakerStorePeriodActive() {
         var store = readNewUserIcebreakerStore();
         var days = store && typeof store.days === 'object' ? store.days : null;
         if (!days) return false;
@@ -612,6 +595,30 @@
             }
         }
         return false;
+    }
+
+    function isNewUserIcebreakerActiveForGreeting() {
+        var hasRuntimeState = false;
+        if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+            hasRuntimeState = true;
+            try {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            } catch (_) {}
+        }
+        try {
+            var state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function') {
+                hasRuntimeState = true;
+                if (state.isPeriodActive()) return true;
+            }
+        } catch (_) {}
+        if (!hasRuntimeState) return isNewUserIcebreakerStorePeriodActive();
+        return false;
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        if (isNewUserIcebreakerActiveForGreeting()) return true;
+        return isNewUserIcebreakerStorePeriodActive();
     }
 
     function isNewUserIcebreakerBlockingGreeting(reason) {

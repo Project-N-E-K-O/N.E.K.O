@@ -1005,7 +1005,7 @@
                 voiceKey: voiceKey || '',
                 fallback: isRelease ? 'release' : 'redirect'
             }).then(function () {
-                speakLine(fallbackText, voiceKey || '');
+                var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');
                 if (isRelease) {
                     markDay(day, {
                         started: true,
@@ -1015,11 +1015,17 @@
                         nodeId: nodeId,
                         releasedByFreeText: true
                     });
-                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
-                    if (activeSession === session) {
-                        activeSession = null;
-                    }
-                    dispatchIcebreakerEnded('free_text_release');
+                    var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');
+                    return Promise.all([
+                        Promise.resolve(routeEndPromise),
+                        Promise.resolve(fallbackSpeechPromise).catch(function () {})
+                    ]).then(function () {
+                        if (activeSession === session) {
+                            activeSession = null;
+                        }
+                        dispatchIcebreakerEnded('free_text_release');
+                        return true;
+                    });
                 } else if (activeSession === session) {
                     var currentNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
