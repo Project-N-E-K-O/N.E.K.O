@@ -103,6 +103,25 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "data-mastery={nodeMasteryLevel(node)}" in knowledge_map
     assert "Number.isFinite(mastery)" in knowledge_map
     assert "masteryText" in knowledge_map
+    assert "selectedSubject" in knowledge_map
+    assert "knowledge-subject-selector" in knowledge_map
+    assert "KNOWLEDGE_SUBJECT_OPTIONS" in knowledge_map
+    assert "'math'" in knowledge_map
+    assert "'computer_science'" in knowledge_map
+    assert "ui.knowledge.subject.${normalized}" in knowledge_map
+    assert "study_knowledge_map', { limit: 1000 })" in knowledge_map
+    assert "study_knowledge_map', { limit: 1000, subject" not in knowledge_map
+    assert "const knownSubjects = KNOWLEDGE_SUBJECT_OPTIONS.filter((subject) => subjectCounts.has(subject));" in knowledge_map
+    assert "visibleNodes.slice(0, 60)" in knowledge_map
+    assert "edgeGroups(props, visibleNodes, visibleEdges)" in knowledge_map
+    assert "edgeGraph(props, visibleNodes, visibleEdges)" in knowledge_map
+    assert "edgeGroups(props, nodes, edges)" in knowledge_map
+    assert ".flatMap((group) => group.items.slice(0, 6)" in knowledge_map
+    assert "knowledge-edge-graph__svg" in knowledge_map
+    assert "knowledge-edge-arrow-surface" in knowledge_map
+    assert "knowledge-node-detail-dialog" in knowledge_map
+    assert "setSelectedNode(null)" in knowledge_map
+    assert "ui.button.close" in knowledge_map
     assert 'className="pomodoro-ring"' in pomodoro
     assert "useRef<AbortController | null>(null)" in study_panel
     assert "event.key !== 'Escape'" in study_panel
