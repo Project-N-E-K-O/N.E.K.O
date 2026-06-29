@@ -12,6 +12,7 @@ const STANDALONE_HUD_POSITION = Object.freeze({
     right: 'auto',
     transform: 'none'
 });
+const AGENT_TASK_HUD_COLLAPSED_KEY = 'agent-task-hud-collapsed-v2';
 
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
@@ -655,7 +656,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
     });
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
-    const hudCollapsedKey = 'agent-task-hud-collapsed-v2';
     const applyHudCollapsed = (collapsed) => {
         if (!collapsed && hud.style.display !== 'none') {
             // Check edge collision for smooth unfolding direction towards the left
@@ -713,15 +713,21 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // Default: expanded
     let hudCollapsed = false;
-    try { hudCollapsed = localStorage.getItem(hudCollapsedKey) === 'true'; } catch (_) { }
+    try { hudCollapsed = localStorage.getItem(AGENT_TASK_HUD_COLLAPSED_KEY) === 'true'; } catch (_) { }
     applyHudCollapsed(hudCollapsed);
 
     minimizeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         hudCollapsed = !hudCollapsed;
         applyHudCollapsed(hudCollapsed);
-        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
+        try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, String(hudCollapsed)); } catch (_) { }
     });
+
+    hud._setAgentTaskHudCollapsed = (collapsed) => {
+        hudCollapsed = collapsed === true;
+        applyHudCollapsed(hudCollapsed);
+        try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, String(hudCollapsed)); } catch (_) { }
+    };
 
     // 空状态提示
     const emptyState = document.createElement('div');
@@ -802,6 +808,17 @@ window.AgentHUD.showAgentTaskHUD = function () {
 };
 
 // 隐藏任务 HUD
+window.AgentHUD.expandAgentTaskHUD = function () {
+    const hud = document.getElementById('agent-task-hud');
+    if (!hud) return false;
+    if (typeof hud._setAgentTaskHudCollapsed === 'function') {
+        hud._setAgentTaskHudCollapsed(false);
+        return true;
+    }
+    try { localStorage.setItem(AGENT_TASK_HUD_COLLAPSED_KEY, 'false'); } catch (_) {}
+    return false;
+};
+
 window.AgentHUD.hideAgentTaskHUD = function () {
     const hud = document.getElementById('agent-task-hud');
     if (!hud) {
