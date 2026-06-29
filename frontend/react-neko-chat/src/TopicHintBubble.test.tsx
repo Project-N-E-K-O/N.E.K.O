@@ -2,6 +2,7 @@ import { render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import TopicHintBubble, { isTopicHintMessage } from './TopicHintBubble';
 import MessageBubble from './MessageBubble';
+import { isCompactExportMessageSelectable } from './CompactExportHistoryPanel';
 import { parseChatMessage, type ChatMessage } from './message-schema';
 
 function topicHintMessage(author = '桃奈'): ChatMessage {
@@ -78,6 +79,19 @@ describe('TopicHintBubble', () => {
     const text = container.querySelector('.topic-hint-chip')?.textContent ?? '';
     expect(text).toContain('桃奈');
     expect(text).not.toContain('chat.topicHint');
+  });
+
+  it('excludes topic-hint teasers from compact-export selection accounting', () => {
+    expect(isCompactExportMessageSelectable(topicHintMessage())).toBe(false);
+    expect(
+      isCompactExportMessageSelectable({
+        id: 'a-1',
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:00',
+        blocks: [{ type: 'text', text: 'hi' }],
+      }),
+    ).toBe(true);
   });
 
   it('rejects a whitespace-only author at the schema boundary', () => {

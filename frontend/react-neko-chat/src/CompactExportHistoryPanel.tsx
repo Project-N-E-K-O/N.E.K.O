@@ -114,7 +114,10 @@ type CompactHistoryBubbleTone = {
 };
 
 export function isCompactExportMessageSelectable(message: ChatMessage) {
-  return !!message.id && message.status !== 'sending';
+  // Frontend-only topic-hint teasers are hidden from the history view and never
+  // exported, so they must not count toward selectable/selected totals either —
+  // otherwise the header count diverges from what's visible/selectable.
+  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message);
 }
 
 function isSelectionIgnoredTarget(target: EventTarget | null, currentTarget: EventTarget) {

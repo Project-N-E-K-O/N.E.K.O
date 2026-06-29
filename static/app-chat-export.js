@@ -334,7 +334,8 @@
                 if (!message || !message.id || !Array.isArray(message.blocks)) return false;
                 // Drop frontend-only topic-hint teasers: they carry no exportable
                 // text and would otherwise become blank entries in the export.
-                if (message.blocks.length > 0 && message.blocks.every(function (b) {
+                // Mirror isTopicHintMessage (role==='system' + all topic-hint blocks).
+                if (message.role === 'system' && message.blocks.length > 0 && message.blocks.every(function (b) {
                     return b && b.type === 'topic-hint';
                 })) return false;
                 return true;
