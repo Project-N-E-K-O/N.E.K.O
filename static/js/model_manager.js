@@ -3219,7 +3219,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
-        window._modelManagerCurrentAvatarType = 'pngtuber';
+        // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
+        // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
+        // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
+        // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
         currentLive3dSubType = '';
         currentModelInfo = {
             name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),

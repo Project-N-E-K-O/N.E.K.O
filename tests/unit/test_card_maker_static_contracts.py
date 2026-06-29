@@ -135,8 +135,11 @@ def test_model_manager_pngtuber_character_config_fallback_loads_preview():
 
     assert script.index(timer_decl) < script.index("await switchModelDisplay(savedModelType, savedSubType);")
     assert script.count(timer_decl) == 1
-    assert "window._modelManagerCurrentAvatarType = 'pngtuber';" in preview_block
-    assert preview_block.index("window._modelManagerCurrentAvatarType = 'pngtuber';") < preview_block.index("await window.loadPNGTuberAvatar(pngtuberConfig);")
+    # 单写入者纪律：旗标只由 switchModelDisplay() 维护（恒等于当前真实 model type）；
+    # previewPNGTuberConfig 不再写它，避免在非 pngtuber 页面被误置而让 live2d-init 跳过 Live2D/VRM 初始化
+    assert "window._modelManagerCurrentAvatarType =" not in preview_block
+    assert script.count("window._modelManagerCurrentAvatarType =") == 1
+    assert "window._modelManagerCurrentAvatarType = type;" in script
     assert "window.lanlan_config.model_type = 'pngtuber';" not in preview_block
     assert "window.lanlan_config.pngtuber = Object.assign({}, pngtuberConfig);" not in preview_block
     assert "if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;" in preview_block
