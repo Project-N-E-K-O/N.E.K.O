@@ -184,7 +184,10 @@ def test_emotion_manager_config_steps_survive_until_model_selected():
     reset_step = emotion_block.split("element: '#reset-btn',", 1)[1].split("popover:", 1)[0]
     assert "requiresVisible: false" in config_step
     assert "requiresVisible: false" in reset_step
-    assert "requiresVisible: true" not in emotion_block
+    # Constrain only the two restored steps; a global negative on emotion_block
+    # would also break on unrelated, legitimately visibility-gated steps added later.
+    assert "requiresVisible: true" not in config_step
+    assert "requiresVisible: true" not in reset_step
 
 
 def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
