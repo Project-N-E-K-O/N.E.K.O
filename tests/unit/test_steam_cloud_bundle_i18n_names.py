@@ -386,7 +386,11 @@ def test_download_cloudsave_bundle_repairs_damaged_newer_local_autocloud_snapsho
     local_manifest = json.loads(local_manifest_path.read_text(encoding="utf-8"))
     local_manifest["exported_at_utc"] = "2026-01-02T00:00:00Z"
     local_manifest_path.write_text(json.dumps(local_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    damaged_relative_path = next(iter(local_export["manifest"]["files"].keys()))
+    damaged_relative_path = next(
+        relative_path
+        for relative_path in local_export["manifest"]["files"].keys()
+        if relative_path in remote_export["manifest"]["files"]
+    )
     (local_cm.cloudsave_dir / damaged_relative_path).write_text("damaged payload", encoding="utf-8")
 
     bundle_path = tmp_path / "healthy_remote_bundle.zip"
@@ -429,6 +433,9 @@ def test_download_cloudsave_bundle_repairs_damaged_newer_local_autocloud_snapsho
     assert json.loads((local_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))[
         "fingerprint"
     ] == remote_export["manifest"]["fingerprint"]
+    assert (local_cm.cloudsave_dir / damaged_relative_path).read_bytes() == (
+        remote_cm.cloudsave_dir / damaged_relative_path
+    ).read_bytes()
 
 
 @pytest.mark.unit
