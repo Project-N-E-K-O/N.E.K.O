@@ -69,4 +69,26 @@ describe('TopicHintBubble', () => {
     // Must NOT fall back to the generic system-chip.
     expect(container.querySelector('.system-chip')).toBeNull();
   });
+
+  it('falls back to the default copy when safeT echoes the key back', () => {
+    // A non-i18next safeT returning the key (missing translation) must not leak
+    // the raw key into the bubble.
+    (window as unknown as Record<string, unknown>).safeT = (key: string) => key;
+    const { container } = render(<TopicHintBubble message={topicHintMessage('桃奈')} />);
+    const text = container.querySelector('.topic-hint-chip')?.textContent ?? '';
+    expect(text).toContain('桃奈');
+    expect(text).not.toContain('chat.topicHint');
+  });
+
+  it('rejects a whitespace-only author at the schema boundary', () => {
+    expect(() =>
+      parseChatMessage({
+        id: 'topic-hint-x',
+        role: 'system',
+        author: 'x',
+        time: '10:00',
+        blocks: [{ type: 'topic-hint', author: '   ' }],
+      }),
+    ).toThrow();
+  });
 });

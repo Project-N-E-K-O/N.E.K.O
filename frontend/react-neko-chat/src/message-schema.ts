@@ -42,7 +42,9 @@ const statusBlockSchema = z.object({
 // (no LLM-context text); the dedicated TopicHintBubble renders localized copy.
 const topicHintBlockSchema = z.object({
   type: z.literal('topic-hint'),
-  author: z.string().min(1),
+  // Trim before length check so a whitespace-only author is rejected, matching
+  // the trim the bubble does at render time.
+  author: z.string().trim().min(1),
 });
 
 const buttonGroupBlockSchema = z.object({

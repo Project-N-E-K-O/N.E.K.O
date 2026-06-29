@@ -1292,6 +1292,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .topic-hint-chip-text {
   white-space: normal;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .composer-panel {

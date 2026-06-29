@@ -904,21 +904,42 @@
     // Backend sends a `topic_hint` WS frame that never touches the sync queue /
     // chat memory, so this bubble is display-only and never re-enters LLM
     // context. Rendered by react-neko-chat's dedicated TopicHintBubble.
-    function appendReactTopicHint(author) {
+    function topicHintMessageId(turnId) {
+        // Deterministic id keyed on the turn so a later cancel_topic_hint frame
+        // can remove exactly this teaser. Falls back to an auto id when no turn
+        // is supplied (then it just can't be cancelled, which is fine).
+        var tid = String(turnId || '').trim();
+        return tid ? 'topic-hint-' + tid : nextReactMessageId('topic-hint');
+    }
+
+    function appendReactTopicHint(author, turnId) {
         var host = getHost();
         if (!host || typeof host.appendMessage !== 'function') return null;
 
-        var name = String(author || getCurrentAssistantName() || '').trim();
+        // Trim BEFORE falling back: a whitespace-only author must yield the
+        // assistant name, not an empty bubble.
+        var name = String(author || '').trim() || String(getCurrentAssistantName() || '').trim();
         if (!name) return null;
 
         return host.appendMessage({
-            id: nextReactMessageId('topic-hint'),
+            id: topicHintMessageId(turnId),
             role: 'system',
             author: name,
             time: getCurrentTimeString(),
             createdAt: Date.now(),
+            turnId: String(turnId || '').trim() || undefined,
             blocks: [{ type: 'topic-hint', author: name }]
         });
+    }
+
+    // Retract a previously shown teaser when its opener failed before producing
+    // any output (backend send_cancel_topic_hint). No-op if it was never shown.
+    function removeReactTopicHint(turnId) {
+        var host = getHost();
+        if (!host || typeof host.removeMessage !== 'function') return;
+        var tid = String(turnId || '').trim();
+        if (!tid) return;
+        host.removeMessage('topic-hint-' + tid);
     }
 
     // ======================== refreshReactAssistantAvatars ========================
@@ -949,6 +970,7 @@
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
     window._resetReactChatSwitchState = _resetReactChatSwitchState;
     window.appendReactTopicHint = appendReactTopicHint;
+    window.removeReactTopicHint = removeReactTopicHint;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {
@@ -957,6 +979,7 @@
         window.appChat.processRealisticQueue = processRealisticQueue;
         window.appChat.appendReactUserMessage = appendReactUserMessage;
         window.appChat.appendReactTopicHint = appendReactTopicHint;
+        window.appChat.removeReactTopicHint = removeReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;
     }
 

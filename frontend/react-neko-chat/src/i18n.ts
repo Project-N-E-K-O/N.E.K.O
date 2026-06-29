@@ -17,7 +17,9 @@ export function i18n(key: string, fallback: string, vars?: Record<string, string
   };
   if (typeof w.safeT === 'function') {
     const v = (w.safeT as (k: string, f: unknown) => unknown)(key, arg);
-    if (typeof v === 'string') return apply(v);
+    // Guard against a safeT that echoes the key back on a missing translation
+    // (mirrors the window.t branch) so we fall through to the fallback instead.
+    if (typeof v === 'string' && v !== key) return apply(v);
   }
   if (typeof w.t === 'function') {
     try {

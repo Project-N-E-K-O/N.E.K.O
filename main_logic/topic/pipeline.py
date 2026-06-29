@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from collections import defaultdict
@@ -54,7 +55,12 @@ _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
 _UNANSWERED_TOPIC_WEIGHT = 1.0 / 3.0
 # A user turn arriving within this window after a delivery counts as a response.
 _TOPIC_RESPONSE_WINDOW_SECONDS = 10 * 60
+# Tolerance for the daily weight-sum quota comparison (weight units).
 _QUOTA_WEIGHT_EPSILON = 1e-6
+# Separate tolerance for matching a used record by its used_at timestamp
+# (seconds). Kept distinct from the weight epsilon so tuning one never silently
+# widens the other — they share a value today but mean different things.
+_USED_AT_MATCH_EPSILON = 1e-6
 
 
 def _clean_text(value: Any, *, token_limit: int = _MAX_TEXT_TOKENS) -> str:
@@ -80,7 +86,7 @@ def _record_weight(record: Mapping[str, Any]) -> float:
         weight = float(record.get("weight", 1.0))
     except (TypeError, ValueError):
         return 1.0
-    if weight != weight:  # NaN
+    if math.isnan(weight):
         return 1.0
     return max(0.0, min(1.0, weight))
 
@@ -985,7 +991,7 @@ class TopicHookPool:
         clamped = max(0.0, min(1.0, float(weight)))
         with self._used_topics_lock:
             for record in self._used_topics.get(name, []):
-                if abs(float(record.get("used_at") or 0.0) - used_at) <= _QUOTA_WEIGHT_EPSILON:
+                if abs(float(record.get("used_at") or 0.0) - used_at) <= _USED_AT_MATCH_EPSILON:
                     record["weight"] = clamped
                     return True
         return False
