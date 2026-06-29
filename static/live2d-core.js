@@ -55,8 +55,10 @@ const LIVE2D_BUBBLE_GEOMETRY_OVERRIDES = Object.freeze({});
 // 在稳定窗口后允许缓存自动刷新一次，避免“早期误识别被长期锁死”。
 const LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS = 1800;
 const LIVE2D_LINUX_X11_DEFAULT_QUALITY = 'low';
-const LIVE2D_LINUX_X11_INTERACTIVE_FPS = 60;
-const LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS = 900;
+// 自适应帧率：无动作/说话/交互时降到地板省 CPU，活动时升回配置帧率（默认 60，全平台生效）。
+const LIVE2D_IDLE_FPS = 30;                         // 静止地板帧率
+const LIVE2D_INTERACTIVE_FPS_HOLD_MS = 900;         // 活动后维持满帧的窗口，过后衰减回地板
+const LIVE2D_IDLE_FPS_GOVERNOR_INTERVAL_MS = 300;   // 活动探测轮询间隔
 const LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE = 200;
 
 function isDesktopLinuxX11Runtime() {
@@ -134,8 +136,8 @@ class Live2DManager {
         this._bubbleGeometryModelReadyAt = 0;
         this._bubbleGeometryRefreshPass = 0;
         this._linuxX11RendererProfileOptimized = false;
-        this._linuxX11FpsRestoreTimer = null;
-        this._linuxX11BaseTargetFps = null;
+        this._idleFpsRestoreTimer = null;
+        this._idleFpsGovernorTimer = null;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -300,6 +302,8 @@ class Live2DManager {
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
+                // 启动自适应帧率守护：静止时降到地板（LIVE2D_IDLE_FPS），活动时升回配置帧率。
+                this._startIdleFpsGovernor();
 
                 // Resize 渲染器并等比调整模型坐标/尺寸
                 // 触发时机：
@@ -509,56 +513,84 @@ class Live2DManager {
      */
     setTargetFPS(fps) {
         if (this.pixi_app && this.pixi_app.ticker) {
-            if (this._linuxX11FpsRestoreTimer) {
-                clearTimeout(this._linuxX11FpsRestoreTimer);
-                this._linuxX11FpsRestoreTimer = null;
-                this._linuxX11BaseTargetFps = null;
+            if (this._idleFpsRestoreTimer) {
+                clearTimeout(this._idleFpsRestoreTimer);
+                this._idleFpsRestoreTimer = null;
             }
             this.pixi_app.ticker.maxFPS = fps;
             console.log(`[Live2D Core] 目标帧率设置为 ${fps === 0 ? 'VSync (无限制)' : fps + 'fps'}`);
         }
     }
 
-    boostLinuxX11InteractiveFPS(durationMs = LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS) {
-        if (!isDesktopLinuxX11Runtime()) return;
+    // 用户配置的目标帧率（活动时的上限），默认 60；0 表示不限帧（跟随 VSync）。
+    _resolveConfiguredTargetFps() {
+        const configured = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : 60;
+        return Number.isFinite(configured) ? configured : 60;
+    }
+
+    // 静止地板帧率：不超过用户配置；配置为 0（不限帧）时仍压到地板省 CPU。
+    _resolveIdleFps() {
+        const configured = this._resolveConfiguredTargetFps();
+        return configured === 0 ? LIVE2D_IDLE_FPS : Math.min(LIVE2D_IDLE_FPS, configured);
+    }
+
+    // 有渲染活动时升回配置帧率，并安排在 durationMs 后衰减回静止地板（全平台）。
+    boostInteractiveFPS(durationMs = LIVE2D_INTERACTIVE_FPS_HOLD_MS) {
         if (!this.pixi_app || !this.pixi_app.ticker) return;
-
         const ticker = this.pixi_app.ticker;
-        const configured = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
-        const configuredFps = Number(configured);
-        if (configuredFps === 0) {
-            if (this._linuxX11FpsRestoreTimer) {
-                clearTimeout(this._linuxX11FpsRestoreTimer);
-                this._linuxX11FpsRestoreTimer = null;
-                this._linuxX11BaseTargetFps = null;
-            }
-            if (ticker.maxFPS !== 0) {
-                ticker.maxFPS = 0;
-            }
-            return;
+        const configured = this._resolveConfiguredTargetFps();
+        const activeFps = configured === 0 ? 0 : Math.max(LIVE2D_IDLE_FPS, configured);
+        if (ticker.maxFPS !== activeFps) {
+            ticker.maxFPS = activeFps;
         }
-
-        const baseFps = Math.max(1, Number.isFinite(configuredFps) ? configuredFps : 60);
-        const boostFps = Math.max(baseFps, LIVE2D_LINUX_X11_INTERACTIVE_FPS);
-        this._linuxX11BaseTargetFps = baseFps;
         const originalTicker = ticker;
-        if (ticker.maxFPS !== boostFps) {
-            ticker.maxFPS = boostFps;
+        if (this._idleFpsRestoreTimer) {
+            clearTimeout(this._idleFpsRestoreTimer);
         }
-        if (this._linuxX11FpsRestoreTimer) {
-            clearTimeout(this._linuxX11FpsRestoreTimer);
-        }
-        this._linuxX11FpsRestoreTimer = setTimeout(() => {
-            this._linuxX11FpsRestoreTimer = null;
-            const latestConfigured = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : NaN;
-            const restoreFps = Number.isFinite(latestConfigured)
-                ? latestConfigured
-                : (Number.isFinite(this._linuxX11BaseTargetFps) ? this._linuxX11BaseTargetFps : 60);
-            this._linuxX11BaseTargetFps = null;
+        this._idleFpsRestoreTimer = setTimeout(() => {
+            this._idleFpsRestoreTimer = null;
             if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
-                originalTicker.maxFPS = restoreFps;
+                originalTicker.maxFPS = this._resolveIdleFps();
             }
-        }, Math.max(100, Number(durationMs) || LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS));
+        }, Math.max(100, Number(durationMs) || LIVE2D_INTERACTIVE_FPS_HOLD_MS));
+    }
+
+    // 向后兼容旧调用名（live2d-interaction.js 的交互升帧），现已推广到全平台。
+    boostLinuxX11InteractiveFPS(durationMs) {
+        this.boostInteractiveFPS(durationMs);
+    }
+
+    // 是否有需要满帧的渲染活动：动作/表情播放、拖拽、光标聚焦跟踪、口型同步说话。
+    _hasRenderActivity() {
+        try {
+            if (typeof this.hasActiveMotionPlayback === 'function' && this.hasActiveMotionPlayback()) {
+                return true;
+            }
+        } catch (_) {}
+        if (this._isDraggingModel || this.isFocusing) return true;
+        const appState = window.appState;
+        if (appState && appState.lipSyncActive) return true;
+        return false;
+    }
+
+    // 自适应帧率守护：周期性探测活动状态，有活动就续命满帧，无活动时由衰减计时器回落到地板。
+    _startIdleFpsGovernor() {
+        this._stopIdleFpsGovernor();
+        // 启动即视为活动（加载/入场动画期间保持满帧），随后自动衰减。
+        this.boostInteractiveFPS();
+        this._idleFpsGovernorTimer = setInterval(() => {
+            if (!this.pixi_app || !this.pixi_app.ticker) return;
+            if (this._hasRenderActivity()) {
+                this.boostInteractiveFPS();
+            }
+        }, LIVE2D_IDLE_FPS_GOVERNOR_INTERVAL_MS);
+    }
+
+    _stopIdleFpsGovernor() {
+        if (this._idleFpsGovernorTimer) {
+            clearInterval(this._idleFpsGovernorTimer);
+            this._idleFpsGovernorTimer = null;
+        }
     }
 
     /**
