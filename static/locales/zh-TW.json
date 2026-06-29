@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "對話",
+        "topicHint": "{{author}}好像有點想找你聊的話題…",
         "viewerTitle": "對話 (觀看模式)",
         "tooltip": "對話區",
         "textInputPlaceholder": "回車發送，Shift+回車換行",
@@ -1593,7 +1594,9 @@
                 "layerImagesFailed": "一個或多個圖層圖片載入失敗",
                 "emptyLayerRefs": "一個或多個圖層圖片引用為空"
             }
-        }
+        },
+        "pngtuberImportProjectFile": "導入工程檔案",
+        "pngtuberImportFolder": "導入資料夾"
     },
     "voice": {
         "title": "音色注冊",
@@ -1606,6 +1609,12 @@
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "mimoApiRequired": "此功能需要 MiMo 模型，請在 API 密鑰設置頁中保存 MiMo API Key",
         "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
+        "vllmOmniNotice": "本地 vLLM-Omni 服務，無需 API Key，請確保已配置本地服務地址",
+        "vllmRefTextLabel": "參考音頻原文（vLLM-Omni 克隆必填，須與音頻內容嚴格對應）",
+        "vllmRefTextHint": "逐字輸入參考音頻裡說的話，文本與音頻不符會導致克隆音質下降",
+        "vllmRefTextPlaceholder": "例如：希望你以後能夠做的比我還好呦",
+        "vllmRefTextRequired": "請填寫參考音頻原文（vLLM-Omni 克隆必填）",
+        "vllmRefTextTooLong": "vLLM-Omni 參考音頻原文過長，請控制在 100 字以內",
         "providerLabel": "語音克隆服務商",
         "provider": {
             "cosyvoice": "阿里百煉 CosyVoice",
@@ -1613,7 +1622,19 @@
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際版）",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo（小米）"
+            "mimo": "MiMo（小米）",
+            "vllm_omni": "vLLM-Omni（本機複製）"
+        },
+        "sourcePreset": "預製",
+        "sourceClone": "克隆",
+        "sourceDesign": "描述生成",
+        "providerLocal": "本地 CosyVoice",
+        "providerFree": "免費",
+        "providerFreeApi": "免費 API",
+        "providerUnknown": "其他",
+        "nativeVoice": {
+            "qingchunshaonv": "青春少女",
+            "wenrounansheng": "溫柔男聲"
         },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
@@ -1978,11 +1999,15 @@
         "gender": "性別",
         "nickname": "昵稱",
         "apiKeySettings": "API Key",
-        "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
-        "masterProfileTitle": "主人檔案",
+        "masterProfile": "我的檔案（唯一）：檔案名為必填項，其他均為可選項。",
+        "masterProfileTitle": "我的檔案",
         "profileName": "檔案名",
         "profileNameMaxHint": "最多60個字符",
         "profileNameTooLong": "檔案名過長",
+        "profileNameUnsafeDot": "檔案名不能僅由點號組成或以點號結尾",
+        "profileNameDotSequence": "檔案名不能包含連續點號(..)",
+        "profileNameReservedDevice": "檔案名不能使用 Windows 保留設備名",
+        "profileNameInvalid": "檔案名無效",
         "profileNameContainsSlash": "檔案名不能包含路徑分隔符(/或\\)",
         "profileNameContainsDot": "檔案名不能包含點號(.)",
         "profileNameInvalidChars": "檔案名只能包含文字、數字、空格、底線、連字符、括號、間隔號(·/・)和撇號",
@@ -2063,7 +2088,7 @@
         "aiAssistApiMissing": "輔助 API 尚未設定。請在「API Key 設定」裡完成設定後再試。",
         "confirmNewCatgirl": "確認新貓娘",
         "saveChanges": "保存修改",
-        "saveMaster": "保存主人設定",
+        "saveMaster": "儲存我的檔案",
         "addMasterField": "新增設定",
         "manageLive2D": "點擊管理Live2D模型",
         "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
@@ -2071,7 +2096,7 @@
         "rename": "修改名稱",
         "cancel": "取消",
         "addMasterFieldPrompt": "請輸入新設定的名稱（鍵名）",
-        "addMasterFieldTitle": "新增主人設定",
+        "addMasterFieldTitle": "新增我的檔案欄位",
         "fieldExists": "該設定已存在",
         "profileNameRequired": "檔案名為必填項",
         "profileNameRenameOnlyHint": "請透過「修改名稱」按鈕修改檔案名",
@@ -2129,10 +2154,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server 回應逾時 (>3s)",
         "loadFailed": "載入角色資料失敗",
         "renameError": "重新命名失敗: {{error}}",
-        "renameMasterTitle": "重新命名主人",
+        "renameMasterTitle": "重新命名我的檔案",
         "renameSuccess": "重新命名成功",
         "autoSaveError": "儲存設定失敗",
-        "saveMasterError": "儲存主人設定失敗",
+        "saveMasterError": "儲存我的檔案失敗",
         "autoSaved": "已自動儲存設定",
         "autoSaveFailed": "自動儲存失敗，請手動儲存後再關閉頁面",
         "unsavedNewCatgirlDraftDetected": "偵測到未儲存的新貓娘草稿，請先儲存或取消後再同步刷新",
@@ -2160,7 +2185,7 @@
         "generatingCard": "正在生成角色卡...",
         "settings": "設定",
         "renamePrompt": "請輸入新的檔案名",
-        "renameMasterPrompt": "請輸入新的主人檔案名",
+        "renameMasterPrompt": "請輸入新的檔案名",
         "renameTitle": "修改名稱",
         "tempSaveFailed": "臨時儲存失敗: {{error}}",
         "newCatgirlSuccess": "新貓娘創建成功",
@@ -2189,7 +2214,7 @@
         "cardAuthorReadonly": "此來源的卡面無法修改作者",
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
-        "saveMasterSuccess": "儲存主人設定成功",
+        "saveMasterSuccess": "我的檔案儲存成功",
         "editCardFace": "編輯卡面",
         "cardFaceModelSettings": "卡面模型設定",
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
@@ -3229,8 +3254,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 主人檔案",
-                "desc": "這是妳的主人檔案。檔案名是必填項，其他信息（性別、昵稱等）都是可選的。這些信息會影響貓娘對妳的稱呼和態度。"
+                "title": "👤 我的檔案",
+                "desc": "這是您的檔案。檔案名是必填項，其他資訊（性別、暱稱等）都是可選的。這些資訊會影響貓娘對您的稱呼和態度。"
             },
             "step2": {
                 "title": "📝 設置檔案名",
@@ -4468,6 +4493,8 @@
              "yuiCheatInk": "Yui 扔了墨汁",
              "yuiCheatBanana": "Yui 丟了香蕉皮",
              "yuiCheatBananaSlip": "踩到香蕉皮了",
+             "playerIcePowerup": "冰塊生效，Yui 被凍住了",
+             "yuiFrozen": "Yui 還被冰住，出拍延後",
              "nekoThinking": "Neko思考中",
              "nekoTurn": "Neko回合",
              "copyNeko": "復刻Neko",
@@ -4713,6 +4740,12 @@
                      "這團墨汁的戰術效果不錯吧"
                  ]
              },
+             "playerIceScore": [
+                 "唔，不算啦不算啦，重來！",
+                 "被凍住的時候得分不算啦！",
+                 "等一下等一下，剛才我被冰住了！",
+                 "這球有冰塊加成，重來重來！"
+             ],
              "easterEgg": {
                  "lateNight": "這麼晚了還在羽毛球？",
                  "xmas": "鈴鐺都掛上了，還要打喵？",

@@ -961,6 +961,29 @@ def test_activity_guess_loop_kicks_topic_candidates_before_private_bail():
     assert source.index("if rule_snap.state == 'private':") < source.index("if not _proactive_chat_enabled():")
 
 
+def test_activity_guess_gate_wired_with_production_backoff_knobs():
+    """config → tracker → gate wiring carries the user-tuned faster-decay
+    schedule: 4x growth per re-narration, capped at 900s (aligned with the
+    15-min away threshold)."""
+    from main_logic.activity.tracker import UserActivityTracker
+    from config import (
+        ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+        ACTIVITY_GUESS_BACKOFF_MULTIPLIER,
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS,
+    )
+
+    tracker = UserActivityTracker('test_lanlan')
+    gate = tracker._activity_guess_gate
+    assert gate._base == ACTIVITY_GUESS_BACKOFF_BASE_SECONDS
+    assert gate._mult == ACTIVITY_GUESS_BACKOFF_MULTIPLIER
+    assert gate._cap == max(
+        ACTIVITY_GUESS_BACKOFF_CAP_SECONDS, ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
+    )
+    # Pin the user's headline ask so a silent revert to the old 2x/600s is caught.
+    assert ACTIVITY_GUESS_BACKOFF_MULTIPLIER == 4.0
+    assert ACTIVITY_GUESS_BACKOFF_CAP_SECONDS == 900.0
+
+
 def test_narration_suppressed_check_defaults_and_injection():
     from main_logic.activity.tracker import UserActivityTracker
 

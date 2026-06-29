@@ -11,6 +11,13 @@ class QQAutoReplySessionMixin:
     def _build_session_key(*, sender_id: str, is_group: bool, group_id: str | None = None) -> str:
         sender = str(sender_id or "").strip()
         if is_group:
+            return f"group:{str(group_id or '').strip()}"
+        return f"private:{sender}"
+
+    @staticmethod
+    def _build_backlog_conversation_key(*, sender_id: str, is_group: bool, group_id: str | None = None) -> str:
+        sender = str(sender_id or "").strip()
+        if is_group:
             return f"group:{str(group_id or '').strip()}:{sender}"
         return f"private:{sender}"
 

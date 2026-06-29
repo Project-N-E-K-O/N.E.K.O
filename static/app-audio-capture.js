@@ -1513,15 +1513,7 @@
             if (!isPopupAvailable()) return false;
             micPopup.innerHTML = '';
 
-            if (audioInputs.length === 0) {
-                var noMicItem = document.createElement('div');
-                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
-                noMicItem.style.padding = '8px 12px';
-                noMicItem.style.color = 'var(--neko-popup-text-sub)';
-                noMicItem.style.fontSize = '13px';
-                micPopup.appendChild(noMicItem);
-                return true;
-            }
+            var hasMicrophoneDevices = audioInputs.length > 0;
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
@@ -1753,6 +1745,13 @@
             gainSlider.step = '1';
             gainSlider.value = String(S.microphoneGainDb);
             Object.assign(gainSlider.style, { width: '100%', height: '6px', borderRadius: '3px', cursor: 'pointer', accentColor: '#4f8cff' });
+            if (!hasMicrophoneDevices) {
+                gainSlider.disabled = true;
+                gainSlider.style.cursor = 'not-allowed';
+                gainSlider.style.opacity = '0.55';
+                gainLabel.style.color = 'var(--neko-popup-text-sub)';
+                gainValueEl.style.color = 'var(--neko-popup-text-sub)';
+            }
 
             gainSlider.addEventListener('input', function (e) {
                 var newGainDb = parseFloat(e.target.value);
@@ -1828,33 +1827,40 @@
             rightColumn.appendChild(deviceTitle);
 
             // 默认麦克风选项
-            var defaultOption = document.createElement('button');
-            defaultOption.className = 'mic-option';
-            defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
-            if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
-            Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
-            defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
-            defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
-            defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
-            rightColumn.appendChild(defaultOption);
+            if (hasMicrophoneDevices) {
+                var defaultOption = document.createElement('button');
+                defaultOption.className = 'mic-option';
+                defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
+                if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
+                Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
+                defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
+                defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
+                defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
+                rightColumn.appendChild(defaultOption);
 
-            var sep3 = document.createElement('div');
-            Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
-            rightColumn.appendChild(sep3);
+                var sep3 = document.createElement('div');
+                Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                rightColumn.appendChild(sep3);
 
-            // 各个设备选项
-            audioInputs.forEach(function (device, idx) {
-                var option = document.createElement('button');
-                option.className = 'mic-option';
-                option.dataset.deviceId = device.deviceId;
-                option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
-                if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
-                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
-                option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
-                option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
-                option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
-                rightColumn.appendChild(option);
-            });
+                // 各个设备选项
+                audioInputs.forEach(function (device, idx) {
+                    var option = document.createElement('button');
+                    option.className = 'mic-option';
+                    option.dataset.deviceId = device.deviceId;
+                    option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
+                    if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
+                    Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
+                    option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
+                    option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
+                    option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
+                    rightColumn.appendChild(option);
+                });
+            } else {
+                var noMicItem = document.createElement('div');
+                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
+                Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                rightColumn.appendChild(noMicItem);
+            }
 
             // 组装
             micPopup.appendChild(leftColumn);

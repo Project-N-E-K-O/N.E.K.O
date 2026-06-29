@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Chat",
+        "topicHint": "{{author}} seems to have something they'd like to chat about…",
         "viewerTitle": "Chat (Viewer Mode)",
         "tooltip": "Chat Area",
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",
@@ -1593,7 +1594,9 @@
                 "layerImagesFailed": "one or more layer images failed to load",
                 "emptyLayerRefs": "one or more layer image refs are empty"
             }
-        }
+        },
+        "pngtuberImportProjectFile": "Import Project File",
+        "pngtuberImportFolder": "Import Folder"
     },
     "voice": {
         "title": "Voice Registration",
@@ -1606,6 +1609,12 @@
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
+        "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
+        "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
+        "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
+        "vllmRefTextPlaceholder": "e.g. I hope you can do even better than me in the future",
+        "vllmRefTextRequired": "Please enter the reference audio transcript (required for vLLM-Omni clone)",
+        "vllmRefTextTooLong": "Reference audio transcript is too long; please keep it within 100 characters",
         "providerLabel": "Voice Clone Provider",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",
@@ -1613,7 +1622,19 @@
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs",
-            "mimo": "MiMo (Xiaomi)"
+            "mimo": "MiMo (Xiaomi)",
+            "vllm_omni": "vLLM-Omni (Local Clone)"
+        },
+        "sourcePreset": "Preset",
+        "sourceClone": "Clone",
+        "sourceDesign": "Voice Design",
+        "providerLocal": "Local CosyVoice",
+        "providerFree": "Free",
+        "providerFreeApi": "Free API",
+        "providerUnknown": "Other",
+        "nativeVoice": {
+            "qingchunshaonv": "Youthful Girl",
+            "wenrounansheng": "Gentle Male Voice"
         },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
@@ -1978,11 +1999,15 @@
         "gender": "Gender",
         "nickname": "Nickname",
         "apiKeySettings": "API Key",
-        "masterProfile": "Master Profile (Unique): Profile name is required, others are optional and can be deleted.",
-        "masterProfileTitle": "Master Profile",
+        "masterProfile": "My Profile (Unique): Profile name is required, others are optional and can be deleted.",
+        "masterProfileTitle": "My Profile",
         "profileName": "Profile Name",
         "profileNameMaxHint": "Max 60 characters",
         "profileNameTooLong": "Profile name is too long",
+        "profileNameUnsafeDot": "Profile name cannot be only dots or end with a dot",
+        "profileNameDotSequence": "Profile name cannot contain consecutive dots (..)",
+        "profileNameReservedDevice": "Profile name cannot use a Windows reserved device name",
+        "profileNameInvalid": "Profile name is invalid",
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
         "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "profileNameInvalidChars": "Profile name can only contain letters, numbers, spaces, underscores, hyphens, parentheses, middle dots (·/・), and apostrophes",
@@ -2063,7 +2088,7 @@
         "aiAssistApiMissing": "Assist API is not configured yet. Please configure it in API Key Settings first.",
         "confirmNewCatgirl": "Confirm New NEKO",
         "saveChanges": "Save Changes",
-        "saveMaster": "Save Master Profile",
+        "saveMaster": "Save My Profile",
         "addMasterField": "Add Field",
         "manageLive2D": "Click to manage Live2D model",
         "idleMotionHint": "When saving, the selected motion will be set as idle motion",
@@ -2071,7 +2096,7 @@
         "rename": "Rename",
         "cancel": "Cancel",
         "addMasterFieldPrompt": "Please enter the name of the new field (key name)",
-        "addMasterFieldTitle": "Add Master Field",
+        "addMasterFieldTitle": "Add My Profile Field",
         "fieldExists": "This field already exists",
         "profileNameRequired": "Profile name is required",
         "profileNameRenameOnlyHint": "Use the Rename button to change the profile name",
@@ -2129,10 +2154,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server timed out (>3s)",
         "loadFailed": "Failed to load character data",
         "renameError": "Rename failed: {{error}}",
-        "renameMasterTitle": "Rename Master",
+        "renameMasterTitle": "Rename My Profile",
         "renameSuccess": "Rename successful",
         "autoSaveError": "Failed to save settings",
-        "saveMasterError": "Failed to save master settings",
+        "saveMasterError": "Failed to save my profile",
         "autoSaved": "Settings auto-saved",
         "autoSaveFailed": "Auto-save failed, please save manually before closing",
         "unsavedNewCatgirlDraftDetected": "Detected an unsaved new NEKO draft. Please save or cancel it before syncing refresh",
@@ -2160,7 +2185,7 @@
         "generatingCard": "Generating character card...",
         "settings": "Settings",
         "renamePrompt": "Please enter a new profile name",
-        "renameMasterPrompt": "Please enter a new master profile name",
+        "renameMasterPrompt": "Please enter a new profile name",
         "renameTitle": "Rename",
         "tempSaveFailed": "Temp save failed: {{error}}",
         "newCatgirlSuccess": "New NEKO created successfully",
@@ -2189,7 +2214,7 @@
         "cardAuthorReadonly": "Author is read-only for this source",
         "cardAuthorUpdated": "Author updated",
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
-        "saveMasterSuccess": "Master profile saved successfully",
+        "saveMasterSuccess": "My profile saved successfully",
         "editCardFace": "Edit Card Face",
         "cardFaceModelSettings": "Card Model Settings",
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
@@ -3229,8 +3254,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 Master Profile",
-                "desc": "This is your master profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
+                "title": "👤 My Profile",
+                "desc": "This is your profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
             },
             "step2": {
                 "title": "📝 Set Profile Name",
@@ -4468,6 +4493,8 @@
              "yuiCheatInk": "Yui tossed ink",
              "yuiCheatBanana": "Yui tossed a banana peel",
              "yuiCheatBananaSlip": "You stepped on the banana peel",
+             "playerIcePowerup": "Ice activated. Yui is frozen",
+             "yuiFrozen": "Yui is still frozen, shot delayed",
              "nekoThinking": "Neko is thinking",
              "nekoTurn": "Neko's turn",
              "copyNeko": "Copy Neko",
@@ -4713,6 +4740,12 @@
                      "That ink tactic worked pretty well."
                  ]
              },
+             "playerIceScore": [
+                 "Mmph, that does not count. Do it over!",
+                 "Wait, I was frozen. That point needs a replay!",
+                 "That ice helped too much. Run that one back!",
+                 "No fair, I could not move!"
+             ],
              "easterEgg": {
                  "lateNight": "Still playing badminton this late?",
                  "xmas": "The bells are up and you still want to rally?",

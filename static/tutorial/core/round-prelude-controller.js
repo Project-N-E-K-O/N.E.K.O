@@ -30,6 +30,7 @@
             this.beginAvatarOverride = normalizedOptions.beginAvatarOverride || noop;
             this.revealPrepared = normalizedOptions.revealPrepared || noop;
             this.ensureVisible = normalizedOptions.ensureVisible || noop;
+            this.waitForAvatarReady = normalizedOptions.waitForAvatarReady || noop;
             this.sleep = normalizedOptions.sleep || noop;
             this.beginTakingOver = normalizedOptions.beginTakingOver || noop;
             this.setLifecycleActive = normalizedOptions.setLifecycleActive || noop;
@@ -69,6 +70,11 @@
                 return toPromise(() => this.revealPrepared()).then(() => {
                     throw error;
                 });
+            });
+            await toPromise(() => this.waitForAvatarReady(sceneId, {
+                deferRevealPrepared
+            })).catch((error) => {
+                this.warn('[Tutorial] 等待 YUI 模型视觉就绪失败，继续启动教程:', error);
             });
 
             await toPromise(() => this.sleep(delayMs));

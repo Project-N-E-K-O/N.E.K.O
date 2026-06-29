@@ -80,18 +80,18 @@ def test_blocked_greeting_check_retries_without_home_tutorial_state():
     assert "_scheduleGreetingCheckRetry();" in blocked_branch
 
 
-def test_tutorial_release_greeting_check_bypasses_icebreaker_consumption():
+def test_greeting_check_defers_until_new_user_icebreaker_ends():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
     send_block = source.split("function _sendGreetingCheckIfReady()", 1)[1].split(
         "function _onModelReady()",
         1,
     )[0]
-    assert send_block.index("if (_consumeGreetingCheckForNewUserIcebreaker())") < send_block.index(
+    assert send_block.index("if (_deferGreetingCheckForNewUserIcebreaker())") < send_block.index(
         "if (_isGreetingCheckBlocked())"
     )
 
-    consume_block = source.split("function _consumeGreetingCheckForNewUserIcebreaker()", 1)[1].split(
+    defer_block = source.split("function _deferGreetingCheckForNewUserIcebreaker()", 1)[1].split(
         "function _sendGreetingCheckIfReady()",
         1,
     )[0]
@@ -99,28 +99,51 @@ def test_tutorial_release_greeting_check_bypasses_icebreaker_consumption():
         "function normalizeAssistantTurnId(turnId)",
         1,
     )[0]
-    assert "if (isTutorialReleaseGreetingReason(normalizedReason))" in blocking_block
-    assert "return false;" in blocking_block
-    assert "return isNewUserIcebreakerPeriodActive();" in blocking_block
+    assert "return isNewUserIcebreakerActiveForGreeting();" in blocking_block
+    assert "isTutorialReleaseGreetingReason" not in blocking_block
+    active_block = source.split("function isNewUserIcebreakerActiveForGreeting()", 1)[1].split(
+        "function isNewUserIcebreakerPeriodActive()",
+        1,
+    )[0]
+    assert "window.NekoNewUserIcebreakerState" in active_block
+    assert "state.isPeriodActive()" in active_block
+    assert "window.newUserIcebreaker.getActiveSession()" in active_block
+    assert "return isNewUserIcebreakerStorePeriodActive();" in active_block
+    assert "hasRuntimeState" not in active_block
     period_block = source.split("function isNewUserIcebreakerPeriodActive()", 1)[1].split(
         "function isNewUserIcebreakerBlockingGreeting(reason)",
         1,
     )[0]
-    assert "readNewUserIcebreakerStore()" in period_block
-    assert "window.newUserIcebreaker.getActiveSession()" in period_block
-    assert "return false;" in period_block
-    assert "if (isTutorialReleaseGreetingReason(S._greetingCheckReason)) return false;" in consume_block
-    assert "sendHomeTutorialState(" not in consume_block
-    assert "S._greetingCheckPending = false;" in consume_block
-    assert "_resetGreetingCheckRetry(true);" in consume_block
-    assert "_scheduleGreetingCheckRetry();" not in consume_block
+    assert "isNewUserIcebreakerActiveForGreeting()" in period_block
+    assert "isNewUserIcebreakerStorePeriodActive()" not in period_block
+    assert "readNewUserIcebreakerStore()" not in period_block
+    store_block = source.split("function isNewUserIcebreakerStorePeriodActive()", 1)[1].split(
+        "function isNewUserIcebreakerActiveForGreeting()",
+        1,
+    )[0]
+    assert "readNewUserIcebreakerStore()" in store_block
+    assert "isNewUserIcebreakerEntryBlocking(entry)" in store_block
+    entry_block = source.split("function isNewUserIcebreakerEntryBlocking(entry)", 1)[1].split(
+        "function isNewUserIcebreakerStorePeriodActive()",
+        1,
+    )[0]
+    assert "entry.completed !== true" in entry_block
+    assert "isRecentNewUserIcebreakerEntry(entry)" in entry_block
+    assert "return false;" in store_block
+    assert "sendHomeTutorialState(" not in defer_block
+    assert "_scheduleGreetingCheckRetry();" in defer_block
+    assert "S._greetingCheckPending = false;" not in defer_block
+    assert "S._greetingCheckReason = '';" not in defer_block
+    assert "_resetGreetingCheckRetry(true);" not in defer_block
     assert "var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');" in send_block
     assert "sendHomeTutorialState(" not in send_block
     assert "reason: greetingReason" in send_block
     assert "if (S._startupGreetingReleasePending) {" in send_block
     assert send_block.index("if (S._startupGreetingReleasePending)") < send_block.index(
-        "if (_consumeGreetingCheckForNewUserIcebreaker())"
+        "if (_deferGreetingCheckForNewUserIcebreaker())"
     )
+    assert "window.addEventListener('neko:new-user-icebreaker-ended'" in source
+    assert "function _consumeGreetingCheckForNewUserIcebreaker()" not in source
 
     assert "function _isTutorialBlockingGreeting()" not in source
     assert "function isHomeTutorialLockedForGreeting()" not in source

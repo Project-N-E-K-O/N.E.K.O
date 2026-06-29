@@ -3,8 +3,22 @@
  * 支持所有页面的引导配置
  */
 
-// 新教程体系目前由 Yui Guide/7 天悬浮教程承载，旧多页面教程已下线。
-const TUTORIAL_PAGES = Object.freeze(['home']);
+// Home uses the Yui seven-day guide; non-home pages use the restored Driver.js page tutorial runtime.
+const TUTORIAL_PAGES = Object.freeze([
+    'home',
+    'model_manager',
+    'model_manager_live2d',
+    'model_manager_vrm',
+    'model_manager_mmd',
+    'model_manager_common',
+    'parameter_editor',
+    'emotion_manager',
+    'chara_manager',
+    'settings',
+    'voice_clone',
+    'steam_workshop',
+    'memory_browser',
+]);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
@@ -27,6 +41,16 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function getTutorialStorageKeysForPageFallback(pageKey) {
+    if (pageKey === 'model_manager') {
+        return [
+            'model_manager',
+            'model_manager_live2d',
+            'model_manager_vrm',
+            'model_manager_mmd',
+            'model_manager_common',
+        ].map(getTutorialStorageKeyForPage);
+    }
+
     if (pageKey === 'home') {
         return [
             getTutorialStorageKeyForPage('home_yui_v1'),
@@ -640,14 +664,10 @@ class UniversalTutorialManager {
         if (state.completedRounds.includes(round) || state.skippedRounds.includes(round)) {
             return false;
         }
-        if (state.pendingRound || state.manualResetRound) {
-            return state.pendingRound === round || state.manualResetRound === round;
+        if (state.manualResetRound) {
+            return state.manualResetRound === round;
         }
-        if (state.pendingRound !== round && state.manualResetRound !== round) {
-            const today = getTodayLocalDateForAvatarFloatingGuide();
-            return state.lastAutoShownRound === round && state.lastAutoShownDate === today;
-        }
-        return true;
+        return this.getNextAvatarFloatingGuideAutoRound() === round;
     }
 
     isAvatarFloatingGuideRoundRegistered(day) {
@@ -665,7 +685,7 @@ class UniversalTutorialManager {
     getNextAvatarFloatingGuideAutoRound() {
         const state = loadAvatarFloatingGuideState();
         const today = getTodayLocalDateForAvatarFloatingGuide();
-        const pendingManualRound = state.pendingRound || state.manualResetRound;
+        const pendingManualRound = state.manualResetRound;
         if (pendingManualRound) {
             return pendingManualRound;
         }
@@ -747,9 +767,7 @@ class UniversalTutorialManager {
                 return;
             }
             this.startAvatarFloatingGuideRound(round, { source: 'auto' }).then((result) => {
-                if (result !== false) {
-                    this.markAvatarFloatingGuideRoundAutoShown(round);
-                } else {
+                if (result === false) {
                     this.dispatchStartupGreetingRelease('avatar-floating-round-start-skipped', { day: round });
                 }
             }).catch((error) => {
@@ -800,6 +818,7 @@ class UniversalTutorialManager {
                 beginAvatarOverride: (overrideOptions) => this.beginTutorialAvatarOverride(overrideOptions),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
                 ensureVisible: (sceneId, ensureOptions) => this.ensureTutorialYuiLive2dVisible(sceneId, ensureOptions),
+                waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000),
                 sleep: (delayMs) => this.sleep(delayMs),
                 beginTakingOver: (detail) => {
                     const director = detail && detail.director;
@@ -1901,6 +1920,60 @@ class UniversalTutorialManager {
         return ['preparing', 'applying', 'settling'].includes(String(manager._modelLoadState || ''));
     }
 
+    isTutorialYuiLive2dVisualReady() {
+        const manager = window.live2dManager || null;
+        if (!this.isTutorialYuiLive2dActive() || !this.hasTutorialYuiLive2dRenderableModel(manager)) {
+            return false;
+        }
+        if (manager._isLoadingModel === true) {
+            return false;
+        }
+        const state = String(manager._modelLoadState || '');
+        if (state !== 'ready') {
+            return false;
+        }
+        if (manager._isModelReadyForInteraction !== true) {
+            return false;
+        }
+        return true;
+    }
+
+    waitForTutorialYuiLive2dVisualReady(reason = '', maxWaitTime = 12000) {
+        if (this.isTutorialYuiLive2dVisualReady()) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            let resolved = false;
+            const timeoutMs = Math.max(0, Math.floor(Number(maxWaitTime) || 0));
+            const done = (result) => {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                clearTimeout(timer);
+                clearInterval(poller);
+                window.removeEventListener('neko-live2d-model-ready', onReady);
+                window.removeEventListener('live2d-model-ready', onReady);
+                if (!result) {
+                    console.warn('[Tutorial] 等待 YUI Live2D 视觉就绪超时，继续启动教程:', reason || 'unknown');
+                }
+                resolve(result);
+            };
+            const checkReady = () => {
+                if (this.isTutorialYuiLive2dVisualReady()) {
+                    done(true);
+                }
+            };
+            const onReady = () => checkReady();
+            const poller = setInterval(checkReady, 100);
+            const timer = setTimeout(() => done(false), timeoutMs);
+            window.addEventListener('neko-live2d-model-ready', onReady);
+            window.addEventListener('live2d-model-ready', onReady);
+            checkReady();
+        });
+    }
+
     waitForLive2dModelLoadIdle(maxWaitTime = 30000) {
         if (!this.isLive2dModelLoadBusy()) {
             return Promise.resolve(true);
@@ -2947,6 +3020,10 @@ class UniversalTutorialManager {
             yuiGuideSceneId: 'avatar_floating_day' + round,
         }];
         this.activeAvatarFloatingGuideRound = round;
+        if (source === 'auto') {
+            // Reserve the daily auto start before long narration so refreshes cannot replay it.
+            this.markAvatarFloatingGuideRoundAutoShown(round);
+        }
         this.setAvatarFloatingGuideCurrentRound(round);
         this.snapshotAvatarFloatingModelInteractionState('avatar-floating-guide-start');
         this.isTutorialRunning = true;
@@ -3742,6 +3819,31 @@ async function initUniversalTutorialManager() {
  * 全局函数：重置所有引导
  * 供 HTML 按钮调用
  */
+async function showTutorialResetMessage(message, options = {}) {
+    const title = options.title || (window.t ? window.t('memory.tutorialReset', 'Tutorial') : 'Tutorial');
+    if (typeof window.showTutorialResetNotice === 'function') {
+        try {
+            await window.showTutorialResetNotice(message, Object.assign({}, options, { title }));
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] custom notice failed:', error);
+        }
+    }
+    if (typeof window.showAlert === 'function') {
+        try {
+            await window.showAlert(message, title);
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] common alert failed:', error);
+        }
+    }
+    if (typeof window.alert === 'function') {
+        window.alert(message);
+        return;
+    }
+    console.log('[TutorialReset]', message);
+}
+
 async function resetAllTutorials() {
     if (window.universalTutorialManager) {
         await window.universalTutorialManager.resetAllTutorials();
@@ -3754,7 +3856,10 @@ async function resetAllTutorials() {
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
         dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
-    alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
+    const resetMessage = window.t
+        ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。')
+        : '已重置所有引导，下次进入各页面时将重新显示引导。';
+    await showTutorialResetMessage(resetMessage);
 }
 
 /**
@@ -3783,19 +3888,19 @@ async function resetTutorialForPage(pageKey) {
                 const fallbackError = window.t
                     ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                     : '触发当前角色性格重选失败，请稍后再试。';
-                alert(payload && payload.error ? payload.error : fallbackError);
+                void showTutorialResetMessage(payload && payload.error ? payload.error : fallbackError, { variant: 'error' });
                 return;
             }
 
             const successMessage = window.t
                 ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的性格重选请求，请回到主页刷新后继续。')
                 : '已记录当前角色的性格重选请求，请回到主页刷新后继续。';
-            alert(successMessage);
+            void showTutorialResetMessage(successMessage);
         }).catch(() => {
             const fallbackError = window.t
                 ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                 : '触发当前角色性格重选失败，请稍后再试。';
-            alert(fallbackError);
+            void showTutorialResetMessage(fallbackError, { variant: 'error' });
         });
         return;
     }
@@ -3815,6 +3920,14 @@ async function resetTutorialForPage(pageKey) {
 
     const pageNames = {
         'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
+        'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
+        'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
+        'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',
+        'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
+        'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
+        'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
+        'steam_workshop': window.t ? window.t('steam.workshop', 'Steam创意工坊') : 'Steam创意工坊',
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
         'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;
@@ -3822,7 +3935,7 @@ async function resetTutorialForPage(pageKey) {
     const message = window.t
         ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
         : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
-    alert(message);
+    await showTutorialResetMessage(message);
 }
 
 /**

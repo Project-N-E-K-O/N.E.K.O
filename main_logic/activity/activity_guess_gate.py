@@ -40,11 +40,11 @@ separate signature's state:
   the exact app, so flicking between two same-category apps is a no-op and even
   cross-category flicker only registers at the category level.
 * **Per-signature exponential backoff** — each distinct signature carries its
-  OWN streak and is re-narrated on an interval that grows with each of *its*
-  re-narrations: ``BASE → 2·BASE → …`` capped at ``CAP``. Oscillating between
-  already-narrated signatures therefore decays from "every BASE" toward "every
-  CAP", and a one-off new activity does NOT reset the backoff a separate,
-  still-oscillating signature has accumulated.
+  OWN streak and is re-narrated on an interval that grows by ``MULTIPLIER`` with
+  each of *its* re-narrations: ``BASE → MULTIPLIER·BASE → MULTIPLIER²·BASE → …``
+  capped at ``CAP``. Oscillating between already-narrated signatures therefore
+  decays from "every BASE" toward "every CAP", and a one-off new activity does
+  NOT reset the backoff a separate, still-oscillating signature has accumulated.
 * **Novelty / freshness bypass** — a signature not in the small recently-narrated
   cache, or one whose cached narration was built under an OLDER conversation turn
   (``conv_seq``), fires immediately and restarts that signature's backoff. The
@@ -96,15 +96,26 @@ class ActivityGuessGate:
         scores, guess = gate.cached(current_sig)
     """
 
-    def __init__(self, *, base_seconds: float, cap_seconds: float, cache_size: int):
+    def __init__(
+        self, *, base_seconds: float, cap_seconds: float, cache_size: int,
+        backoff_multiplier: float = 2.0,
+    ):
         if base_seconds <= 0:
             raise ValueError('base_seconds must be > 0')
+        # The multiplier must actually grow the interval. A value <= 1 would
+        # degrade the backoff to "re-narrate every BASE" — i.e. the original
+        # idle burn this gate exists to kill. So, unlike ``cap`` (a soft ceiling
+        # that clamps), the multiplier is load-bearing like ``base`` and a
+        # misconfig raises rather than silently re-introducing the burn.
+        if backoff_multiplier <= 1.0:
+            raise ValueError('backoff_multiplier must be > 1')
         self._base = float(base_seconds)
+        self._mult = float(backoff_multiplier)
         # ``cap`` is a soft ceiling, not load-bearing like ``base``: a bad value
         # (0 / negative / below base) is clamped up to ``base`` rather than
         # raising, so a misconfigured config knob degrades to "no backoff beyond
         # base" instead of crashing tracker/session init. (``base`` must raise —
-        # base <= 0 would zero out the floor and the ``2**streak`` interval.)
+        # base <= 0 would zero out the floor and the ``mult**streak`` interval.)
         self._cap = max(float(cap_seconds), self._base)
         self._cache_size = max(1, int(cache_size))
         # signature -> (last_fire_ts, streak, conv_seq, scores, guess), LRU
@@ -116,12 +127,14 @@ class ActivityGuessGate:
         # Global only for the hard anti-thrash floor (no two LLM calls closer
         # than BASE, regardless of which signature).
         self._last_fire_ts: float | None = None
-        # Cap the per-signature streak so ``base * 2**streak`` can't grow without
-        # bound — once the interval reaches CAP, a larger streak changes nothing.
+        # Cap the per-signature streak so ``base * mult**streak`` can't grow
+        # without bound — once the interval reaches CAP, a larger streak changes
+        # nothing. ``mult > 1`` (enforced above) guarantees ``eff`` strictly
+        # grows, so this loop terminates well before the 32 backstop.
         self._max_streak = 0
         eff = self._base
         while eff < self._cap and self._max_streak < 32:
-            eff *= 2
+            eff *= self._mult
             self._max_streak += 1
 
     def should_fire(self, sig: Hashable, conv_seq: int, now: float) -> bool:
@@ -139,7 +152,7 @@ class ActivityGuessGate:
         # Same activity, same conversation → re-narrate only after this
         # signature's own grown interval has elapsed.
         last_ts, streak = rec[0], rec[1]
-        return (now - last_ts) >= min(self._base * (2 ** streak), self._cap)
+        return (now - last_ts) >= min(self._base * (self._mult ** streak), self._cap)
 
     def record_fired(
         self,

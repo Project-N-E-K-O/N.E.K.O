@@ -2113,13 +2113,19 @@
                     pngtuberContainer.style.visibility = 'visible';
                 }
 
+                const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
-                    prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
-                    const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
-                    if (pngtuberImage) {
-                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
+                    if (modelReturnEnterRect) {
+                        playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
                     }
+                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
+                    pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {
+                        pngtuberImage.style.removeProperty('transition');
+                        pngtuberImage.style.removeProperty('opacity');
+                        pngtuberImage.style.setProperty('visibility', 'visible', 'important');
+                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    });
                 }
 
                 const live2dContainerPngtuber = document.getElementById('live2d-container');
@@ -4830,7 +4836,9 @@
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+                        iconImg.src = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+                        iconImg.srcset = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
+                        iconImg.style.imageRendering = 'auto';
                         iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
@@ -5203,6 +5211,8 @@
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
                         iconImg.src = '/static/icons/expand_icon_off.png';
+                        iconImg.removeAttribute('srcset');
+                        iconImg.style.imageRendering = '';
                         iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';

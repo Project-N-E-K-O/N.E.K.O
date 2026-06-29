@@ -148,6 +148,10 @@
         return Date.now() - latest <= NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS;
     }
 
+    function isNewUserIcebreakerEntryBlocking(entry) {
+        return !!(entry && entry.completed !== true && isRecentNewUserIcebreakerEntry(entry));
+    }
+
     function getNewUserIcebreakerBlockingRetryMs() {
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
@@ -167,6 +171,7 @@
         for (let day = 1; day <= 7; day += 1) {
             const entry = days[String(day)];
             if (!entry || typeof entry !== 'object') continue;
+            if (entry.completed === true) continue;
             [
                 Number(entry.triggeredAt || 0),
                 Number(entry.updatedAt || 0),
@@ -206,7 +211,7 @@
         if (finalDay && finalDay.completed === true) return false;
         for (let day = 1; day <= 7; day += 1) {
             const entry = days[String(day)];
-            if (isRecentNewUserIcebreakerEntry(entry)) {
+            if (isNewUserIcebreakerEntryBlocking(entry)) {
                 return true;
             }
         }
@@ -222,6 +227,7 @@
             for (let day = 1; day <= 7; day += 1) {
                 const entry = days[String(day)];
                 if (!entry || typeof entry !== 'object') continue;
+                if (entry.completed === true) continue;
                 const latest = Math.max(
                     Number(entry.triggeredAt || 0),
                     Number(entry.updatedAt || 0),

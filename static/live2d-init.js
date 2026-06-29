@@ -465,7 +465,11 @@ async function _initLive2DModelInner() {
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
 
     // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
+    const modelManagerAvatarType = window.location.pathname.includes('model_manager')
+        ? String(window._modelManagerCurrentAvatarType || '').toLowerCase()
+        : '';
     if (
+        modelManagerAvatarType === 'pngtuber' ||
         (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' ||
         ((window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
         (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd')
