@@ -4251,9 +4251,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-within > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled)):focus-within > .compact-input-tool-tooltip {
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip {
   opacity: 1;
   transform: translate(0, 0);
 }
@@ -6174,8 +6172,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     transition: none !important;
   }
 
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,
-  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip {
     transform: translate(0, 0);
   }
 
