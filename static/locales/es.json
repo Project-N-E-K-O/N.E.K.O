@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Charlar",
+        "topicHint": "{{author}} parece tener algo de lo que quiere hablar…",
         "viewerTitle": "Chat (modo espectador)",
         "tooltip": "Área de chat",
         "textInputPlaceholder": "Presione Enter para enviar, Shift+Enter para una nueva línea",

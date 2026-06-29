@@ -2268,11 +2268,56 @@ test('avatar floating auto-start rechecks current due round before delayed launc
 
     assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{[\s\S]*?return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
+    assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
     assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownDate === today/);
+});
+
+test('avatar floating auto-start reserves the round before long playback can be refreshed', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const startRoundBlock = managerSource.split('    async startAvatarFloatingGuideRound(day, options = {}) {')[1].split(
+        '    async waitForTutorialTeardownSettled(reason = ',
+        1
+    )[0];
+    const autoReservationIndex = startRoundBlock.indexOf("if (source === 'auto')");
+    const setCurrentIndex = startRoundBlock.indexOf('this.setAvatarFloatingGuideCurrentRound(round);');
+
+    assert.notEqual(autoReservationIndex, -1, 'auto round starts should reserve same-day playback before long narration');
+    assert.notEqual(setCurrentIndex, -1, 'round starts should still persist current round state');
+    assert.ok(autoReservationIndex < setCurrentIndex, 'auto reservation should be written before pending/current round state');
+    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round\);[\s\S]*?\}/);
+});
+
+test('avatar floating auto due calculation ignores runtime pending round after refresh', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const nextAutoBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
+        '    getHomeAvatarFloatingGuideStartRound(options = {}) {',
+        1
+    )[0];
+
+    assert.match(nextAutoBlock, /const pendingManualRound = state\.manualResetRound;/);
+    assert.doesNotMatch(nextAutoBlock, /state\.pendingRound\s*\|\|\s*state\.manualResetRound/);
+    assert.ok(
+        nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
+        'manual resets should still override same-day auto reservation'
+    );
+});
+
+test('avatar floating auto start does not mark auto-shown again after playback settles', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const maybeAutoBlock = managerSource.split('    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {')[1].split(
+        '    ensureTutorialSkipController() {',
+        1
+    )[0];
+
+    assert.match(maybeAutoBlock, /this\.startAvatarFloatingGuideRound\(round, \{ source: 'auto' \}\)\.then\(\(result\) => \{/);
+    assert.match(maybeAutoBlock, /if \(result === false\) \{[\s\S]*?avatar-floating-round-start-skipped/);
+    assert.doesNotMatch(maybeAutoBlock, /markAvatarFloatingGuideRoundAutoShown\(round\)/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {

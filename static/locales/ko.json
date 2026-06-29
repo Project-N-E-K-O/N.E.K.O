@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "채팅",
+        "topicHint": "{{author}}이(가) 하고 싶은 이야기가 있나 봐요…",
         "viewerTitle": "채팅(뷰어 모드)",
         "tooltip": "채팅 영역",
         "textInputPlaceholder": "보내려면 Enter를 누르고, 줄을 바꾸려면 Shift+Enter를 누르세요.",
