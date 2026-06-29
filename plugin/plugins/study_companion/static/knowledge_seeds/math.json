@@ -73,6 +73,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "college_cs_bit_binary",
+          "relation": "application",
+          "reason": "Real-number magnitude and approximation connect to computer numeric representation, binary scale, and rounding limits.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -340,6 +357,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "reason": "Motion graph interpretation uses absolute distance and signed displacement to distinguish position change from path length.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -466,6 +500,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "application",
+          "reason": "Chemical stoichiometry uses scientific notation for particle counts, molar quantities, and very small or large masses.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -586,6 +637,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_cs_bit_binary",
+          "relation": "application",
+          "reason": "Binary representation and bit shifts rely on powers of two as the numeric scale for computer storage.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -717,6 +785,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "application",
+          "reason": "Algebraic expressions model unknown coefficients and proportional quantities in chemical stoichiometry calculations.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -837,6 +922,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "reason": "Polynomial expressions describe position, velocity, and time relationships in motion models.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -1253,6 +1355,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "application",
+          "reason": "Fractional expressions model mole ratios, concentration ratios, and limiting-reagent comparisons.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1363,6 +1482,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "Projectile and energy formulas can lead to square-root expressions when solving for speed, time, or height.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -1479,6 +1615,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Market equilibrium sets demand equal to supply, making equation modeling a core tool for economic analysis.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -1610,6 +1763,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "reason": "Uniform-motion equations use linear relationships among position, velocity, and time.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -1731,6 +1901,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Linear price, quantity, revenue, and cost assumptions are modeled with one-variable equations in market problems.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -1998,6 +2185,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Supply-demand equilibrium often solves a system linking price and quantity.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2119,6 +2323,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "Projectile height-time models lead to quadratic equations for landing time and maximum-height conditions.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -2261,6 +2482,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "Factoring can solve projectile height equations when the time roots are simple.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2398,6 +2636,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "The quadratic formula solves motion equations when projectile time or height roots do not factor neatly.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2519,6 +2774,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Quadratic supply-demand or profit models use discriminants to judge whether feasible equilibrium or break-even roots exist.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -2649,6 +2921,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Economic quadratic models use Vieta relations to reason about paired break-even quantities without solving every root directly.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -2769,6 +3058,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Economic constraints such as budget, capacity, and minimum profit are naturally expressed as inequalities.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -2910,6 +3216,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Supply-demand and pricing models use linear inequalities for feasible price or quantity ranges.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3036,6 +3359,23 @@
             "batch": "math_second_fill",
             "scope": "real_algebra_equations_inequalities"
           }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Market feasibility problems combine supply, demand, budget, and capacity constraints as inequality systems.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3147,6 +3487,23 @@
             "learning_path",
             "practice_planning",
             "hint_generation"
+          ],
+          "metadata": {
+            "batch": "math_second_fill",
+            "scope": "real_algebra_equations_inequalities"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Economic decision problems use inequalities to compare supply, demand, cost, revenue, and capacity constraints.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "practice_planning",
+            "hint_generation",
+            "review"
           ],
           "metadata": {
             "batch": "math_second_fill",
@@ -3270,6 +3627,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "reason": "平面直角坐标系 is applied through 运动图像综合, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
           }
         }
       ],
@@ -3399,6 +3777,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "geo_senior_earth_movement",
+          "relation": "application",
+          "reason": "点的坐标 is applied through 地球运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "geography",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_geography"
           }
         }
       ],
@@ -3677,6 +4076,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "reason": "坐标对称 is applied through 简谐运动图像, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -3806,6 +4226,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "application",
+          "reason": "中点坐标公式 is applied through 动量与质心运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
           }
         }
       ],
@@ -3937,6 +4378,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "两点距离公式 is applied through 平抛与斜抛运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
           }
         }
       ],
@@ -4194,6 +4656,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "application",
+          "reason": "正比例函数 is applied through 溶液浓度与稀释, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
           }
         }
       ],
@@ -4934,6 +5417,28 @@
             "hint_generation",
             "practice_planning"
           ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "Market equilibrium in demand-supply models applies the same intersection idea: set the demand and supply functions equal, then interpret the crossing point as equilibrium price and quantity.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.93,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "bridge_direction": "math_to_economics",
+            "bridge_focus": "function_intersection_to_market_equilibrium",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5190,6 +5695,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "application",
+          "reason": "分段一次函数 is applied through 需求供给模型, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_economics"
           }
         }
       ],
@@ -5452,6 +5978,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "二次函数一般式 is applied through 平抛与斜抛运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
           }
         }
       ],
@@ -5730,6 +6277,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "reason": "二次函数对称轴 is applied through 简谐运动图像, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5859,6 +6427,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "二次函数顶点坐标 is applied through 平抛与斜抛运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -5987,6 +6576,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "application",
+          "reason": "二次函数开口方向 is applied through 算法复杂度分析, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_computer_science"
           }
         }
       ],
@@ -6428,6 +7038,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "reason": "二次函数与方程根 is applied through 平抛与斜抛运动, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6698,6 +7329,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "reason": "由点求二次函数解析式 is applied through 高中物理实验数据处理, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6827,6 +7479,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_junior_work_power",
+          "relation": "application",
+          "reason": "二次函数面积应用 is applied through 功和功率, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -6908,6 +7581,65 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "confusable",
+          "reason": "Contrast 二次函数利润应用 with 需求供给模型; learners often mix their conditions, notation, or use cases.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_micro_demand_supply",
+          "relation": "procedure_step",
+          "reason": "After 二次函数利润应用, use 需求供给模型 as the next procedural step in problem solving.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_micro_elasticity",
+          "relation": "application",
+          "reason": "二次函数利润应用 is applied through 弹性分析, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_economics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -7975,6 +8707,27 @@
           },
           "reason": "After identifying 三角形内角和, move to 三角形三边关系 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "三角形内角和 applies to 平抛与斜抛运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -8104,6 +8857,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 三角形三边关系, move to 勾股定理 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "三角形三边关系 applies to 二力平衡, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -8366,6 +9140,27 @@
           },
           "reason": "After identifying 三角形全等判定, move to 三角形相似判定 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_experiment_vernier",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "三角形全等判定 applies to 游标卡尺与螺旋测微器读数, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -8494,6 +9289,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 等腰三角形, move to 三角形全等判定 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "等腰三角形 applies to 二力平衡, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -9428,6 +10244,27 @@
           },
           "reason": "After identifying 四边形概念, move to 平行线性质 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "geo_senior_earth_movement",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "geography",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_geography"
+          },
+          "reason": "四边形概念 applies to 地球运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -9557,6 +10394,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 平行线性质, move to 平行四边形 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_electric_magnetic_field",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "平行线性质 applies to 电场磁场综合, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -9995,6 +10853,27 @@
           },
           "reason": "After identifying 矩形, move to 正方形 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_junior_work_power",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "矩形 applies to 功和功率, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -10124,6 +11003,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 菱形, move to 正方形 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_electric_potential_graph",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "菱形 applies to 电势与场强图像, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -10266,6 +11166,27 @@
           },
           "reason": "After identifying 正方形, move to 菱形 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_junior_pressure_buoyancy",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "正方形 applies to 压强与浮力, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -10407,6 +11328,27 @@
           },
           "reason": "After identifying 梯形, move to 三角形中位线 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_junior_work_power",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "梯形 applies to 功和功率, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -10536,6 +11478,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 三角形中位线, move to 梯形 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "三角形中位线 applies to 平抛与斜抛运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -10829,6 +11792,27 @@
           },
           "reason": "After identifying 圆的基本概念, move to 圆心角与弧 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "圆的基本概念 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -10959,6 +11943,27 @@
           },
           "reason": "After identifying 圆心角与弧, move to 圆周角定理 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "圆心角与弧 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -11088,6 +12093,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 圆周角定理, move to 圆内接四边形 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "圆周角定理 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -11230,6 +12256,27 @@
           },
           "reason": "After identifying 圆内接四边形, move to 圆综合题 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_gravitation_orbit",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "圆内接四边形 applies to 万有引力与天体运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -11371,6 +12418,27 @@
           },
           "reason": "After identifying 切线概念, move to 切线性质与判定 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_electric_magnetic_field",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "切线概念 applies to 电场磁场综合, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -11499,6 +12567,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 切线性质与判定, move to 弦与垂径定理 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "切线性质与判定 applies to 圆周运动临界条件, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -11640,6 +12729,27 @@
           },
           "reason": "After identifying 弦与垂径定理, move to 圆周角定理 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "弦与垂径定理 applies to 简谐运动图像, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -11770,6 +12880,27 @@
           },
           "reason": "After identifying 弧长公式, move to 扇形面积 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "弧长公式 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -11898,6 +13029,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 扇形面积, move to 圆综合题 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "扇形面积 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -12040,6 +13192,27 @@
           },
           "reason": "After identifying 圆综合题, move to 特殊四边形判定与证明 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_critical",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "圆综合题 applies to 圆周运动临界条件, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -12168,6 +13341,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_design",
+          "relation": "application",
+          "reason": "数据收集与整理 is applied through 生物实验设计, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_biology"
           }
         }
       ],
@@ -12298,6 +13492,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "application",
+          "reason": "平均数中位数众数 is applied through 实验图表信息提取, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_biology"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -12427,6 +13642,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "application",
+          "reason": "加权平均数 is applied through 经济数据图表解读, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_economics"
           }
         }
       ],
@@ -12701,6 +13937,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "reason": "频数分布直方图 is applied through 高中物理实验数据处理, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -12829,6 +14086,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "application",
+          "reason": "概率概念 is applied through 实验误差与结论评价, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_biology"
           }
         }
       ],
@@ -13099,6 +14377,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "bio_senior_experiment_design",
+          "relation": "application",
+          "reason": "列表法与树状图 is applied through 生物实验设计, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_biology"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -13348,6 +14647,27 @@
           },
           "reason": "After identifying 轴对称, move to 旋转 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "轴对称 applies to 简谐运动图像, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -13478,6 +14798,27 @@
           },
           "reason": "After identifying 旋转, move to 坐标旋转与中心对称 as the next proof, construction, or calculation step.",
           "context": "practice"
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "旋转 applies to 圆周运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
+          "context": "practice"
         }
       ],
       "typical_misconceptions": [
@@ -13606,6 +14947,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 中心对称, move to 坐标对称 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "中心对称 applies to 简谐运动图像, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -13736,6 +15098,27 @@
             "added_for": "math_geometry_core_pack_20260626"
           },
           "reason": "After identifying 位似, move to 比例尺 as the next proof, construction, or calculation step.",
+          "context": "practice"
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_geometry_core_pack_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "位似 applies to 平抛与斜抛运动, connecting geometry structure with a concrete cross-topic or cross-subject model.",
           "context": "practice"
         }
       ],
@@ -14263,6 +15646,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 特殊角三角函数值, use sin cos tan 定义 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Special-angle values anchor sine and cosine readings in simple harmonic motion graphs at standard phase positions."
         }
       ],
       "typical_misconceptions": [
@@ -14395,6 +15800,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 三角函数表与计算, use 测高测距应用 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Using trigonometric values supports projectile-motion component calculations when launch angles are not special angles."
         }
       ],
       "typical_misconceptions": [
@@ -14538,6 +15965,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 测高测距应用, use 锐角三角函数综合题 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Height-and-distance trigonometry transfers directly to projectile and line-of-sight physical modeling."
         }
       ],
       "typical_misconceptions": [
@@ -14671,6 +16120,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 锐角三角函数综合题, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Comprehensive trigonometry supports wave-graph reading where phase, amplitude, and period are represented by sine or cosine models."
         }
       ],
       "typical_misconceptions": [
@@ -14783,6 +16254,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 完全平方公式, use 公式法因式分解 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_stoichiometry_limiting",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Perfect-square identities support algebraic simplification before stoichiometry equations are solved for limiting or excess quantities."
         }
       ],
       "typical_misconceptions": [
@@ -14895,6 +16388,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 平方差公式, use 公式法因式分解 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Difference-of-squares transformations simplify expressions before chemical amount relations are rearranged and solved."
         }
       ],
       "typical_misconceptions": [
@@ -15018,6 +16533,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 分式方程, use 方程解的检验 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Fractional equations model concentration and dilution problems where the unknown is embedded in a ratio or reciprocal relation."
         }
       ],
       "typical_misconceptions": [
@@ -15141,6 +16678,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 含参方程, use 二次函数参数范围 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Parameter equations connect to motion graphs when changing initial speed, acceleration, or time shifts the solution set of a physical model."
         }
       ],
       "typical_misconceptions": [
@@ -15264,6 +16823,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 坐标系中的面积, use 坐标法证明几何关系 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_motion_graph_synthesis",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Coordinate-area reasoning connects to displacement from velocity-time graphs and to area interpretation in data-rich physical models."
         }
       ],
       "typical_misconceptions": [
@@ -15507,6 +17088,28 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.9
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "application",
+          "reason": "Algorithm complexity analysis compares how runtime functions grow with input size; monotonicity and growth-rate reading help distinguish linear, polynomial, logarithmic, and exponential behavior.",
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.94,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "bridge_direction": "math_to_computer_science",
+            "bridge_focus": "function_growth_to_algorithm_complexity",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -16125,6 +17728,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 多边形内角和, use 特殊四边形判定与证明 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Polygon angle-sum reasoning supports circular and rotational geometry diagrams used in physical path and angle constraints."
         }
       ],
       "typical_misconceptions": [
@@ -16248,6 +17873,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 点线圆位置关系, use 切线性质与判定 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_circular_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Point-line-circle position relations transfer to circular-motion diagrams where radius, tangent direction, and contact conditions matter."
         }
       ],
       "typical_misconceptions": [
@@ -16321,6 +17968,44 @@
         }
       ],
       "related": [
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "confusable",
+          "reason": "Contrast 复合事件概率 with 实验误差与结论评价; learners often mix their conditions, notation, or use cases.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "procedure_step",
+          "reason": "After 复合事件概率, use 实验误差与结论评价 as the next procedural step in problem solving.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
         {
           "id": "function_graph_reading",
           "relation": "application",
@@ -16462,6 +18147,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 图形变换综合题, use 坐标旋转与中心对称 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Transformation reasoning supports symmetry and periodicity arguments in oscillation graphs and physical motion models."
         }
       ],
       "typical_misconceptions": [
@@ -16585,6 +18292,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 三角函数与面积, use 向量数量积 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_force_decomposition",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Trigonometric area and projection reasoning support force decomposition and vector component calculations."
         }
       ],
       "typical_misconceptions": [
@@ -16707,6 +18436,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 有理数混合运算, use 分式概念与运算 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_solution_concentration",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Rational-number operations are used when concentration, dilution, and ratio data must be converted into consistent chemical calculations."
         }
       ],
       "typical_misconceptions": [
@@ -16828,6 +18579,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 平方根与立方根, use 二次根式 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_projectile_motion",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Square-root reasoning appears when projectile-motion formulas are solved backward for time, speed, or height from quadratic relations."
         }
       ],
       "typical_misconceptions": [
@@ -16949,6 +18722,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 无理数估算, use 数轴与相反数 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_experiment_data",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Irrational-number estimation helps judge whether measured physical data and rounded experimental results are reasonable."
         }
       ],
       "typical_misconceptions": [
@@ -22718,6 +24513,52 @@
           ]
         },
         {
+          "id": "college_c_recursion_basic",
+          "relation": "application",
+          "reason": "Geometric proof organization and recursive programming both depend on a base case, a repeatable step, and a justification that the step preserves correctness.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "bridge_direction": "math_to_computer_science",
+            "bridge_focus": "proof_structure_to_recursion_correctness",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
+        },
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "application",
+          "reason": "Geometric proof organization and recursion-to-iteration conversion both require a base case, a repeatable step, and a correctness argument for each transition.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.91,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "bridge_direction": "math_to_computer_science",
+            "bridge_focus": "proof_structure_to_recursion_iteration",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
+        },
+        {
           "id": "auxiliary_line_strategy",
           "relation": "procedure_step",
           "priority": "core",
@@ -24741,6 +26582,27 @@
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
           }
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "application",
+          "reason": "抽样调查 is applied through 经济数据图表解读, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_economics"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -24870,6 +26732,27 @@
             "source_subject": "math",
             "target_subject": "math",
             "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_curve_table",
+          "relation": "application",
+          "reason": "统计图表综合 is applied through 实验图表信息提取, linking the math method to a concrete cross-topic or cross-subject problem type.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.89,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_biology"
           }
         }
       ],
@@ -27844,7 +29727,32 @@
       "chapter": "数与运算",
       "depth": 1,
       "difficulty": 0.18,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "chinese_primary_paragraph_main_idea",
+          "relation": "prerequisite",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chinese",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cycle_fix": "avoid_primary_math_prerequisite_cycle",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chinese"
+          },
+          "reason": "Basic paragraph main-idea reading supports number-sense tasks by helping learners extract quantities, place-value words, and comparison conditions from short problem statements without creating a math prerequisite cycle.",
+          "required_mastery": 0.55
+        }
+      ],
       "related": [
         {
           "id": "real_number_concept",
@@ -27910,6 +29818,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 数感与数位, use 有理数混合运算 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "chem_senior_mole_calculation",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "chemistry",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_chemistry"
+          },
+          "reason": "Number sense supports mole and quantity calculations by keeping units, place value, and magnitude estimates coherent before formula substitution."
         }
       ],
       "typical_misconceptions": [
@@ -34568,6 +36498,36 @@
       ],
       "related": [
         {
+          "id": "chem_senior_ph_ionization",
+          "relation": "application",
+          "reason": "Application: exponential and logarithmic models support pH and ionization calculations.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_physics_damped_forced_oscillation",
+          "relation": "application",
+          "reason": "Application: exponential decay and growth intuition supports damping models.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_econ_growth_productivity",
+          "relation": "application",
+          "reason": "Application: exponential growth models support productivity and economic growth analysis.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "senior_power_function",
           "relation": "confusable",
           "reason": "Exponential functions have the variable in the exponent, while power functions have the variable in the base; their graph growth and domains differ.",
@@ -34592,6 +36552,37 @@
           "priority": "core",
           "context": "practice",
           "confidence": 0.9
+        },
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "application",
+          "reason": "PCR amplification follows repeated doubling intuition, so exponential-function growth helps explain why DNA copies increase rapidly before electrophoresis verification.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.87,
+          "use_cases": [
+            "practice_planning",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "bio_senior_pcr_electrophoresis",
+          "relation": "procedure_step",
+          "reason": "Procedure step: model PCR amplification as repeated doubling with an exponential function before interpreting electrophoresis verification results.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.95,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "metadata": {
+            "batch": "math_relation_gap_fill",
+            "scope": "cross_subject_retrieval_stability",
+            "cross_subject": true
+          }
         }
       ],
       "typical_misconceptions": [
@@ -34780,6 +36771,16 @@
         }
       ],
       "related": [
+        {
+          "id": "chem_senior_ph_ionization",
+          "relation": "application",
+          "reason": "Application: logarithmic functions are used in pH scale reasoning.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
         {
           "id": "senior_exponential_function",
           "relation": "confusable",
@@ -35849,6 +37850,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 两角和差公式, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_wave_interference",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Sum-difference formulas explain phase shifts and superposition patterns in wave interference problems."
         }
       ],
       "typical_misconceptions": [
@@ -35963,6 +37986,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "After 二倍角公式, use 三角函数图像与性质 as the next procedural step in solving or proving the problem."
+        },
+        {
+          "id": "physics_senior_simple_harmonic",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Double-angle formulas help transform oscillation expressions and interpret frequency-doubling patterns in harmonic models."
         }
       ],
       "typical_misconceptions": [
@@ -36690,6 +38735,19 @@
             "diagnosis",
             "hint_generation",
             "review"
+          ]
+        },
+        {
+          "id": "college_ds_recursion_iteration",
+          "relation": "application",
+          "reason": "Recursive sequence thinking transfers to computer-science recursion and iteration, where later states depend on previous states.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
         }
       ],
@@ -39514,6 +41572,28 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_enzyme_curve",
+          "relation": "application",
+          "reason": "Enzyme activity curves use extrema reasoning when identifying optimal temperature or pH; derivative-based maximum and minimum thinking explains why curve peaks matter.",
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "use_cases": [
+            "diagnosis",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "bridge_direction": "math_to_biology",
+            "bridge_focus": "derivative_extrema_to_enzyme_activity_curve",
+            "cross_subject": true,
+            "added_for": "fixed_retrieval_eval_cross_subject_cases"
+          }
         }
       ],
       "typical_misconceptions": [
@@ -39949,6 +42029,44 @@
       ],
       "related": [
         {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "confusable",
+          "reason": "Contrast 古典概型 with 实验误差与结论评价; learners often mix their conditions, notation, or use cases.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "bio_senior_experiment_error_analysis",
+          "relation": "procedure_step",
+          "reason": "After 古典概型, use 实验误差与结论评价 as the next procedural step in problem solving.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "biology",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
           "id": "function_graph_reading",
           "relation": "application",
           "reason": "古典概型 is applied through 函数图像信息读取, linking the math method to a concrete cross-topic or cross-subject problem type.",
@@ -40041,6 +42159,44 @@
         }
       ],
       "related": [
+        {
+          "id": "college_micro_elasticity",
+          "relation": "confusable",
+          "reason": "Contrast 随机变量及分布列 with 弹性分析; learners often mix their conditions, notation, or use cases.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "diagnosis",
+          "confidence": 0.87,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
+        {
+          "id": "college_micro_elasticity",
+          "relation": "procedure_step",
+          "reason": "After 随机变量及分布列, use 弹性分析 as the next procedural step in problem solving.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "economics",
+            "added_for": "math_core_pack_second_batch_20260626"
+          }
+        },
         {
           "id": "function_graph_reading",
           "relation": "application",
@@ -41515,6 +43671,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "Contrast 两个重要极限 with 极限运算法则; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_ds_algorithm_complexity",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "computer_science",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_computer_science"
+          },
+          "reason": "Important limits support asymptotic comparison when algorithm complexity focuses on dominant growth behavior."
         }
       ],
       "typical_misconceptions": [
@@ -43248,6 +45426,16 @@
           ]
         },
         {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "application",
+          "reason": "Application: derivatives model velocity and acceleration in college kinematics.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "college_mean_value_theorem",
           "relation": "application",
           "reason": "Application: apply college_derivative_calculation when solving or modeling tasks involving college_mean_value_theorem in the calculus cluster.",
@@ -43797,6 +45985,28 @@
             "added_for": "math_core_pack_third_batch_20260626"
           },
           "reason": "Contrast 微分 with 函数图像信息读取; learners often mix their conditions, formulas, or use cases."
+        },
+        {
+          "id": "college_physics_kinematics_calculus",
+          "relation": "application",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation",
+            "practice_planning",
+            "review"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.9,
+          "metadata": {
+            "source_subject": "math",
+            "target_subject": "physics",
+            "added_for": "math_core_pack_third_batch_20260626",
+            "cross_subject": true,
+            "bridge_direction": "math_to_physics"
+          },
+          "reason": "Differentials connect local change in calculus with instantaneous velocity and small-displacement physical approximations."
         }
       ],
       "typical_misconceptions": [
@@ -48284,6 +50494,16 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "college_physics_work_energy_theorem",
+          "relation": "application",
+          "reason": "Application: definite integrals model accumulated work and energy transfer.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -49442,6 +51662,16 @@
           "id": "college_force_analysis",
           "relation": "procedure_step",
           "reason": "Procedure step: after 定积分物理应用, move to 受力分析. Keep the workflow explicit so guidance can ask for the next missing step.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_physics_momentum_center_mass",
+          "relation": "application",
+          "reason": "Application: integral accumulation connects force over time with momentum and impulse.",
           "use_cases": [
             "diagnosis",
             "learning_path",
@@ -50999,6 +53229,19 @@
           "confidence": 0.88
         },
         {
+          "id": "college_c_2d_array_matrix",
+          "relation": "application",
+          "reason": "Application: college_matrix_operations is used when solving or modeling tasks involving college_c_2d_array_matrix.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88
+        },
+        {
           "id": "college_matrix_dimension",
           "relation": "confusable",
           "reason": "Contrast college_matrix_operations with college_matrix_dimension; students often mix their conditions, notation, or conclusions.",
@@ -51238,6 +53481,19 @@
           "id": "college_matrix_dimension",
           "relation": "application",
           "reason": "Application: college_linear_transformation is used when solving or modeling tasks involving college_matrix_dimension.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88
+        },
+        {
+          "id": "college_c_2d_array_matrix",
+          "relation": "application",
+          "reason": "Application: college_linear_transformation is used when solving or modeling tasks involving college_c_2d_array_matrix.",
           "use_cases": [
             "diagnosis",
             "learning_path",
@@ -55481,6 +57737,32 @@
           "confidence": 0.88
         },
         {
+          "id": "bio_senior_genetics_law",
+          "relation": "application",
+          "reason": "Application: college_expectation_variance is used when solving or modeling tasks involving bio_senior_genetics_law.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "application",
+          "reason": "Application: college_expectation_variance is used when solving or modeling tasks involving college_econ_data_graph.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "priority": "core",
+          "context": "practice",
+          "confidence": 0.88
+        },
+        {
           "id": "college_standard_deviation",
           "relation": "procedure_step",
           "reason": "Procedure step: use college_standard_deviation while working through college_expectation_variance so the solving workflow stays explicit.",
@@ -56303,6 +58585,19 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "bio_senior_population_growth",
+          "relation": "application",
+          "reason": "First-order differential equations model change-rate processes such as idealized population growth or decay before more complex systems are introduced.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -57110,6 +59405,36 @@
           ]
         },
         {
+          "id": "college_ds_shortest_path",
+          "relation": "application",
+          "reason": "Application: graph theory provides the model behind shortest-path algorithms.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_ds_graph_traversal",
+          "relation": "application",
+          "reason": "Application: graph theory underlies BFS and DFS traversal.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_ds_graph_representation",
+          "relation": "application",
+          "reason": "Application: graph theory concepts map to adjacency-list and adjacency-matrix storage.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
           "id": "college_spanning_tree",
           "relation": "application",
           "reason": "Application: apply college_graph_theory_intro when solving or modeling tasks involving college_spanning_tree in the discrete_logic cluster.",
@@ -57695,6 +60020,19 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "college_ds_hash_table",
+          "relation": "application",
+          "reason": "Number-theory ideas about remainders support modular hashing and table indexing in data-structure applications.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.86,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -58056,6 +60394,19 @@
             "diagnosis",
             "hint_generation",
             "review"
+          ]
+        },
+        {
+          "id": "college_micro_consumer_choice",
+          "relation": "application",
+          "reason": "Unit-rate and unit-price comparison are early forms of cost-benefit reasoning used later in consumer-choice examples.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
         }
       ],
@@ -61338,6 +63689,19 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "chinese_senior_exam_revision_strategy",
+          "relation": "application",
+          "reason": "Multi-choice review benefits from exam-revision habits such as classifying errors, revisiting evidence, and tracking option traps.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -64111,6 +66475,16 @@
             "learning_path",
             "hint_generation"
           ]
+        },
+        {
+          "id": "bio_senior_genetics_law",
+          "relation": "application",
+          "reason": "Application: binomial models support Mendelian genetics count and probability questions.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
         }
       ],
       "skills": [
@@ -64210,6 +66584,16 @@
           "id": "college_hypothesis_testing",
           "relation": "application",
           "reason": "Application: use 正态分布 to handle 假设检验. normal approximation supports many classical tests.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ]
+        },
+        {
+          "id": "college_econ_data_graph",
+          "relation": "application",
+          "reason": "Application: normal models support economic data summaries and interval interpretation.",
           "use_cases": [
             "diagnosis",
             "learning_path",
@@ -64627,6 +67011,19 @@
             "hint_generation",
             "review"
           ]
+        },
+        {
+          "id": "college_physics_damped_forced_oscillation",
+          "relation": "application",
+          "reason": "Linear first-order solution habits prepare students for forced-response thinking before they meet higher-order linear vibration models.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.84,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
+          ]
         }
       ],
       "typical_misconceptions": [
@@ -64721,6 +67118,19 @@
             "diagnosis",
             "hint_generation",
             "review"
+          ]
+        },
+        {
+          "id": "chem_senior_rate_factors",
+          "relation": "application",
+          "reason": "Separable equations give the mathematical pattern behind simple rate-law growth or decay models used when discussing reaction-rate change.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.85,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
         }
       ],
@@ -64920,6 +67330,19 @@
             "diagnosis",
             "hint_generation",
             "review"
+          ]
+        },
+        {
+          "id": "college_ds_hash_table",
+          "relation": "application",
+          "reason": "Modulo operations are used to map keys into hash-table buckets and to reason about cyclic indexing.",
+          "priority": "useful",
+          "context": "practice",
+          "confidence": 0.88,
+          "use_cases": [
+            "learning_path",
+            "hint_generation",
+            "practice_planning"
           ]
         }
       ],
@@ -67809,7 +70232,19 @@
       "chapter": "微积分",
       "depth": 3,
       "difficulty": 0.7,
-      "prerequisites": [],
+      "prerequisites": [
+        {
+          "id": "physics_junior_force_balance",
+          "relation": "prerequisite",
+          "reason": "Master physics_junior_force_balance before 受力分析; it supplies the foundation for this college math concept.",
+          "use_cases": [
+            "diagnosis",
+            "learning_path",
+            "hint_generation"
+          ],
+          "required_mastery": 0.55
+        }
+      ],
       "related": [
         {
           "id": "college_energy_conservation",
