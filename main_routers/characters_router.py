@@ -3798,11 +3798,11 @@ async def rename_master(old_name: str, request: Request):
     async with _ugc_sync_lock:
         characters = await _config_manager.aload_characters()
         if '主人' not in characters or not characters['主人']:
-            return JSONResponse({'success': False, 'error': '主人档案不存在'}, status_code=404)
+            return JSONResponse({'success': False, 'error': '我的档案不存在'}, status_code=404)
 
         current_master = characters['主人'].get('档案名', '')
         if current_master != old_name:
-            return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
+            return JSONResponse({'success': False, 'error': '原档案名不匹配'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
         _append_profile_rename_event(characters['主人'], old_name, new_name)

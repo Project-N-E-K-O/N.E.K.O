@@ -4,10 +4,17 @@ from pathlib import Path
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/universal-manager.js"
 )
+ROUND_PRELUDE_CONTROLLER_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/round-prelude-controller.js"
+)
 
 
 def _read_manager() -> str:
     return UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+
+
+def _read_round_prelude() -> str:
+    return ROUND_PRELUDE_CONTROLLER_PATH.read_text(encoding="utf-8")
 
 
 def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
@@ -154,6 +161,19 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
     assert "YUI 临时模型需要重新加载以恢复视觉对象" in visible_block
     assert "&& this.hasTutorialYuiLive2dRenderableModel()" in visible_block
     assert "&& placementReady === true;" in visible_block
+    assert "isTutorialYuiLive2dVisualReady()" in source
+    visual_ready_block = source.split(
+        "    isTutorialYuiLive2dVisualReady() {",
+        1,
+    )[1].split(
+        "    waitForTutorialYuiLive2dVisualReady(reason = '', maxWaitTime = 12000) {",
+        1,
+    )[0]
+    assert "this.isTutorialYuiLive2dActive()" in visual_ready_block
+    assert "this.hasTutorialYuiLive2dRenderableModel(manager)" in visual_ready_block
+    assert "manager._isLoadingModel === true" in visual_ready_block
+    assert "state !== 'ready'" in visual_ready_block
+    assert "manager._isModelReadyForInteraction !== true" in visual_ready_block
 
     restore_block = source.split(
         "    restoreTutorialLive2dDisplayState(reason = '', options = {}) {",
@@ -170,6 +190,24 @@ def test_tutorial_yui_visibility_does_not_trust_stale_live2d_path_without_model(
     assert "live2dContainer.style.setProperty('opacity', '1', 'important');" in restore_block
     assert "live2dCanvas.style.removeProperty('opacity');" in restore_block
     assert "live2dCanvas.style.setProperty('opacity', '1', 'important');" in restore_block
+
+
+def test_round_prelude_waits_for_yui_visual_ready_before_taking_over():
+    source = _read_round_prelude()
+    play_block = source.split("        async play(day, options) {", 1)[1].split(
+        "    return {",
+        1,
+    )[0]
+
+    assert "this.waitForAvatarReady = normalizedOptions.waitForAvatarReady || noop;" in source
+    assert "await toPromise(() => this.ensureVisible(sceneId, {" in play_block
+    assert "await toPromise(() => this.waitForAvatarReady(sceneId, {" in play_block
+    assert play_block.index("await toPromise(() => this.ensureVisible(sceneId, {") < play_block.index(
+        "await toPromise(() => this.waitForAvatarReady(sceneId, {"
+    )
+    assert play_block.index("await toPromise(() => this.waitForAvatarReady(sceneId, {") < play_block.index(
+        "this.beginTakingOver({"
+    )
 
 
 def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay():
@@ -236,6 +274,7 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
     assert "hideTutorialLive2dRuntimeSurfaceAfterResidueClear()" in source
     assert "await this.waitForTutorialTeardownSettled('avatar-floating-guide-start');" in start_round_block
     assert "async waitForTutorialTeardownSettled(reason = '')" in source
+    assert "waitForAvatarReady: (sceneId, _options) => this.waitForTutorialYuiLive2dVisualReady(sceneId, 12000)" in source
     assert "if (!this.hasTutorialYuiLive2dRenderableModel(manager)) {" in placement_block
     assert "deferRevealPrepared: true" in prelude_block
     assert "const deferRevealPrepared = options && options.deferRevealPrepared === true;" in ensure_visible_block

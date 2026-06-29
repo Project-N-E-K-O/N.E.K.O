@@ -3344,10 +3344,31 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                 });
                 return true;
             };
+            director.moveCursorToTrackedElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'trackedMove',
+                    id: element && element.id,
+                    durationMs,
+                    exactDuration: !!(options && options.exactDuration),
+                    recheckDelayMs: options && options.recheckDelayMs,
+                    settleDelayMs: options && options.settleDelayMs,
+                });
+                return true;
+            };
+            director.waitForStableElementRect = async (element, timeoutMs) => {
+                calls.push({
+                    type: 'stableRect',
+                    id: element && element.id,
+                    timeoutMs,
+                });
+                return element;
+            };
+            director.isCursorAlignedWithElement = () => true;
             director.cursor = {
                 hasPosition: () => true,
                 showAt: () => {},
                 moveToRect: async () => true,
+                moveToPoint: async () => true,
                 click: (visibleMs) => calls.push({ type: 'click', visibleMs }),
                 wobble: () => calls.push({ type: 'wobble' }),
                 cancel: () => {},
@@ -3452,13 +3473,27 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         {"type": "move", "id": "live2d-btn-agent", "durationMs": 760, "exactDuration": False},
         {"type": "click", "visibleMs": 420},
         {"type": "api:openAgentPanel"},
+        {"type": "stableRect", "id": "live2d-toggle-agent-user-plugin", "timeoutMs": 760},
         {
             "type": "highlight",
             "key": "day6_plugin_side_panel-user-plugin",
             "primaryId": "live2d-toggle-agent-user-plugin",
             "persistentId": None,
         },
-        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 420, "exactDuration": True},
+        {
+            "type": "trackedMove",
+            "id": "live2d-toggle-agent-user-plugin",
+            "durationMs": 420,
+            "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
+        },
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-user-plugin",
+            "primaryId": "live2d-toggle-agent-user-plugin",
+            "persistentId": None,
+        },
         {"type": "click", "visibleMs": 320},
         {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
         {
@@ -3466,6 +3501,12 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "toggleId": "agent-user-plugin",
             "actionId": "management-panel",
         },
+        {
+            "type": "stableRect",
+            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "timeoutMs": 760,
+        },
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
         {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
         {
             "type": "highlight",
@@ -3474,10 +3515,20 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "persistentId": None,
         },
         {
-            "type": "move",
+            "type": "trackedMove",
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
             "durationMs": 420,
             "exactDuration": True,
+            "recheckDelayMs": 120,
+            "settleDelayMs": 40,
+        },
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
+        {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-management-panel",
+            "primaryId": "",
+            "persistentId": None,
         },
         {"type": "click", "visibleMs": 320},
         {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},

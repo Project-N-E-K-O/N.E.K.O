@@ -2113,13 +2113,19 @@
                     pngtuberContainer.style.visibility = 'visible';
                 }
 
+                const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;
                 if (pngtuberContainer) {
-                    prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
-                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
-                    const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
-                    if (pngtuberImage) {
-                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });
+                    if (modelReturnEnterRect) {
+                        playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);
                     }
+                    pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
+                    pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {
+                        pngtuberImage.style.removeProperty('transition');
+                        pngtuberImage.style.removeProperty('opacity');
+                        pngtuberImage.style.setProperty('visibility', 'visible', 'important');
+                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    });
                 }
 
                 const live2dContainerPngtuber = document.getElementById('live2d-container');
