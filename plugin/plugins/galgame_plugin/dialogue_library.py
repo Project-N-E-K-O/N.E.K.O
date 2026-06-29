@@ -16,6 +16,12 @@ _SENREN_BANKA_LIBRARY_FILE = "senren_banka.json"
 _MIN_FUZZY_KEY_LENGTH = 8
 _FUZZY_MATCH_THRESHOLD = 0.9
 _SENREN_BANKA_PROCESS_NAMES = frozenset({"senrenbanka.exe", "senrenbanka"})
+
+
+def _title_match_key(value: str) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip().lower().replace(" ", "")
+
+
 _SENREN_BANKA_TITLE_SUBSTRINGS = (
     "千恋万花",
     "千恋＊万花",
@@ -25,6 +31,9 @@ _SENREN_BANKA_TITLE_SUBSTRINGS = (
     "senren banka",
     "senren＊banka",
     "senren*banka",
+)
+_SENREN_BANKA_TITLE_KEYS = tuple(
+    key for key in (_title_match_key(token) for token in _SENREN_BANKA_TITLE_SUBSTRINGS) if key
 )
 _BUILTIN_LIBRARY_SPECS = (
     {
@@ -81,6 +90,7 @@ class DialogueLibrary:
         self.lines = tuple(lines)
         self._exact: dict[str, DialogueLibraryMatch] = {}
         self._candidates: list[tuple[str, DialogueLibraryMatch]] = []
+        self._candidates_by_length: dict[int, list[tuple[str, DialogueLibraryMatch]]] = {}
         for line in self.lines:
             for candidate_text in line.candidate_texts():
                 key = dialogue_library_key(candidate_text)
@@ -96,6 +106,7 @@ class DialogueLibrary:
                 )
                 self._exact.setdefault(key, match)
                 self._candidates.append((key, match))
+                self._candidates_by_length.setdefault(len(key), []).append((key, match))
 
     def match(self, text: str) -> DialogueLibraryMatch | None:
         key = dialogue_library_key(text)
@@ -108,9 +119,7 @@ class DialogueLibrary:
             return None
         best_match: DialogueLibraryMatch | None = None
         best_score = 0.0
-        for candidate_key, candidate_match in self._candidates:
-            if len(candidate_key) < _MIN_FUZZY_KEY_LENGTH:
-                continue
+        for candidate_key, candidate_match in self._fuzzy_candidates_for_key(key):
             score = _match_score(key, candidate_key)
             if score > best_score:
                 best_score = score
@@ -125,6 +134,12 @@ class DialogueLibrary:
             score=best_score,
             matched_text=best_match.matched_text,
         )
+
+    def _fuzzy_candidates_for_key(self, key: str) -> Iterable[tuple[str, DialogueLibraryMatch]]:
+        min_length = max(_MIN_FUZZY_KEY_LENGTH, int(len(key) * _FUZZY_MATCH_THRESHOLD))
+        max_length = int(len(key) / _FUZZY_MATCH_THRESHOLD) + 1
+        for length in range(min_length, max_length + 1):
+            yield from self._candidates_by_length.get(length, ())
 
 
 def dialogue_library_key(text: str) -> str:
@@ -174,7 +189,10 @@ def match_dialogue_library_for_target(
         normalized_title=normalized_title,
     ):
         return None
-    library = _load_senren_banka_library(library_dir=library_dir)
+    try:
+        library = _load_senren_banka_library(library_dir=library_dir)
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return None
     if library is None:
         return None
     return library.match(text)
@@ -233,12 +251,8 @@ def matches_senren_banka_target(*, process_name: str, normalized_title: str) -> 
     process = str(process_name or "").strip().lower()
     if process in _SENREN_BANKA_PROCESS_NAMES:
         return True
-    title = unicodedata.normalize("NFKC", str(normalized_title or "")).strip().lower()
-    title_compact = title.replace(" ", "")
-    return any(
-        token in title or token.replace(" ", "") in title_compact
-        for token in _SENREN_BANKA_TITLE_SUBSTRINGS
-    )
+    title_key = _title_match_key(normalized_title)
+    return any(token_key in title_key for token_key in _SENREN_BANKA_TITLE_KEYS)
 
 
 def _load_senren_banka_library(*, library_dir: Path | None = None) -> DialogueLibrary | None:

@@ -67,6 +67,7 @@ from .ocr_chrome_noise import (
     looks_like_window_title_line as _looks_like_window_title_line,
 )
 from .dialogue_library import (
+    DialogueLibraryMatch as _DialogueLibraryMatch,
     match_dialogue_library_for_target as _match_dialogue_library_for_target,
 )
 from .aihong_state import (
@@ -540,7 +541,9 @@ class TextMixin:
         return content_text, cleaned_text
 
 
-    def _dialogue_library_match_for_cleaned_text(self, cleaned_text: str):
+    def _dialogue_library_match_for_cleaned_text(
+        self, cleaned_text: str
+    ) -> _DialogueLibraryMatch | None:
         target = self._attached_window
         process_name = (
             str(target.process_name or "")

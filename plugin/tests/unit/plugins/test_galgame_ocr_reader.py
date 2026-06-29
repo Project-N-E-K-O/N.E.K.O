@@ -443,6 +443,22 @@ def test_senren_banka_dialogue_library_matches_fixture_line_with_minor_ocr_error
     assert match.score >= 0.9
 
 
+def test_senren_banka_dialogue_library_matches_normalized_traditional_title(
+    tmp_path: Path,
+) -> None:
+    library_dir = _write_senren_banka_dialogue_library(tmp_path / "dialogue_libraries")
+
+    match = galgame_dialogue_library.match_dialogue_library_for_target(
+        "这是千恋万花台词库的开发者测试行。",
+        process_name="",
+        normalized_title="千戀＊萬花",
+        library_dir=library_dir,
+    )
+
+    assert match is not None
+    assert match.game_id == galgame_dialogue_library.SENREN_BANKA_GAME_ID
+
+
 def test_dialogue_library_rejects_invalid_line(tmp_path: Path) -> None:
     library_dir = tmp_path / "dialogue_libraries"
     library_dir.mkdir()
@@ -461,6 +477,22 @@ def test_dialogue_library_rejects_invalid_line(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"line #1.*game_id=senren_banka"):
         galgame_dialogue_library.load_dialogue_library(path)
+
+
+def test_dialogue_library_match_ignores_invalid_library_on_hot_path(tmp_path: Path) -> None:
+    library_dir = tmp_path / "dialogue_libraries"
+    library_dir.mkdir()
+    (library_dir / "senren_banka.json").write_text("{", encoding="utf-8")
+
+    assert (
+        galgame_dialogue_library.match_dialogue_library_for_target(
+            "这是千恋万花台词库的开发者测试句。",
+            process_name="SenrenBanka.exe",
+            normalized_title="千恋＊万花",
+            library_dir=library_dir,
+        )
+        is None
+    )
 
 
 def test_dialogue_library_does_not_match_unrelated_game_target(tmp_path: Path) -> None:
