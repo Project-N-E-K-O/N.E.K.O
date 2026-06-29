@@ -16,6 +16,7 @@
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
     var activeSession = null;
     var pendingStartDay = '';
+    var pendingGuideEndStateDay = '';
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -62,7 +63,7 @@
     }
 
     function isPeriodActive() {
-        return !!activeSession;
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
     function fetchJson(url) {
@@ -154,6 +155,26 @@
         if (pendingStartDay === dayKey) {
             pendingStartDay = '';
         }
+    }
+
+    function clearPendingGuideEndStateDay(dayKey) {
+        if (pendingGuideEndStateDay === dayKey) {
+            pendingGuideEndStateDay = '';
+        }
+    }
+
+    function markPendingStartFromEndState(endState) {
+        var dayKey = String(endState && endState.day || '');
+        if (dayKey) pendingGuideEndStateDay = dayKey;
+        return dayKey;
+    }
+
+    function dispatchIcebreakerEnded(reason) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended', {
+                detail: { reason: reason || 'complete' }
+            }));
+        } catch (_) {}
     }
 
     function endIcebreakerRoute(session, reason) {
@@ -867,6 +888,7 @@
             if (activeSession === session) {
                 activeSession = null;
             }
+            dispatchIcebreakerEnded('handoff');
             return true;
         });
     }
@@ -995,6 +1017,7 @@
                     if (activeSession === session) {
                         activeSession = null;
                     }
+                    dispatchIcebreakerEnded('free_text_release');
                 } else if (activeSession === session) {
                     var currentNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
@@ -1091,6 +1114,7 @@
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
+                clearPendingGuideEndStateDay(dayKey);
                 markDay(dayKey, {
                     started: true,
                     completed: false,
@@ -1179,8 +1203,12 @@
     function handleGuideEndEvent(event) {
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
+        var endState = resolveLatestEndState(detail, eventType);
+        var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
-            startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType));
+            startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+                if (!started) clearPendingGuideEndStateDay(pendingDay);
+            });
         }, 500);
     }
 

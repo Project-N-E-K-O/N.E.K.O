@@ -636,7 +636,10 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     assert match is not None
     body = match.group("body")
     assert "startFromEndState(resolveLatestEndState(detail, eventType))" not in body
-    assert "startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType))" in body
+    assert "var endState = resolveLatestEndState(detail, eventType);" in body
+    assert "var pendingDay = markPendingStartFromEndState(endState);" in body
+    assert "startFromEndStateWhenTutorialIdle(endState)" in body
+    assert "clearPendingGuideEndStateDay(pendingDay)" in body
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
@@ -948,6 +951,7 @@ def test_icebreaker_bridge_events_use_monotonic_timestamps_for_deduping():
 def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     app_proactive = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
     for source in (app_websocket, app_proactive):
         assert "NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1'" in source
@@ -963,9 +967,13 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
             source,
             flags=re.S,
         ).group("body")
-        assert "getActiveSession()" in period_body
+        if source is app_websocket:
+            assert "isNewUserIcebreakerActiveForGreeting()" in period_body
+        else:
+            assert "getActiveSession()" in period_body
         assert "if (!window.newUserIcebreaker" not in period_body
-        assert period_body.index("readNewUserIcebreakerStore()") > period_body.index("getActiveSession()")
+        active_marker = "isNewUserIcebreakerActiveForGreeting()" if source is app_websocket else "getActiveSession()"
+        assert period_body.index("readNewUserIcebreakerStore()") > period_body.index(active_marker)
         assert "entry.started === true" not in period_body
         assert "entry.completed === true" not in period_body
         assert "|| entry.triggeredAt" not in period_body
@@ -975,10 +983,13 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive
 
     assert "isNewUserIcebreakerBlockingGreeting(S._greetingCheckReason)" in app_websocket
-    assert "function isTutorialReleaseGreetingReason(reason)" in app_websocket
-    assert "if (isTutorialReleaseGreetingReason(normalizedReason))" in app_websocket
-    assert "tutorial-completed" in app_websocket
-    assert "tutorial-skipped" in app_websocket
+    assert "function isNewUserIcebreakerActiveForGreeting()" in app_websocket
+    assert "return isNewUserIcebreakerActiveForGreeting();" in app_websocket
+    assert "function isTutorialReleaseGreetingReason(reason)" not in app_websocket
+    assert "function markPendingStartFromEndState(endState)" in runtime
+    assert "pendingGuideEndStateDay" in runtime
+    assert "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);" in runtime
+    assert "window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended'" in runtime
 
 
 def test_react_chat_assets_use_react_chat_cache_version():
