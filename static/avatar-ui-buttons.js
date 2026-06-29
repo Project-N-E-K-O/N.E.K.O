@@ -886,6 +886,26 @@ function _dispatchNekoIdleCat1PlaygroundQuestionBlockClick(element) {
     } catch (_) {}
 }
 
+function _restoreNekoIdleCat1PlaygroundStartPositions(button) {
+    const state = button && button.__nekoIdleCat1PlaygroundDropState;
+    const starts = state && state.start && state.start.bodies ? state.start.bodies : null;
+    if (!state || !state.bodies || !starts) return false;
+    let restored = false;
+    ['cat', 'yarn', 'desktop-yarn'].forEach((id) => {
+        const body = state.bodies.get(id);
+        const start = starts[id];
+        if (!body || !start) return;
+        body.vx = 0;
+        body.vy = 0;
+        body.dragging = false;
+        body.grounded = false;
+        _setNekoIdleCat1PlaygroundBodyPosition(body, start.x, start.y, { force: true });
+        restored = true;
+    });
+    if (restored) _setNekoIdleCat1PlaygroundCatGroundedArt(button);
+    return restored;
+}
+
 function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, event) {
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (event) {
@@ -894,6 +914,12 @@ function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, e
     }
     if (state && (state.draggingBodyId || state.suppressClickBodyId === 'question-block')) return true;
     _dispatchNekoIdleCat1PlaygroundQuestionBlockClick(element);
+    if (_isNekoIdleCat1PlaygroundDropActive(button)) {
+        _stopNekoIdleCat1PlaygroundPhysics(button);
+        _clearNekoIdleCat1PlaygroundPointerListeners(button);
+        _restoreNekoIdleCat1PlaygroundStartPositions(button);
+        _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'question-block-click');
+    }
     return true;
 }
 
@@ -1223,6 +1249,8 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     state.container = container;
     state.releaseReason = '';
     state.lastTickAt = 0;
+    state.start = null;
+    state.end = null;
     state.bodies = new Map();
     state.draggingBodyId = '';
     state.lastPointerSamples = [];
@@ -1286,6 +1314,8 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     state.pointerBodyId = '';
     state.pointerId = null;
     state.lastPointerSamples = [];
+    state.start = null;
+    state.end = null;
     state.entryQuestionBlockElement = null;
     state.suppressClickBodyId = '';
     if (state.suppressClickTimer) {
@@ -1649,6 +1679,19 @@ function _createNekoIdleCat1PlaygroundQuestionBlockClone(rect, button) {
     return clone;
 }
 
+function _captureNekoIdleCat1PlaygroundStartPositions(state) {
+    const snapshot = { bodies: {} };
+    if (!state || !state.bodies || typeof state.bodies.forEach !== 'function') return snapshot;
+    state.bodies.forEach((body) => {
+        if (!body || !['cat', 'yarn', 'desktop-yarn'].includes(body.id)) return;
+        snapshot.bodies[body.id] = {
+            x: Number(body.x) || 0,
+            y: Number(body.y) || 0
+        };
+    });
+    return snapshot;
+}
+
 function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
     const state = _getNekoIdleCat1PlaygroundDropState(button);
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -1723,6 +1766,7 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
             try { questionBlockElement.parentNode.removeChild(questionBlockElement); } catch (_) {}
         }
     }
+    state.start = _captureNekoIdleCat1PlaygroundStartPositions(state);
     return state.bodies.size > 0;
 }
 

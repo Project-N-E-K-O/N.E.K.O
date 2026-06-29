@@ -275,6 +275,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "state.targetElement = mirror;" in register_block
     assert "desktop: true" in register_block
     assert "mirror.parentNode.removeChild(mirror)" in register_block
+    assert "state.start = _captureNekoIdleCat1PlaygroundStartPositions(state);" in register_block
 
     playground_bounds_block = _source_slice_between(
         source,
@@ -510,6 +511,17 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "pointerMoved" not in click_block
     assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'cat-click');" in click_block
     assert "_dispatchNekoIdleReturnClickFromButton(button);" in click_block
+    assert "function _captureNekoIdleCat1PlaygroundStartPositions(state)" in source
+    assert "function _restoreNekoIdleCat1PlaygroundStartPositions(button)" in source
+    restore_start_block = _source_slice_between(
+        source,
+        "function _restoreNekoIdleCat1PlaygroundStartPositions(button)",
+        "function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, event)",
+        "cat1 playground restore start positions",
+    )
+    assert "['cat', 'yarn', 'desktop-yarn'].forEach" in restore_start_block
+    assert "_setNekoIdleCat1PlaygroundBodyPosition(body, start.x, start.y, { force: true });" in restore_start_block
+    assert "_setNekoIdleCat1PlaygroundCatGroundedArt(button);" in restore_start_block
     question_click_block = _source_slice_between(
         source,
         "function _handleNekoIdleCat1PlaygroundQuestionBlockCloneClick(button, element, event)",
@@ -518,6 +530,9 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "state.suppressClickBodyId === 'question-block'" in question_click_block
     assert "pointerMoved" not in question_click_block
+    assert "_restoreNekoIdleCat1PlaygroundStartPositions(button);" in question_click_block
+    assert "_releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'question-block-click');" in question_click_block
+    assert "_dispatchNekoIdleReturnClickFromButton(button);" not in question_click_block
 
     assert "function _suppressNekoIdleCat1PlaygroundNonCatNativeEvent(event)" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
