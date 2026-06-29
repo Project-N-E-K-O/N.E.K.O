@@ -898,6 +898,29 @@
         });
     }
 
+    // ======================== appendReactTopicHint（深话题预告气泡） ========================
+
+    // Frontend-only teaser shown right before a proactive deep-topic opener.
+    // Backend sends a `topic_hint` WS frame that never touches the sync queue /
+    // chat memory, so this bubble is display-only and never re-enters LLM
+    // context. Rendered by react-neko-chat's dedicated TopicHintBubble.
+    function appendReactTopicHint(author) {
+        var host = getHost();
+        if (!host || typeof host.appendMessage !== 'function') return null;
+
+        var name = String(author || getCurrentAssistantName() || '').trim();
+        if (!name) return null;
+
+        return host.appendMessage({
+            id: nextReactMessageId('topic-hint'),
+            role: 'system',
+            author: name,
+            time: getCurrentTimeString(),
+            createdAt: Date.now(),
+            blocks: [{ type: 'topic-hint', author: name }]
+        });
+    }
+
     // ======================== refreshReactAssistantAvatars ========================
 
     function refreshReactAssistantAvatars() {
@@ -925,6 +948,7 @@
     window._tryFlushPendingHostMessages = _tryFlushPendingHostMessages;
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
     window._resetReactChatSwitchState = _resetReactChatSwitchState;
+    window.appendReactTopicHint = appendReactTopicHint;
 
     // 覆盖 appChat 上的方法
     if (window.appChat) {
@@ -932,6 +956,7 @@
         window.appChat.createGeminiBubble = createGeminiBubble;
         window.appChat.processRealisticQueue = processRealisticQueue;
         window.appChat.appendReactUserMessage = appendReactUserMessage;
+        window.appChat.appendReactTopicHint = appendReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;
     }
 

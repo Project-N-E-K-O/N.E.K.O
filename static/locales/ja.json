@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "チャット",
+        "topicHint": "{{author}}は何か話したいことがあるみたい…",
         "viewerTitle": "チャット（ビューアーモード）",
         "tooltip": "チャットエリア",
         "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",

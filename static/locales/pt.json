@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Bater papo",
+        "topicHint": "{{author}} parece ter algo sobre o que quer conversar…",
         "viewerTitle": "Bate-papo (modo visualizador)",
         "tooltip": "Área de bate-papo",
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",

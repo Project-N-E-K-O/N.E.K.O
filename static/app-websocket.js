@@ -1943,6 +1943,16 @@
                         detail: { active: !!response.active },
                     }));
 
+                // -------- topic_hint（深话题预告气泡，仅前端展示，不入上下文）--------
+                } else if (response.type === 'topic_hint') {
+                    if (typeof window.appendReactTopicHint === 'function') {
+                        try {
+                            window.appendReactTopicHint(response.author);
+                        } catch (topicHintErr) {
+                            console.warn('[topic_hint] append failed', topicHintErr);
+                        }
+                    }
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;

@@ -1273,6 +1273,27 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   white-space: normal;
 }
 
+/* 深话题预告气泡：她"有想聊的话题"的前端专属提示，斜体 + 特殊强调色，
+   与普通 system-chip 区分。纯前端展示，不进 LLM 上下文。 */
+.topic-hint-chip {
+  max-width: min(82%, 640px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-style: italic;
+  color: #7d5fc4;
+  background: rgba(130, 105, 205, 0.12);
+  border: 1px solid rgba(130, 105, 205, 0.22);
+}
+
+.topic-hint-chip-text {
+  white-space: normal;
+}
+
 .composer-panel {
   display: grid;
   /* 显式 1 列、min 边为 0：阻断 grid item 默认 min-width: auto 把内部
@@ -5559,6 +5580,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .system-chip-time {
   color: #7a8494;
+}
+
+[data-theme="dark"] .topic-hint-chip {
+  color: #c2acf2;
+  background: rgba(124, 104, 184, 0.24);
+  border-color: rgba(150, 128, 214, 0.36);
 }
 
 /* --- 输入区域 --- */
