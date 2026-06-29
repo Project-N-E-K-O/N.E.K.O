@@ -605,6 +605,10 @@ body .container-header {
     background: linear-gradient(to right, #4BD4FD, #17A7FF);
 }
 
+.tutorial-reset-notice-card[data-variant="error"] .tutorial-reset-notice-header {
+    background: linear-gradient(to right, #ff8a70, #ff4d67);
+}
+
 .tutorial-reset-notice-mark {
     position: relative;
     flex: 0 0 auto;
@@ -716,6 +720,10 @@ body .container-header {
     background: linear-gradient(to right, #1880aa, #0a3585);
 }
 
+[data-theme="dark"] .tutorial-reset-notice-card[data-variant="error"] .tutorial-reset-notice-header {
+    background: linear-gradient(to right, #c04b42, #8f1d3a);
+}
+
 [data-theme="dark"] .tutorial-reset-notice-mark {
     background: #252525;
     box-shadow: inset 0 -3px 7px rgba(74, 163, 223, 0.18), 0 4px 12px rgba(0, 0, 0, 0.28);
@@ -758,6 +766,19 @@ body .container-header {
     to {
         opacity: 0;
         transform: translateY(8px) scale(0.98);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tutorial-reset-notice-backdrop,
+    .tutorial-reset-notice-backdrop.is-closing,
+    .tutorial-reset-notice-card,
+    .tutorial-reset-notice-backdrop.is-closing .tutorial-reset-notice-card {
+        animation: none;
+    }
+
+    .tutorial-reset-notice-ok {
+        transition: none;
     }
 }
 
