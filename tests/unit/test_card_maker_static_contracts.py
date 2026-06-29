@@ -180,9 +180,18 @@ def test_model_manager_pngtuber_upload_supports_project_file_without_removing_fo
     assert "menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);" in script
     assert "let pngtuberUploadChoiceOpeningPicker = false;" in script
     assert "if (pngtuberUploadChoiceOpeningPicker) return;" in script
-    assert "setTimeout(() => {" in script
     assert "menu.parentNode.removeChild(menu);" in script
     assert "pngtuberUploadChoiceMenu.remove();" not in script
+    choice_item_block = script[
+        script.index("function createPNGTuberUploadChoiceItem"):
+        script.index("function showPNGTuberUploadChoice")
+    ]
+    assert "try {\n                onSelect();" in choice_item_block
+    assert "} finally {\n                setTimeout(() => {" in choice_item_block
+    assert (
+        "pngtuberUploadChoiceOpeningPicker = false;\n"
+        "                    closePNGTuberUploadChoice();"
+    ) in choice_item_block
     assert "event.key === 'Escape'" in script
     assert "window.t('live2d.pngtuberImportProjectFile')" in script
     assert "window.t('live2d.pngtuberImportFolder')" in script

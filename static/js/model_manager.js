@@ -9111,11 +9111,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         item.innerHTML = `<span class="dropdown-item-text" data-text="${label}">${label}</span>`;
         const select = () => {
             pngtuberUploadChoiceOpeningPicker = true;
-            onSelect();
-            setTimeout(() => {
-                pngtuberUploadChoiceOpeningPicker = false;
-                closePNGTuberUploadChoice();
-            }, 0);
+            try {
+                onSelect();
+            } finally {
+                setTimeout(() => {
+                    pngtuberUploadChoiceOpeningPicker = false;
+                    closePNGTuberUploadChoice();
+                }, 0);
+            }
         };
         item.addEventListener('click', select);
         item.addEventListener('keydown', (event) => {
