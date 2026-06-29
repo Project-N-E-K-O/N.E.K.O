@@ -137,8 +137,8 @@ window.Jukebox = {
     if (!target || !tooltip) return;
 
     const rect = target.getBoundingClientRect();
-    const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-    const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth || 0;
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight || 0;
     const edgePadding = 8;
     const gap = 6;
     const tooltipWidth = tooltip.offsetWidth;
