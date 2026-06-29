@@ -225,6 +225,7 @@ class Live2DManager {
         if (this.isInitialized && (!this.pixi_app || !this.pixi_app.stage)) {
             console.warn('Live2D 管理器标记为已初始化，但 pixi_app 或 stage 不存在，重置状态');
             if (this.pixi_app && this.pixi_app.destroy) {
+                this._stopIdleFpsGovernor();
                 if (this._screenChangeHandler) {
                     window.removeEventListener('resize', this._screenChangeHandler);
                     this._screenChangeHandler = null;
@@ -443,6 +444,7 @@ class Live2DManager {
                 this._displayChangeHandler = null;
             }
             if (this.pixi_app && this.pixi_app.destroy) {
+                this._stopIdleFpsGovernor();
                 try {
                     this.pixi_app.destroy(true);
                 } catch (e) {
@@ -476,6 +478,7 @@ class Live2DManager {
             this._displayChangeHandler = null;
         }
         if (this.pixi_app && this.pixi_app.destroy) {
+            this._stopIdleFpsGovernor();
             try {
                 this.pixi_app.destroy(true);
             } catch (e) {
@@ -512,14 +515,23 @@ class Live2DManager {
      * @param {number} fps - 目标帧率，0 表示不限帧（跟随 VSync）
      */
     setTargetFPS(fps) {
-        if (this.pixi_app && this.pixi_app.ticker) {
-            if (this._idleFpsRestoreTimer) {
-                clearTimeout(this._idleFpsRestoreTimer);
-                this._idleFpsRestoreTimer = null;
-            }
-            this.pixi_app.ticker.maxFPS = fps;
-            console.log(`[Live2D Core] 目标帧率设置为 ${fps === 0 ? 'VSync (无限制)' : fps + 'fps'}`);
+        if (!this.pixi_app || !this.pixi_app.ticker) return;
+        // setTargetFPS 是「目标帧率」配置的权威应用点：先同步配置源，确保 governor 的
+        // boost/restore 读到的是新值而非旧值（调用方一般已设过 window.targetFrameRate，这里兜底自洽）。
+        const resolved = Number(fps);
+        window.targetFrameRate = Number.isFinite(resolved) ? resolved : 60;
+        if (this._idleFpsRestoreTimer) {
+            clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
         }
+        // 立即按 governor 语义落地，不必等下一次活动周期：有渲染活动升回配置帧率，
+        // 否则直接压到静止地板，避免改完设置后空闲态停在未节流的值。
+        if (this._hasRenderActivity()) {
+            this.boostInteractiveFPS();
+        } else {
+            this.pixi_app.ticker.maxFPS = this._resolveIdleFps();
+        }
+        console.log(`[Live2D Core] 目标帧率设置为 ${window.targetFrameRate === 0 ? 'VSync (无限制)' : window.targetFrameRate + 'fps'}`);
     }
 
     // 用户配置的目标帧率（活动时的上限），默认 60；0 表示不限帧（跟随 VSync）。
@@ -539,7 +551,9 @@ class Live2DManager {
         if (!this.pixi_app || !this.pixi_app.ticker) return;
         const ticker = this.pixi_app.ticker;
         const configured = this._resolveConfiguredTargetFps();
-        const activeFps = configured === 0 ? 0 : Math.max(LIVE2D_IDLE_FPS, configured);
+        // 活动时升回用户配置上限（0=不限帧）。不再 Math.max(IDLE,...)，否则会把刻意设到
+        // 低于地板的配置（如低端机 24fps）反而抬到 30，超过用户上限。
+        const activeFps = configured === 0 ? 0 : configured;
         if (ticker.maxFPS !== activeFps) {
             ticker.maxFPS = activeFps;
         }
@@ -590,6 +604,11 @@ class Live2DManager {
         if (this._idleFpsGovernorTimer) {
             clearInterval(this._idleFpsGovernorTimer);
             this._idleFpsGovernorTimer = null;
+        }
+        // 一并清掉待触发的衰减计时器，避免销毁/重建失败路径留下后台 timer。
+        if (this._idleFpsRestoreTimer) {
+            clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
         }
     }
 
