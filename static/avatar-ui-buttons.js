@@ -322,6 +322,13 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS = 2;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS = 0.65;
 const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_CLICK_EVENT = 'neko:idle-cat1-playground-question-block-click';
+const _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE = 'cat1-playground-pair-move';
+const _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING = 0.986;
+const _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING = 0.88;
+const _NEKO_IDLE_CAT1_PLAYGROUND_MAX_ANGULAR_VELOCITY_RAD_PER_SEC = 14;
+const _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC = 0.02;
+const _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_SPEED_RAD_PER_SEC = 8;
+const _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_EPSILON_RAD = 0.01;
 const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
     left: 112 / 512,
     top: 2 / 512,
@@ -1364,6 +1371,21 @@ function _isAnyNekoIdleCat1PlaygroundDropActive() {
     return active;
 }
 
+function _isAnyNekoIdleCat1PlaygroundDropLifecycleActive() {
+    let active = false;
+    _forEachNekoIdleReturnButton((button) => {
+        if (active) return;
+        active = _isNekoIdleCat1PlaygroundDropActive(button);
+    });
+    return active;
+}
+
+function _isNekoIdleCat1PlaygroundPairMoveFeedback(detail) {
+    if (!detail || typeof detail !== 'object') return false;
+    return detail.reason === _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE ||
+        detail.source === _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE;
+}
+
 function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability) {
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (!state || !state.active || state.released) return false;
@@ -1594,6 +1616,17 @@ function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
         height: height,
         vx: Number(options.vx) || 0,
         vy: Number(options.vy) || 0,
+        rotationEnabled: !!options.rotationEnabled,
+        rotation: Number(options.rotation) || 0,
+        angularVelocity: Number(options.angularVelocity) || 0,
+        angularDamping: Number(options.angularDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING,
+        angularGroundDamping: Number(options.angularGroundDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING,
+        settleRotationWhenGrounded: !!options.settleRotationWhenGrounded,
+        restRotationStepRad: Math.max(0, Number(options.restRotationStepRad) || 0),
+        restRotationOffsetRad: Number(options.restRotationOffsetRad) || 0,
+        rotationSettling: false,
+        rotationSettleTarget: Number(options.rotationSettleTarget) || 0,
+        rotationSettleSpeed: Number(options.rotationSettleSpeed) || _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_SPEED_RAD_PER_SEC,
         dragging: false,
         grounded: false,
         floorY: Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - height),
@@ -1753,6 +1786,12 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
         const body = _createNekoIdleCat1PlaygroundPhysicsBody('question-block', questionBlockElement, {
             id: 'question-block',
             mass: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS,
+            rotationEnabled: true,
+            angularDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING,
+            angularGroundDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING,
+            settleRotationWhenGrounded: true,
+            restRotationStepRad: Math.PI / 2,
+            restRotationOffsetRad: 0,
             visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS
         });
         if (body) {
@@ -1785,10 +1824,31 @@ function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {}) {
             top: body.screenOffsetY + body.y,
             width: body.width,
             height: body.height
-        }, { force: !!options.force });
-    } else {
+        }, {
+            force: !!options.force,
+            reason: _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE,
+            source: _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE
+        });
+    } else if (body.id === 'yarn') {
         _setNekoIdleCat1PairMoveChatPosition(body.element, body.x, body.y);
+    } else {
+        _setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);
     }
+    _applyNekoIdleCat1PlaygroundBodyRotation(body);
+}
+
+function _setNekoIdleCat1PlaygroundFixedBodyPosition(element, left, top) {
+    if (!element) return;
+    element.style.left = `${Math.round(left)}px`;
+    element.style.top = `${Math.round(top)}px`;
+    element.style.right = '';
+    element.style.bottom = '';
+}
+
+function _applyNekoIdleCat1PlaygroundBodyRotation(body) {
+    if (!body || !body.rotationEnabled || !body.element || body.desktop) return;
+    body.element.style.transformOrigin = 'center center';
+    body.element.style.transform = `rotate(${Number(body.rotation) || 0}rad)`;
 }
 
 function _updateNekoIdleCat1PlaygroundBodyBounds(body) {
@@ -1923,6 +1983,129 @@ function _resolveNekoIdleCat1PlaygroundBodyCollisions(state) {
     return resolved;
 }
 
+function _isNekoIdleCat1PlaygroundBodyRotating(body) {
+    return !!(body && body.rotationEnabled &&
+        Math.abs(Number(body.angularVelocity) || 0) > _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC);
+}
+
+function _isNekoIdleCat1PlaygroundBodySettlingRotation(body) {
+    return !!(body && body.rotationEnabled && body.rotationSettling);
+}
+
+function _isNekoIdleCat1PlaygroundBodyRestRotationPending(body) {
+    if (!_shouldNekoIdleCat1PlaygroundBodySettleRotation(body)) return false;
+    if (body.rotationSettling) return true;
+    const target = _getNekoIdleCat1PlaygroundNearestRestRotation(body);
+    return Math.abs((Number(body.rotation) || 0) - target) > _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_EPSILON_RAD ||
+        Math.abs(Number(body.angularVelocity) || 0) > _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC;
+}
+
+function _clampNekoIdleCat1PlaygroundAngularVelocity(value) {
+    const velocity = Number(value) || 0;
+    return Math.max(
+        -_NEKO_IDLE_CAT1_PLAYGROUND_MAX_ANGULAR_VELOCITY_RAD_PER_SEC,
+        Math.min(velocity, _NEKO_IDLE_CAT1_PLAYGROUND_MAX_ANGULAR_VELOCITY_RAD_PER_SEC)
+    );
+}
+
+function _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state) {
+    if (!body || !body.rotationEnabled || !velocity || !state) return 0;
+    const width = Math.max(1, Number(body.width) || 1);
+    const height = Math.max(1, Number(body.height) || 1);
+    const pointerOffsetX = Number(state.pointerOffsetX);
+    const pointerOffsetY = Number(state.pointerOffsetY);
+    const rx = (Number.isFinite(pointerOffsetX) ? pointerOffsetX : width / 2) - width / 2;
+    const ry = (Number.isFinite(pointerOffsetY) ? pointerOffsetY : height / 2) - height / 2;
+    const radiusSquared = (rx * rx) + (ry * ry);
+    const safeRadiusSquared = Math.max(radiusSquared, Math.pow(Math.max(width, height), 2) * 0.16);
+    let angularVelocity = ((rx * velocity.vy) - (ry * velocity.vx)) / safeRadiusSquared;
+    if (Math.abs(angularVelocity) < 0.25) {
+        angularVelocity = velocity.vx / Math.max(width, height) * 0.65;
+    }
+    return _clampNekoIdleCat1PlaygroundAngularVelocity(angularVelocity);
+}
+
+function _getNekoIdleCat1PlaygroundNearestRestRotation(body) {
+    const rotation = Number(body && body.rotation) || 0;
+    const step = Math.abs(Number(body && body.restRotationStepRad) || 0);
+    if (step <= 0) return rotation;
+    const offset = Number(body && body.restRotationOffsetRad) || 0;
+    return Math.round((rotation - offset) / step) * step + offset;
+}
+
+function _shouldNekoIdleCat1PlaygroundBodySettleRotation(body) {
+    return !!(body && body.rotationEnabled &&
+        body.settleRotationWhenGrounded &&
+        Math.abs(Number(body.restRotationStepRad) || 0) > 0 &&
+        body.grounded &&
+        !body.dragging);
+}
+
+function _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt) {
+    if (!body || !body.rotationEnabled) return false;
+    const shouldSettle = _shouldNekoIdleCat1PlaygroundBodySettleRotation(body);
+    if (!shouldSettle) {
+        if (body.rotationSettling && (!body.grounded || body.dragging)) {
+            body.rotationSettling = false;
+        }
+        return false;
+    }
+    if (!body.rotationSettling) {
+        body.rotationSettleTarget = _getNekoIdleCat1PlaygroundNearestRestRotation(body);
+        if (Math.abs((Number(body.rotation) || 0) - body.rotationSettleTarget) <= _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_EPSILON_RAD &&
+            Math.abs(Number(body.angularVelocity) || 0) <= _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC) {
+            body.rotation = body.rotationSettleTarget;
+            body.angularVelocity = 0;
+            _applyNekoIdleCat1PlaygroundBodyRotation(body);
+            return false;
+        }
+        body.rotationSettling = true;
+    }
+
+    const current = Number(body.rotation) || 0;
+    const target = Number(body.rotationSettleTarget) || 0;
+    const delta = target - current;
+    const settleSpeed = Math.max(0.001, Number(body.rotationSettleSpeed) ||
+        _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_SPEED_RAD_PER_SEC);
+    const damping = Math.exp(-settleSpeed * 0.9 * Math.max(0, dt));
+    body.angularVelocity = _clampNekoIdleCat1PlaygroundAngularVelocity(
+        ((Number(body.angularVelocity) || 0) + (delta * settleSpeed * settleSpeed * dt)) * damping
+    );
+    body.rotation = current + ((Number(body.angularVelocity) || 0) * dt);
+
+    if (Math.abs(delta) <= _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_SETTLE_EPSILON_RAD &&
+        Math.abs(Number(body.angularVelocity) || 0) <= _NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC) {
+        body.rotation = target;
+        body.angularVelocity = 0;
+        body.rotationSettling = false;
+        _applyNekoIdleCat1PlaygroundBodyRotation(body);
+        return false;
+    }
+    _applyNekoIdleCat1PlaygroundBodyRotation(body);
+    return true;
+}
+
+function _stepNekoIdleCat1PlaygroundBodyRotation(body, dt) {
+    if (!body || !body.rotationEnabled) return false;
+    if (body.rotationSettling) return false;
+    if (!_isNekoIdleCat1PlaygroundBodyRotating(body)) {
+        body.angularVelocity = 0;
+        return false;
+    }
+    body.rotation = (Number(body.rotation) || 0) + ((Number(body.angularVelocity) || 0) * dt);
+    const baseDamping = Number(body.angularDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING;
+    const groundDamping = Number(body.angularGroundDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING;
+    const damping = body.grounded
+        ? Math.min(baseDamping, groundDamping)
+        : baseDamping;
+    body.angularVelocity *= Math.pow(damping, Math.max(1, dt * 60));
+    if (!_isNekoIdleCat1PlaygroundBodyRotating(body)) {
+        body.angularVelocity = 0;
+    }
+    _applyNekoIdleCat1PlaygroundBodyRotation(body);
+    return true;
+}
+
 function _setNekoIdleCat1PlaygroundCatAirArt(button) {
     const art = button && button.querySelector('.neko-idle-return-art');
     if (!art) return;
@@ -1952,46 +2135,54 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
             return;
         }
         _updateNekoIdleCat1PlaygroundBodyBounds(body);
-        if (!body.grounded || Math.abs(body.vx) > 0.05 || Math.abs(body.vy) > 0.05) {
+        if (!_shouldNekoIdleCat1PlaygroundBodySettleRotation(body)) {
+            _stepNekoIdleCat1PlaygroundBodyRotation(body, dt);
+        }
+        const linearActive = !body.grounded || Math.abs(body.vx) > 0.05 || Math.abs(body.vy) > 0.05;
+        if (linearActive) {
             if (body.grounded &&
                 Math.abs(body.vx) <= _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC) {
                 body.vx = 0;
                 body.vy = 0;
                 body.y = body.floorY;
-                _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });
-                return;
-            }
-            body.vy += state.gravityPxPerSecond2 * dt;
-            body.x += body.vx * dt;
-            body.y += body.vy * dt;
-            body.vx *= body.grounded
-                ? _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING
-                : _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING;
-
-            if (body.x <= body.wallLeft) {
-                body.x = body.wallLeft;
-                body.vx = Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
-            }
-
-            if (body.x >= body.wallRight) {
-                body.x = body.wallRight;
-                body.vx = -Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
-            }
-
-            if (body.y >= body.floorY) {
-                body.y = body.floorY;
-                body.vy = 0;
-                body.grounded = true;
-                if (Math.abs(body.vx) <= _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC) {
-                    body.vx = 0;
-                }
             } else {
-                body.grounded = false;
+                body.vy += state.gravityPxPerSecond2 * dt;
+                body.x += body.vx * dt;
+                body.y += body.vy * dt;
+                body.vx *= body.grounded
+                    ? _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING
+                    : _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING;
+
+                if (body.x <= body.wallLeft) {
+                    body.x = body.wallLeft;
+                    body.vx = Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                }
+
+                if (body.x >= body.wallRight) {
+                    body.x = body.wallRight;
+                    body.vx = -Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                }
+
+                if (body.y >= body.floorY) {
+                    body.y = body.floorY;
+                    body.vy = 0;
+                    body.grounded = true;
+                    if (Math.abs(body.vx) <= _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC) {
+                        body.vx = 0;
+                    }
+                } else {
+                    body.grounded = false;
+                }
             }
             _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.grounded || body.desktop });
         }
+        _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt);
         if (!body.grounded) allGrounded = false;
-        if (!body.grounded || Math.abs(body.vx) > 0.5 || Math.abs(body.vy) > 0.5) {
+        const angularActive = _isNekoIdleCat1PlaygroundBodyRotating(body) ||
+            _isNekoIdleCat1PlaygroundBodySettlingRotation(body) ||
+            _isNekoIdleCat1PlaygroundBodyRestRotationPending(body);
+        if (!body.grounded || Math.abs(body.vx) > 0.5 || Math.abs(body.vy) > 0.5 ||
+            angularActive) {
             needsNextFrame = true;
         }
     });
@@ -2002,7 +2193,10 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
             if (!body) return;
             if (body.dragging) needsNextFrame = true;
             if (!body.grounded) allGrounded = false;
-            if (!body.grounded || Math.abs(body.vx) > 0.5 || Math.abs(body.vy) > 0.5) {
+            if (!body.grounded || Math.abs(body.vx) > 0.5 || Math.abs(body.vy) > 0.5 ||
+                _isNekoIdleCat1PlaygroundBodyRotating(body) ||
+                _isNekoIdleCat1PlaygroundBodySettlingRotation(body) ||
+                _isNekoIdleCat1PlaygroundBodyRestRotationPending(body)) {
                 needsNextFrame = true;
             }
         });
@@ -2132,6 +2326,10 @@ function _handleNekoIdleCat1PlaygroundPointerDownForBody(button, body, event) {
     state.pointerMoved = false;
     state.pointerOffsetX = event.clientX - body.x;
     state.pointerOffsetY = event.clientY - body.y;
+    if (body.rotationEnabled) {
+        body.angularVelocity = 0;
+        body.rotationSettling = false;
+    }
     state.lastPointerSamples = [{
         x: event.clientX,
         y: event.clientY,
@@ -2267,6 +2465,7 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
     const velocity = _getNekoIdleCat1PlaygroundPointerVelocity(state.lastPointerSamples);
     body.vx = velocity.vx;
     body.vy = velocity.vy;
+    body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);
     body.dragging = false;
     body.grounded = false;
     state.phase = 'ballistic';
@@ -5880,9 +6079,12 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
     }
     _nekoIdleDesktopChatPairMoveLastDispatchAt = now;
     _nekoIdleDesktopChatPairMoveLastDispatchSignature = signature;
+    const source = typeof options.source === 'string' && options.source ? options.source : 'cat1-pair-move';
+    const reason = typeof options.reason === 'string' && options.reason ? options.reason : source;
     const message = {
         action: 'idle_chat_pair_move_bounds',
-        source: 'cat1-pair-move',
+        source: source,
+        reason: reason,
         lanlan_name: _getNekoIdleCurrentLanlanName(),
         screenRect: {
             left: normalized.left,
@@ -7204,6 +7406,10 @@ function _ensureNekoIdleReturnPresentationBridge() {
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
         const nextMinimized = !!(detail && detail.minimized && screenRect);
+        if (_isAnyNekoIdleCat1PlaygroundDropLifecycleActive() &&
+            _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)) {
+            return;
+        }
         const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
         if (nextMinimized &&
             _nekoIdleDesktopCompactSurfaceState &&
@@ -7233,7 +7439,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 sourceUpdatedAt
             );
         }
-        const pairMoveFeedback = !!(detail && detail.reason === 'cat1-pair-move');
+        const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
             const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
             if (currentState && (currentState.pairMovePlan || currentState.pairMoveFrame)) {

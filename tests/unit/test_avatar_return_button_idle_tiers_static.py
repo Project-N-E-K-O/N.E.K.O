@@ -194,6 +194,20 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)" in source
     assert "function _isNekoIdleCat1PlaygroundDropActive(button)" in source
     assert "function _isNekoIdleCat1PlaygroundEntryOrDropActive(button, capability)" in source
+    assert "function _isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in source
+    assert "function _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE = 'cat1-playground-pair-move'" in source
+    pair_move_feedback_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)",
+        "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)",
+        "cat1 playground pair-move feedback helper"
+    )
+    assert "detail.reason === _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE" in pair_move_feedback_block
+    assert "detail.source === _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE" in pair_move_feedback_block
+    assert "detail.reason === 'idle-pair-move'" not in pair_move_feedback_block
+    assert "detail.reason === 'cat1-pair-move'" not in pair_move_feedback_block
+    assert "detail.source === 'cat1-pair-move'" not in pair_move_feedback_block
     assert "function _isNekoIdleCat1PlaygroundCapabilityBlocked(button, capability)" in source
     assert "function _handleNekoIdleCat1PlaygroundEntryRequest(event)" in source
     assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
@@ -267,6 +281,12 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS" in register_block
     assert register_block.count("mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS") == 2
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS" in register_block
+    assert register_block.count("rotationEnabled: true") == 1
+    assert "angularDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING" in register_block
+    assert "angularGroundDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING" in register_block
+    assert register_block.count("settleRotationWhenGrounded: true") == 1
+    assert "restRotationStepRad: Math.PI / 2" in register_block
+    assert "restRotationOffsetRad: 0" in register_block
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS" in register_block
     assert register_block.count("visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS") == 2
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS" in register_block
@@ -377,6 +397,51 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "const mass = _normalizeNekoIdleCat1PlaygroundBodyMass(options.mass);" in source
     assert "mass: mass" in source
     assert "inverseMass: 1 / mass" in source
+    assert "rotationEnabled: !!options.rotationEnabled" in source
+    assert "angularVelocity: Number(options.angularVelocity) || 0" in source
+    assert "angularDamping: Number(options.angularDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING" in source
+    assert "angularGroundDamping: Number(options.angularGroundDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING" in source
+    assert "settleRotationWhenGrounded: !!options.settleRotationWhenGrounded" in source
+    assert "restRotationStepRad: Math.max(0, Number(options.restRotationStepRad) || 0)" in source
+    assert "restRotationOffsetRad: Number(options.restRotationOffsetRad) || 0" in source
+    assert "rotationSettling: false" in source
+    assert "function _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state)" in source
+    assert "function _getNekoIdleCat1PlaygroundNearestRestRotation(body)" in source
+    assert "function _shouldNekoIdleCat1PlaygroundBodySettleRotation(body)" in source
+    assert "function _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt)" in source
+    assert "function _stepNekoIdleCat1PlaygroundBodyRotation(body, dt)" in source
+    assert "function _isNekoIdleCat1PlaygroundBodyRestRotationPending(body)" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_MAX_ANGULAR_VELOCITY_RAD_PER_SEC" in source
+    assert "Math.round((rotation - offset) / step) * step + offset" in source
+    assert "_isNekoIdleCat1PlaygroundBodySettlingRotation(body)" in physics_block
+    assert "_isNekoIdleCat1PlaygroundBodyRestRotationPending(body)" in physics_block
+    assert "const linearActive = !body.grounded || Math.abs(body.vx) > 0.05 || Math.abs(body.vy) > 0.05;" in physics_block
+    assert "const angularActive = _isNekoIdleCat1PlaygroundBodyRotating(body)" in physics_block
+    assert "_stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt);" in physics_block
+    assert "body.id === 'question-block'" not in physics_block
+    settle_should_block = _source_slice_between(
+        source,
+        "function _shouldNekoIdleCat1PlaygroundBodySettleRotation(body)",
+        "function _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt)",
+        "cat1 playground rotation settle gate",
+    )
+    assert "body.grounded" in settle_should_block
+    assert "!body.dragging" in settle_should_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" not in settle_should_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_ROTATION_STOP_RAD_PER_SEC" not in settle_should_block
+    rest_rotation_block = _source_slice_between(
+        source,
+        "function _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt)",
+        "function _stepNekoIdleCat1PlaygroundBodyRotation(body, dt)",
+        "cat1 playground grounded rotation settle",
+    )
+    assert "body.rotationSettleTarget = _getNekoIdleCat1PlaygroundNearestRestRotation(body);" in rest_rotation_block
+    assert "body.rotation = body.rotationSettleTarget;" in rest_rotation_block
+    assert "_applyNekoIdleCat1PlaygroundBodyRotation(body);" in rest_rotation_block
+    assert "const damping = Math.exp(-settleSpeed * 0.9 * Math.max(0, dt));" in rest_rotation_block
+    assert "delta * settleSpeed * settleSpeed * dt" in rest_rotation_block
+    assert "body.angularVelocity = _clampNekoIdleCat1PlaygroundAngularVelocity(" in rest_rotation_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" not in rest_rotation_block
     assert "first.inverseMass" in collision_block
     assert "second.inverseMass" in collision_block
     assert "first.mass" in collision_block
@@ -395,6 +460,13 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     )
     assert "if (body.element) {" in set_position_block
     assert "_setNekoIdleCat1PairMoveChatPosition(body.element, body.x, body.y);" in set_position_block
+    assert "body.id === 'yarn'" in set_position_block
+    assert "_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);" in set_position_block
+    assert "function _setNekoIdleCat1PlaygroundFixedBodyPosition(element, left, top)" in set_position_block
+    assert "_applyNekoIdleCat1PlaygroundBodyRotation(body);" in set_position_block
+    assert "body.element.style.transformOrigin = 'center center';" in set_position_block
+    assert "body.element.style.transform = `rotate(${Number(body.rotation) || 0}rad)`;" in set_position_block
+    assert set_position_block.index("body.id === 'yarn'") < set_position_block.index("_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);")
 
     release_block = _source_slice_between(
         source,
@@ -454,6 +526,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "state.pointerBodyId = body.id;" in pointer_down_block
     assert "state.draggingBodyId = body.id;" not in pointer_down_block
     assert "event.preventDefault()" not in pointer_down_block
+    assert "body.angularVelocity = 0;" in pointer_down_block
+    assert "body.rotationSettling = false;" in pointer_down_block
 
     desktop_pointer_block = _source_slice_between(
         source,
@@ -498,6 +572,7 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "state.pointerBodyId = '';" in pointer_up_block
     assert "state.phase = 'ballistic';" in pointer_up_block
     assert "state.suppressClickBodyId = body.id;" in pointer_up_block
+    assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
     assert "state.suppressClickTimer = setTimeout" in pointer_up_block
     assert "state.pointerId = null;\n    state.pointerId = null;" not in pointer_up_block
 
@@ -2617,12 +2692,31 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     ]
     assert "const force = !!(options && options.force);" in desktop_dispatch_block
     assert "if (_isNekoDesktopLinuxRuntime() && !force) return false;" in desktop_dispatch_block
+    assert "const source = typeof options.source === 'string' && options.source ? options.source : 'cat1-pair-move';" in desktop_dispatch_block
+    assert "const reason = typeof options.reason === 'string' && options.reason ? options.reason : source;" in desktop_dispatch_block
+    assert "source: source" in desktop_dispatch_block
+    assert "reason: reason" in desktop_dispatch_block
     assert "new CustomEvent('neko:idle-chat-pair-move-bounds'" in desktop_dispatch_block
+    set_position_block = source[
+        source.index("function _setNekoIdleCat1PlaygroundBodyPosition"):
+        source.index("function _setNekoIdleCat1PlaygroundFixedBodyPosition")
+    ]
+    assert "reason: _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE" in set_position_block
+    assert "source: _NEKO_IDLE_CAT1_PLAYGROUND_PAIR_MOVE_SOURCE" in set_position_block
+    minimized_state_block = source[
+        source.index("window.addEventListener('neko:idle-chat-minimized-state'"):
+        source.index("window.addEventListener('neko:idle-chat-compact-surface-state'")
+    ]
+    assert "_isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in minimized_state_block
+    assert "_isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in minimized_state_block
+    assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
     react_chat_source = (PROJECT_ROOT / "static" / "app-react-chat-window.js").read_text(encoding="utf-8")
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source
-    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force });" in react_chat_source
+    assert "electronCat1PairMovePendingReason" in react_chat_source
+    assert "scheduleElectronChatMinimizedState(reason);" in react_chat_source
+    assert "reason: detail.reason || detail.source || 'cat1-pair-move'" in react_chat_source
     assert "chatMode: chatTarget ? chatTarget.mode : 'solo'" in source
     assert "dy: moveVector.dy" in source
     assert '_setNekoIdleCat1PairMoveChatPosition' in source

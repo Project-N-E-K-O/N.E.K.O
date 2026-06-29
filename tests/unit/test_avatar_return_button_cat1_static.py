@@ -348,7 +348,7 @@ def test_cat1_external_chat_position_updates_interrupt_pair_move_for_retarget():
         "window.addEventListener('neko:idle-chat-compact-surface-state'",
         1,
     )[0]
-    assert "const pairMoveFeedback = !!(detail && detail.reason === 'cat1-pair-move');" in minimized_state_block
+    assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
     assert "if (pairMoveFeedback) return;" in minimized_state_block
     assert "_interruptNekoIdleCat1PairMoveForRetarget(button, currentState)" in minimized_state_block
 

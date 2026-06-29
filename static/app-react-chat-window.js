@@ -61,6 +61,7 @@
     var electronCat1PairMoveBoundsFrame = 0;
     var electronCat1PairMovePendingBounds = null;
     var electronCat1PairMovePendingForce = false;
+    var electronCat1PairMovePendingReason = '';
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
@@ -4764,6 +4765,9 @@
 
     async function applyElectronCat1PairMoveBounds(bounds, options) {
         var force = !!(options && options.force);
+        var reason = options && typeof options.reason === 'string' && options.reason
+            ? options.reason
+            : 'cat1-pair-move';
         if (isElectronLinuxRuntime() && !force) return;
         var targetBounds = electronRectToBounds(bounds);
         if (!targetBounds) return;
@@ -4776,7 +4780,7 @@
             } else {
                 bridge.setBounds(targetBounds.x, targetBounds.y, targetBounds.width, targetBounds.height);
             }
-            scheduleElectronChatMinimizedState('cat1-pair-move');
+            scheduleElectronChatMinimizedState(reason);
         } catch (_) {
             // A transient desktop move failure should not break the CAT1 animation loop.
         }
@@ -4784,18 +4788,27 @@
 
     function scheduleElectronCat1PairMoveBounds(bounds, options) {
         var force = !!(options && options.force);
+        var reason = options && typeof options.reason === 'string' && options.reason
+            ? options.reason
+            : (options && typeof options.source === 'string' && options.source ? options.source : 'cat1-pair-move');
         if (!isElectronChatWindow()) return;
         if (isElectronLinuxRuntime() && !force) return;
         electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
         electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;
+        electronCat1PairMovePendingReason = reason;
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
         electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
             var pendingBounds = electronCat1PairMovePendingBounds;
             var pendingForce = electronCat1PairMovePendingForce;
+            var pendingReason = electronCat1PairMovePendingReason || 'cat1-pair-move';
             electronCat1PairMovePendingBounds = null;
             electronCat1PairMovePendingForce = false;
+            electronCat1PairMovePendingReason = '';
             electronCat1PairMoveBoundsFrame = 0;
-            applyElectronCat1PairMoveBounds(pendingBounds, { force: pendingForce });
+            applyElectronCat1PairMoveBounds(pendingBounds, {
+                force: pendingForce,
+                reason: pendingReason
+            });
         });
     }
 
@@ -6812,7 +6825,10 @@
         window.addEventListener('neko:idle-chat-pair-move-bounds', function (event) {
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail) return;
-            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force });
+            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, {
+                force: !!detail.force,
+                reason: detail.reason || detail.source || 'cat1-pair-move'
+            });
         });
         window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', handleIdleCat1PlayYarnVisibility);

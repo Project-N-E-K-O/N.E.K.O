@@ -271,14 +271,16 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "runtime.platform === 'linux'" in source
     assert "electronCat1PairMoveBoundsFrame" in source
     assert "electronCat1PairMovePendingForce" in source
+    assert "electronCat1PairMovePendingReason" in source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in source
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in source
     assert "window.addEventListener('neko:idle-chat-pair-move-bounds'" in source
-    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, { force: !!detail.force })" in source
+    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, {" in source
+    assert "reason: detail.reason || detail.source || 'cat1-pair-move'" in source
     assert "if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;" in source
     assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
     assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
-    assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
+    assert "scheduleElectronChatMinimizedState(reason)" in source
 
     apply_block = _between(
         source,
@@ -286,6 +288,8 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
         "function scheduleElectronCat1PairMoveBounds(bounds, options) {",
     )
     assert "var force = !!(options && options.force);" in apply_block
+    assert "var reason = options && typeof options.reason === 'string' && options.reason" in apply_block
+    assert ": 'cat1-pair-move';" in apply_block
     assert "if (isElectronLinuxRuntime() && !force) return;" in apply_block
     assert "if (isElectronLinuxRuntime()) return;" not in apply_block
 
@@ -295,12 +299,16 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
         "function isElectronIdleDockCurrent(generation) {",
     )
     assert "var force = !!(options && options.force);" in schedule_block
+    assert "var reason = options && typeof options.reason === 'string' && options.reason" in schedule_block
     assert "if (isElectronLinuxRuntime() && !force) return;" in schedule_block
     assert "if (isElectronLinuxRuntime()) return;" not in schedule_block
     assert "electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;" in schedule_block
+    assert "electronCat1PairMovePendingReason = reason;" in schedule_block
     assert "var pendingForce = electronCat1PairMovePendingForce;" in schedule_block
+    assert "var pendingReason = electronCat1PairMovePendingReason || 'cat1-pair-move';" in schedule_block
     assert "electronCat1PairMovePendingForce = false;" in schedule_block
-    assert "applyElectronCat1PairMoveBounds(pendingBounds, { force: pendingForce });" in schedule_block
+    assert "electronCat1PairMovePendingReason = '';" in schedule_block
+    assert "reason: pendingReason" in schedule_block
 
 
 def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
