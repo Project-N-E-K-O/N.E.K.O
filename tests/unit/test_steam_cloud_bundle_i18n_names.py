@@ -2,6 +2,7 @@ import io
 import json
 import shutil
 import contextlib
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -28,6 +29,7 @@ from utils.steam_cloud_bundle import (
     download_cloudsave_bundle_from_steam,
     upload_cloudsave_bundle_to_steam,
 )
+import utils.steam_cloud_bundle as steam_cloud_bundle
 
 
 VALID_I18N_CASES = [
@@ -166,15 +168,67 @@ def test_download_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform
 
 
 @pytest.mark.unit
-def test_download_cloudsave_bundle_skips_on_windows_frozen_launch():
+def test_download_cloudsave_bundle_uses_bridge_on_windows_packaged_launch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
         "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch.object(sys, "frozen", True, create=True), patch(
+        "utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge
     ):
-        result = download_cloudsave_bundle_from_steam(object())
+        result = download_cloudsave_bundle_from_steam(cm)
 
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "not_source_launch"
+    assert result["reason"] == "cloud_disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "nuitka_marker",
+    ["module_compiled", "main_binary_dir"],
+)
+def test_download_cloudsave_bundle_uses_bridge_on_nuitka_packaged_launch(nuitka_marker: str, tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    marker_patches = [
+        patch.dict(steam_cloud_bundle.__dict__, {"__compiled__": True})
+        if nuitka_marker == "module_compiled"
+        else patch.object(sys.modules["__main__"], "__nuitka_binary_dir", str(tmp_path), create=True)
+    ]
+
+    with marker_patches[0], patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(cm)
+
+    assert observed["entered"] is True
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit
@@ -247,6 +301,144 @@ def test_download_cloudsave_bundle_continues_when_remote_meta_is_not_json_object
 
 
 @pytest.mark.unit
+def test_download_cloudsave_bundle_preserves_newer_local_autocloud_snapshot(tmp_path):
+    remote_cm = _make_config_manager(tmp_path / "remote")
+    local_cm = _make_config_manager(tmp_path / "local")
+    bootstrap_local_cloudsave_environment(remote_cm)
+    bootstrap_local_cloudsave_environment(local_cm)
+
+    _write_runtime_state(remote_cm, character_name="远端旧角色", recent_message="old remote")
+    remote_export = export_local_cloudsave_snapshot(remote_cm)
+    _write_runtime_state(local_cm, character_name="本地新角色", recent_message="new local")
+    local_export = export_local_cloudsave_snapshot(local_cm)
+
+    remote_manifest_path = remote_cm.cloudsave_dir / "manifest.json"
+    remote_manifest = json.loads(remote_manifest_path.read_text(encoding="utf-8"))
+    remote_manifest["exported_at_utc"] = "2026-01-01T00:00:00Z"
+    remote_manifest_path.write_text(json.dumps(remote_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    local_manifest_path = local_cm.cloudsave_dir / "manifest.json"
+    local_manifest = json.loads(local_manifest_path.read_text(encoding="utf-8"))
+    local_manifest["exported_at_utc"] = "2026-01-02T00:00:00Z"
+    local_manifest_path.write_text(json.dumps(local_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    bundle_path = tmp_path / "older_remote_bundle.zip"
+    _write_remote_bundle(bundle_path, remote_cm)
+    bundle_bytes = bundle_path.read_bytes()
+    remote_meta = {
+        "schema_version": 1,
+        "bundle_format": "zip",
+        "manifest_fingerprint": remote_export["manifest"]["fingerprint"],
+        "sequence_number": remote_export["manifest"]["sequence_number"],
+        "exported_at_utc": "2026-01-01T00:00:00Z",
+        "file_count": len(remote_export["manifest"]["files"]),
+    }
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            return True
+
+        def file_exists(self, filename):
+            return filename in {REMOTE_META_FILENAME, REMOTE_BUNDLE_FILENAME}
+
+        def read_file(self, filename):
+            if filename == REMOTE_META_FILENAME:
+                return json.dumps(remote_meta, ensure_ascii=False).encode("utf-8")
+            if filename == REMOTE_BUNDLE_FILENAME:
+                return bundle_bytes
+            raise FileNotFoundError(filename)
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(local_cm)
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "local_snapshot_newer_or_equal"
+    assert json.loads((local_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))[
+        "fingerprint"
+    ] == local_export["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
+def test_download_cloudsave_bundle_repairs_damaged_newer_local_autocloud_snapshot(tmp_path):
+    remote_cm = _make_config_manager(tmp_path / "remote")
+    local_cm = _make_config_manager(tmp_path / "local")
+    bootstrap_local_cloudsave_environment(remote_cm)
+    bootstrap_local_cloudsave_environment(local_cm)
+
+    _write_runtime_state(remote_cm, character_name="远端健康角色", recent_message="healthy remote")
+    remote_export = export_local_cloudsave_snapshot(remote_cm)
+    _write_runtime_state(local_cm, character_name="本地损坏角色", recent_message="damaged local")
+    local_export = export_local_cloudsave_snapshot(local_cm)
+
+    remote_manifest_path = remote_cm.cloudsave_dir / "manifest.json"
+    remote_manifest = json.loads(remote_manifest_path.read_text(encoding="utf-8"))
+    remote_manifest["exported_at_utc"] = "2026-01-01T00:00:00Z"
+    remote_manifest_path.write_text(json.dumps(remote_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    local_manifest_path = local_cm.cloudsave_dir / "manifest.json"
+    local_manifest = json.loads(local_manifest_path.read_text(encoding="utf-8"))
+    local_manifest["exported_at_utc"] = "2026-01-02T00:00:00Z"
+    local_manifest_path.write_text(json.dumps(local_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    damaged_relative_path = next(
+        relative_path
+        for relative_path in local_export["manifest"]["files"].keys()
+        if relative_path in remote_export["manifest"]["files"]
+    )
+    (local_cm.cloudsave_dir / damaged_relative_path).write_text("damaged payload", encoding="utf-8")
+
+    bundle_path = tmp_path / "healthy_remote_bundle.zip"
+    _write_remote_bundle(bundle_path, remote_cm)
+    bundle_bytes = bundle_path.read_bytes()
+    remote_meta = {
+        "schema_version": 1,
+        "bundle_format": "zip",
+        "manifest_fingerprint": remote_export["manifest"]["fingerprint"],
+        "sequence_number": remote_export["manifest"]["sequence_number"],
+        "exported_at_utc": "2026-01-01T00:00:00Z",
+        "file_count": len(remote_export["manifest"]["files"]),
+    }
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            return True
+
+        def file_exists(self, filename):
+            return filename in {REMOTE_META_FILENAME, REMOTE_BUNDLE_FILENAME}
+
+        def read_file(self, filename):
+            if filename == REMOTE_META_FILENAME:
+                return json.dumps(remote_meta, ensure_ascii=False).encode("utf-8")
+            if filename == REMOTE_BUNDLE_FILENAME:
+                return bundle_bytes
+            raise FileNotFoundError(filename)
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(local_cm)
+
+    assert result["success"] is True
+    assert result["action"] == "downloaded"
+    assert json.loads((local_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))[
+        "fingerprint"
+    ] == remote_export["manifest"]["fingerprint"]
+    assert (local_cm.cloudsave_dir / damaged_relative_path).read_bytes() == (
+        remote_cm.cloudsave_dir / damaged_relative_path
+    ).read_bytes()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
 def test_upload_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_name: str, tmp_path):
     cm = _make_config_manager(tmp_path / platform_name)
@@ -276,20 +468,127 @@ def test_upload_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_n
 
 
 @pytest.mark.unit
-def test_upload_cloudsave_bundle_skips_on_windows_frozen_launch(tmp_path):
+def test_upload_cloudsave_bundle_wraps_bundle_and_meta_writes_in_batch(tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="批量上传角色", recent_message="batch")
+    export_local_cloudsave_snapshot(cm)
+
+    class _BatchBridge:
+        def __init__(self):
+            self.storage = {}
+            self.events = []
+
+        def cloud_enabled(self):
+            return True
+
+        def begin_file_write_batch(self):
+            self.events.append("begin")
+            return True
+
+        def end_file_write_batch(self):
+            self.events.append("end")
+            return True
+
+        def file_exists(self, remote_name):
+            return remote_name in self.storage
+
+        def read_file(self, remote_name):
+            return self.storage[remote_name]
+
+        def write_file(self, remote_name, payload):
+            self.events.append(f"write:{remote_name}")
+            self.storage[remote_name] = payload
+
+        def delete_file(self, remote_name):
+            self.events.append(f"delete:{remote_name}")
+            self.storage.pop(remote_name, None)
+            return True
+
+    bridge = _BatchBridge()
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield bridge
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = upload_cloudsave_bundle_to_steam(cm)
+
+    assert result["action"] == "uploaded"
+    assert bridge.events[0] == "begin"
+    assert bridge.events[-1] == "end"
+    assert f"write:{REMOTE_BUNDLE_FILENAME}" in bridge.events
+    assert f"write:{REMOTE_META_FILENAME}" in bridge.events
+
+
+@pytest.mark.unit
+def test_upload_cloudsave_bundle_uses_bridge_on_windows_packaged_launch(tmp_path):
     cm = _make_config_manager(tmp_path / "target")
     bootstrap_local_cloudsave_environment(cm)
     _write_runtime_state(cm, character_name="冻结上传角色", recent_message="hello")
     export_local_cloudsave_snapshot(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
 
     with patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
         "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch.object(sys, "frozen", True, create=True), patch(
+        "utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge
     ):
         result = upload_cloudsave_bundle_to_steam(cm)
 
+    assert observed["entered"] is True
     assert result["success"] is True
     assert result["action"] == "skipped"
-    assert result["reason"] == "not_source_launch"
+    assert result["reason"] == "cloud_disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "nuitka_marker",
+    ["module_compiled", "main_binary_dir"],
+)
+def test_upload_cloudsave_bundle_uses_bridge_on_nuitka_packaged_launch(nuitka_marker: str, tmp_path):
+    cm = _make_config_manager(tmp_path / "target")
+    bootstrap_local_cloudsave_environment(cm)
+    _write_runtime_state(cm, character_name="Nuitka上传角色", recent_message="hello")
+    export_local_cloudsave_snapshot(cm)
+    observed = {"entered": False}
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            observed["entered"] = True
+            return False
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    marker_patches = [
+        patch.dict(steam_cloud_bundle.__dict__, {"__compiled__": True})
+        if nuitka_marker == "module_compiled"
+        else patch.object(sys.modules["__main__"], "__nuitka_binary_dir", str(tmp_path), create=True)
+    ]
+
+    with marker_patches[0], patch("utils.steam_cloud_bundle.is_source_launch", return_value=False), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = upload_cloudsave_bundle_to_steam(cm)
+
+    assert observed["entered"] is True
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert result["reason"] == "cloud_disabled"
 
 
 @pytest.mark.unit

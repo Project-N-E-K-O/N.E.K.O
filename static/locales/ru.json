@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Чат",
+        "topicHint": "Кажется, {{author}} хочет о чём-то поговорить…",
         "viewerTitle": "Чат (Режим просмотра)",
         "tooltip": "Область чата",
         "textInputPlaceholder": "Нажмите Enter для отправки, Shift+Enter для новой строки",

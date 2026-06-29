@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Chat",
+        "topicHint": "{{author}} seems to have something they'd like to chat about…",
         "viewerTitle": "Chat (Viewer Mode)",
         "tooltip": "Chat Area",
         "textInputPlaceholder": "Press Enter to send, Shift+Enter for new line",

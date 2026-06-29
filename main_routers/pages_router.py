@@ -45,6 +45,9 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 ))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/tutorial-styles.css",
+    _PROJECT_ROOT / "static/libs/driver.min.css",
+    _PROJECT_ROOT / "static/libs/driver.min.js",
     _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
@@ -234,7 +237,8 @@ async def live2d_parameter_editor(request: Request):
     """Live2D parameter editor page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -291,7 +295,10 @@ async def mmd_emotion_manager(request: Request):
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/voice_clone.html", {"request": request})
+    return templates.TemplateResponse("templates/voice_clone.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/api_key", response_class=HTMLResponse)

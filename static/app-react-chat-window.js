@@ -18,7 +18,8 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
-    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
     // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
     // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
     // instead of the active compact yarn ball. Strictly gated on the restorable
@@ -5447,6 +5448,7 @@
             ballIcon.src = legacyFull
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            ballIcon.srcset = legacyFull ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
         }
         var shell = getShell();
         if (shell) {
@@ -5463,9 +5465,11 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = isLegacyFullMinimizedBall()
+            var legacyFullIcon = isLegacyFullMinimizedBall();
+            icon.src = legacyFullIcon
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            icon.srcset = legacyFullIcon ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();

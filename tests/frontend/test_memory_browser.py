@@ -11,6 +11,14 @@ def _request_json(route):
     return post_data_json() if callable(post_data_json) else post_data_json
 
 
+def _assert_tutorial_reset_notice(page: Page, message: str) -> None:
+    notice = page.locator(".tutorial-reset-notice-backdrop")
+    expect(notice).to_be_visible()
+    expect(page.locator(".tutorial-reset-notice-message")).to_have_text(message)
+    page.locator(".tutorial-reset-notice-ok").click()
+    expect(notice).to_have_count(0)
+
+
 @pytest.fixture
 def seed_memory_file(clean_user_data_dir, running_server):
     """Create a seed memory file in the test memory directory."""
@@ -218,18 +226,59 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
         and r.request.method == "POST"
         and r.status == 200
     ):
-        with mock_page.expect_event("dialog") as dialog_info:
-            mock_page.locator("#tutorial-reset-btn").click()
-
-    dialog = dialog_info.value
-    dialog_messages = [dialog.message]
-    dialog.accept()
+        mock_page.locator("#tutorial-reset-btn").click()
 
     assert request_log == [{
         "url": f"{running_server}/api/characters/persona-reselect-current",
         "method": "POST",
     }]
-    assert dialog_messages == ["已记录当前角色的性格重选请求，请回到主页刷新后继续。"]
+    _assert_tutorial_reset_notice(mock_page, "已记录当前角色的性格重选请求，请回到主页刷新后继续。")
+
+
+@pytest.mark.frontend
+def test_memory_browser_reset_notice_replaces_open_notice_without_pending_promise(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_function("typeof window.showTutorialResetNotice === 'function'")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const first = window.showTutorialResetNotice('First message');
+            const second = window.showTutorialResetNotice('Second message');
+            const firstResult = await Promise.race([
+                first,
+                new Promise((resolve) => window.setTimeout(() => resolve('timeout'), 250)),
+            ]);
+            const visibleNotices = document.querySelectorAll('.tutorial-reset-notice-backdrop').length;
+            const message = document.querySelector('.tutorial-reset-notice-message')?.textContent || '';
+            document.querySelector('.tutorial-reset-notice-ok')?.click();
+            const secondResult = await Promise.race([
+                second,
+                new Promise((resolve) => window.setTimeout(() => resolve('timeout'), 500)),
+            ]);
+            return {
+                firstResult,
+                secondResult,
+                visibleNotices,
+                message,
+                remainingNotices: document.querySelectorAll('.tutorial-reset-notice-backdrop').length,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "firstResult": False,
+        "secondResult": True,
+        "visibleNotices": 1,
+        "message": "Second message",
+        "remainingNotices": 0,
+    }
 
 
 @pytest.mark.frontend
@@ -307,8 +356,6 @@ def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
     expect(mock_page.locator(".tutorial-cascader-popup")).to_be_hidden()
     expect(mock_page.locator("#tutorial-reset-btn")).to_be_enabled()
 
-    dialog_messages = []
-    mock_page.once("dialog", lambda dialog: (dialog_messages.append(dialog.message), dialog.accept()))
     mock_page.locator("#tutorial-reset-btn").click()
     mock_page.wait_for_function("window.__tutorialResetCalls.length === 2")
 
@@ -316,7 +363,7 @@ def test_memory_browser_home_all_reset_restarts_avatar_guide_from_day_one(
         {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
         {"type": "prompt", "reason": "memory_browser_home_all_reset"},
     ]
-    assert dialog_messages == ["已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。"]
+    _assert_tutorial_reset_notice(mock_page, "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。")
 
 
 @pytest.mark.frontend
@@ -401,17 +448,15 @@ def test_memory_browser_home_all_reset_falls_back_to_prompt_reset_api_without_ma
     mock_page.locator(".tutorial-cascader-option[data-tutorial-home-all='true']").click()
 
     with mock_page.expect_response("**/api/tutorial-prompt/reset"):
-        with mock_page.expect_event("dialog") as dialog_info:
-            mock_page.locator("#tutorial-reset-btn").click()
+        mock_page.locator("#tutorial-reset-btn").click()
 
-    dialog = dialog_info.value
-    dialog.accept()
     mock_page.wait_for_function("window.__tutorialResetCalls.length === 1")
 
     assert mock_page.evaluate("window.__tutorialResetCalls") == [
         {"type": "avatar", "options": {"source": "memory_browser_reset_home_all"}},
     ]
     assert prompt_reset_payloads == [{"reason": "memory_browser_home_all_reset"}]
+    _assert_tutorial_reset_notice(mock_page, "已重置主页 7 天新手教程，请重新加载 Neko 后从第 1 天开始。")
 
 
 @pytest.mark.frontend

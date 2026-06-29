@@ -310,6 +310,10 @@
             '已重置第 {{day}} 天新手教程，请刷新 Neko 后启动。',
             { day }
         );
+        if (typeof window.showTutorialResetNotice === 'function') {
+            void window.showTutorialResetNotice(message);
+            return;
+        }
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(message, 2500, { priority: 1 });
             return;
@@ -335,13 +339,16 @@
                     });
                 } catch (error) {
                     console.error('[AvatarFloatingGuideReset] 重置失败:', error);
-                    if (typeof window.showStatusToast === 'function') {
+                    const message = translateResetMessage(
+                        'tutorial.reset.dayFailed',
+                        '新手教程重置失败，请稍后再试。',
+                        { day }
+                    );
+                    if (typeof window.showTutorialResetNotice === 'function') {
+                        void window.showTutorialResetNotice(message, { variant: 'error' });
+                    } else if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
-                            translateResetMessage(
-                                'tutorial.reset.dayFailed',
-                                '新手教程重置失败，请稍后再试。',
-                                { day }
-                            ),
+                            message,
                             3000,
                             { priority: 2 }
                         );

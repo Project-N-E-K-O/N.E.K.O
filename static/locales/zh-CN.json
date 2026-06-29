@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "对话",
+        "topicHint": "{{author}}好像有点想找你聊的话题…",
         "viewerTitle": "对话 (观看模式)",
         "tooltip": "对话区",
         "textInputPlaceholder": "回车发送，Shift+回车换行",
