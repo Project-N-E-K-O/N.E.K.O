@@ -8,6 +8,7 @@
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js"></script>
     <style>
         :root {
             color-scheme: light;
@@ -633,7 +634,7 @@
                         <span id="themeToggleText">主题切换</span>
                     </button>
                     <button id="minimizeGuideBtn" class="guide-action-btn" type="button">
-                        <span aria-hidden="true">-</span>
+                        <span aria-hidden="true">&minus;</span>
                         <span data-guide-common="minimize">最小化</span>
                     </button>
                     <button id="closeGuideBtn" class="guide-action-btn" type="button">
@@ -1216,12 +1217,13 @@
             }
 
             function initializeMinimizeButton() {
-                minimizeGuideBtn.addEventListener('click', () => {
+                minimizeGuideBtn.addEventListener('click', async () => {
                     const controller = window.nekoWindowControl;
-                    if (controller && typeof controller.minimize === 'function') {
-                        Promise.resolve(controller.minimize()).catch((error) => {
-                            console.warn('[OpenClawGuide] Failed to minimize guide window:', error);
-                        });
+                    if (!controller || typeof controller.minimize !== 'function') return;
+                    try {
+                        await controller.minimize();
+                    } catch (error) {
+                        console.warn('[OpenClawGuide] Failed to minimize guide window:', error);
                     }
                 });
             }
