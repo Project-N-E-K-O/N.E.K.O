@@ -9713,6 +9713,10 @@ async function destroyLive2DPreviewContext() {
             manager._displayChangeHandler = null;
         }
 
+        if (typeof manager._stopIdleFpsGovernor === 'function') {
+            manager._stopIdleFpsGovernor();
+        }
+
         if (manager.pixi_app && typeof manager.pixi_app.destroy === 'function') {
             try {
                 manager.pixi_app.destroy(true);
