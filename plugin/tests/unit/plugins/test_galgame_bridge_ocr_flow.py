@@ -2926,11 +2926,21 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
         process_name="chrome.exe",
         pid=1500,
     )
+    excluded_plugin_ui_window = DetectedGameWindow(
+        hwnd=303,
+        title="Galgame Play Assistant",
+        process_name="electron.exe",
+        pid=1600,
+    )
     plugin._ocr_reader_manager = OcrReaderManager(
         logger=plugin.logger,
         config=plugin._cfg,
         platform_fn=lambda: True,
-        window_scanner=lambda: [eligible_window, excluded_window],
+        window_scanner=lambda: [
+            eligible_window,
+            excluded_window,
+            excluded_plugin_ui_window,
+        ],
         capture_backend=_FakeCaptureBackend(),
         ocr_backend=_FakeOcrBackend(),
     )
@@ -2939,9 +2949,16 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
     assert isinstance(listed, Ok)
     assert listed.value["candidate_count"] == 1
-    assert listed.value["excluded_candidate_count"] == 1
+    assert listed.value["excluded_candidate_count"] == 2
     assert listed.value["windows"][0]["window_key"] == eligible_window.window_key
-    assert listed.value["excluded_windows"][0]["exclude_reason"] == "excluded_self_window"
+    excluded_by_key = {
+        item["window_key"]: item for item in listed.value["excluded_windows"]
+    }
+    assert excluded_by_key[excluded_window.window_key]["exclude_reason"] == "excluded_self_window"
+    assert (
+        excluded_by_key[excluded_plugin_ui_window.window_key]["exclude_reason"]
+        == "excluded_self_window"
+    )
 
     saved = await plugin.galgame_set_ocr_window_target(window_key=eligible_window.window_key)
 
@@ -2959,6 +2976,13 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
     assert isinstance(rejected, Err)
     assert "excluded OCR window" in str(rejected.error)
+
+    rejected_plugin_ui = await plugin.galgame_set_ocr_window_target(
+        window_key=excluded_plugin_ui_window.window_key
+    )
+
+    assert isinstance(rejected_plugin_ui, Err)
+    assert "excluded OCR window" in str(rejected_plugin_ui.error)
 
     cleared = await plugin.galgame_set_ocr_window_target(clear=True)
 

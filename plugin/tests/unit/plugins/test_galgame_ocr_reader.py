@@ -18,6 +18,7 @@ from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
 from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
+from plugin.plugins.galgame_plugin import dialogue_library as galgame_dialogue_library
 from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as galgame_printwindow_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
@@ -386,6 +387,31 @@ def _window() -> list[DetectedGameWindow]:
             pid=4242,
         )
     ]
+
+
+def test_senren_banka_dialogue_library_matches_starter_line_with_minor_ocr_error() -> None:
+    match = galgame_dialogue_library.match_dialogue_library_for_target(
+        "这是千恋万花台词库的开发者占位句。",
+        process_name="SenrenBanka.exe",
+        normalized_title="千恋＊万花",
+    )
+
+    assert match is not None
+    assert match.game_id == galgame_dialogue_library.SENREN_BANKA_GAME_ID
+    assert match.line_id == "starter:001"
+    assert match.text == "这是千恋万花台词库的开发者占位行。"
+    assert match.score >= 0.9
+
+
+def test_dialogue_library_does_not_match_unrelated_game_target() -> None:
+    assert (
+        galgame_dialogue_library.match_dialogue_library_for_target(
+            "这是千恋万花台词库的开发者占位句。",
+            process_name="DemoGame.exe",
+            normalized_title="Demo Window",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -4282,6 +4308,47 @@ async def test_ocr_reader_runtime_exposes_stable_text_tracker(
     assert result.runtime["stable_ocr_block_reason"] == "waiting_for_repeat"
 
 
+@pytest.mark.asyncio
+async def test_ocr_reader_senren_banka_dialogue_library_confirms_matched_line_immediately(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=101,
+                title="千恋＊万花",
+                process_name="SenrenBanka.exe",
+                pid=28828,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["这是千恋万花台词库的开发者占位句。"]),
+    )
+
+    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+    session = read_session_json(bridge_root / result.runtime["game_id"] / "session.json").session
+
+    assert result.runtime["detail"] == "receiving_text"
+    assert result.runtime["last_observed_line"]["text"] == "这是千恋万花台词库的开发者占位行。"
+    assert result.runtime["last_stable_line"]["text"] == "这是千恋万花台词库的开发者占位行。"
+    assert result.runtime["stable_ocr_stable_text"] == "这是千恋万花台词库的开发者占位行。"
+    assert result.runtime["stable_ocr_block_reason"] == ""
+    assert session is not None
+    assert session["state"]["text"] == "这是千恋万花台词库的开发者占位行。"
+
+
 def test_ocr_reader_starts_foreground_advance_monitor_for_real_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6800,6 +6867,54 @@ async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_
     assert result.runtime["candidate_count"] == 0
     assert result.runtime["excluded_candidate_count"] == 1
     assert result.runtime["last_exclude_reason"] == "excluded_self_window"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Galgame Play Assistant",
+        "Galgame 游玩助手",
+        "Galgame 遊玩助手",
+        "Galgame プレイアシスタント",
+        "Galgame 플레이 도우미",
+        "Помощник для Galgame",
+    ],
+)
+def test_ocr_window_inventory_excludes_galgame_plugin_ui_titles(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+    title: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=303,
+                title=title,
+                process_name="electron.exe",
+                pid=1600,
+                width=1280,
+                height=900,
+                area=1280 * 900,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    eligible, excluded = manager._scan_window_inventory()
+
+    assert eligible == []
+    assert len(excluded) == 1
+    assert excluded[0].exclude_reason == "excluded_self_window"
 
 
 @pytest.mark.asyncio
