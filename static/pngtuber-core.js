@@ -2032,8 +2032,10 @@
             });
             this._uiWindowHandlers.push({ event: 'resize', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'orientationchange', handler: scheduleLayout, target: window });
+            this._uiWindowHandlers.push({ event: 'neko:yui-guide-floating-toolbar-suppression-change', handler: scheduleLayout, target: window });
             window.addEventListener('resize', scheduleLayout);
             window.addEventListener('orientationchange', scheduleLayout);
+            window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', scheduleLayout);
             if (this.image) {
                 this.image.addEventListener('load', scheduleLayout);
                 this._uiWindowHandlers.push({ event: 'load', handler: scheduleLayout, target: this.image });
