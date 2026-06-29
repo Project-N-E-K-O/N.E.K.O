@@ -863,8 +863,13 @@ def test_status_payload_exposes_developer_managed_dialogue_library_status(
     assert library_status["editable"] is False
     assert library_status["active_game_id"] == "senren_banka"
     assert library_status["total_line_count"] >= 1
-    assert library_status["packs"][0]["source"] == "developer_builtin"
-    assert library_status["packs"][0]["matches_target"] is True
+    active_pack = next(
+        pack
+        for pack in library_status["packs"]
+        if pack["game_id"] == library_status["active_game_id"]
+    )
+    assert active_pack["source"] == "developer_builtin"
+    assert active_pack["matches_target"] is True
 
 
 def test_status_payload_exposes_vision_classifier_runtime(

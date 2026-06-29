@@ -154,8 +154,11 @@ def load_dialogue_library(path: Path) -> DialogueLibrary:
     lines: list[DialogueLibraryLine] = []
     for index, raw_line in enumerate(raw_lines, start=1):
         line = _coerce_dialogue_line(raw_line, game_id=game_id, fallback_index=index)
-        if line is not None:
-            lines.append(line)
+        if line is None:
+            raise ValueError(
+                f"invalid dialogue library line #{index} for game_id={game_id}: {path}"
+            )
+        lines.append(line)
     return DialogueLibrary(game_id=game_id, title=title, lines=lines)
 
 

@@ -65,6 +65,7 @@ from ..context_builder.builder import (
 )
 from ..dialogue_library import built_in_dialogue_library_status
 from ..dxcam_support import inspect_dxcam_installation
+from ..ocr_text_normalize import _normalize_window_title
 from ..reader import expand_bridge_root, normalize_text, read_session_json
 from plugin.plugins._shared.rapidocr.rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
@@ -2565,10 +2566,12 @@ def _build_status_payload_unchecked(
                 or ocr_runtime_obj.get("process_name")
                 or ""
             ),
-            normalized_title=str(
-                ocr_runtime_obj.get("effective_window_title")
-                or ocr_runtime_obj.get("window_title")
-                or ""
+            normalized_title=_normalize_window_title(
+                str(
+                    ocr_runtime_obj.get("effective_window_title")
+                    or ocr_runtime_obj.get("window_title")
+                    or ""
+                )
             ),
         ),
         "screen_type": str(getattr(state, "screen_type", "") or ""),

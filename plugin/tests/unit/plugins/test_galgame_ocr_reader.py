@@ -389,26 +389,89 @@ def _window() -> list[DetectedGameWindow]:
     ]
 
 
-def test_senren_banka_dialogue_library_matches_starter_line_with_minor_ocr_error() -> None:
+def _write_senren_banka_dialogue_library(
+    library_dir: Path,
+    *,
+    line_id: str = "fixture:001",
+    text: str = "这是千恋万花台词库的开发者测试行。",
+    aliases: list[str] | None = None,
+) -> Path:
+    library_dir.mkdir(parents=True, exist_ok=True)
+    (library_dir / "senren_banka.json").write_text(
+        json.dumps(
+            {
+                "game_id": galgame_dialogue_library.SENREN_BANKA_GAME_ID,
+                "title": "千恋＊万花",
+                "lines": [
+                    {
+                        "id": line_id,
+                        "text": text,
+                        "aliases": aliases or [],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    galgame_dialogue_library._load_dialogue_library_cached.cache_clear()
+    return library_dir
+
+
+def test_senren_banka_dialogue_library_matches_fixture_line_with_minor_ocr_error(
+    tmp_path: Path,
+) -> None:
+    expected_line_id = "fixture:ocr-fuzzy"
+    expected_text = "这是千恋万花台词库的开发者测试行。"
+    library_dir = _write_senren_banka_dialogue_library(
+        tmp_path / "dialogue_libraries",
+        line_id=expected_line_id,
+        text=expected_text,
+    )
+
     match = galgame_dialogue_library.match_dialogue_library_for_target(
-        "这是千恋万花台词库的开发者占位句。",
+        "这是千恋万花台词库的开发者测试句。",
         process_name="SenrenBanka.exe",
         normalized_title="千恋＊万花",
+        library_dir=library_dir,
     )
 
     assert match is not None
     assert match.game_id == galgame_dialogue_library.SENREN_BANKA_GAME_ID
-    assert match.line_id == "starter:001"
-    assert match.text == "这是千恋万花台词库的开发者占位行。"
+    assert match.line_id == expected_line_id
+    assert match.text == expected_text
     assert match.score >= 0.9
 
 
-def test_dialogue_library_does_not_match_unrelated_game_target() -> None:
+def test_dialogue_library_rejects_invalid_line(tmp_path: Path) -> None:
+    library_dir = tmp_path / "dialogue_libraries"
+    library_dir.mkdir()
+    path = library_dir / "senren_banka.json"
+    path.write_text(
+        json.dumps(
+            {
+                "game_id": galgame_dialogue_library.SENREN_BANKA_GAME_ID,
+                "title": "千恋＊万花",
+                "lines": [{"id": "fixture:bad", "text": ""}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"line #1.*game_id=senren_banka"):
+        galgame_dialogue_library.load_dialogue_library(path)
+
+
+def test_dialogue_library_does_not_match_unrelated_game_target(tmp_path: Path) -> None:
+    library_dir = _write_senren_banka_dialogue_library(tmp_path / "dialogue_libraries")
+
     assert (
         galgame_dialogue_library.match_dialogue_library_for_target(
-            "这是千恋万花台词库的开发者占位句。",
+            "这是千恋万花台词库的开发者测试句。",
             process_name="DemoGame.exe",
             normalized_title="Demo Window",
+            library_dir=library_dir,
         )
         is None
     )
@@ -4312,9 +4375,19 @@ async def test_ocr_reader_runtime_exposes_stable_text_tracker(
 async def test_ocr_reader_senren_banka_dialogue_library_confirms_matched_line_immediately(
     tmp_path: Path,
     ocr_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
+    expected_text = "这是千恋万花台词库的开发者测试行。"
+    observed_text = "这是千恋万花台词库的开发者测试句。"
+    library_dir = _write_senren_banka_dialogue_library(
+        tmp_path / "dialogue_libraries",
+        line_id="fixture:ocr-runtime",
+        text=expected_text,
+    )
+    monkeypatch.setattr(galgame_dialogue_library, "_DEFAULT_LIBRARY_DIR", library_dir)
+    galgame_dialogue_library._load_dialogue_library_cached.cache_clear()
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -4333,7 +4406,7 @@ async def test_ocr_reader_senren_banka_dialogue_library_confirms_matched_line_im
             )
         ],
         capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(["这是千恋万花台词库的开发者占位句。"]),
+        ocr_backend=_FakeOcrBackend([observed_text]),
     )
 
     result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
@@ -4341,12 +4414,12 @@ async def test_ocr_reader_senren_banka_dialogue_library_confirms_matched_line_im
     session = read_session_json(bridge_root / result.runtime["game_id"] / "session.json").session
 
     assert result.runtime["detail"] == "receiving_text"
-    assert result.runtime["last_observed_line"]["text"] == "这是千恋万花台词库的开发者占位行。"
-    assert result.runtime["last_stable_line"]["text"] == "这是千恋万花台词库的开发者占位行。"
-    assert result.runtime["stable_ocr_stable_text"] == "这是千恋万花台词库的开发者占位行。"
+    assert result.runtime["last_observed_line"]["text"] == expected_text
+    assert result.runtime["last_stable_line"]["text"] == expected_text
+    assert result.runtime["stable_ocr_stable_text"] == expected_text
     assert result.runtime["stable_ocr_block_reason"] == ""
     assert session is not None
-    assert session["state"]["text"] == "这是千恋万花台词库的开发者占位行。"
+    assert session["state"]["text"] == expected_text
 
 
 def test_ocr_reader_starts_foreground_advance_monitor_for_real_runtime(

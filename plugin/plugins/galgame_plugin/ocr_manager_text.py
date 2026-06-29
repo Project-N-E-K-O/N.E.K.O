@@ -550,7 +550,9 @@ class TextMixin:
         normalized_title = (
             str(target.normalized_title or "")
             if target is not None
-            else str(self._runtime.effective_window_title or self._runtime.window_title or "")
+            else _normalize_window_title(
+                str(self._runtime.effective_window_title or self._runtime.window_title or "")
+            )
         )
         return _match_dialogue_library_for_target(
             cleaned_text,
