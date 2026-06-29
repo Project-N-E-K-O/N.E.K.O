@@ -941,7 +941,7 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                this._floatingButtonsContainer.style.display = this.isLocked ? 'none' : 'flex';
+                this._floatingButtonsContainer.style.display = this.isLocked || isYuiGuideFloatingToolbarSuppressed() ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
                 this.updateLockIconPosition();
@@ -1196,6 +1196,12 @@
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
+            if (isYuiGuideFloatingToolbarSuppressed()) {
+                lockIcon.style.display = 'none';
+                lockIcon.style.visibility = 'hidden';
+                lockIcon.style.opacity = '0';
+                return;
+            }
             const image = this.image || (this.ensureContainer() && this.image);
             const rect = image ? image.getBoundingClientRect() : null;
             if (!rect || rect.width <= 0 || rect.height <= 0) {
@@ -1209,6 +1215,7 @@
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, window.innerWidth - 40))}px`;
             lockIcon.style.top = `${Math.max(0, Math.min(targetY, window.innerHeight - 40))}px`;
             lockIcon.style.display = 'block';
+            lockIcon.style.visibility = 'visible';
 
             const lockRect = lockIcon.getBoundingClientRect();
             let isOverlapped = false;
@@ -1831,6 +1838,13 @@
         PNGTuberManager.prototype._pngtuberAvatarUiApplied = true;
     }
 
+    function isYuiGuideFloatingToolbarSuppressed() {
+        return !!(
+            window.isNekoYuiGuideFloatingToolbarSuppressed
+            && window.isNekoYuiGuideFloatingToolbarSuppressed()
+        );
+    }
+
     function installPNGTuberFloatingButtons() {
         applyPNGTuberAvatarUiMixins();
         if (typeof PNGTuberManager.prototype.setupFloatingButtonsBase !== 'function') return;
@@ -1846,6 +1860,13 @@
             this._buttonConfigs = this.getDefaultButtonConfigs();
 
             this.updateFloatingButtonsPosition = () => {
+                if (isYuiGuideFloatingToolbarSuppressed()) {
+                    buttonsContainer.style.display = 'none';
+                    buttonsContainer.style.visibility = 'hidden';
+                    buttonsContainer.style.opacity = '0';
+                    this.updateLockIconPosition();
+                    return;
+                }
                 if (this._isInReturnState) {
                     buttonsContainer.style.display = 'none';
                     return;

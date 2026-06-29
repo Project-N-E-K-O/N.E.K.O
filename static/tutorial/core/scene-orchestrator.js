@@ -255,6 +255,9 @@
             const previousSceneId = director.currentSceneId;
             director.currentSceneId = scene.id;
             director.currentStep = director.getAvatarFloatingInterruptStep(scene);
+            if (typeof director.syncAvatarFloatingToolbarForScene === 'function') {
+                director.syncAvatarFloatingToolbarForScene(scene, scene.id || 'scene');
+            }
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = !!(
                 director.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
@@ -540,6 +543,7 @@
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
                 const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
                 const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
+                const day5CharacterSettingsPersistentTarget = director.getDay5CharacterSettingsPersistenceTarget(scene.id);
                 const highlightConfig = {
                     key: scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
@@ -551,6 +555,9 @@
                 }
                 if (typeof day4SettingsPersistentTarget !== 'undefined') {
                     highlightConfig.persistent = day4SettingsPersistentTarget;
+                }
+                if (typeof day5CharacterSettingsPersistentTarget !== 'undefined') {
+                    highlightConfig.persistent = day5CharacterSettingsPersistentTarget;
                 }
                 director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 director.applyGuideHighlights(highlightConfig);
@@ -670,6 +677,7 @@
             }
             const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
             const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
+            const day5CharacterSettingsPersistentTarget = director.getDay5CharacterSettingsPersistenceTarget(scene.id);
             const highlightConfig = {
                 key: scene.id,
                 persistent: persistentTarget,
@@ -681,6 +689,9 @@
             }
             if (typeof day4SettingsPersistentTarget !== 'undefined') {
                 highlightConfig.persistent = day4SettingsPersistentTarget;
+            }
+            if (typeof day5CharacterSettingsPersistentTarget !== 'undefined') {
+                highlightConfig.persistent = day5CharacterSettingsPersistentTarget;
             }
             director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
             director.applyGuideHighlights(highlightConfig);
@@ -751,23 +762,9 @@
 
         async applySettledCleanupHighlight(scene) {
             const director = this.director;
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
-            const highlightConfig = {
-                key: scene.id + '-settled',
-                persistent: await director.resolveAvatarFloatingPersistent(scene, {
-                    fallbackToChatWindow: false
-                }),
-                primary: await director.resolveAvatarFloatingTarget(scene, 'primary'),
-                secondary: await director.resolveAvatarFloatingTarget(scene, 'secondary')
-            };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingSettledCleanupHighlight === 'function') {
+                await director.applyAvatarFloatingSettledCleanupHighlight(scene);
             }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
-            }
-            director.applyGuideHighlights(highlightConfig);
         }
 
         async finishGenericScene(scene, index, total, context, narration, playback) {
@@ -951,6 +948,9 @@
                     director.overlay.clearPersistentSpotlight();
                     director.overlay.clearActionSpotlight();
                     director.cursor.hide();
+                    if (typeof director.setAvatarFloatingToolbarVisible === 'function') {
+                        director.setAvatarFloatingToolbarVisible(true, 'round-complete');
+                    }
                     if (!director.destroyed) {
                         director.setTutorialTakingOver(false);
                     }

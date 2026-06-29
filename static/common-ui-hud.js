@@ -723,6 +723,12 @@ window.AgentHUD.createAgentTaskHUD = function () {
         try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
     });
 
+    hud._setAgentTaskHudCollapsed = (collapsed) => {
+        hudCollapsed = collapsed === true;
+        applyHudCollapsed(hudCollapsed);
+        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
+    };
+
     // 空状态提示
     const emptyState = document.createElement('div');
     emptyState.id = 'agent-task-empty';
@@ -802,6 +808,17 @@ window.AgentHUD.showAgentTaskHUD = function () {
 };
 
 // 隐藏任务 HUD
+window.AgentHUD.expandAgentTaskHUD = function () {
+    const hud = document.getElementById('agent-task-hud');
+    if (!hud) return false;
+    if (typeof hud._setAgentTaskHudCollapsed === 'function') {
+        hud._setAgentTaskHudCollapsed(false);
+        return true;
+    }
+    try { localStorage.setItem('agent-task-hud-collapsed-v2', 'false'); } catch (_) {}
+    return false;
+};
+
 window.AgentHUD.hideAgentTaskHUD = function () {
     const hud = document.getElementById('agent-task-hud');
     if (!hud) {

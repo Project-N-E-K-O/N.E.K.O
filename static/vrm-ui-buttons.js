@@ -18,6 +18,13 @@ AvatarButtonMixin.apply(VRMManager.prototype, 'vrm', {
     excludeLiveD2Elements: ['#live2d-floating-buttons', '#live2d-lock-icon', '#live2d-return-button-container']
 });
 
+function isYuiGuideFloatingToolbarSuppressed() {
+    return !!(
+        window.isNekoYuiGuideFloatingToolbarSuppressed
+        && window.isNekoYuiGuideFloatingToolbarSuppressed()
+    );
+}
+
 /**
  * 设置浮动按钮系统（VRM 特定）
  */
@@ -43,6 +50,12 @@ VRMManager.prototype.setupFloatingButtons = function() {
     const prefix = this._avatarPrefix;
 
     const applyResponsiveFloatingLayout = () => {
+        if (isYuiGuideFloatingToolbarSuppressed()) {
+            buttonsContainer.style.display = 'none';
+            buttonsContainer.style.visibility = 'hidden';
+            buttonsContainer.style.opacity = '0';
+            return;
+        }
         if (this._isInReturnState) {
             buttonsContainer.style.display = 'none';
             return;
@@ -71,6 +84,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
     // 锁图标显示逻辑
     const shouldShowLockIcon = () => {
+        if (isYuiGuideFloatingToolbarSuppressed()) return false;
         // 教程期间始终显示锁图标，防止高亮框位置异常
         if (window.isInTutorial) return true;
         const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
@@ -610,9 +624,10 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             if (buttonsContainer) {
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
-                    buttonsContainer.style.visibility = 'visible';
-                    buttonsContainer.style.opacity = '1';
-                    buttonsContainer.style.display = this.interaction && this.interaction.checkLocked && this.interaction.checkLocked() ? 'none' : 'flex';
+                    const suppressed = isYuiGuideFloatingToolbarSuppressed();
+                    buttonsContainer.style.visibility = suppressed ? 'hidden' : 'visible';
+                    buttonsContainer.style.opacity = suppressed ? '0' : '1';
+                    buttonsContainer.style.display = suppressed || (this.interaction && this.interaction.checkLocked && this.interaction.checkLocked()) ? 'none' : 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const screenWidth = window.innerWidth;
@@ -652,7 +667,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         Number.isFinite(parseFloat(buttonsContainer.style.left)) &&
                         Number.isFinite(parseFloat(buttonsContainer.style.top)) &&
                         !this._snapUIPosition;
-                    const shouldShowButtons = isUiPositionReady &&
+                    const shouldShowButtons = !isYuiGuideFloatingToolbarSuppressed() && isUiPositionReady &&
                         (inTutorial || (!isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenOverlay)));
                     buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                     buttonsContainer.style.visibility = shouldShowButtons ? 'visible' : 'hidden';
