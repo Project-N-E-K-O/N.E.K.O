@@ -2268,9 +2268,12 @@ test('avatar floating auto-start rechecks current due round before delayed launc
 
     assert.match(maybeAutoBlock, /if \(!this\.isAvatarFloatingGuideRoundPendingAutoStart\(round\)\) \{[\s\S]*?return;\s*\}/);
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
+    assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
     assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
     assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
     assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
+    assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownDate === today/);
 });
@@ -2303,6 +2306,18 @@ test('avatar floating auto due calculation ignores runtime pending round after r
         nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
         'manual resets should still override same-day auto reservation'
     );
+});
+
+test('avatar floating auto start does not mark auto-shown again after playback settles', () => {
+    const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const maybeAutoBlock = managerSource.split('    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {')[1].split(
+        '    ensureTutorialSkipController() {',
+        1
+    )[0];
+
+    assert.match(maybeAutoBlock, /this\.startAvatarFloatingGuideRound\(round, \{ source: 'auto' \}\)\.then\(\(result\) => \{/);
+    assert.match(maybeAutoBlock, /if \(result === false\) \{[\s\S]*?avatar-floating-round-start-skipped/);
+    assert.doesNotMatch(maybeAutoBlock, /markAvatarFloatingGuideRoundAutoShown\(round\)/);
 });
 
 test('tutorial destroy requests share the PC global overlay cleanup path', () => {

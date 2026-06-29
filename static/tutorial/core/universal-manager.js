@@ -640,8 +640,8 @@ class UniversalTutorialManager {
         if (state.completedRounds.includes(round) || state.skippedRounds.includes(round)) {
             return false;
         }
-        if (state.pendingRound || state.manualResetRound) {
-            return state.pendingRound === round || state.manualResetRound === round;
+        if (state.manualResetRound) {
+            return state.manualResetRound === round;
         }
         return this.getNextAvatarFloatingGuideAutoRound() === round;
     }
@@ -743,9 +743,7 @@ class UniversalTutorialManager {
                 return;
             }
             this.startAvatarFloatingGuideRound(round, { source: 'auto' }).then((result) => {
-                if (result !== false) {
-                    this.markAvatarFloatingGuideRoundAutoShown(round);
-                } else {
+                if (result === false) {
                     this.dispatchStartupGreetingRelease('avatar-floating-round-start-skipped', { day: round });
                 }
             }).catch((error) => {
