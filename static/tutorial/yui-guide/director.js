@@ -4139,6 +4139,24 @@
             return undefined;
         }
 
+        applyAvatarFloatingPersistenceOverride(highlightConfig, sceneId) {
+            if (!highlightConfig) {
+                return highlightConfig;
+            }
+            const persistentTargetGetters = [
+                this.getDay2CharacterSettingsPersistenceTarget,
+                this.getDay4SettingsButtonPersistenceTarget,
+                this.getDay5CharacterSettingsPersistenceTarget
+            ];
+            persistentTargetGetters.forEach((getPersistentTarget) => {
+                const persistentTarget = getPersistentTarget.call(this, sceneId);
+                if (typeof persistentTarget !== 'undefined') {
+                    highlightConfig.persistent = persistentTarget;
+                }
+            });
+            return highlightConfig;
+        }
+
         refreshSettingsPeekSpotlights(settingsButton) {
             const targets = this.getSettingsPeekTargets();
             const normalizeVisibleTarget = (element) => this.isElementVisible(element) ? element : null;
@@ -7167,9 +7185,6 @@
 
         async applyAvatarFloatingSettledCleanupHighlight(scene) {
             const normalizedScene = scene || {};
-            const day2CharacterSettingsPersistentTarget = this.getDay2CharacterSettingsPersistenceTarget(normalizedScene.id);
-            const day4SettingsPersistentTarget = this.getDay4SettingsButtonPersistenceTarget(normalizedScene.id);
-            const day5CharacterSettingsPersistentTarget = this.getDay5CharacterSettingsPersistenceTarget(normalizedScene.id);
             const highlightConfig = {
                 key: (normalizedScene.id || 'scene') + '-settled',
                 persistent: await this.resolveAvatarFloatingPersistent(normalizedScene, {
@@ -7178,15 +7193,7 @@
                 primary: await this.resolveAvatarFloatingTarget(normalizedScene, 'primary'),
                 secondary: await this.resolveAvatarFloatingTarget(normalizedScene, 'secondary')
             };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-            }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
-            }
-            if (typeof day5CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day5CharacterSettingsPersistentTarget;
-            }
+            this.applyAvatarFloatingPersistenceOverride(highlightConfig, normalizedScene.id);
             this.applyGuideHighlights(highlightConfig);
         }
 

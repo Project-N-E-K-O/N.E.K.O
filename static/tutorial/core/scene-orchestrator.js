@@ -541,23 +541,14 @@
                 });
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
-                const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-                const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
-                const day5CharacterSettingsPersistentTarget = director.getDay5CharacterSettingsPersistenceTarget(scene.id);
                 const highlightConfig = {
                     key: scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
                 };
-                if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-                }
-                if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day4SettingsPersistentTarget;
-                }
-                if (typeof day5CharacterSettingsPersistentTarget !== 'undefined') {
-                    highlightConfig.persistent = day5CharacterSettingsPersistentTarget;
+                if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                    director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
                 }
                 director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 director.applyGuideHighlights(highlightConfig);
@@ -675,23 +666,14 @@
                     result: sceneRunId === director.sceneRunId && !director.isStopping()
                 };
             }
-            const day2CharacterSettingsPersistentTarget = director.getDay2CharacterSettingsPersistenceTarget(scene.id);
-            const day4SettingsPersistentTarget = director.getDay4SettingsButtonPersistenceTarget(scene.id);
-            const day5CharacterSettingsPersistentTarget = director.getDay5CharacterSettingsPersistenceTarget(scene.id);
             const highlightConfig = {
                 key: scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget
             };
-            if (typeof day2CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day2CharacterSettingsPersistentTarget;
-            }
-            if (typeof day4SettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day4SettingsPersistentTarget;
-            }
-            if (typeof day5CharacterSettingsPersistentTarget !== 'undefined') {
-                highlightConfig.persistent = day5CharacterSettingsPersistentTarget;
+            if (typeof director.applyAvatarFloatingPersistenceOverride === 'function') {
+                director.applyAvatarFloatingPersistenceOverride(highlightConfig, scene.id);
             }
             director.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
             director.applyGuideHighlights(highlightConfig);
