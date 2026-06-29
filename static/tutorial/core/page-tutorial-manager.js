@@ -62,6 +62,13 @@
         }
     }
 
+    function getYuiHandoffTargetPagesForPage(pageKey) {
+        if (pageKey === 'settings') {
+            return ['settings', 'api_key'];
+        }
+        return [pageKey];
+    }
+
     function isActiveYuiHandoffTokenForPage(rawToken, pageKey) {
         const token = parseYuiHandoffToken(rawToken);
         if (!token || !token.token) return false;
@@ -71,7 +78,7 @@
         if (Number.isFinite(expiresAt) && Date.now() > expiresAt) return false;
 
         const targetPage = typeof token.target_page === 'string' ? token.target_page.trim() : '';
-        return !!targetPage && targetPage === pageKey;
+        return !!targetPage && getYuiHandoffTargetPagesForPage(pageKey).includes(targetPage);
     }
 
     class PageTutorialManager {
@@ -222,6 +229,38 @@
             });
         }
 
+        isApiSettingsPage() {
+            const path = String(window.location.pathname || '');
+            return this.currentPage === 'settings' && path.includes('api_key');
+        }
+
+        waitForApiSettingsReady(maxWaitTime = 5000) {
+            if (!this.isApiSettingsPage()) {
+                return Promise.resolve(true);
+            }
+
+            return new Promise((resolve) => {
+                const start = Date.now();
+                const isLoadingOverlayHidden = () => {
+                    const loadingOverlay = document.getElementById('loading-overlay');
+                    if (!loadingOverlay) return true;
+                    if (loadingOverlay.hidden) return true;
+                    const style = window.getComputedStyle
+                        ? window.getComputedStyle(loadingOverlay)
+                        : loadingOverlay.style;
+                    return style.display === 'none' || style.visibility === 'hidden';
+                };
+                const check = () => {
+                    if (isLoadingOverlayHidden() || Date.now() - start >= maxWaitTime) {
+                        resolve(true);
+                        return;
+                    }
+                    window.setTimeout(check, 120);
+                };
+                check();
+            });
+        }
+
         t(key, fallback) {
             try {
                 if (typeof window.t === 'function') {
@@ -302,6 +341,13 @@
             if (this.currentPage === 'chara_manager') {
                 this.waitForCharacterCards().then(() => {
                     this.startTutorialWhenI18nReady(500, manual ? 'manual' : 'auto');
+                });
+                return;
+            }
+
+            if (this.isApiSettingsPage()) {
+                this.waitForApiSettingsReady().then(() => {
+                    this.startTutorialWhenI18nReady(300, manual ? 'manual' : 'auto');
                 });
                 return;
             }

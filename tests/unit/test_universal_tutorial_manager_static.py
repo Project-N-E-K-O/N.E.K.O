@@ -138,10 +138,12 @@ def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
 
     assert "const YUI_HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';" in page_source
     assert "function parseYuiHandoffToken(rawToken)" in page_source
+    assert "function getYuiHandoffTargetPagesForPage(pageKey)" in page_source
+    assert "return ['settings', 'api_key'];" in page_source
     assert "function isActiveYuiHandoffTokenForPage(rawToken, pageKey)" in page_source
     assert "if (token.consumed) return false;" in page_source
     assert "Date.now() > expiresAt" in page_source
-    assert "return !!targetPage && targetPage === pageKey;" in page_source
+    assert "return !!targetPage && getYuiHandoffTargetPagesForPage(pageKey).includes(targetPage);" in page_source
 
     handoff_block = page_source.split("hasActiveYuiHandoff() {", 1)[1].split(
         "        checkAndStartTutorial() {",
@@ -167,6 +169,34 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     assert manage_block.index("window.innerWidth <= 768") < manage_block.index(
         "return SUPPORTED_PAGES.includes(this.currentPage);"
     )
+
+
+def test_page_tutorial_manager_waits_for_api_settings_loading_overlay():
+    page_source = _read_page_manager()
+
+    assert "isApiSettingsPage()" in page_source
+    assert "waitForApiSettingsReady(maxWaitTime = 5000)" in page_source
+
+    check_start_block = page_source.split("        checkAndStartTutorial() {", 1)[1].split(
+        "        startTutorialWhenI18nReady",
+        1,
+    )[0]
+    assert "if (this.isApiSettingsPage()) {" in check_start_block
+    assert "this.waitForApiSettingsReady().then(() => {" in check_start_block
+    assert "this.startTutorialWhenI18nReady(300, manual ? 'manual' : 'auto');" in check_start_block
+    assert check_start_block.index("this.waitForApiSettingsReady().then(() => {") < check_start_block.index(
+        "this.startTutorialWhenI18nReady(1200, manual ? 'manual' : 'auto');"
+    )
+
+    wait_block = page_source.split("        waitForApiSettingsReady(maxWaitTime = 5000) {", 1)[1].split(
+        "        t(key, fallback) {",
+        1,
+    )[0]
+    assert "const loadingOverlay = document.getElementById('loading-overlay');" in wait_block
+    assert "loadingOverlay.hidden" in wait_block
+    assert "style.display === 'none' || style.visibility === 'hidden'" in wait_block
+    assert "Date.now() - start >= maxWaitTime" in wait_block
+    assert "window.setTimeout(check, 120);" in wait_block
 
 
 def test_emotion_manager_config_steps_survive_until_model_selected():
@@ -225,6 +255,43 @@ def test_restored_driver_cleans_drag_handlers_between_steps_and_stays_quiet():
     assert "document.addEventListener('touchend', handleDragEnd, { passive: false });" in bind_drag_block
     assert "dragHandle," in bind_drag_block
     assert "handleDragStart," in bind_drag_block
+
+
+def test_restored_driver_cancels_delayed_scroll_callbacks_after_destroy():
+    source = _read_driver()
+
+    assert "this.isDestroyed = false;" in source
+    assert "this.pendingTimers = new Set();" in source
+    assert "this.pendingScrollCleanups = new Set();" in source
+    assert "setManagedTimeout(callback, delay)" in source
+    assert "clearDelayedCallbacks()" in source
+
+    show_step_block = source.split("        showStep(index) {", 1)[1].split(
+        "        scrollToElementAndHighlight",
+        1,
+    )[0]
+    assert "if (this.isDestroyed) return;" in show_step_block
+    assert "this.clearDelayedCallbacks();" in show_step_block
+
+    scroll_block = source.split("scrollToElementAndHighlight(element, popover, stepIndex) {", 1)[1].split(
+        "        createHighlight(element) {",
+        1,
+    )[0]
+    assert "if (this.isDestroyed || !this.isActive) return;" in scroll_block
+    assert "if (created || this.isDestroyed || !this.isActive) return;" in scroll_block
+    assert "cleanupScroll();" in scroll_block
+    assert "this.pendingScrollCleanups.add(cleanupScroll);" in scroll_block
+    assert "scrollTimer = this.setManagedTimeout(createAfterScroll, 150);" in scroll_block
+    assert "fallbackTimer = this.setManagedTimeout(createAfterScroll, 1200);" in scroll_block
+    assert "this.setManagedTimeout(poll, 50);" in scroll_block
+
+    destroy_block = source.split("        destroy() {", 1)[1].split(
+        "        /**",
+        1,
+    )[0]
+    assert "if (this.isDestroyed) return;" in destroy_block
+    assert "this.isDestroyed = true;" in destroy_block
+    assert "this.clearDelayedCallbacks();" in destroy_block
 
 
 def test_restored_driver_animation_keyframes_are_namespaced():
