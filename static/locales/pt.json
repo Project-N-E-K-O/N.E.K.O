@@ -1575,6 +1575,17 @@
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Clone Local)"
         },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Gerado por descrição",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Grátis",
+        "providerFreeApi": "API grátis",
+        "providerUnknown": "Outro",
+        "nativeVoice": {
+            "qingchunshaonv": "Garota jovem",
+            "wenrounansheng": "Voz masculina suave"
+        },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",
         "customPrefixNote": "Máximo de 10 caracteres, números e letras em inglês apenas",

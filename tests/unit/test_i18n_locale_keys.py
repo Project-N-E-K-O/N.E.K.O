@@ -25,6 +25,20 @@ REQUIRED_KEYS = (
     "tutorialPrompt.startFailed",
 )
 
+CHARACTER_MANAGER_VOICE_KEYS = (
+    "voice.providerUnknown",
+    "voice.providerLocal",
+    "voice.providerFree",
+    "voice.providerFreeApi",
+    "voice.sourcePreset",
+    "voice.sourceClone",
+    "voice.sourceDesign",
+    "voice.nativeVoice.qingchunshaonv",
+    "voice.nativeVoice.wenrounansheng",
+)
+
+CHARACTER_MANAGER_JS = REPO_ROOT / "static" / "js" / "character_card_manager.js"
+
 PNG_TUBER_PREVIEW_LABELS = {
     "zh-CN.json": ("测试说话", "状态预览"),
     "zh-TW.json": ("測試說話", "狀態預覽"),
@@ -131,6 +145,32 @@ def test_tutorial_prompt_locale_keys_exist_in_all_locales():
             missing_by_locale[locale_path.name] = missing
 
     assert missing_by_locale == {}
+
+
+@pytest.mark.unit
+def test_character_manager_voice_source_labels_exist_in_all_locales():
+    missing_by_locale: dict[str, list[str]] = {}
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        missing = [key for key in CHARACTER_MANAGER_VOICE_KEYS if not _has_nested_key(data, key)]
+        if missing:
+            missing_by_locale[locale_path.name] = missing
+
+    assert missing_by_locale == {}
+
+
+@pytest.mark.unit
+def test_character_manager_voice_source_labels_do_not_use_cjk_fallbacks():
+    source = CHARACTER_MANAGER_JS.read_text(encoding="utf-8")
+    relevant_start = source.index("function _panelVoiceProviderShortName(provider)")
+    relevant_end = source.index("function _panelCreateVoiceSelectUi(selectEl)", relevant_start)
+    relevant_source = source[relevant_start:relevant_end]
+    relevant_source = re.sub(r"//.*", "", relevant_source)
+    relevant_source = re.sub(r"/\*.*?\*/", "", relevant_source, flags=re.DOTALL)
+
+    for hardcoded_label in ("其他", "本地 CosyVoice", "免费", "预制", "克隆", "描述生成"):
+        assert hardcoded_label not in relevant_source
 
 
 @pytest.mark.unit

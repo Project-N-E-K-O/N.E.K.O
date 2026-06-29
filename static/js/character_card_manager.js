@@ -6376,9 +6376,16 @@ function _panelSetFieldLabel(labelEl, key) {
     const MAX_LABEL_LEN = 8;
     let displayText = key;
     if (window.t && typeof window.t === 'function') {
-        const translated = window.t('character.field.' + key);
-        if (translated && translated !== 'character.field.' + key) {
-            displayText = translated;
+        const profileLabelKey = 'characterProfile.labels.' + key;
+        const translatedProfileLabel = window.t(profileLabelKey);
+        if (translatedProfileLabel && translatedProfileLabel !== profileLabelKey) {
+            displayText = translatedProfileLabel;
+        } else {
+            const fieldKey = 'character.field.' + key;
+            const translatedFieldLabel = window.t(fieldKey);
+            if (translatedFieldLabel && translatedFieldLabel !== fieldKey) {
+                displayText = translatedFieldLabel;
+            }
         }
     }
     labelEl.textContent = displayText;
@@ -6464,7 +6471,14 @@ function _panelAttachTextareaAutoResize(textarea) {
 function _panelGetNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
-        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        const provider = voiceData && String(voiceData.provider || '').trim();
+        if (provider === 'free') {
+            return _panelVoiceI18n('voice.providerFreeApi', 'Free API');
+        }
+        if (VoiceDisplayUtils.isKnownProvider(provider, { includeFree: false })) {
+            return _panelVoiceProviderShortName(provider);
+        }
+        const label = voiceData && (voiceData.provider_label || provider);
         if (label) return String(label);
     }
     return '';
@@ -6498,45 +6512,30 @@ function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
 // ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
 // 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
 // 后缀需本地化（voice.provider.* / voice.source.*）。
-const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
-    cosyvoice: 'CosyVoice',
-    cosyvoice_intl: 'CosyVoice Intl',
-    minimax: 'MiniMax',
-    minimax_intl: 'MiniMax Intl',
-    elevenlabs: 'ElevenLabs',
-    gptsovits: 'GPT-SoVITS',
-    gemini: 'Gemini',
-    step: 'StepFun',
-    grok: 'Grok',
-    mimo: 'MiMo',
-    vllm_omni: 'vLLM-Omni',
-});
-
 function _panelVoiceI18n(key, fallback) {
-    if (window.t) {
-        const t = window.t(key);
-        if (t && t !== key) return t;
-    }
-    return fallback;
+    return VoiceDisplayUtils.t(key, fallback);
 }
 
 function _panelVoiceProviderShortName(provider) {
-    const p = String(provider || '').trim();
-    if (!p) return _panelVoiceI18n('voice.providerUnknown', '其他');
-    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', '本地 CosyVoice');
-    if (p === 'free') return _panelVoiceI18n('voice.providerFree', '免费');
-    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFree',
+        freeFallback: 'Free',
+    });
 }
 
 function _panelVoiceSourceLabel(source) {
     const s = String(source || '').trim();
     const map = {
-        preset: ['voice.sourcePreset', '预制'],
-        clone: ['voice.sourceClone', '克隆'],
-        design: ['voice.sourceDesign', '描述生成'],
+        preset: ['voice.sourcePreset', 'Preset'],
+        clone: ['voice.sourceClone', 'Clone'],
+        design: ['voice.sourceDesign', 'Voice Design'],
     };
     const entry = map[s];
     return entry ? _panelVoiceI18n(entry[0], entry[1]) : s;
+}
+
+function _panelNativeVoiceDisplayName(voiceId, voiceData) {
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 // 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
@@ -6886,7 +6885,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     const nativeGroup = document.createElement('optgroup');
                     // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
                     const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
-                        || _panelVoiceI18n('voice.providerUnknown', '其他');
+                        || _panelVoiceI18n('voice.providerUnknown', 'Other');
                     nativeGroup.label = _panelNormalizeVoiceGroupLabel(
                         _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
                     );
@@ -6894,7 +6893,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.textContent = _panelNativeVoiceDisplayName(voiceId, voiceData);
                         option.title = voiceId;
                         if (voiceId === currentVoiceId) option.selected = true;
                         nativeGroup.appendChild(option);
@@ -10767,7 +10766,7 @@ function renderMasterForm(master) {
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = normalizedKey;
+        _panelSetFieldLabel(label, normalizedKey);
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
@@ -11056,7 +11055,7 @@ async function addMasterField() {
     const wrapper = document.createElement('div');
     wrapper.className = 'field-row-wrapper custom-row';
     const label = document.createElement('label');
-    label.textContent = key;
+    _panelSetFieldLabel(label, key);
     wrapper.appendChild(label);
 
     const row = document.createElement('div');

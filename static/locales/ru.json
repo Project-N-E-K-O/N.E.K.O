@@ -1575,6 +1575,17 @@
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Локальный клон)"
         },
+        "sourcePreset": "Пресет",
+        "sourceClone": "Клон",
+        "sourceDesign": "Генерация по описанию",
+        "providerLocal": "Локальный CosyVoice",
+        "providerFree": "Бесплатно",
+        "providerFreeApi": "Бесплатный API",
+        "providerUnknown": "Другое",
+        "nativeVoice": {
+            "qingchunshaonv": "Юная девушка",
+            "wenrounansheng": "Мягкий мужской голос"
+        },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
         "customPrefixNote": "Максимум 10 символов, только цифры и латинские буквы",

@@ -1575,6 +1575,17 @@
             "mimo": "MiMo（小米）",
             "vllm_omni": "vLLM-Omni（本機複製）"
         },
+        "sourcePreset": "預製",
+        "sourceClone": "克隆",
+        "sourceDesign": "描述生成",
+        "providerLocal": "本地 CosyVoice",
+        "providerFree": "免費",
+        "providerFreeApi": "免費 API",
+        "providerUnknown": "其他",
+        "nativeVoice": {
+            "qingchunshaonv": "青春少女",
+            "wenrounansheng": "溫柔男聲"
+        },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
         "customPrefixNote": "不超過10個字符，只支持數字和英文字母",

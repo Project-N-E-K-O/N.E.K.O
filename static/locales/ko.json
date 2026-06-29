@@ -1575,6 +1575,17 @@
             "mimo": "MiMo (샤오미)",
             "vllm_omni": "vLLM-Omni(로컬 클론)"
         },
+        "sourcePreset": "프리셋",
+        "sourceClone": "복제",
+        "sourceDesign": "설명 생성",
+        "providerLocal": "로컬 CosyVoice",
+        "providerFree": "무료",
+        "providerFreeApi": "무료 API",
+        "providerUnknown": "기타",
+        "nativeVoice": {
+            "qingchunshaonv": "청춘 소녀",
+            "wenrounansheng": "부드러운 남성 음성"
+        },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
         "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",

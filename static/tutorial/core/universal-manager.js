@@ -3819,6 +3819,31 @@ async function initUniversalTutorialManager() {
  * 全局函数：重置所有引导
  * 供 HTML 按钮调用
  */
+async function showTutorialResetMessage(message, options = {}) {
+    const title = options.title || (window.t ? window.t('memory.tutorialReset', 'Tutorial') : 'Tutorial');
+    if (typeof window.showTutorialResetNotice === 'function') {
+        try {
+            await window.showTutorialResetNotice(message, Object.assign({}, options, { title }));
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] custom notice failed:', error);
+        }
+    }
+    if (typeof window.showAlert === 'function') {
+        try {
+            await window.showAlert(message, title);
+            return;
+        } catch (error) {
+            console.warn('[TutorialReset] common alert failed:', error);
+        }
+    }
+    if (typeof window.alert === 'function') {
+        window.alert(message);
+        return;
+    }
+    console.log('[TutorialReset]', message);
+}
+
 async function resetAllTutorials() {
     if (window.universalTutorialManager) {
         await window.universalTutorialManager.resetAllTutorials();
@@ -3831,7 +3856,10 @@ async function resetAllTutorials() {
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
         dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
-    alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
+    const resetMessage = window.t
+        ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。')
+        : '已重置所有引导，下次进入各页面时将重新显示引导。';
+    await showTutorialResetMessage(resetMessage);
 }
 
 /**
@@ -3860,19 +3888,19 @@ async function resetTutorialForPage(pageKey) {
                 const fallbackError = window.t
                     ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                     : '触发当前角色性格重选失败，请稍后再试。';
-                alert(payload && payload.error ? payload.error : fallbackError);
+                void showTutorialResetMessage(payload && payload.error ? payload.error : fallbackError, { variant: 'error' });
                 return;
             }
 
             const successMessage = window.t
                 ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的性格重选请求，请回到主页刷新后继续。')
                 : '已记录当前角色的性格重选请求，请回到主页刷新后继续。';
-            alert(successMessage);
+            void showTutorialResetMessage(successMessage);
         }).catch(() => {
             const fallbackError = window.t
                 ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
                 : '触发当前角色性格重选失败，请稍后再试。';
-            alert(fallbackError);
+            void showTutorialResetMessage(fallbackError, { variant: 'error' });
         });
         return;
     }
@@ -3907,7 +3935,7 @@ async function resetTutorialForPage(pageKey) {
     const message = window.t
         ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
         : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
-    alert(message);
+    await showTutorialResetMessage(message);
 }
 
 /**
