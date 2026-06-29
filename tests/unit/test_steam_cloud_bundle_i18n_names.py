@@ -366,6 +366,72 @@ def test_download_cloudsave_bundle_preserves_newer_local_autocloud_snapshot(tmp_
 
 
 @pytest.mark.unit
+def test_download_cloudsave_bundle_repairs_damaged_newer_local_autocloud_snapshot(tmp_path):
+    remote_cm = _make_config_manager(tmp_path / "remote")
+    local_cm = _make_config_manager(tmp_path / "local")
+    bootstrap_local_cloudsave_environment(remote_cm)
+    bootstrap_local_cloudsave_environment(local_cm)
+
+    _write_runtime_state(remote_cm, character_name="远端健康角色", recent_message="healthy remote")
+    remote_export = export_local_cloudsave_snapshot(remote_cm)
+    _write_runtime_state(local_cm, character_name="本地损坏角色", recent_message="damaged local")
+    local_export = export_local_cloudsave_snapshot(local_cm)
+
+    remote_manifest_path = remote_cm.cloudsave_dir / "manifest.json"
+    remote_manifest = json.loads(remote_manifest_path.read_text(encoding="utf-8"))
+    remote_manifest["exported_at_utc"] = "2026-01-01T00:00:00Z"
+    remote_manifest_path.write_text(json.dumps(remote_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    local_manifest_path = local_cm.cloudsave_dir / "manifest.json"
+    local_manifest = json.loads(local_manifest_path.read_text(encoding="utf-8"))
+    local_manifest["exported_at_utc"] = "2026-01-02T00:00:00Z"
+    local_manifest_path.write_text(json.dumps(local_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    damaged_relative_path = next(iter(local_export["manifest"]["files"].keys()))
+    (local_cm.cloudsave_dir / damaged_relative_path).write_text("damaged payload", encoding="utf-8")
+
+    bundle_path = tmp_path / "healthy_remote_bundle.zip"
+    _write_remote_bundle(bundle_path, remote_cm)
+    bundle_bytes = bundle_path.read_bytes()
+    remote_meta = {
+        "schema_version": 1,
+        "bundle_format": "zip",
+        "manifest_fingerprint": remote_export["manifest"]["fingerprint"],
+        "sequence_number": remote_export["manifest"]["sequence_number"],
+        "exported_at_utc": "2026-01-01T00:00:00Z",
+        "file_count": len(remote_export["manifest"]["files"]),
+    }
+
+    class _DummyBridge:
+        def cloud_enabled(self):
+            return True
+
+        def file_exists(self, filename):
+            return filename in {REMOTE_META_FILENAME, REMOTE_BUNDLE_FILENAME}
+
+        def read_file(self, filename):
+            if filename == REMOTE_META_FILENAME:
+                return json.dumps(remote_meta, ensure_ascii=False).encode("utf-8")
+            if filename == REMOTE_BUNDLE_FILENAME:
+                return bundle_bytes
+            raise FileNotFoundError(filename)
+
+    @contextlib.contextmanager
+    def _fake_bridge(*, steamworks=None):
+        yield _DummyBridge()
+
+    with patch("utils.steam_cloud_bundle.is_source_launch", return_value=True), patch(
+        "utils.steam_cloud_bundle.sys.platform", "win32"
+    ), patch("utils.steam_cloud_bundle.steam_cloud_bundle_bridge", _fake_bridge):
+        result = download_cloudsave_bundle_from_steam(local_cm)
+
+    assert result["success"] is True
+    assert result["action"] == "downloaded"
+    assert json.loads((local_cm.cloudsave_dir / "manifest.json").read_text(encoding="utf-8"))[
+        "fingerprint"
+    ] == remote_export["manifest"]["fingerprint"]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
 def test_upload_cloudsave_bundle_uses_bridge_on_desktop_source_launch(platform_name: str, tmp_path):
     cm = _make_config_manager(tmp_path / platform_name)

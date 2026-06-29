@@ -155,6 +155,8 @@ def _local_cloudsave_snapshot_is_newer_or_equal(config_manager, remote_manifest_
     )
     if local_fingerprint and remote_fingerprint and local_fingerprint == remote_fingerprint:
         return _cloudsave_manifest_matches_local_files(config_manager, remote_fingerprint)
+    if not local_fingerprint or not _cloudsave_manifest_matches_local_files(config_manager, local_fingerprint):
+        return False
 
     local_exported_at = _parse_manifest_export_time(local_manifest.get("exported_at_utc"))
     remote_exported_at = _parse_manifest_export_time(remote_manifest_like.get("exported_at_utc"))
