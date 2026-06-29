@@ -1368,6 +1368,30 @@ LLM_OUTPUT_GUARD_MAX_TOKENS = 4096
 - 残留边界：max output < 4096 的极老/极小模型仍可能 400；这类安装可下调本常量。
   彻底鲁棒需要 per-model 上限元数据（codebase 目前不跟踪），故取保守定值。"""
 
+ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS = 20.0
+"""新用户破冰自由输入解释器 LLM timeout（秒）。用户面前的短分类/短回复调用，卡住时应快速失败。"""
+
+ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS = 512
+"""新用户破冰自由输入解释器输出 token 上限。输出固定 JSON，512 只作短任务上限。"""
+
+ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS = 800
+"""破冰自由输入解释器：当前 YUI 台词输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS = 800
+"""破冰自由输入解释器：用户自由输入 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS = 200
+"""破冰自由输入解释器：单个选项文案 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS = 240
+"""破冰自由输入解释器：近期自由输入记录单段文本 token 上限。"""
+
+ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS = 4
+"""破冰自由输入解释器：近期自由输入记录最多带入条数。"""
+
+ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS = 240
+"""破冰自由输入解释器：模型 reply 字段清洗后的 token 上限。"""
+
 DIALOG_LLM_STREAM_TIMEOUT_SECONDS = 180
 """主对话流式 LLM client 的总请求 timeout（秒），作 hang-guard。
 - 用途：OmniOfflineClient 的 streaming chat client（stream_text /
@@ -2479,6 +2503,14 @@ __all__ = [
     'DIALOG_LLM_STREAM_TIMEOUT_SECONDS',
     'FOCUS_THINKING_EXTRA_TOKENS',
     'LLM_OUTPUT_GUARD_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_INTERPRETER_TIMEOUT_SECONDS',
+    'ICEBREAKER_FREE_TEXT_OUTPUT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_ASSISTANT_LINE_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_USER_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_OPTION_LABEL_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_TEXT_MAX_TOKENS',
+    'ICEBREAKER_FREE_TEXT_HISTORY_MAX_ITEMS',
+    'ICEBREAKER_FREE_TEXT_REPLY_MAX_TOKENS',
     'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
