@@ -116,9 +116,8 @@ jobs:
           # reads numpy's __cpu_features__, no py-cpuinfo) are in
           # [project.dependencies] now — plain `uv sync` covers both the
           # build-time prepare step and the bundled runtime.
-          # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
-          # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies
-          # blocks opencv-python (full) so only the headless cv2 ships.
+          # `--group galgame` adds the local rapidocr-pillow fork for the
+          # bundled OCR backend without the opencv/shapely dependency chain.
           uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
@@ -360,15 +359,11 @@ jobs:
           # package itself (CI previously only carried its package-data).
           NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
           # galgame_plugin native OCR/vision cohort. Installed on every platform by
-          # `uv sync --group galgame` (rapidocr-onnxruntime + opencv-python-headless,
-          # which pulls shapely/pyclipper). Nuitka's auto-follow misses their data
-          # files, so include package + data explicitly. Synced with build_nuitka.bat.
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=cv2"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=cv2"
+          # `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
+          # Nuitka's auto-follow misses their data files, so include package +
+          # data explicitly.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=rapidocr_onnxruntime"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=shapely"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=shapely"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=pyclipper"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=mss"
           # dxcam is Windows-only (win32 marker); it's handled in the Windows cmd
@@ -536,16 +531,11 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
           rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
-          rem rapidocr-onnxruntime + opencv-python-headless, pulling shapely/pyclipper;
-          rem mss/dxcam from main deps). Nuitka auto-follow misses their data files,
-          rem so include package + data explicitly. Synced with build_nuitka.bat.
+          rem local rapidocr-pillow fork + pyclipper; mss/dxcam from main deps).
+          rem Nuitka auto-follow misses their data files, so include package + data.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=rapidocr_onnxruntime
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=cv2
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=cv2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pyclipper
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=shapely
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=shapely
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=mss
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=dxcam
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat

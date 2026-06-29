@@ -80,10 +80,9 @@ dependencies = [
   # when this dependency is unavailable. Skipped on Windows/macOS
   # to keep dev installs lean.
   "python-xlib ; sys_platform == 'linux'",
-  # NOTE: rapidocr-onnxruntime + cv2 cohort lives in [dependency-groups] galgame
-  # below — it brings opencv (~109 MB on disk) which the main program does not
-  # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly
-  # so the packaged dist still bundles it; plain `uv sync` skips it.
+  # NOTE: RapidOCR lives in [dependency-groups] galgame below so plain
+  # `uv sync` keeps dev installs lean while packaged builds can still bundle
+  # the OCR backend with `uv sync --group galgame`.
   "imagehash>=4.3.2",
 ]
 
@@ -137,14 +136,8 @@ exclude = [
 # 但 deps/*.whl 本地存档可保证 uv lock/sync 在无网/CI 环境下仍可复现。
 [tool.uv.sources]
 pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
+rapidocr-pillow = { path = "./deps/rapidocr_pillow" }
 
-# rapidocr-onnxruntime hard-depends on `opencv-python`, but we want
-# `opencv-python-headless` to provide the cv2 module instead (no GUI/Qt → ~25 MB
-# smaller). The override below blocks the opencv-python pin so only the
-# headless variant (declared in [dependency-groups] galgame) ends up in .venv.
-# Both wheels expose the same `cv2` module name, so rapidocr's `import cv2`
-# works against either.
-#
 # python3-xlib (0.15, a stale 2016 py3 fork that pyautogui/mouseinfo pin) and
 # python-xlib (0.33, the maintained fork we depend on directly for galgame_plugin
 # X11 enumeration) both install into the same `Xlib` import namespace — having
@@ -153,7 +146,6 @@ pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 # its API is a strict superset, so pyautogui's `from Xlib...` resolves fine.
 [tool.uv]
 override-dependencies = [
-    "opencv-python ; sys_platform == 'never'",
     "python3-xlib ; sys_platform == 'never'",
 ]
 
@@ -168,13 +160,13 @@ dev = [
     "ruff>=0.15.4",
 ]
 # galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev
-# install lean (~130 MB saved). Build scripts add `--group galgame` so packaged
+# install lean. Build scripts add `--group galgame` so packaged
 # Nuitka/PyInstaller dist bundles everything; plugin code import-guards these
 # so the plugin still loads (with degraded OCR backend) when the group is missing.
-# See memory: project_galgame_native_deps_size.md
+# The local rapidocr-pillow fork keeps the rapidocr_onnxruntime import package
+# but removes the opencv/shapely transitive dependency chain.
 galgame = [
-    "rapidocr-onnxruntime",
-    "opencv-python-headless",  # provides cv2 module; ~25 MB lighter than opencv-python
+    "rapidocr-pillow",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
