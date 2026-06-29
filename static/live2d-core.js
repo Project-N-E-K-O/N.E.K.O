@@ -600,6 +600,12 @@ class Live2DManager {
                 this._stopIdleFpsGovernor();
                 return;
             }
+            // 暂停态（pauseRendering / 切到非 Live2D 角色时直接 ticker.stop() 但保留 pixi_app 复用）：
+            // ticker 已 stop，跳过升/降帧工作。不在此自终止——有多处直接 ticker.start() 的恢复路径
+            // （app-character / model_manager / app-ui / live2d-model 等）不走 resumeRendering，
+            // 自终止后无人重启会让 Live2D 失去 idle 节流；ticker 恢复 started 后本守护自动继续治理。
+            // 用 === false 安全降级：万一某 pixi 版本无 started 属性，守卫不触发即维持原行为。
+            if (this.pixi_app.ticker.started === false) return;
             if (this._hasRenderActivity()) {
                 this.boostInteractiveFPS();
             }
