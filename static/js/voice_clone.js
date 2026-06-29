@@ -44,20 +44,6 @@ const voiceCloneApiConfigState = {
 const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
 const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
 const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
-const VOICE_CLONE_NATIVE_PROVIDER_SHORT = Object.freeze({
-    cosyvoice: 'CosyVoice',
-    cosyvoice_intl: 'CosyVoice Intl',
-    minimax: 'MiniMax',
-    minimax_intl: 'MiniMax Intl',
-    elevenlabs: 'ElevenLabs',
-    gptsovits: 'GPT-SoVITS',
-    gemini: 'Gemini',
-    step: 'StepFun',
-    grok: 'Grok',
-    mimo: 'MiMo',
-    vllm_omni: 'vLLM-Omni',
-});
-
 function sleepVoiceCloneLoaderRetry(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -213,26 +199,21 @@ function normalizeVoicePreviewLanguage(rawLanguage) {
 }
 
 function voiceCloneI18n(key, fallback) {
-    if (window.t) {
-        const translated = window.t(key);
-        if (translated && translated !== key) return translated;
-    }
-    return fallback;
+    return VoiceDisplayUtils.t(key, fallback);
 }
 
 function getNativeProviderShortName(provider) {
-    const normalized = String(provider || '').trim();
-    if (!normalized) return voiceCloneI18n('voice.providerUnknown', 'Other');
-    if (normalized === 'local') return voiceCloneI18n('voice.providerLocal', 'Local CosyVoice');
-    if (normalized === 'free') return voiceCloneI18n('voice.providerFreeApi', 'Free API');
-    return VOICE_CLONE_NATIVE_PROVIDER_SHORT[normalized] || normalized;
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFreeApi',
+        freeFallback: 'Free API',
+    });
 }
 
 function getNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
         const provider = voiceData && String(voiceData.provider || '').trim();
-        if (provider && (provider === 'local' || provider === 'free' || VOICE_CLONE_NATIVE_PROVIDER_SHORT[provider])) {
+        if (VoiceDisplayUtils.isKnownProvider(provider)) {
             return getNativeProviderShortName(provider);
         }
         const label = voiceData && (voiceData.provider_label || provider);
@@ -252,14 +233,7 @@ function formatNativeVoiceLabel(nativeEntries) {
 }
 
 function getNativeVoiceDisplayName(voiceId, voiceData) {
-    const id = String(voiceId || '').trim();
-    if (id) {
-        const translated = voiceCloneI18n('voice.nativeVoice.' + id, '');
-        if (translated) return translated;
-    }
-    if (voiceData && voiceData.prefix) return voiceData.prefix;
-    if (voiceData && voiceData.display_name) return voiceData.display_name;
-    return id;
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 function getVoicePreviewLanguage() {

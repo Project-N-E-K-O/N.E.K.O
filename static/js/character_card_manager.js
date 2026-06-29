@@ -6475,7 +6475,7 @@ function _panelGetNativeVoiceProviderLabel(nativeEntries) {
         if (provider === 'free') {
             return _panelVoiceI18n('voice.providerFreeApi', 'Free API');
         }
-        if (provider && (provider === 'local' || _PANEL_VOICE_PROVIDER_SHORT[provider])) {
+        if (VoiceDisplayUtils.isKnownProvider(provider, { includeFree: false })) {
             return _panelVoiceProviderShortName(provider);
         }
         const label = voiceData && (voiceData.provider_label || provider);
@@ -6512,34 +6512,15 @@ function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
 // ── source-first 选声：把音色按「provider · 来源」分组（声音来源统一架构 §5）──
 // 品牌名跨语言通用，用 JS 常量；只有 local（本地 CosyVoice）/ free（免费）与「· 来源」
 // 后缀需本地化（voice.provider.* / voice.source.*）。
-const _PANEL_VOICE_PROVIDER_SHORT = Object.freeze({
-    cosyvoice: 'CosyVoice',
-    cosyvoice_intl: 'CosyVoice Intl',
-    minimax: 'MiniMax',
-    minimax_intl: 'MiniMax Intl',
-    elevenlabs: 'ElevenLabs',
-    gptsovits: 'GPT-SoVITS',
-    gemini: 'Gemini',
-    step: 'StepFun',
-    grok: 'Grok',
-    mimo: 'MiMo',
-    vllm_omni: 'vLLM-Omni',
-});
-
 function _panelVoiceI18n(key, fallback) {
-    if (window.t) {
-        const t = window.t(key);
-        if (t && t !== key) return t;
-    }
-    return fallback;
+    return VoiceDisplayUtils.t(key, fallback);
 }
 
 function _panelVoiceProviderShortName(provider) {
-    const p = String(provider || '').trim();
-    if (!p) return _panelVoiceI18n('voice.providerUnknown', 'Other');
-    if (p === 'local') return _panelVoiceI18n('voice.providerLocal', 'Local CosyVoice');
-    if (p === 'free') return _panelVoiceI18n('voice.providerFree', 'Free');
-    return _PANEL_VOICE_PROVIDER_SHORT[p] || p;
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFree',
+        freeFallback: 'Free',
+    });
 }
 
 function _panelVoiceSourceLabel(source) {
@@ -6554,14 +6535,7 @@ function _panelVoiceSourceLabel(source) {
 }
 
 function _panelNativeVoiceDisplayName(voiceId, voiceData) {
-    const id = String(voiceId || '').trim();
-    if (id) {
-        const translated = _panelVoiceI18n('voice.nativeVoice.' + id, '');
-        if (translated) return translated;
-    }
-    if (voiceData && voiceData.prefix) return voiceData.prefix;
-    if (voiceData && voiceData.display_name) return voiceData.display_name;
-    return id;
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 // 「<Provider> · <来源>」组标签，如 "ElevenLabs · 克隆" / "Gemini · 预制"
