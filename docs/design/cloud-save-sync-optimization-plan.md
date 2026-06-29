@@ -192,9 +192,9 @@
 
 ## 6. source/frozen 与 bundle helper 边界
 
-- `download_cloudsave_bundle_from_steam()` / `upload_cloudsave_bundle_to_steam()` 在非 source launch 下直接返回 `reason = "not_source_launch"`。
-- source launch 且平台支持时，才走 RemoteStorage bundle helper。
-- 打包运行主路径仍然是 Steam Auto-Cloud 同步 `cloudsave/`。
+- `download_cloudsave_bundle_from_steam()` / `upload_cloudsave_bundle_to_steam()` 在 source launch 或 frozen/packaged launch 下都可走 RemoteStorage bundle helper。
+- 非 source 且非 packaged 的普通 Python 进程仍直接返回 `reason = "not_source_launch"`，避免测试、脚本和非发行态误初始化 Steam。
+- 打包运行保留 Steam Auto-Cloud 同步 `cloudsave/`，同时使用 RemoteStorage bundle 作为跨设备兜底；当 Auto-Cloud 路径配置失配或用户存储位置与 anchor 分叉时，bundle 仍能把同一份快照同步到另一台设备。
 
 ---
 
@@ -208,7 +208,7 @@
 
 `cloudsave/` 目录：
 
-- 三平台统一为运行时根目录下 `cloudsave/`。
+- 三平台统一为固定 anchor root 下 `cloudsave/`。默认情况下 anchor root 等于平台标准应用数据目录；当用户把运行时数据迁移到其他位置时，`cloudsave/` 仍留在 anchor root，避免 Steam 云目录随用户自选路径漂移。
 
 Steam Auto-Cloud 推荐规则：
 
