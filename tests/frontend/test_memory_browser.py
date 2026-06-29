@@ -236,6 +236,52 @@ def test_memory_browser_current_personality_reset_requests_home_reselect(
 
 
 @pytest.mark.frontend
+def test_memory_browser_reset_notice_replaces_open_notice_without_pending_promise(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_function("typeof window.showTutorialResetNotice === 'function'")
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const first = window.showTutorialResetNotice('First message');
+            const second = window.showTutorialResetNotice('Second message');
+            const firstResult = await Promise.race([
+                first,
+                new Promise((resolve) => window.setTimeout(() => resolve('timeout'), 250)),
+            ]);
+            const visibleNotices = document.querySelectorAll('.tutorial-reset-notice-backdrop').length;
+            const message = document.querySelector('.tutorial-reset-notice-message')?.textContent || '';
+            document.querySelector('.tutorial-reset-notice-ok')?.click();
+            const secondResult = await Promise.race([
+                second,
+                new Promise((resolve) => window.setTimeout(() => resolve('timeout'), 500)),
+            ]);
+            return {
+                firstResult,
+                secondResult,
+                visibleNotices,
+                message,
+                remainingNotices: document.querySelectorAll('.tutorial-reset-notice-backdrop').length,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "firstResult": False,
+        "secondResult": True,
+        "visibleNotices": 1,
+        "message": "Second message",
+        "remainingNotices": 0,
+    }
+
+
+@pytest.mark.frontend
 def test_memory_browser_all_tutorial_reset_includes_avatar_guide_state(
     mock_page: Page,
     running_server: str,

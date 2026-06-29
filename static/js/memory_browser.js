@@ -81,14 +81,15 @@
         return translate('memory.tutorialReset', domTitle || 'Tutorial');
     }
 
+    let activeTutorialResetNotice = null;
+
     function showTutorialResetNotice(message, options) {
         const config = options && typeof options === 'object' ? options : {};
         const title = config.title || getTutorialResetNoticeTitle();
         const okText = config.okText || translate('common.ok', 'OK');
         const variant = config.variant === 'error' ? 'error' : 'success';
-        const existing = document.querySelector('.tutorial-reset-notice-backdrop');
-        if (existing && existing.parentNode) {
-            existing.parentNode.removeChild(existing);
+        if (activeTutorialResetNotice) {
+            activeTutorialResetNotice.dispose(false);
         }
 
         return new Promise(function (resolve) {
@@ -142,17 +143,42 @@
             backdrop.appendChild(card);
 
             let closed = false;
+            let cleaned = false;
+            let settled = false;
+
+            function cleanup() {
+                if (cleaned) return;
+                cleaned = true;
+                document.removeEventListener('keydown', onKeydown);
+                if (backdrop.parentNode) {
+                    backdrop.parentNode.removeChild(backdrop);
+                }
+                if (activeTutorialResetNotice && activeTutorialResetNotice.backdrop === backdrop) {
+                    activeTutorialResetNotice = null;
+                }
+            }
+
+            function settle(result) {
+                if (settled) return;
+                settled = true;
+                resolve(result);
+            }
+
             function close() {
                 if (closed) return;
                 closed = true;
-                document.removeEventListener('keydown', onKeydown);
                 backdrop.classList.add('is-closing');
                 window.setTimeout(function () {
-                    if (backdrop.parentNode) {
-                        backdrop.parentNode.removeChild(backdrop);
-                    }
-                    resolve(true);
+                    cleanup();
+                    settle(true);
                 }, 160);
+            }
+
+            function dispose(result) {
+                if (cleaned) return;
+                closed = true;
+                cleanup();
+                settle(result);
             }
 
             function onKeydown(event) {
@@ -170,6 +196,7 @@
             });
             document.addEventListener('keydown', onKeydown);
             document.body.appendChild(backdrop);
+            activeTutorialResetNotice = { backdrop, dispose };
             window.setTimeout(function () {
                 okButton.focus();
             }, 0);
