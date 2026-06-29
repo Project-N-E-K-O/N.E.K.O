@@ -1207,7 +1207,14 @@
         var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
             startFromEndStateWhenTutorialIdle(endState).then(function (started) {
-                if (!started) clearPendingGuideEndStateDay(pendingDay);
+                if (!started) {
+                    clearPendingGuideEndStateDay(pendingDay);
+                    dispatchIcebreakerEnded('start_failed');
+                }
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] deferred start failed:', error);
+                clearPendingGuideEndStateDay(pendingDay);
+                dispatchIcebreakerEnded('start_failed');
             });
         }, 500);
     }

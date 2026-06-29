@@ -651,6 +651,9 @@ def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
     assert "var pendingDay = markPendingStartFromEndState(endState);" in body
     assert "startFromEndStateWhenTutorialIdle(endState)" in body
     assert "clearPendingGuideEndStateDay(pendingDay)" in body
+    assert ".catch(function (error)" in body
+    assert "console.warn('[NewUserIcebreaker] deferred start failed:', error);" in body
+    assert "dispatchIcebreakerEnded('start_failed')" in body
 
 
 def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
