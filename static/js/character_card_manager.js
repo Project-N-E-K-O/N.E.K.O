@@ -3471,7 +3471,7 @@ async function loadCharacterCards() {
         showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
     }
 
-    // 同步加载主人档案和已隐藏猫娘列表
+    // 同步加载我的档案和已隐藏猫娘列表
     loadMasterProfile();
     renderHiddenCatgirls();
 
@@ -10688,7 +10688,7 @@ function selectPreviewImage() {
 }
 
 
-// ===================== 主人档案管理 =====================
+// ===================== 我的档案管理 =====================
 
 async function loadMasterProfile() {
     try {
@@ -10698,7 +10698,7 @@ async function loadMasterProfile() {
         const master = data?.['主人'] || {};
         renderMasterForm(master);
     } catch (e) {
-        console.error('加载主人档案失败:', e);
+        console.error('加载我的档案失败:', e);
     }
 }
 
@@ -10742,7 +10742,7 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
-    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名我的档案';
     renameBtn.textContent = renameText;
     renameBtn.title = renameTitle;
     renameBtn.setAttribute('aria-label', renameTitle);
@@ -10820,7 +10820,7 @@ function renderMasterForm(master) {
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
     saveBtn.style.display = hasMasterProfileName ? 'none' : '';
-    const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
+    const saveText = window.t ? window.t('character.saveMaster') : '保存我的档案';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
     btnArea.appendChild(saveBtn);
@@ -10889,14 +10889,14 @@ async function saveMasterForm() {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
-            showMessage(window.t ? window.t('character.saveMasterSuccess') : '保存主人设定成功', 'success');
+            showMessage(window.t ? window.t('character.saveMasterSuccess') : '我的档案保存成功', 'success');
             await loadMasterProfile();
         } else {
             const err = await resp.text();
             showMessage((window.t ? window.t('character.saveMasterError') : '保存失败') + ': ' + err, 'error');
         }
     } catch (e) {
-        showMessage(window.t ? window.t('character.saveMasterError') : '保存主人设定失败', 'error');
+        showMessage(window.t ? window.t('character.saveMasterError') : '保存我的档案失败', 'error');
     }
 }
 
@@ -11039,7 +11039,7 @@ async function addMasterField() {
         key = await showPrompt(
             window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）',
             '',
-            window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
+            window.t ? window.t('character.addMasterFieldTitle') : '新增我的档案字段'
         );
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
@@ -11102,8 +11102,8 @@ async function renameMaster() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
-    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名我的档案';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(

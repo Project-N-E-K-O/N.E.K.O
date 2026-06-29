@@ -3183,6 +3183,19 @@ def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
     assert "window.showAlert(msg, title)" in source
 
 
+def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    status_block = source.split("const setStatus = (msg, options) => {", 1)[1].split(
+        "const currentLanlanName",
+        1,
+    )[0]
+
+    assert "options.stabilizeTutorialText === true" in status_block
+    assert "isTutorialAgentStatusLocked()" in status_block
+    assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
+    assert "s.textContent = text;" in status_block
+
+
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {

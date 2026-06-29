@@ -1543,7 +1543,9 @@
         "cannotDeleteBoundModel": "無法刪除目前正在使用的模型",
         "modelInUse": "使用中",
         "pngtuberTalkPreview": "測試說話",
-        "pngtuberStatePreview": "狀態預覽"
+        "pngtuberStatePreview": "狀態預覽",
+        "pngtuberImportProjectFile": "導入工程檔案",
+        "pngtuberImportFolder": "導入資料夾"
     },
     "voice": {
         "title": "音色注冊",
@@ -1935,8 +1937,8 @@
         "gender": "性別",
         "nickname": "昵稱",
         "apiKeySettings": "API Key",
-        "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
-        "masterProfileTitle": "主人檔案",
+        "masterProfile": "我的檔案（唯一）：檔案名為必填項，其他均為可選項。",
+        "masterProfileTitle": "我的檔案",
         "profileName": "檔案名",
         "profileNameMaxHint": "最多60個字符",
         "profileNameTooLong": "檔案名過長",
@@ -2024,7 +2026,7 @@
         "aiAssistApiMissing": "輔助 API 尚未設定。請在「API Key 設定」裡完成設定後再試。",
         "confirmNewCatgirl": "確認新貓娘",
         "saveChanges": "保存修改",
-        "saveMaster": "保存主人設定",
+        "saveMaster": "儲存我的檔案",
         "addMasterField": "新增設定",
         "manageLive2D": "點擊管理Live2D模型",
         "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
@@ -2032,7 +2034,7 @@
         "rename": "修改名稱",
         "cancel": "取消",
         "addMasterFieldPrompt": "請輸入新設定的名稱（鍵名）",
-        "addMasterFieldTitle": "新增主人設定",
+        "addMasterFieldTitle": "新增我的檔案欄位",
         "fieldExists": "該設定已存在",
         "profileNameRequired": "檔案名為必填項",
         "profileNameRenameOnlyHint": "請透過「修改名稱」按鈕修改檔案名",
@@ -2090,10 +2092,10 @@
         "gsvDiagTimeout": "GPT-SoVITS server 回應逾時 (>3s)",
         "loadFailed": "載入角色資料失敗",
         "renameError": "重新命名失敗: {{error}}",
-        "renameMasterTitle": "重新命名主人",
+        "renameMasterTitle": "重新命名我的檔案",
         "renameSuccess": "重新命名成功",
         "autoSaveError": "儲存設定失敗",
-        "saveMasterError": "儲存主人設定失敗",
+        "saveMasterError": "儲存我的檔案失敗",
         "autoSaved": "已自動儲存設定",
         "autoSaveFailed": "自動儲存失敗，請手動儲存後再關閉頁面",
         "unsavedNewCatgirlDraftDetected": "偵測到未儲存的新貓娘草稿，請先儲存或取消後再同步刷新",
@@ -2121,7 +2123,7 @@
         "generatingCard": "正在生成角色卡...",
         "settings": "設定",
         "renamePrompt": "請輸入新的檔案名",
-        "renameMasterPrompt": "請輸入新的主人檔案名",
+        "renameMasterPrompt": "請輸入新的檔案名",
         "renameTitle": "修改名稱",
         "tempSaveFailed": "臨時儲存失敗: {{error}}",
         "newCatgirlSuccess": "新貓娘創建成功",
@@ -2150,7 +2152,7 @@
         "cardAuthorReadonly": "此來源的卡面無法修改作者",
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
-        "saveMasterSuccess": "儲存主人設定成功",
+        "saveMasterSuccess": "我的檔案儲存成功",
         "editCardFace": "編輯卡面",
         "cardFaceModelSettings": "卡面模型設定",
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
@@ -3190,8 +3192,8 @@
         },
         "chara_manager": {
             "step1": {
-                "title": "👤 主人檔案",
-                "desc": "這是妳的主人檔案。檔案名是必填項，其他信息（性別、昵稱等）都是可選的。這些信息會影響貓娘對妳的稱呼和態度。"
+                "title": "👤 我的檔案",
+                "desc": "這是您的檔案。檔案名是必填項，其他資訊（性別、暱稱等）都是可選的。這些資訊會影響貓娘對您的稱呼和態度。"
             },
             "step2": {
                 "title": "📝 設置檔案名",
@@ -4429,6 +4431,8 @@
              "yuiCheatInk": "Yui 扔了墨汁",
              "yuiCheatBanana": "Yui 丟了香蕉皮",
              "yuiCheatBananaSlip": "踩到香蕉皮了",
+             "playerIcePowerup": "冰塊生效，Yui 被凍住了",
+             "yuiFrozen": "Yui 還被冰住，出拍延後",
              "nekoThinking": "Neko思考中",
              "nekoTurn": "Neko回合",
              "copyNeko": "復刻Neko",
@@ -4674,6 +4678,12 @@
                      "這團墨汁的戰術效果不錯吧"
                  ]
              },
+             "playerIceScore": [
+                 "唔，不算啦不算啦，重來！",
+                 "被凍住的時候得分不算啦！",
+                 "等一下等一下，剛才我被冰住了！",
+                 "這球有冰塊加成，重來重來！"
+             ],
              "easterEgg": {
                  "lateNight": "這麼晚了還在羽毛球？",
                  "xmas": "鈴鐺都掛上了，還要打喵？",

@@ -80,7 +80,8 @@
                     voiceKey: 'avatar_floating_day6_plugin_side_panel',
                     text: '除了之前介绍的功能，这里还有超多好玩的插件呢。',
                     emotion: 'happy',
-                    operation: 'day6-plugin-open-management-panel-flow'
+                    operation: 'day6-plugin-open-management-panel-flow',
+                    afterSceneDelayMs: 0
                 },
                 {
                     id: 'day6_plugin_dashboard',
