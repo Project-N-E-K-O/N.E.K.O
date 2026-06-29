@@ -29,7 +29,18 @@ def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
     locale = json.loads(LOCALE_PATH.read_text(encoding="utf-8"))
     day = scripts["days"][day_key]
 
-    assert len(day["nodes"]) == 7
+    # All seven days intentionally use the same lightweight 3-round tree:
+    # root -> 2 branches -> 4 handoff leaves.
+    expected_node_counts = {
+        "1": 7,
+        "2": 7,
+        "3": 7,
+        "4": 7,
+        "5": 7,
+        "6": 7,
+        "7": 7,
+    }
+    assert len(day["nodes"]) == expected_node_counts[day_key]
 
     for node_id, node in day["nodes"].items():
         assert node.get("voiceKey"), node_id
