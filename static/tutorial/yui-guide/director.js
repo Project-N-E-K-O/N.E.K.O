@@ -5919,6 +5919,31 @@
             return hidden;
         }
 
+        positionAvatarFloatingSidePanelNow(panel) {
+            const targetPanel = panel || null;
+            const anchor = targetPanel && targetPanel._anchorElement ? targetPanel._anchorElement : null;
+            const popupUi = window.AvatarPopupUI || null;
+            if (!targetPanel || !anchor || !popupUi || typeof popupUi.positionSidePanel !== 'function') {
+                return false;
+            }
+
+            try {
+                popupUi.positionSidePanel(targetPanel, anchor);
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] positionAvatarFloatingSidePanelNow 失败:', error);
+                return false;
+            }
+        }
+
+        refreshAvatarFloatingSettingsPanelLayout(panel) {
+            const popupPositioned = this.positionManagedPanelNow('settings');
+            const sidePanelPositioned = panel && this.isElementVisible(panel)
+                ? this.positionAvatarFloatingSidePanelNow(panel)
+                : false;
+            return popupPositioned || sidePanelPositioned;
+        }
+
         forceHideAvatarFloatingGuideManagedSurfaces() {
             this.forceHideManagedPanel('settings');
             this.forceHideManagedPanel('agent');
@@ -5947,6 +5972,9 @@
                 return false;
             }
             const targetAnchor = anchor || panel._anchorElement || null;
+            if (targetAnchor) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
             this.collapseAvatarFloatingSidePanelsExcept(panel);
             if (typeof panel._expand === 'function') {
                 if (panel._hoverCollapseTimer) {
@@ -5976,12 +6004,17 @@
             if (!opened || this.isStopping()) {
                 return null;
             }
+            this.positionManagedPanelNow('settings');
             const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
             if (!panel) {
                 return null;
             }
             this.sidebarPauseController.trackPanel(panel);
-            return (await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null)) ? panel : null;
+            const expanded = await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null);
+            if (expanded) {
+                this.refreshAvatarFloatingSettingsPanelLayout(panel);
+            }
+            return expanded ? panel : null;
         }
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
