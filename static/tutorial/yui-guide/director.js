@@ -5841,6 +5841,12 @@
             const sceneId = typeof normalizedScene.id === 'string'
                 ? normalizedScene.id
                 : '';
+            const day4SettingsSceneIds = [
+                'day4_chat_settings',
+                'day4_model_behavior',
+                'day4_gaze_follow',
+                'day4_privacy_mode'
+            ];
             const day2SettingsSceneIds = [
                 'day2_personalization_space',
                 'day2_personalization_detail',
@@ -5851,7 +5857,11 @@
                 'day5_character_panic',
                 'day5_memory_entry'
             ];
-            if (day2SettingsSceneIds.includes(sceneId) || day5SettingsSceneIds.includes(sceneId)) {
+            if (
+                day2SettingsSceneIds.includes(sceneId)
+                || day4SettingsSceneIds.includes(sceneId)
+                || day5SettingsSceneIds.includes(sceneId)
+            ) {
                 return true;
             }
 

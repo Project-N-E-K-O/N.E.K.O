@@ -628,6 +628,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     buttonsContainer.style.visibility = suppressed ? 'hidden' : 'visible';
                     buttonsContainer.style.opacity = suppressed ? '0' : '1';
                     buttonsContainer.style.display = suppressed || (this.interaction && this.interaction.checkLocked && this.interaction.checkLocked()) ? 'none' : 'flex';
+                    if (lockIcon && !this._isInReturnState) {
+                        const shouldShowLock = !!(this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon());
+                        lockIcon.style.display = shouldShowLock ? 'block' : 'none';
+                        lockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
+                        lockIcon.style.opacity = shouldShowLock ? '' : '0';
+                    }
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const screenWidth = window.innerWidth;
