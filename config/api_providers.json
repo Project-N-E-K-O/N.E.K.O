@@ -212,6 +212,23 @@
       "vision_model": "doubao-seed-character-260628",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
+    "doubao_tts": {
+      "key": "doubao_tts",
+      "name": "豆包语音（火山引擎）",
+      "description": "火山引擎豆包语音合成 2.0 / 声音复刻 2.0",
+      "openrouter_url": "https://openspeech.bytedance.com",
+      "provider_type": "tts",
+      "conversation_model": "",
+      "summary_model": "",
+      "correction_model": "",
+      "emotion_model": "",
+      "vision_model": "",
+      "agent_model": "",
+      "tts_default_model": "seed-icl-2.0",
+      "tts_default_voice": "",
+      "probe_kind": "http_tts",
+      "probe_sub_type": "doubao_tts"
+    },
     "minimax": {
       "key": "minimax",
       "name": "MiniMax（国服）",
@@ -334,6 +351,7 @@
     "kimi_code": "ASSIST_API_KEY_KIMI_CODE",
     "deepseek": "ASSIST_API_KEY_DEEPSEEK",
     "doubao": "ASSIST_API_KEY_DOUBAO",
+    "doubao_tts": "ASSIST_API_KEY_DOUBAO_TTS",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
     "mimo": "ASSIST_API_KEY_MIMO",
@@ -417,6 +435,10 @@
     },
     "vllm_omni": {
       "config_field": "ttsModelApiKey",
+      "restricted": false
+    },
+    "doubao_tts": {
+      "config_field": "assistApiKeyDoubaoTts",
       "restricted": false
     }
   },

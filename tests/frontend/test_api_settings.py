@@ -743,6 +743,139 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
 
 
 @pytest.mark.frontend
+def test_explicit_doubao_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='doubao_tts']", state="attached", timeout=10000)
+
+    payload = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'doubao_tts';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            document.getElementById('ttsModelApiKey').value = 'doubao-speech-key';
+            document.getElementById('ttsVoiceId').value = 'S_test';
+
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["ttsModelProvider"] == "doubao_tts"
+    assert payload["ttsProvider"] == "doubao_tts"
+    assert payload["ttsModelId"] == "seed-icl-2.0"
+    assert payload["ttsVoiceId"] == "S_test"
+
+
+@pytest.mark.frontend
+def test_doubao_tts_keybook_saves_independent_speech_key(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#keyBookInput_doubao_tts", state="attached", timeout=10000)
+    expect(mock_page.locator("label[data-i18n='api.keyBook.doubao_tts']")).not_to_have_text("api.keyBook.doubao_tts")
+
+    payload = mock_page.evaluate("""
+        async () => {
+            setMaskedInput(document.getElementById('keyBookInput_vllm_omni'), '');
+            setMaskedInput(document.getElementById('keyBookInput_doubao_tts'), 'ark-speech-key');
+
+            window.__capturedSavePayload = null;
+            window.saveApiKey = async (params) => {
+                window.__capturedSavePayload = JSON.parse(JSON.stringify(params));
+            };
+
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+
+            await save_button_down({ preventDefault() {} });
+            return window.__capturedSavePayload;
+        }
+    """)
+
+    assert payload["assistApiKeyDoubaoTts"] == "ark-speech-key"
+
+
+@pytest.mark.frontend
+def test_doubao_tts_connectivity_uses_tts_probe_with_voice_id(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='doubao_tts']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        async () => {
+            document.getElementById('enableCustomApi').checked = true;
+            toggleCustomApi();
+
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'doubao_tts';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+
+            document.getElementById('ttsModelUrl').value = 'https://openspeech.bytedance.com';
+            document.getElementById('ttsModelId').value = 'seed-icl-2.0';
+            document.getElementById('ttsModelApiKey').value = 'ark-test';
+            document.getElementById('ttsVoiceId').value = 'S_test';
+
+            const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'tts' });
+            const calls = [];
+            const originalFetch = window.fetch;
+            window.fetch = async (input, init) => {
+                if (String(input).includes('/api/config/test_connectivity')) {
+                    const body = JSON.parse(init.body);
+                    calls.push(body);
+                    return new Response(JSON.stringify({ success: true, resolved_url: body.url }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            try {
+                const connectivity = await ConnectivityManager.testKey({
+                    url: resolved.url,
+                    api_key: resolved.key || '',
+                    model: resolved.model || '',
+                    voice_id: resolved.voiceId || '',
+                    provider_type: resolved.providerType,
+                    sub_type: resolved.subType || '',
+                    cache_id: resolved.cacheId
+                });
+                return { resolved, calls, connectivity };
+            } finally {
+                window.fetch = originalFetch;
+            }
+        }
+    """)
+
+    assert result["resolved"]["providerType"] == "tts"
+    assert result["resolved"]["subType"] == "doubao_tts"
+    assert result["resolved"]["voiceId"] == "S_test"
+    assert result["calls"][0]["provider_type"] == "tts"
+    assert result["calls"][0]["sub_type"] == "doubao_tts"
+    assert result["calls"][0]["voice_id"] == "S_test"
+    assert result["connectivity"]["success"] is True
+
+
+@pytest.mark.frontend
 def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, running_server: str):
     """GPT-SoVITS moved to the ttsModelProvider dropdown:
 

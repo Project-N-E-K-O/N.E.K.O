@@ -137,6 +137,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="mimo-v2.5-tts；辅助 API 选择 MiMo 时使用",
     ),
+    "doubao_tts": TTSProviderMeta(
+        name="doubao_tts",
+        category="http_sentence",
+        protocol="HTTP POST /api/v3/tts/unidirectional (NDJSON base64 audio chunks)",
+        input_streaming=False,
+        output_streaming=True,
+        client_sentence_split=True,
+        audio_format="WAV/PCM 24kHz → resample 48kHz",
+        notes="Doubao OpenSpeech seed-icl-2.0；风格控制走 additions.context_texts",
+    ),
     "elevenlabs": TTSProviderMeta(
         name="elevenlabs",
         category="ws_bistream",

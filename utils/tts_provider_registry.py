@@ -127,7 +127,7 @@ DispatchResolver = Callable[
 #   'ws_handshake' — open the WebSocket and watch the handshake for auth errors
 #                    (vLLM-Omni). 'local_http' — hit the local service over HTTP
 #                    (GPT-SoVITS). 'none' — no preflight probe.
-ProbeKind = Literal["ws_handshake", "local_http", "none"]
+ProbeKind = Literal["ws_handshake", "local_http", "http_tts", "none"]
 
 
 @dataclass(frozen=True)
