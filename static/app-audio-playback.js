@@ -689,6 +689,12 @@
         logAudioLifecycle('maybeFinalizeAssistantSpeech:enter', {
             requestedTurnId: normalizedTurnId
         });
+        if (normalizedTurnId && S.assistantTurnSettledId === normalizedTurnId) {
+            logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_already_settled', {
+                requestedTurnId: normalizedTurnId
+            });
+            return true;
+        }
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_completion_mismatch', {
                 requestedTurnId: normalizedTurnId
@@ -705,6 +711,7 @@
                 });
                 stopActiveLipSync();
                 S.isPlaying = false;
+                S.assistantTurnSettledId = normalizedTurnId;
                 dispatchAssistantSpeechEnd(normalizedTurnId);
                 return true;
             }

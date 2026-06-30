@@ -21,5 +21,22 @@ def test_playback_gate_opens_when_audio_drains_before_turn_completion():
     mismatch_block = source[mismatch_start:drained_guard_start]
 
     assert "isAssistantTurnPlaybackDrained(normalizedTurnId)" in mismatch_block
+    assert "S.assistantTurnSettledId = normalizedTurnId" in mismatch_block
     assert "dispatchAssistantSpeechEnd(normalizedTurnId)" in mismatch_block
     assert "return true" in mismatch_block
+
+
+def test_late_turn_completion_does_not_reschedule_already_settled_turn():
+    source = _source()
+    settled_guard_start = source.index(
+        "if (normalizedTurnId && S.assistantTurnSettledId === normalizedTurnId)"
+    )
+    mismatch_start = source.index(
+        "if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId)",
+        settled_guard_start,
+    )
+    settled_guard_block = source[settled_guard_start:mismatch_start]
+
+    assert "maybeFinalizeAssistantSpeech:skip_already_settled" in settled_guard_block
+    assert "return true" in settled_guard_block
+    assert "scheduleProactiveChat" not in settled_guard_block
