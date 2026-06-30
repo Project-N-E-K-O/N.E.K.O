@@ -148,6 +148,17 @@ def test_observability_emit_does_not_overwrite_live_event_bus_health_status():
     assert status["last_event_type"] == "danmaku"
 
 
+def test_live_event_health_status_ignores_duck_typed_payloads():
+    bus = EventBus()
+
+    bus.publish("result", SimpleNamespace(type="result", schema_version=1))
+
+    status = bus.status()
+    assert status["publish_count"] == 0
+    assert status["last_event_type"] == ""
+    assert status["last_publish_at"] == 0
+
+
 def test_live_ingest_status_tracks_last_published_event_for_health_rows():
     audit = _Audit()
     bus = EventBus(audit)

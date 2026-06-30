@@ -55,3 +55,16 @@ async def test_clear_profiles_resets_active_fallback_store(tmp_path, monkeypatch
     assert result["path"] == str(default / "viewer_profiles.json")
     assert await store.recent_profiles() == []
     assert json.loads((default / "viewer_profiles.json").read_text(encoding="utf-8")) == {}
+
+
+@pytest.mark.asyncio
+async def test_clear_profiles_raises_when_all_writes_fail(tmp_path, monkeypatch):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="9", nickname="blocked viewer"))
+    monkeypatch.setattr(store, "_write_json", lambda _file, _profiles: False)
+
+    with pytest.raises(OSError, match="failed to clear viewer profiles"):
+        await store.clear_profiles()
+
+    assert await store.has_roasted("9") is False
+    assert (await store.recent_profiles())[0]["uid"] == "9"

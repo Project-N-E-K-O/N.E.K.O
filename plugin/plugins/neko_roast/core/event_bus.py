@@ -27,6 +27,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .contracts import LiveEvent
+
 
 class _Subscription:
     __slots__ = ("event_type", "handler", "owner")
@@ -64,7 +66,7 @@ class EventBus:
     def publish(self, event_type: str, event: Any) -> None:
         """按类型逐订阅者隔离派发。无订阅者 = 静默丢弃。"""
         event_type = str(event_type)
-        if getattr(event, "schema_version", None) is not None and getattr(event, "type", ""):
+        if isinstance(event, LiveEvent):
             self._last_publish_at = time.time()
             self._last_event_type = event_type
             self._publish_count += 1

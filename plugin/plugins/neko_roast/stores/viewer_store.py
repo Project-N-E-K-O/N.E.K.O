@@ -119,11 +119,11 @@ class ViewerStore:
                 return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
         return {}
 
-    async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> None:
+    async def _save_all(self, profiles: dict[str, dict[str, Any]]) -> bool:
         file, custom = self._resolve_file()
         if await asyncio.to_thread(self._write_json, file, profiles):
             self._active_fallback_file = None
-            return
+            return True
         # 自定义目录写失败 → 回退默认目录（只告警一次，避免刷屏）。
         if custom:
             fallback = self._default_dir() / _STORE_FILE
@@ -132,8 +132,9 @@ class ViewerStore:
                 if not self._fallback_warned:
                     self._audit("viewer_store_fallback", f"自定义目录不可写，已回退默认目录：{fallback.parent}")
                     self._fallback_warned = True
-                return
+                return True
         self._audit("viewer_store_save_failed", f"档案写入失败：{file}")
+        return False
 
     # ── 公共 API（行为与原 KV 版一致，仅底层换成 JSON）──────────────
 
@@ -195,7 +196,9 @@ class ViewerStore:
         async with self._lock:
             profiles = await self._load_all()
             cleared = len(profiles)
-            await self._save_all({})
+            if not await self._save_all({}):
+                file, _custom = self._resolve_file()
+                raise OSError(f"failed to clear viewer profiles: {file}")
             file, _custom = self._resolve_file()
             if self._active_fallback_file is not None:
                 file = self._active_fallback_file
