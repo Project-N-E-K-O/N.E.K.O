@@ -5589,8 +5589,6 @@
     }
 
     function _handleIdleCat1PlaygroundYarnRequest(event) {
-        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
-        if (detail && detail.reason && detail.reason !== 'cat1-playground-entry') return;
         if (getCurrentChatSurfaceMode() === 'minimized') return;
         setChatSurfaceMode('minimized');
     }

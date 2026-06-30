@@ -122,7 +122,7 @@ def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
 
     assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
     assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",

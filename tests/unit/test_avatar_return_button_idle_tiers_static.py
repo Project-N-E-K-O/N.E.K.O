@@ -760,6 +760,8 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     )
     assert "setChatSurfaceMode('minimized')" in app_block
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
+    assert "detail.reason" not in app_block
+    assert "cat1-playground-entry" not in app_block
 
 
 def test_model_cat_transition_contract_is_present():
@@ -2521,7 +2523,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "Dev-only short interval for tuning cat sounds and the linked thought bubble." not in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
     assert "_NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10" in source
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10" in source
