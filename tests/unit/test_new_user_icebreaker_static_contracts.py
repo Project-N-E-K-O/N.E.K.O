@@ -525,9 +525,19 @@ def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
         1,
     )[0]
 
-    assert "return speakViaProjectTts(text, voiceKey).then(function () {" in speak_line_block
+    tts_fire_and_forget = "Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});"
+    assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
+    assert tts_fire_and_forget in speak_line_block
+    assert "return speechDurationPromise;" in speak_line_block
+    assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
+    assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
+        tts_fire_and_forget
+    )
+    assert speak_line_block.index(tts_fire_and_forget) < speak_line_block.index(
+        "return speechDurationPromise;"
+    )
 
 
 def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure():
@@ -581,7 +591,8 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
 
     assert "var session = activeSession;" in handoff_block
     assert "return appendChatMessage('assistant', text" in handoff_block
-    assert "return speakViaProjectTts(text, voiceKey)" in runtime
+    assert "function speakViaProjectTts(text, voiceKey)" in runtime
+    assert "Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block

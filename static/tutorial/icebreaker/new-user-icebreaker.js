@@ -705,11 +705,16 @@
     }
 
     function speakLine(text, voiceKey) {
-        return speakViaProjectTts(text, voiceKey).then(function () {
-            return new Promise(function (resolve) {
-                window.setTimeout(resolve, estimateSpeechDurationMs(text));
-            });
+        var speechDurationPromise = new Promise(function (resolve) {
+            window.setTimeout(resolve, estimateSpeechDurationMs(text));
         });
+        // Keep completion capped by the local speech estimate even if /speak stalls.
+        try {
+            Promise.resolve(speakViaProjectTts(text, voiceKey)).catch(function () {});
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] project TTS failed:', error);
+        }
+        return speechDurationPromise;
     }
 
     function applyAssistantTextEmotion(text) {
