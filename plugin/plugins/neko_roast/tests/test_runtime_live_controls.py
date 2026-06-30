@@ -136,6 +136,17 @@ async def test_connect_live_room_injects_live_instructions_after_listener_starts
 
 
 @pytest.mark.asyncio
+async def test_connect_live_room_resets_idle_hosting_failure_counter(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime._idle_hosting_consecutive_failures = runtime._IDLE_HOSTING_FAILURE_LIMIT
+
+    snapshot = await runtime.connect_live_room()
+
+    assert snapshot["connected"] is True
+    assert runtime._idle_hosting_consecutive_failures == 0
+
+
+@pytest.mark.asyncio
 async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: RoastRuntime) -> None:
     runtime.config.developer_tools_enabled = True
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))

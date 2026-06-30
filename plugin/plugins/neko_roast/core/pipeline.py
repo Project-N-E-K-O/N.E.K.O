@@ -162,8 +162,6 @@ class RoastPipeline:
                     already_roasted = identity.uid in self._session_roasted_uids
                     if self.ctx.config.roast_once_per_uid and not already_roasted:
                         already_roasted = await self.ctx.viewer_profile.has_roasted(identity.uid)
-                    if not already_roasted:
-                        already_roasted = identity.uid in self._session_roasted_uids
                     if not already_roasted and self.ctx.config.dry_run and event.source == "live_danmaku":
                         already_roasted = identity.uid in self._dry_run_roasted_uids
                 has_uid_lock = uid_lock is not None

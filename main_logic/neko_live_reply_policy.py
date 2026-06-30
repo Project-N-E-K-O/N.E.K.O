@@ -17,6 +17,8 @@ from typing import Any
 REPLY_TARGET_CHARS = 14
 DEFAULT_DISPATCH_REPLY_CHARS = 28
 DISPATCH_REPLY_CHAR_LIMITS = {
+    "avatar_roast": 32,
+    "danmaku_response": 28,
     "warmup_hosting": 56,
     "idle_hosting": 64,
     "active_engagement": 72,
