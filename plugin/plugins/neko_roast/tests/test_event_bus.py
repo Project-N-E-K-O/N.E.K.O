@@ -124,3 +124,40 @@ def test_super_chat_jpn_routes_to_super_chat_bus_key():
     assert live_event.type == "super_chat"
     assert live_event.uid == "42"
     assert live_event.payload["raw_type"] == "SUPER_CHAT_MESSAGE_JPN"
+
+
+def test_publish_updates_status_for_runtime_health_rows():
+    bus = EventBus()
+
+    bus.publish("danmaku", LiveEvent(type="danmaku", uid="1"))
+
+    status = bus.status()
+    assert status["publish_count"] == 1
+    assert status["last_event_type"] == "danmaku"
+    assert status["last_publish_at"] > 0
+
+
+def test_observability_emit_does_not_overwrite_live_event_bus_health_status():
+    bus = EventBus()
+
+    bus.publish("danmaku", LiveEvent(type="danmaku", uid="1"))
+    bus.emit("result", {"status": "dry_run"})
+
+    status = bus.status()
+    assert status["publish_count"] == 1
+    assert status["last_event_type"] == "danmaku"
+
+
+def test_live_ingest_status_tracks_last_published_event_for_health_rows():
+    audit = _Audit()
+    bus = EventBus(audit)
+    module = BiliLiveIngestModule()
+    module.ctx = SimpleNamespace(audit=audit, event_bus=bus)
+    module._room_id = 100
+    event = SimpleNamespace(uid=42, nickname="User", text="hi", room_id=100, guard_level=0)
+
+    module._on_live_event("DANMU_MSG", event)
+
+    status = module.status()
+    assert status["last_event_type"] == "danmaku"
+    assert status["last_event_at"] > 0
