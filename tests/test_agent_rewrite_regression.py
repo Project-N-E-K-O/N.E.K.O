@@ -1833,6 +1833,9 @@ def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predict
     )[0]
     assert "window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()" in live2d_inner
     assert "window.NekoAvatarFloatingBoot.markUserModelBootSkipped('live2d-init')" in live2d_inner
+    assert "async function autoInitMMDOnMainPage()" in mmd_init_source
+    assert "window.autoInitMMDOnMainPage = autoInitMMDOnMainPage;" in mmd_init_source
+    assert "autoInitMMDOnMainPage();" in mmd_init_source
 
     self_heal_block = live2d_init_source.split("function _nekoShouldSelfHealLive2D()", 1)[1].split(
         "function scheduleLive2DConfigRetry",
@@ -1941,14 +1944,19 @@ def test_avatar_floating_direct_boot_does_not_wait_for_user_floating_buttons():
     assert "beginDirectTutorialLoading" not in claim_block
     assert "state.predictionSuppressed = false;" not in mark_skipped_block
     assert "await window.showCurrentModel();" in recovery_block
-    assert recovery_block.index("await window.initLive2DModel();") < recovery_block.index("await window.showCurrentModel();")
+    assert recovery_block.index("await window.initLive2DModel();") < recovery_block.rindex("await window.showCurrentModel();")
     assert "await window.initMMDModel();" in recovery_block
+    assert "await window.autoInitMMDOnMainPage();" in recovery_block
     assert "const isMmdModel = modelType === 'live3d' && subType === 'mmd';" in recovery_block
     mmd_branch = recovery_block.split("if (isMmdModel) {", 1)[1].split(
         "} else if ((modelType === 'vrm' || modelType === 'live3d')",
         1,
     )[0]
-    assert "return false;" not in mmd_branch
+    assert "return false;" not in mmd_branch.split("await window.showCurrentModel();", 1)[0]
+    assert "return true;" not in mmd_branch.split("await window.initMMDModel();", 1)[1].split(
+        "await window.showCurrentModel();",
+        1,
+    )[0]
     assert recovery_block.index("if (isMmdModel) {") < recovery_block.index("await window.showCurrentModel();")
 
 

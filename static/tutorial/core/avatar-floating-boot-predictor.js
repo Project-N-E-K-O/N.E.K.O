@@ -305,10 +305,20 @@
         try {
             const isMmdModel = modelType === 'live3d' && subType === 'mmd';
             if (isMmdModel) {
+                if (typeof window.autoInitMMDOnMainPage === 'function') {
+                    await window.autoInitMMDOnMainPage();
+                    if (window.mmdManager && window.mmdManager.currentModel) {
+                        return true;
+                    }
+                }
                 if (typeof window.initMMDModel === 'function') {
                     await window.initMMDModel();
+                }
+                if (typeof window.showCurrentModel === 'function') {
+                    await window.showCurrentModel();
                     return true;
                 }
+                return false;
             } else if ((modelType === 'vrm' || modelType === 'live3d') && typeof window.initVRMModel === 'function') {
                 await window.initVRMModel();
                 return true;
