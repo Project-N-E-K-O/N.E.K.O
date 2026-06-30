@@ -6,7 +6,14 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules, viewer_session_context_block
+from .._prompt_context import (
+    anti_repeat_rules,
+    live_output_quality_rules,
+    recent_context_block,
+    short_reply_rules,
+    sustained_charm_rules,
+    viewer_session_context_block,
+)
 
 
 class AvatarRoastModule(BaseModule):
@@ -103,12 +110,17 @@ class AvatarRoastModule(BaseModule):
             "Use the host beat reply_affordance as the only reply hook; do not add a second question.",
             "Use the host beat fun_axis as the line's purpose; do not drift into generic hosting.",
             "Make it feel like a spontaneous host beat, with a little NEKO personality and no formal opening.",
+            "The final line must be a complete sentence; never end with an unfinished word or dangling choice.",
+            "Do not use punishment, public-shaming, trial, labor-camp, or real-person judgment language.",
+            "Do not say \u516c\u5f00\u793a\u4f17, \u52b3\u6539, \u5ba1\u5224, \u5904\u5211, or \u60e9\u7f5a.",
             "Do not pretend a viewer sent a message.",
             "Do not announce that nobody is talking or that the room is silent.",
             "Do not use generic welcome slogans, direct interaction requests, or attendance-check lines.",
             "Do not mention viewer absence, silence metrics, queues, timing controls, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it natural, low-pressure, and specific enough to avoid template-hosting.",
+            *live_output_quality_rules(kind="host"),
+            *sustained_charm_rules(kind="host"),
             *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
             "Output only the line NEKO should say.",
@@ -208,6 +220,8 @@ class AvatarRoastModule(BaseModule):
             "Current danmaku wins over any previous reply.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             f"Tone: {strength_hint}. Pacing: {pace}",
+            *live_output_quality_rules(),
+            *sustained_charm_rules(),
             "Output only NEKO's one-line first-appearance roast. No explanation, no prefix, no suffix, no rule recap.",
         ]
         return (

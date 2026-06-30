@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import re
+
 from ...core import active_topic_rules
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
-from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules, viewer_session_context_block
+from .._prompt_context import (
+    anti_repeat_rules,
+    live_output_quality_rules,
+    recent_context_block,
+    short_reply_rules,
+    sustained_charm_rules,
+    viewer_session_context_block,
+)
 from .._base import BaseModule
 
 
@@ -49,6 +58,7 @@ class DanmakuResponseModule(BaseModule):
         nickname = identity.nickname or identity.uid or "this viewer"
         danmaku = (event.danmaku_text or "").strip()
         danmaku_profile = DanmakuResponseModule._danmaku_profile(danmaku)
+        anchor_hint = DanmakuResponseModule._anchor_hint(danmaku)
         mode_contract = DanmakuResponseModule._mode_contract(event.live_mode)
         strength_hint = {
             "gentle": "soft, warm, and companionable",
@@ -64,10 +74,14 @@ class DanmakuResponseModule(BaseModule):
             "Only continue an old thread if the current danmaku explicitly continues that exact thread.",
             "Do not answer @other-viewer messages as a call to NEKO unless NEKO is the mentioned target.",
             "Do not repeat first-appearance, avatar, ID, or entrance-roast templates.",
-            "Only mention avatar or nickname if the current danmaku itself makes that relevant.",
+            "Make the target legible: keep one visible anchor from the current danmaku, such as the viewer nickname, a 2-6 character quote, or a concrete noun from the danmaku.",
+            "Do not make every reply start with the nickname; use the nickname only when the line would otherwise be ambiguous.",
+            "Only mention avatar if the current danmaku itself makes that relevant.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Do not launch a new show segment, special plan, topic poll, reward bit, or audience-suggestion prompt.",
             "Keep one short TTS-friendly line.",
+            *live_output_quality_rules(),
+            *sustained_charm_rules(),
             *DanmakuResponseModule._profile_rules(danmaku_profile["kind"]),
             *anti_repeat_rules(),
             *short_reply_rules(),
@@ -83,6 +97,7 @@ class DanmakuResponseModule(BaseModule):
             f"danmaku_profile: {danmaku_profile['kind']}\n"
             f"reply_target: {danmaku_profile['reply_target']}\n"
             f"reply_shape: {danmaku_profile['reply_shape']}\n"
+            f"anchor_hint: {anchor_hint or '(none)'}\n"
             f"mode_contract: {mode_contract}\n"
             f"tone: {strength_hint}\n\n"
             + recent_context
@@ -154,7 +169,23 @@ class DanmakuResponseModule(BaseModule):
             "danmaku_profile": profile["kind"],
             "danmaku_reply_target": profile["reply_target"],
             "danmaku_reply_shape": profile["reply_shape"],
+            "danmaku_anchor_hint": DanmakuResponseModule._anchor_hint(event.danmaku_text or ""),
         }
+
+    @staticmethod
+    def _anchor_hint(danmaku: str) -> str:
+        text = str(danmaku or "").strip()
+        first_clause = re.split(r"[\s，,。.!！?？、；;：:]+", text, maxsplit=1)[0] if text else ""
+        dense = DanmakuResponseModule._dense_text(first_clause or text)
+        if not dense or active_topic_rules._is_reaction_only(dense):
+            return ""
+        if len(dense) <= 6:
+            return dense
+        for start in range(0, min(len(dense), 10), 2):
+            candidate = dense[start : start + 6]
+            if len(candidate) >= 2 and not active_topic_rules._is_reaction_only(candidate):
+                return candidate
+        return dense[:6]
 
     @staticmethod
     def _profile_rules(kind: str) -> list[str]:

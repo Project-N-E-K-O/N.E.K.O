@@ -165,13 +165,13 @@ def idle_hosting_beat_candidates() -> list[dict[str, Any]]:
             "reply_affordance": "viewer can pick raised tail or curled tail",
         },
         {
-            "key": "idle:pretend-expert",
+            "key": "idle:steady-three-sec",
             "live_column": "NEKO three-second challenge",
             "shape": "micro_challenge",
             "fun_axis": "micro_challenge",
-            "title": "猫猫三秒假装懂很多",
-            "hint": "Make one tiny self-challenge about pretending to be knowledgeable.",
-            "reply_affordance": "viewer can judge whether NEKO looked convincing",
+            "title": "猫猫三秒假装很稳",
+            "hint": "Make one tiny self-challenge about staying composed; do not explain anything.",
+            "reply_affordance": "viewer can judge whether NEKO stayed steady",
         },
         {
             "key": "idle:keyboard-patrol",

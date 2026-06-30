@@ -5,6 +5,7 @@ import pytest
 
 from plugin.plugins.neko_roast.adapters.bili_auth_service import BiliAuthService
 from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
+from plugin.plugins.neko_roast.core import active_topic_rules
 from plugin.plugins.neko_roast.core.contracts import (
     InteractionRequest,
     InteractionResult,
@@ -67,6 +68,31 @@ def test_danmaku_response_prompt_is_not_avatar_roast_template():
     assert "Do not repeat first-appearance" in request.prompt_text
     assert "avatar" in request.prompt_text
     assert "only host on stage" in request.prompt_text
+
+
+def test_danmaku_response_prompt_requires_visible_target_anchor():
+    module = DanmakuResponseModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    event = ViewerEvent(
+        uid="42",
+        nickname="方块km",
+        danmaku_text="别怀疑啦，就是你想的那样",
+        source="live_danmaku",
+        live_mode="solo_stream",
+    )
+
+    request = module.build_request(
+        event,
+        ViewerIdentity(uid="42", nickname="方块km"),
+        ViewerProfile(uid="42", nickname="方块km", roast_count=1),
+    )
+
+    assert "Make the target legible" in request.prompt_text
+    assert "viewer nickname, a 2-6 character quote, or a concrete noun" in request.prompt_text
+    assert "anchor_hint: 别怀疑啦" in request.prompt_text
+    assert request.metadata["danmaku_anchor_hint"] == "别怀疑啦"
+    assert "Do not make every reply start with the nickname" in request.prompt_text
+    assert "Only mention avatar if the current danmaku itself makes that relevant." in request.prompt_text
 
 
 def test_danmaku_response_prompt_profiles_tiny_reactions():
@@ -374,6 +400,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
     short_contract = "Hard length limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words."
+    host_contract = "Default host length: one compact sentence; occasional two short sentences are allowed for a fun host beat."
 
     danmaku = DanmakuResponseModule()
     danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
@@ -413,24 +440,44 @@ def test_live_interaction_prompts_share_short_reply_contract():
     )
 
     common_rules = [
-        short_contract,
-        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
-        "Do not chain multiple clauses with commas",
+        "Avoid comma chains; if the draft has too many clauses, cut the weakest side.",
         "Avoid repeated presence checks like anyone here, still here, 有人吗, 还在吗, or 在不在",
+        "Avoid empty praise like interesting, has a vibe, has a joke, 有点意思, 有点东西, or 很有梗",
+        "Do not use 喵 as the whole punchline or default ending",
+        "If the draft needs hidden context, expert knowledge, or a guessed viewer intention",
+        "Do not invent a dilemma, punishment, report, trial, labor-camp, public-shaming",
+        "Forbidden words: 公开示众, 劳改, 审判, 处刑, 惩罚.",
+        "Do not force a technical, game-specific, guide, tutorial, or news title into a fake expert question.",
+        "Never output an unfinished choice; do not end with 还是, 或者, or or.",
+        "Avoid unclear abstract choices; each option must be ordinary, complete, and immediately understandable.",
+        "Keep NEKO's presence cumulative: each line should feel like the same live cat host, not a reset template.",
+        "Use tiny recurring motifs sparingly, such as paw, tail, nest, desk, room weather, stamp, patrol, or password.",
+        "Switch motif when recent material already used the same tiny scene, object, or callback shape.",
+        "Prefer a fresh micro-scene over abstract hosting language.",
     ]
     reply_rules = [
+        short_contract,
+        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
+        "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",
         "If the viewer's danmaku is short, answer even shorter.",
         "For one-word or very short danmaku, answer with a tiny reaction.",
         "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",
         "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one.",
+        "If the current danmaku clearly answers a recent tiny hook, acknowledge the answer first without repeating the old prompt.",
+        "Carry only a tiny emotional echo from recent host material; do not continue old wording or topic by default.",
     ]
     host_rules = [
-        "If the room is quiet, keep the line even smaller.",
-        "One small host beat only; if asking, ask one concrete low-pressure question.",
-        "If recent context was longer than this host beat, shrink the line instead of matching it.",
-        "No explanation, no setup, no second sentence, no extra follow-up after the concrete hook.",
+        host_contract,
+        "Usually keep the host beat within 36 Chinese chars; a rare flavorful beat may reach about 60.",
+        "If the room is quiet, keep the line smaller unless the material itself is especially fun.",
+        "One host beat only; if asking, ask one concrete low-pressure question.",
+        "If recent context was longer than this host beat, do not match its length by default.",
+        "No explanation, no setup, no extra follow-up after the concrete hook.",
+        "For host beats, make it feel like one bead in a tiny live column: room image, verdict, patrol, weather, password, or challenge.",
+        "Do not announce the column name; let the format show through the line.",
+        "After a callback-style host beat, leave space for viewer answers instead of adding a second prompt.",
     ]
 
     for request in [danmaku_request, avatar_request, idle_request, warmup_request, active_request]:
@@ -440,11 +487,13 @@ def test_live_interaction_prompts_share_short_reply_contract():
     for request in [danmaku_request, avatar_request]:
         for rule in reply_rules:
             assert rule in request.prompt_text
-        assert "One small host beat only; if asking, ask one concrete low-pressure question." not in request.prompt_text
+        assert host_contract not in request.prompt_text
+        assert "One host beat only; if asking, ask one concrete low-pressure question." not in request.prompt_text
 
     for request in [idle_request, warmup_request, active_request]:
         for rule in host_rules:
             assert rule in request.prompt_text
+        assert short_contract not in request.prompt_text
         assert "If the viewer's danmaku is short, answer even shorter." not in request.prompt_text
         assert (
             "No explanation, no setup, no second sentence, no follow-up question unless the current danmaku asks one."
@@ -722,7 +771,9 @@ def test_active_engagement_prompt_turns_shape_into_concrete_task():
     assert "NEKO live column: NEKO micro poll" in request.prompt_text
     assert "topic pack: micro_poll" in request.prompt_text
     assert "viewer reply path: viewer can answer with one side" in request.prompt_text
-    assert "avoid yes/no questions" in request.prompt_text
+    assert "both options are obvious and ordinary" in request.prompt_text
+    assert "Start from a clear anchor" in request.prompt_text
+    assert "The final line must be a complete sentence" in request.prompt_text
 
 
 def test_active_engagement_prompt_blocks_broad_engagement_bait():
@@ -739,6 +790,39 @@ def test_active_engagement_prompt_blocks_broad_engagement_bait():
     assert "Do not ask viewers to choose the stream topic for NEKO" in request.prompt_text
     assert "Do not say get the chat moving" in request.prompt_text
     assert "Do not say 大家快来互动, 弹幕刷起来, 接下来我们, or 特别企划." in request.prompt_text
+
+
+def test_active_engagement_rejects_low_confidence_weird_topics():
+    assert not active_topic_rules._is_meaningful_active_topic_text("\u770b\u8fd9\u4e2a\u6838\u7535\u7ad9\u653b\u7565")
+    assert active_topic_rules._active_topic_filter_reason("\u770b\u8fd9\u4e2a\u6838\u7535\u7ad9\u653b\u7565") == "low_confidence_topic"
+    assert not active_topic_rules._is_meaningful_active_topic_text("\u6cf0\u62c9\u745e\u4e9a\u91cc\u9020\u7535\u8111")
+    assert not active_topic_rules._is_meaningful_active_topic_text("\u732b\u732b\u5047\u88c5\u4e13\u5bb6\u61c2\u5f88\u591a")
+    assert active_topic_rules._active_topic_filter_reason("\u732b\u732b\u5047\u88c5\u4e13\u5bb6\u61c2\u5f88\u591a") == "low_confidence_topic"
+    assert active_topic_rules._active_topic_material_profile("\u6cf0\u62c9\u745e\u4e9a\u91cc\u9020\u7535\u8111") == {}
+
+
+def test_live_material_filter_rejects_mojibake_and_judgment_language():
+    assert not active_topic_rules._is_clean_live_material(
+        {
+            "title": "鐚尗涓夌鍋囪鎳傚緢澶?",
+            "hint": "Make one tiny line.",
+            "reply_affordance": "viewer can reply",
+        }
+    )
+    assert not active_topic_rules._is_clean_live_material(
+        {
+            "title": "\u628a\u8fd9\u79cd\u4eba\u516c\u5f00\u793a\u4f17\u8fd8\u662f\u9001\u53bb\u52b3\u6539",
+            "hint": "Make one tiny line.",
+            "reply_affordance": "viewer can reply",
+        }
+    )
+    assert active_topic_rules._is_clean_live_material(
+        {
+            "title": "\u732b\u732b\u7ed9\u7a7a\u6c14\u76d6\u4e00\u679a\u5b89\u9759\u7ae0",
+            "hint": "Make one tiny mood-stamp line.",
+            "reply_affordance": "viewer can answer with one stamp word",
+        }
+    )
 
 
 def test_warmup_hosting_prompt_is_opening_not_idle_filler():
@@ -961,6 +1045,32 @@ async def test_dispatcher_marks_live_requests_with_short_reply_contract():
     assert plugin.metadata["live_reply_contract"] == "short_tts_line"
     assert plugin.metadata["max_reply_chars"] == 28
     assert plugin.metadata["response_module_hint"] == "avatar_roast"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_allows_longer_host_reply_contracts():
+    class Plugin:
+        def __init__(self):
+            self.metadata = None
+
+        def push_message(self, **kwargs):
+            self.metadata = kwargs["metadata"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
+        identity=ViewerIdentity(uid="__neko_active__", nickname="NEKO"),
+        profile=ViewerProfile(uid="__neko_active__", nickname="NEKO"),
+        prompt_text="reply",
+        live_mode="solo_stream",
+        strength="normal",
+    )
+
+    await NekoDispatcher(plugin).push_roast(request)
+
+    assert plugin.metadata["live_reply_contract"] == "short_tts_line"
+    assert plugin.metadata["max_reply_chars"] == 72
+    assert plugin.metadata["response_module_hint"] == "active_engagement"
 
 
 @pytest.mark.asyncio

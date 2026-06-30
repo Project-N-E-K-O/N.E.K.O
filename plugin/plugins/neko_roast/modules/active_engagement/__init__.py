@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules
+from .._prompt_context import (
+    anti_repeat_rules,
+    live_output_quality_rules,
+    recent_context_block,
+    short_reply_rules,
+    sustained_charm_rules,
+)
 
 
 class ActiveEngagementModule(BaseModule):
@@ -57,14 +63,20 @@ class ActiveEngagementModule(BaseModule):
             "NEKO is the only host on stage in solo_stream.",
             "Create exactly one small live-room engagement beat as NEKO.",
             "Make it specific enough that a viewer can naturally reply, without begging for comments.",
+            "Start from a clear anchor: mention the concrete thing NEKO noticed before asking anything.",
             "Use the topic material as raw material only; transform it into NEKO's own live-room line.",
+            "If the topic is technical, game-specific, or unfamiliar, do not pretend expertise; make a light surface reaction instead.",
             "If a NEKO live column is provided, use it as the tiny engagement format without announcing a formal segment.",
             "Follow the requested topic shape when present: either_or, light_stance, tiny_tease, or small_challenge.",
             "Every active engagement line must give viewers one concrete reply handle.",
             "Use the provided viewer reply path as the only reply handle; do not add a second question.",
             "Use the provided fun axis as the line's purpose; do not drift into generic hosting.",
             "The reply handle must be an A/B choice, one-word answer, tiny stance, or playful yes/no-with-a-side.",
+            "Only use A/B when both sides are obvious, ordinary, and complete; otherwise make one tiny stance instead.",
             "Prefer one tiny observation over a plan, segment, or open-ended topic survey.",
+            "The final line must be a complete sentence; never end with an unfinished word or dangling 'or'.",
+            "Do not use punishment, public-shaming, trial, labor-camp, or real-person judgment language.",
+            "Do not say \u516c\u5f00\u793a\u4f17, \u52b3\u6539, \u5ba1\u5224, \u5904\u5211, or \u60e9\u7f5a.",
             "Do not use generic host slogans like 'everyone interact' or 'say something in chat'.",
             "Never address the whole room with broad audience-bait openings like everyone, anyone, chat, 大家, or 你们.",
             "Do not use generic Chinese host lines equivalent to 'everyone interact', 'start sending danmaku', or 'come chat'.",
@@ -76,6 +88,8 @@ class ActiveEngagementModule(BaseModule):
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not pretend a viewer sent a message.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
+            *live_output_quality_rules(kind="host"),
+            *sustained_charm_rules(kind="host"),
             "Keep one short TTS-friendly line.",
             *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
@@ -140,7 +154,7 @@ class ActiveEngagementModule(BaseModule):
     @staticmethod
     def _shape_task_text(shape: str) -> str:
         return {
-            "either_or": "turn the title into one A/B choice; make both options concrete and avoid yes/no questions.",
+            "either_or": "turn the title into one A/B choice only if both options are obvious and ordinary; otherwise use a tiny stance.",
             "light_stance": "give one small NEKO-flavored stance that viewers can agree or disagree with quickly.",
             "tiny_tease": "make one tiny playful tease about the topic without attacking viewers or sounding hostile.",
             "small_challenge": "offer one tiny low-pressure challenge that viewers can answer in a few words.",

@@ -6,12 +6,59 @@ from typing import Any
 
 
 SHORT_REPLY_CONTRACT = "Hard length limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words."
+HOST_REPLY_CONTRACT = (
+    "Default host length: one compact sentence; occasional two short sentences are allowed for a fun host beat."
+)
 RECENT_CONTEXT_DEFAULT_LIMIT = 12
 RECENT_CONTEXT_LINE_LIMIT = 56
 VIEWER_CONTEXT_LINE_LIMIT = 44
 NEKO_ALREADY_SAID_MARKER = " / NEKO already said: "
 REPLY_PATH_MARKER = " / reply: "
 SPENT_OUTPUT_FAMILY_MARKER = " / spent_output_family="
+
+
+def live_output_quality_rules(*, kind: str = "reply") -> list[str]:
+    shared = [
+        "If the draft needs hidden context, expert knowledge, or a guessed viewer intention, replace it with a simpler surface reaction.",
+        "Do not invent a dilemma, punishment, report, trial, labor-camp, public-shaming, or real-person moral judgment.",
+        "Forbidden words: \u516c\u5f00\u793a\u4f17, \u52b3\u6539, \u5ba1\u5224, \u5904\u5211, \u60e9\u7f5a.",
+        "Do not force a technical, game-specific, guide, tutorial, or news title into a fake expert question.",
+        "If the topic is unfamiliar, mention only the visible surface anchor and make one small NEKO reaction.",
+        "Never output an unfinished choice; do not end with \u8fd8\u662f, \u6216\u8005, or or.",
+        "Avoid unclear abstract choices; each option must be ordinary, complete, and immediately understandable.",
+    ]
+    if kind == "host":
+        return [
+            *shared,
+            "For host beats, prefer a safe room observation over a clever but unclear question.",
+            "If the host hook feels strained, output one tiny stance instead of asking viewers to choose.",
+        ]
+    return [
+        *shared,
+        "For danmaku replies, answer the current danmaku before adding any joke.",
+        "If the danmaku itself is unclear, say one tiny reaction instead of inventing its meaning.",
+    ]
+
+
+def sustained_charm_rules(*, kind: str = "reply") -> list[str]:
+    shared = [
+        "Keep NEKO's presence cumulative: each line should feel like the same live cat host, not a reset template.",
+        "Use tiny recurring motifs sparingly, such as paw, tail, nest, desk, room weather, stamp, patrol, or password.",
+        "Switch motif when recent material already used the same tiny scene, object, or callback shape.",
+        "Prefer a fresh micro-scene over abstract hosting language.",
+    ]
+    if kind == "host":
+        return [
+            *shared,
+            "For host beats, make it feel like one bead in a tiny live column: room image, verdict, patrol, weather, password, or challenge.",
+            "Do not announce the column name; let the format show through the line.",
+            "After a callback-style host beat, leave space for viewer answers instead of adding a second prompt.",
+        ]
+    return [
+        *shared,
+        "If the current danmaku clearly answers a recent tiny hook, acknowledge the answer first without repeating the old prompt.",
+        "Carry only a tiny emotional echo from recent host material; do not continue old wording or topic by default.",
+    ]
 
 
 def _compact_context_line(value: Any, *, limit: int) -> str:
@@ -62,24 +109,30 @@ def _compact_plain(text: str, *, limit: int) -> str:
 
 def short_reply_rules(*, kind: str = "reply") -> list[str]:
     shared = [
-        SHORT_REPLY_CONTRACT,
-        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
+        "The line must be complete; never end mid-word, mid-clause, or with an unfinished choice.",
         "Prefer a compact live punchline over explanation, setup, or follow-up commentary.",
         "Do not turn a reply into a host script, segment intro, plan, or audience survey.",
-        "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",
+        "Avoid comma chains; if the draft has too many clauses, cut the weakest side.",
         "Avoid phrases like special plan, everyone look, next let's, what should we talk about, or tell me what you want.",
-        "Avoid repeated presence checks like anyone here, still here, 有人吗, 还在吗, or 在不在; use a concrete tiny beat instead.",
+        "Avoid repeated presence checks like anyone here, still here, \u6709\u4eba\u5417, \u8fd8\u5728\u5417, or \u5728\u4e0d\u5728; use a concrete tiny beat instead.",
+        "Avoid empty praise like interesting, has a vibe, has a joke, \u6709\u70b9\u610f\u601d, \u6709\u70b9\u4e1c\u897f, or \u5f88\u6709\u6897; make one tiny concrete judgment instead.",
+        "Do not use \u55b5 as the whole punchline or default ending; the line must still have a real live-room point.",
     ]
     if kind == "host":
         return [
+            HOST_REPLY_CONTRACT,
             *shared,
-            "If the room is quiet, keep the line even smaller.",
-            "One small host beat only; if asking, ask one concrete low-pressure question.",
-            "If recent context was longer than this host beat, shrink the line instead of matching it.",
-            "No explanation, no setup, no second sentence, no extra follow-up after the concrete hook.",
+            "Usually keep the host beat within 36 Chinese chars; a rare flavorful beat may reach about 60.",
+            "If the room is quiet, keep the line smaller unless the material itself is especially fun.",
+            "One host beat only; if asking, ask one concrete low-pressure question.",
+            "If recent context was longer than this host beat, do not match its length by default.",
+            "No explanation, no setup, no extra follow-up after the concrete hook.",
         ]
     return [
+        SHORT_REPLY_CONTRACT,
+        "One breath only: no more than 20 Chinese chars or 10 English words when the idea still works.",
         *shared,
+        "Do not chain multiple clauses with commas; if the draft has a comma, cut one side.",
         "If the viewer's danmaku is short, answer even shorter.",
         "For one-word or very short danmaku, answer with a tiny reaction.",
         "If recent context was longer than the current danmaku, shrink the reply instead of matching it.",

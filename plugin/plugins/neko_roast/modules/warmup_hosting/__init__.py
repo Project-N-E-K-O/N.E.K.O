@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from .._base import BaseModule
-from .._prompt_context import anti_repeat_rules, recent_context_block, short_reply_rules
+from .._prompt_context import (
+    anti_repeat_rules,
+    live_output_quality_rules,
+    recent_context_block,
+    short_reply_rules,
+    sustained_charm_rules,
+)
 
 
 class WarmupHostingModule(BaseModule):
@@ -51,6 +57,8 @@ class WarmupHostingModule(BaseModule):
             "Do not mention silence, metrics, cooldowns, queues, dry_run, or system state.",
             "Do not invent or hard-code streamer relationship labels; use profile memory if available, otherwise avoid naming the streamer.",
             "Keep it TTS-friendly and easy to continue from.",
+            *live_output_quality_rules(kind="host"),
+            *sustained_charm_rules(kind="host"),
             *anti_repeat_rules(kind="host"),
             *short_reply_rules(kind="host"),
             "Output only NEKO's line.",
