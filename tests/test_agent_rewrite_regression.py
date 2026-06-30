@@ -1804,6 +1804,7 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "window.nekoTutorialLoadingOverlay" in predictor_source
     assert "function isPcLoadingOverlayBridge(bridge)" in predictor_source
     assert "window.nekoTutorialOverlay.loadingOverlay" in predictor_source
+    assert "isPcLoadingOverlayBridge(window.nekoTutorialOverlay)" in predictor_source
     assert "window.nekoTutorialOverlay.beginLoading" in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
     assert "emotion_model_icon.png" in predictor_source

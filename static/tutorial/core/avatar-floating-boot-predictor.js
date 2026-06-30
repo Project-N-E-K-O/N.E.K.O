@@ -227,6 +227,9 @@
         if (window.nekoTutorialOverlay && isPcLoadingOverlayBridge(window.nekoTutorialOverlay.loadingOverlay)) {
             return window.nekoTutorialOverlay.loadingOverlay;
         }
+        if (isPcLoadingOverlayBridge(window.nekoTutorialOverlay)) {
+            return window.nekoTutorialOverlay;
+        }
         if (
             window.nekoTutorialOverlay
             && typeof window.nekoTutorialOverlay.beginLoading === 'function'
