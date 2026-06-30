@@ -18,7 +18,8 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
-    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+    var CHAT_MINIMIZED_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
     // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
     // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
     // instead of the active compact yarn ball. Strictly gated on the restorable
@@ -393,6 +394,10 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
+    // surface 锚点跟踪：拖拽/缩放会话每帧同步保证跟手；静止时只做短暂 settle，
+    // 后续由 layout/avatar/resize/geometry 事件重新唤醒，避免 compact 打开后长期空转。
+    var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;
+    var compactSurfaceTrackingSettleFramesRemaining = 0;
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -464,6 +469,7 @@
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
         }
+        // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         scheduleCompactMinimizeBallTracking();
     }
 
@@ -2034,8 +2040,18 @@
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
+        compactSurfaceTrackingSettleFramesRemaining = 0;
         compactSurfacePendingModelOpen = false;
         clearCompactSurfaceAnchor();
+    }
+
+    function isCompactSurfaceTrackingActive() {
+        return !!(
+            (dragState && dragState.compactSurface) ||
+            compactSurfaceDesktopDragActive ||
+            compactSurfaceResizeSession ||
+            compactSurfaceDesktopResizeActive
+        );
     }
 
     function scheduleCompactMinimizeBallTracking() {
@@ -2043,6 +2059,7 @@
             stopCompactMinimizeBallTracking();
             return;
         }
+        compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
         if (compactMinimizeBallFrame) {
             return;
         }
@@ -2053,8 +2070,17 @@
                 stopCompactMinimizeBallTracking();
                 return;
             }
+            var trackingActive = isCompactSurfaceTrackingActive();
+            if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {
+                return;
+            }
             syncCompactSurfaceAnchor();
             syncCompactInteractionGeometry();
+            if (trackingActive) {
+                compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
+            } else {
+                compactSurfaceTrackingSettleFramesRemaining -= 1;
+            }
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
@@ -5447,6 +5473,7 @@
             ballIcon.src = legacyFull
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            ballIcon.srcset = legacyFull ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
         }
         var shell = getShell();
         if (shell) {
@@ -5463,9 +5490,11 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = isLegacyFullMinimizedBall()
+            var legacyFullIcon = isLegacyFullMinimizedBall();
+            icon.src = legacyFullIcon
                 ? CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
                 : CHAT_MINIMIZED_BALL_ICON_SRC;
+            icon.srcset = legacyFullIcon ? '' : CHAT_MINIMIZED_BALL_ICON_SRCSET;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -6206,6 +6235,9 @@
 
         shell.classList.add('is-dragging');
         document.body.classList.add('react-chat-window-dragging');
+        if (compactSurface) {
+            scheduleCompactMinimizeBallTracking();
+        }
     }
 
     function updateDrag(clientX, clientY) {

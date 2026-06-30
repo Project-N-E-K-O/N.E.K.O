@@ -289,6 +289,25 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
     assert failure.index("stopGameVoiceSttGate({ restoreOrdinaryMic: false });") < throw_index
 
 
+def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    render_start = source.index("window.renderFloatingMicList = async function")
+    render_end = source.index("function updateMicListSelection()", render_start)
+    render = source[render_start:render_end]
+
+    assert "var hasMicrophoneDevices = audioInputs.length > 0;" in render
+    assert "micPopup.appendChild(noMicItem);\n                return true;" not in render
+
+    layout_index = render.index("// ===== 双栏布局 =====")
+    speaker_index = render.index("speakerContainer.className = 'speaker-volume-container';")
+    devices_guard_index = render.index("if (hasMicrophoneDevices) {")
+    no_devices_index = render.index("noMicItem.textContent = window.t ? window.t('microphone.noDevices')")
+
+    assert layout_index < speaker_index < devices_guard_index < no_devices_index
+    assert "gainSlider.disabled = true;" in render
+    assert "rightColumn.appendChild(noMicItem);" in render
+
+
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
     source = _read(APP_BUTTONS_PATH)
     start_flow = _mic_button_start_flow(source)

@@ -6,7 +6,7 @@ import copy
 
 import pytest
 
-from plugin.core.communication import PluginCommunicationResourceManager
+from plugin.core.communication import STARTUP_RESULT_REQ_ID, PluginCommunicationResourceManager
 from plugin.core.state import state
 
 
@@ -105,6 +105,76 @@ async def test_run_on_owner_loop_falls_back_when_owner_loop_not_running() -> Non
     result = await manager._run_on_owner_loop(asyncio.sleep(0, result="ok"))
 
     assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_startup_rejects_ready_result_with_startup_error() -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._startup_result = {
+        "req_id": STARTUP_RESULT_REQ_ID,
+        "success": True,
+        "data": {
+            "status": "ready",
+            "startup_error": "lifecycle.startup failed",
+        },
+        "error": None,
+    }
+
+    with pytest.raises(RuntimeError, match="lifecycle\\.startup failed"):
+        await manager.wait_for_startup(timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_startup_allows_startup_error_when_requested() -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._startup_result = {
+        "req_id": STARTUP_RESULT_REQ_ID,
+        "success": False,
+        "data": {
+            "status": "failed",
+            "startup_error": "lifecycle.startup failed",
+        },
+        "error": "lifecycle.startup failed",
+    }
+
+    result = await manager.wait_for_startup(timeout=0.1, allow_startup_error=True)
+
+    assert result == {
+        "status": "failed",
+        "startup_error": "lifecycle.startup failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_wait_for_startup_uses_result_dispatched_before_wait_call() -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+
+    await manager.prepare_startup_wait()
+    manager._dispatch_result(
+        {
+            "req_id": STARTUP_RESULT_REQ_ID,
+            "success": True,
+            "data": {"status": "ready"},
+            "error": None,
+        }
+    )
+
+    result = await manager.wait_for_startup(timeout=0.01)
+
+    assert result == {"status": "ready"}
+    assert STARTUP_RESULT_REQ_ID not in manager._pending_futures
 
 
 @pytest.mark.asyncio

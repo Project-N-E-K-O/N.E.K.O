@@ -1068,7 +1068,7 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
-def test_legacy_tutorial_pages_do_not_load_universal_tutorial_runtime():
+def test_legacy_tutorial_pages_use_separate_page_tutorial_runtime():
     for template_path in (
         "templates/live2d_emotion_manager.html",
         "templates/mmd_emotion_manager.html",
@@ -1080,8 +1080,43 @@ def test_legacy_tutorial_pages_do_not_load_universal_tutorial_runtime():
     ):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "tutorial/core/universal-manager.js" not in source
-        assert "driver.min" not in source
-        assert "tutorial-styles.css" not in source
+        assert "driver.min.js" in source
+        assert "driver.min.css" in source
+        assert "tutorial-styles.css" in source
+        assert "tutorial/core/page-tutorial-manager.js" in source
+        assert "initPageTutorialManager" in source
+
+    for template_path in (
+        "templates/api_key_settings.html",
+        "templates/memory_browser.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "tutorial/core/universal-manager.js" in source
+        assert "driver.min.js" in source
+        assert "driver.min.css" in source
+        assert "tutorial-styles.css" in source
+        assert "tutorial/core/page-tutorial-manager.js" in source
+        assert "initPageTutorialManager" in source
+
+
+def test_restored_page_tutorial_helpers_use_static_asset_version():
+    for template_path in (
+        "templates/live2d_emotion_manager.html",
+        "templates/mmd_emotion_manager.html",
+        "templates/vrm_emotion_manager.html",
+        "templates/model_manager.html",
+        "templates/live2d_parameter_editor.html",
+        "templates/character_card_manager.html",
+        "templates/voice_clone.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        for helper_path in (
+            "/static/tutorial/core/skip-controller.js",
+            "/static/tutorial/avatar/reload-controller.js",
+            "/static/tutorial/core/lifecycle-state-store.js",
+        ):
+            assert f'{helper_path}?v={{' in source, (template_path, helper_path)
+            assert f'src="{helper_path}"></script>' not in source, (template_path, helper_path)
 
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
@@ -1102,9 +1137,53 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/tutorial/icebreaker/icebreaker_scripts.json" in tracked_paths
     assert "static/tutorial/avatar/yui-standin.js" in tracked_paths
     assert "static/tutorial/avatar/standin-controller.js" in tracked_paths
+    assert "static/tutorial/core/page-tutorial-manager.js" in tracked_paths
+    assert "static/css/tutorial-styles.css" in tracked_paths
+    assert "static/libs/driver.min.js" in tracked_paths
+    assert "static/libs/driver.min.css" in tracked_paths
     assert "static/live2d-init.js" in tracked_paths
     assert "static/app-interpage.js" in tracked_paths
     assert "static/live2d-interaction.js" in tracked_paths
+
+
+@pytest.mark.asyncio
+async def test_restored_tutorial_routes_supply_static_asset_version_to_template():
+    """Restored page-tutorial routes must inject ``_static_assets_ctx()``.
+
+    The templates already reference ``?v={{ static_asset_version|default('0', true) }}``
+    for the Driver / page-tutorial runtime, but the version only cache-busts if
+    the route actually supplies it. ``voice_clone`` and ``live2d_parameter_editor``
+    previously rendered with just ``{"request": request}``, so every tutorial
+    asset on those two pages pinned to ``?v=0`` forever while the other restored
+    pages got versioned URLs. Guard the context here so the gap can't reappear.
+    """
+    from types import SimpleNamespace
+
+    from main_routers import pages_router
+    from main_routers.pages_router import live2d_parameter_editor, voice_clone_page
+    from main_routers.shared_state import init_shared_state
+
+    class _DummyTemplates:
+        def TemplateResponse(self, template_name, context):
+            return {"template_name": template_name, "context": context}
+
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=_DummyTemplates(),
+        config_manager=SimpleNamespace(),
+        logger=None,
+        initialize_character_data=None,
+    )
+
+    expected_version = pages_router._static_assets_ctx()["static_asset_version"]
+    request = SimpleNamespace()
+
+    for route in (voice_clone_page, live2d_parameter_editor):
+        rendered = await route(request)
+        context = rendered["context"]
+        assert "static_asset_version" in context, route.__name__
+        assert context["static_asset_version"] == expected_version, route.__name__
 
 
 def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
@@ -1192,8 +1271,9 @@ def test_universal_tutorial_manager_keeps_page_normalization_without_legacy_step
     ):
         assert obsolete not in source
 
-def test_legacy_character_card_manager_tutorial_steps_are_removed():
+def test_legacy_character_card_manager_tutorial_steps_live_in_page_runtime():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    page_source = Path("static/tutorial/core/page-tutorial-manager.js").read_text(encoding="utf-8")
     template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
 
     for obsolete in (
@@ -1202,14 +1282,16 @@ def test_legacy_character_card_manager_tutorial_steps_are_removed():
         "prepareCharaManagerForTutorial",
         "cleanupCharaManagerTutorialIds",
         "path.includes('character_card_manager')",
-        "tutorial/core/universal-manager.js",
-        "driver.min",
-        "tutorial-styles.css",
     ):
-        if obsolete.startswith("tutorial/") or obsolete == "driver.min" or obsolete == "tutorial-styles.css":
-            assert obsolete not in template_source
-        else:
-            assert obsolete not in source
+        assert obsolete not in source
+
+    assert "getCharaManagerSteps()" in page_source
+    assert "path.includes('character_card_manager')" in page_source
+    assert "waitForCharacterCards" in page_source
+    assert "tutorial/core/universal-manager.js" not in template_source
+    assert "driver.min.js" in template_source
+    assert "tutorial-styles.css" in template_source
+    assert "tutorial/core/page-tutorial-manager.js" in template_source
 
 def test_legacy_character_card_manager_tutorial_prepare_helpers_are_removed():
     source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
@@ -3181,6 +3263,19 @@ def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
     assert "cmdResult.is_free_version" in source
     assert "cmdResult.agent_api_gate && cmdResult.agent_api_gate.is_free_version" in source
     assert "window.showAlert(msg, title)" in source
+
+
+def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    status_block = source.split("const setStatus = (msg, options) => {", 1)[1].split(
+        "const currentLanlanName",
+        1,
+    )[0]
+
+    assert "options.stabilizeTutorialText === true" in status_block
+    assert "isTutorialAgentStatusLocked()" in status_block
+    assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
+    assert "s.textContent = text;" in status_block
 
 
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():

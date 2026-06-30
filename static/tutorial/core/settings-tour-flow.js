@@ -401,6 +401,9 @@
                 return false;
             }
             await director.openSettingsPanel();
+            if (typeof director.positionManagedPanelNow === 'function') {
+                director.positionManagedPanelNow('settings');
+            }
             if (this.isSceneStale(sceneRunId)) {
                 return false;
             }
@@ -424,6 +427,9 @@
 
             characterSettingsPanel = await director.ensureAvatarFloatingSettingsSidePanel('character-settings')
                 || characterSettingsPanel;
+            if (typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
+                director.refreshAvatarFloatingSettingsPanelLayout(characterSettingsPanel);
+            }
             await this.tourPanel(scene, sceneRunId, characterSettingsPanel, narrationPromise, {
                 key: scene.id + '-character-settings-panel',
                 persistent: settingsButton || null
@@ -439,15 +445,36 @@
             const narration = this.prepareNarration(scene);
             const { text, voiceKey } = narration;
 
-            const characterSettingsPanel = director.getCharacterSettingsSidePanel()
-                || await director.ensureAvatarFloatingSettingsSidePanel('character-settings');
+            let characterSettingsPanel = director.getCharacterSettingsSidePanel();
+            const hasVisibleCharacterPanel = characterSettingsPanel && (
+                typeof director.isElementVisible !== 'function'
+                || director.isElementVisible(characterSettingsPanel)
+            );
+            if (!hasVisibleCharacterPanel) {
+                characterSettingsPanel = await director.ensureAvatarFloatingSettingsSidePanel('character-settings')
+                    || characterSettingsPanel;
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
+            }
             const characterSettingsButton = director.getDay5CharacterSettingsButtonTarget();
+            if (characterSettingsPanel && typeof director.refreshAvatarFloatingSettingsPanelLayout === 'function') {
+                director.refreshAvatarFloatingSettingsPanelLayout(characterSettingsPanel);
+            }
             if (characterSettingsPanel) {
                 director.applyGuideHighlights({
                     key: scene.id + '-character-settings-panel',
                     persistent: characterSettingsButton || null,
                     primary: characterSettingsPanel
                 });
+                if (typeof director.moveCursorToElement === 'function') {
+                    await director.moveCursorToElement(characterSettingsPanel, 0, {
+                        exactDuration: true
+                    });
+                    if (this.isSceneStale(sceneRunId)) {
+                        return false;
+                    }
+                }
             }
             director.enableInterrupts(director.currentStep);
 

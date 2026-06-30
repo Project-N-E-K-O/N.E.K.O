@@ -7,7 +7,12 @@ from datetime import datetime
 
 import pytest
 
-from main_logic.topic.pipeline import TopicHookPool, _clean_material
+from main_logic.topic.pipeline import (
+    TopicHookPool,
+    _clean_material,
+    _UNANSWERED_TOPIC_WEIGHT,
+    _record_weight,
+)
 from main_logic.topic.signals import TopicSignalStore
 
 
@@ -1784,12 +1789,27 @@ async def test_topic_pool_limits_daily_topic_triggers_to_two():
     )
 
     for idx in range(3):
+        prev_delivered = len(delivered)
         pool.note_user_message("妮可", f"第{idx}轮认真聊一个新方向，信息量足够做深话题", lang="zh-CN")
         await pool.process_now("妮可")
-        for _ in range(20):
-            if len(delivered) >= min(idx + 1, 2):
-                break
-            await asyncio.sleep(0.01)
+        if idx < 2:
+            # Wait until this round's delivery is fully booked: the record is
+            # marked AND the response window is armed. Only then will the NEXT
+            # round's user turn deterministically upgrade it to full weight —
+            # without this the weight-based quota check races the async booking
+            # (fake_trigger appends to `delivered` BEFORE _arm runs).
+            for _ in range(200):
+                if len(delivered) > prev_delivered and pool._awaiting_response.get("妮可"):
+                    break
+                await asyncio.sleep(0.01)
+        else:
+            # Round 2 must stay blocked by the daily quota (two full-weight
+            # successes). Give the would-be trigger a chance to run and confirm
+            # it does not deliver a third time.
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if len(delivered) > prev_delivered:
+                    break
 
     assert delivered == ["凯迪拉克预算压力", "周末海边旅行计划"]
     ready = pool.get_ready_materials("妮可")
@@ -1814,20 +1834,162 @@ async def test_topic_pool_candidate_ignores_daily_quota():
         daily_topic_limit=1,
         min_user_turns_for_topic=1,
     )
-    pool._mark_topic_used(
-        "妮可",
-        {
-            "used_at": time.time(),
-            "interest": "今天已经投递过的话题",
-            "keywords": ["已投递"],
-        },
-    )
+    # Weight-based quota: an unanswered delivery only costs 1/3, so it takes
+    # roughly three ignored deliveries to fill daily_topic_limit=1.
+    for idx in range(3):
+        pool._mark_topic_used(
+            "妮可",
+            {
+                "used_at": time.time(),
+                "interest": f"今天已经投递过的话题{idx}",
+                "keywords": [f"已投递{idx}"],
+            },
+        )
     assert pool._daily_quota_reached("妮可")
 
     pool.note_user_message("妮可", "今天 quota 满了，但 candidate 仍然应该能抽取新话题", lang="zh-CN")
     await pool.process_now("妮可")
 
     assert pool.get_ready_materials("妮可")[0]["interest"] == "新抽取的话题仍可入池"
+
+
+def test_unanswered_delivery_costs_fractional_quota():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+    )
+    # New deliveries land at the unanswered weight (1/3 each).
+    for idx in range(5):
+        pool._mark_topic_used(
+            "妮可",
+            {"used_at": time.time(), "interest": f"话题{idx}", "keywords": [f"k{idx}"]},
+        )
+        records = pool._used_topics["妮可"]
+        assert _record_weight(records[-1]) == pytest.approx(_UNANSWERED_TOPIC_WEIGHT)
+
+    # 5 ignored deliveries = ~1.67 < 2.0 → still under budget; the 6th tips it over.
+    assert not pool._daily_quota_reached("妮可")
+    pool._mark_topic_used(
+        "妮可",
+        {"used_at": time.time(), "interest": "话题5", "keywords": ["k5"]},
+    )
+    assert pool._daily_quota_reached("妮可")
+
+
+def test_user_reply_within_window_upgrades_quota_weight():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+    )
+    used_at = time.time()
+    material = {"used_at": used_at, "interest": "投出的话题", "keywords": ["投出"]}
+    pool._mark_topic_used("妮可", material)
+    pool._arm_topic_response_window("妮可", material)
+
+    # A real user turn inside the window upgrades the delivery to a full success.
+    pool.note_user_message("妮可", "诶我刚好也在想这个，你说说看", lang="zh-CN")
+    assert _record_weight(pool._used_topics["妮可"][0]) == pytest.approx(1.0)
+    # One-shot: the marker is consumed, a later turn does not re-upgrade anything.
+    assert "妮可" not in pool._awaiting_response
+
+
+def test_user_reply_after_window_keeps_unanswered_weight():
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+    )
+    used_at = time.time()
+    material = {"used_at": used_at, "interest": "投出的话题", "keywords": ["投出"]}
+    pool._mark_topic_used("妮可", material)
+    pool._arm_topic_response_window("妮可", material)
+    # Force the window to have already elapsed.
+    pool._awaiting_response["妮可"]["deadline"] = used_at - 1.0
+
+    pool.note_user_message("妮可", "现在才回，已经超出回应窗口了", lang="zh-CN")
+    assert _record_weight(pool._used_topics["妮可"][0]) == pytest.approx(_UNANSWERED_TOPIC_WEIGHT)
+    assert "妮可" not in pool._awaiting_response
+
+
+def test_used_topic_weight_survives_persist_load_roundtrip(tmp_path):
+    signal_path = tmp_path / "topic_signals.json"
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+        signal_store_path=signal_path,
+    )
+    used_at = time.time()
+    material = {"used_at": used_at, "interest": "持久化话题", "keywords": ["持久化"]}
+    pool._mark_topic_used("妮可", material)
+    pool._used_topics["妮可"][0]["weight"] = 1.0
+    pool._persist_used_topics()
+
+    reloaded = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+        signal_store_path=signal_path,
+    )
+    assert _record_weight(reloaded._used_topics["妮可"][0]) == pytest.approx(1.0)
+
+
+def test_legacy_used_topic_without_weight_loads_as_full(tmp_path):
+    # Backward-compat guarantee: records persisted before the weight field
+    # existed must load as a full 1.0 (they were full successes under the old
+    # count-based quota), never silently demoted to the unanswered 1/3.
+    signal_path = tmp_path / "topic_signals.json"
+    used_path = signal_path.with_name(f"{signal_path.stem}.used_topics.json")
+    # Pin a single timestamp for both records and the quota checks so the test
+    # can't straddle a calendar-day boundary (which would drop the legacy record
+    # from "today" and flake the assertions).
+    now = time.time()
+    used_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "characters": {
+                    "妮可": [
+                        {
+                            "used_at": now,
+                            "hook_id_hash": "",
+                            "interest_hash": "",
+                            "keyword_hashes": [],
+                            "bigram_hashes": [],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pool = TopicHookPool(
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        daily_topic_limit=2,
+        min_user_turns_for_topic=1,
+        signal_store_path=signal_path,
+    )
+    records = pool._used_topics["妮可"]
+    assert len(records) == 1
+    # The legacy record reads as a full success, not the unanswered 1/3.
+    assert _record_weight(records[0]) == pytest.approx(1.0)
+    # One full legacy unit is under the limit of 2; a second full delivery fills it.
+    assert pool._daily_quota_reached("妮可", now=now) is False
+    pool._mark_topic_used(
+        "妮可",
+        {"used_at": now, "interest": "新", "keywords": ["新"]},
+    )
+    pool._used_topics["妮可"][-1]["weight"] = 1.0
+    assert pool._daily_quota_reached("妮可", now=now) is True
 
 
 def test_topic_pool_daily_topic_limit_resets_on_calendar_day():
