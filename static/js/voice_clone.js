@@ -44,7 +44,6 @@ const voiceCloneApiConfigState = {
 const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
 const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
 const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
-
 function sleepVoiceCloneLoaderRetry(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -199,10 +198,25 @@ function normalizeVoicePreviewLanguage(rawLanguage) {
     return 'en';
 }
 
+function voiceCloneI18n(key, fallback) {
+    return VoiceDisplayUtils.t(key, fallback);
+}
+
+function getNativeProviderShortName(provider) {
+    return VoiceDisplayUtils.providerShortName(provider, {
+        freeKey: 'voice.providerFreeApi',
+        freeFallback: 'Free API',
+    });
+}
+
 function getNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
-        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        const provider = voiceData && String(voiceData.provider || '').trim();
+        if (VoiceDisplayUtils.isKnownProvider(provider)) {
+            return getNativeProviderShortName(provider);
+        }
+        const label = voiceData && (voiceData.provider_label || provider);
         if (label) return String(label);
     }
     return '';
@@ -216,6 +230,10 @@ function formatNativeVoiceLabel(nativeEntries) {
             : providerLabel + ' 原生音色';
     }
     return window.t ? window.t('voice.nativePresetLabelGeneric') : '原生预设音色';
+}
+
+function getNativeVoiceDisplayName(voiceId, voiceData) {
+    return VoiceDisplayUtils.nativeVoiceDisplayName(voiceId, voiceData);
 }
 
 function getVoicePreviewLanguage() {
@@ -2138,7 +2156,7 @@ async function loadVoices() {
 
                     const nameDiv = document.createElement('div');
                     nameDiv.className = 'voice-name';
-                    const displayName = (voiceData && voiceData.prefix) || voiceId;
+                    const displayName = getNativeVoiceDisplayName(voiceId, voiceData);
                     nameDiv.textContent = displayName;
                     const badge = document.createElement('span');
                     badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(140,120,220,0.25); color: #b8a4ff;';

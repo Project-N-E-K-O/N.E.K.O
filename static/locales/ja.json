@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "チャット",
+        "topicHint": "{{author}}は何か話したいことがあるみたい…",
         "viewerTitle": "チャット（ビューアーモード）",
         "tooltip": "チャットエリア",
         "textInputPlaceholder": "Enterで送信、Shift+Enterで改行",
@@ -1573,6 +1574,17 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
             "vllm_omni": "vLLM-Omni（ローカルクローン）"
+        },
+        "sourcePreset": "プリセット",
+        "sourceClone": "クローン",
+        "sourceDesign": "説明から生成",
+        "providerLocal": "ローカル CosyVoice",
+        "providerFree": "無料",
+        "providerFreeApi": "無料 API",
+        "providerUnknown": "その他",
+        "nativeVoice": {
+            "qingchunshaonv": "青春少女",
+            "wenrounansheng": "優しい男性声"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
         "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",

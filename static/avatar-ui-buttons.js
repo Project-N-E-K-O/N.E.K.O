@@ -9,6 +9,17 @@
 // 浮动按钮入场动画（错位级联滑入 + 淡入；从上往下）。
 // 退场不做动画 —— 直接 display:none，因为浏览器在 microtask 拦截前已 commit
 // display:none 到下一帧渲染流程，可靠的退场需要改大量调用点，权衡之下放弃。
+function isNekoYuiGuideFloatingToolbarSuppressed() {
+    return !!(
+        typeof window !== 'undefined'
+        && window.nekoYuiGuideFloatingToolbarSuppressed === true
+    );
+}
+
+if (typeof window !== 'undefined') {
+    window.isNekoYuiGuideFloatingToolbarSuppressed = isNekoYuiGuideFloatingToolbarSuppressed;
+}
+
 function _ensureFloatingButtonsAnimationStyles() {
     if (document.getElementById('neko-floating-buttons-animation-styles')) return;
     const style = document.createElement('style');

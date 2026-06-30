@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Charlar",
+        "topicHint": "{{author}} parece tener algo de lo que quiere hablar…",
         "viewerTitle": "Chat (modo espectador)",
         "tooltip": "Área de chat",
         "textInputPlaceholder": "Presione Enter para enviar, Shift+Enter para una nueva línea",
@@ -1573,6 +1574,17 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Clon local)"
+        },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Generado por descripción",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Gratis",
+        "providerFreeApi": "API gratis",
+        "providerUnknown": "Otro",
+        "nativeVoice": {
+            "qingchunshaonv": "Chica juvenil",
+            "wenrounansheng": "Voz masculina suave"
         },
         "selectFile": "Seleccione el archivo de audio local (se recomiendan 8 segundos, máximo 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefijo personalizado (obligatorio, utilizado para distinguir diferentes voces)",

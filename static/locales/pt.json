@@ -674,6 +674,7 @@
     },
     "chat": {
         "title": "Bater papo",
+        "topicHint": "{{author}} parece ter algo sobre o que quer conversar…",
         "viewerTitle": "Bate-papo (modo visualizador)",
         "tooltip": "Área de bate-papo",
         "textInputPlaceholder": "Pressione Enter para enviar, Shift+Enter para nova linha",
@@ -1573,6 +1574,17 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "vllm_omni": "vLLM-Omni (Clone Local)"
+        },
+        "sourcePreset": "Predefinido",
+        "sourceClone": "Clonado",
+        "sourceDesign": "Gerado por descrição",
+        "providerLocal": "CosyVoice local",
+        "providerFree": "Grátis",
+        "providerFreeApi": "API grátis",
+        "providerUnknown": "Outro",
+        "nativeVoice": {
+            "qingchunshaonv": "Garota jovem",
+            "wenrounansheng": "Voz masculina suave"
         },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",

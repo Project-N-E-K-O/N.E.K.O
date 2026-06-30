@@ -24,8 +24,11 @@ def test_mmd_display_switch_snaps_to_target_screen_before_saving_position():
     source = _mmd_source()
 
     display_switch_section = source.split("console.log('[MMD] 屏幕切换成功:', result);", 1)[1]
-    assert "const snapped = await this._snapModelIntoScreen({ animate: true });" in display_switch_section
-    assert "if (!snapped) {\n                await this._savePositionAfterInteraction();" in display_switch_section
+    assert "this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);" in display_switch_section
+    assert "const snapped = useDragPointerForSwitch" in display_switch_section
+    assert "? false" in display_switch_section
+    assert ": await this._snapModelIntoScreen({ animate: true });" in display_switch_section
+    assert "if (useDragPointerForSwitch || !snapped) {\n                await this._savePositionAfterInteraction();" in display_switch_section
 
 
 def test_mmd_display_switch_miss_records_bridge_errors_after_model_leaves_window():

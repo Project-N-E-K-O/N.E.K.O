@@ -83,6 +83,15 @@ export function useFocusGlow(ref: RefObject<HTMLElement | null>): void {
         raf = 0; // fully decayed — stop until the next push
         return;
       }
+      // Activated glow floors at the ENTER baseline (its breathing is a pure CSS
+      // keyframe, not driven by rAF); once charge has decayed to that floor the
+      // intensity is constant, so idle the loop instead of re-writing the same
+      // --focus-glow every frame. onCharge() restarts it on the next push.
+      // Sub-ENTER charges keep decaying toward 0 and idle via render() above.
+      if (setpoint >= ENTER && charge <= ENTER) {
+        raf = 0;
+        return;
+      }
       raf = requestAnimationFrame(tick);
     };
 

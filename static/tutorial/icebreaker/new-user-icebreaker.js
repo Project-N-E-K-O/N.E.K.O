@@ -14,8 +14,10 @@
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
+    var TTS_REQUEST_MAX_WAIT_MS = 12000;
     var activeSession = null;
     var pendingStartDay = '';
+    var pendingGuideEndStateDay = '';
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -62,7 +64,7 @@
     }
 
     function isPeriodActive() {
-        return !!activeSession;
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
     function fetchJson(url) {
@@ -154,6 +156,26 @@
         if (pendingStartDay === dayKey) {
             pendingStartDay = '';
         }
+    }
+
+    function clearPendingGuideEndStateDay(dayKey) {
+        if (pendingGuideEndStateDay === dayKey) {
+            pendingGuideEndStateDay = '';
+        }
+    }
+
+    function markPendingStartFromEndState(endState) {
+        var dayKey = String(endState && endState.day || '');
+        if (dayKey) pendingGuideEndStateDay = dayKey;
+        return dayKey;
+    }
+
+    function dispatchIcebreakerEnded(reason) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended', {
+                detail: { reason: reason || 'complete' }
+            }));
+        } catch (_) {}
     }
 
     function endIcebreakerRoute(session, reason) {
@@ -647,7 +669,7 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey) {
+    function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
@@ -666,30 +688,59 @@
             }
         };
         return getLocalMutationHeaders().then(function (headers) {
-            return fetch(ICEBREAKER_API_BASE + '/speak', {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            });
+            };
+            if (signal) requestOptions.signal = signal;
+            return fetch(ICEBREAKER_API_BASE + '/speak', requestOptions);
         }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         }).then(function (data) {
             return !!(data && data.ok);
         }).catch(function (error) {
+            if (error && error.name === 'AbortError') return false;
             console.warn('[NewUserIcebreaker] project TTS failed:', error);
             return false;
         });
     }
 
-    function speakLine(text, voiceKey) {
-        speakViaProjectTts(text, voiceKey).then(function (ok) {
-            if (ok) return;
-            return new Promise(function (resolve) {
-                window.setTimeout(resolve, estimateSpeechDurationMs(text));
-            });
+    function waitForTtsRequest(text, voiceKey) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                finish();
+            }, TTS_REQUEST_MAX_WAIT_MS);
+            function finish() {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }
+            try {
+                Promise.resolve(
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
+                ).then(finish).catch(function () {
+                    finish();
+                });
+            } catch (error) {
+                console.warn('[NewUserIcebreaker] project TTS failed:', error);
+                finish();
+            }
         });
+    }
+
+    function speakLine(text, voiceKey) {
+        var speechDurationPromise = new Promise(function (resolve) {
+            window.setTimeout(resolve, estimateSpeechDurationMs(text));
+        });
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
     function applyAssistantTextEmotion(text) {
@@ -839,6 +890,7 @@
         var day = session.day;
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
+        var handoffSpeechPromise = Promise.resolve(false);
         applyAssistantTextEmotion(text);
         clearChoicePrompt();
         return appendChatMessage('assistant', text, {
@@ -847,14 +899,7 @@
             voiceKey: option.handoffVoiceKey || '',
             handoff: true
         }).then(function () {
-            speakLine(text, option.handoffVoiceKey || '');
-            markDay(day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                sessionId: sessionId,
-                nodeId: nodeId
-            });
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
@@ -864,9 +909,19 @@
                 return endIcebreakerRoute(session, 'icebreaker_handoff');
             });
         }).then(function () {
+            return Promise.resolve(handoffSpeechPromise).catch(function () {});
+        }).then(function () {
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                sessionId: sessionId,
+                nodeId: nodeId
+            });
             if (activeSession === session) {
                 activeSession = null;
             }
+            dispatchIcebreakerEnded('handoff');
             return true;
         });
     }
@@ -981,20 +1036,27 @@
                 voiceKey: voiceKey || '',
                 fallback: isRelease ? 'release' : 'redirect'
             }).then(function () {
-                speakLine(fallbackText, voiceKey || '');
+                var fallbackSpeechPromise = speakLine(fallbackText, voiceKey || '');
                 if (isRelease) {
-                    markDay(day, {
-                        started: true,
-                        completed: true,
-                        completedAt: Date.now(),
-                        sessionId: sessionId,
-                        nodeId: nodeId,
-                        releasedByFreeText: true
+                    var routeEndPromise = endIcebreakerRoute(session, 'icebreaker_free_text_release');
+                    return Promise.all([
+                        Promise.resolve(routeEndPromise),
+                        Promise.resolve(fallbackSpeechPromise).catch(function () {})
+                    ]).then(function () {
+                        markDay(day, {
+                            started: true,
+                            completed: true,
+                            completedAt: Date.now(),
+                            sessionId: sessionId,
+                            nodeId: nodeId,
+                            releasedByFreeText: true
+                        });
+                        if (activeSession === session) {
+                            activeSession = null;
+                        }
+                        dispatchIcebreakerEnded('free_text_release');
+                        return true;
                     });
-                    endIcebreakerRoute(session, 'icebreaker_free_text_release');
-                    if (activeSession === session) {
-                        activeSession = null;
-                    }
                 } else if (activeSession === session) {
                     var currentNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
@@ -1091,6 +1153,7 @@
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
+                clearPendingGuideEndStateDay(dayKey);
                 markDay(dayKey, {
                     started: true,
                     completed: false,
@@ -1179,8 +1242,19 @@
     function handleGuideEndEvent(event) {
         var detail = event && event.detail ? event.detail : {};
         var eventType = event && event.type ? String(event.type) : '';
+        var endState = resolveLatestEndState(detail, eventType);
+        var pendingDay = markPendingStartFromEndState(endState);
         window.setTimeout(function () {
-            startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType));
+            startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+                if (!started) {
+                    clearPendingGuideEndStateDay(pendingDay);
+                    dispatchIcebreakerEnded('start_failed');
+                }
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] deferred start failed:', error);
+                clearPendingGuideEndStateDay(pendingDay);
+                dispatchIcebreakerEnded('start_failed');
+            });
         }, 500);
     }
 
