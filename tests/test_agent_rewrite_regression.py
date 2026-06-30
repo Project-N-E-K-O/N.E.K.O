@@ -1802,7 +1802,9 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "beginDirectTutorialLoading" in predictor_source
     assert "clearDirectTutorialLoading" in predictor_source
     assert "window.nekoTutorialLoadingOverlay" in predictor_source
-    assert "window.nekoTutorialOverlay" not in predictor_source
+    assert "function isPcLoadingOverlayBridge(bridge)" in predictor_source
+    assert "window.nekoTutorialOverlay.loadingOverlay" in predictor_source
+    assert "window.nekoTutorialOverlay.beginLoading" in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
     assert "emotion_model_icon.png" in predictor_source
     assert "function isTutorialBootAvailable()" in predictor_source
@@ -1818,6 +1820,7 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
 
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
+    index_source = Path("static/js/index.js").read_text(encoding="utf-8")
     live2d_init_source = Path("static/live2d-init.js").read_text(encoding="utf-8")
     vrm_init_source = Path("static/vrm-init.js").read_text(encoding="utf-8")
     mmd_init_source = Path("static/mmd-init.js").read_text(encoding="utf-8")
@@ -1833,6 +1836,15 @@ def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predict
     )[0]
     assert "window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()" in live2d_inner
     assert "window.NekoAvatarFloatingBoot.markUserModelBootSkipped('live2d-init')" in live2d_inner
+    pngtuber_block = index_source.split("if (modelType === 'pngtuber') {", 1)[1].split(
+        "} else if (modelType === 'live3d' || modelType === 'vrm')",
+        1,
+    )[0]
+    assert "window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()" in pngtuber_block
+    assert "window.NekoAvatarFloatingBoot.markUserModelBootSkipped('pngtuber-init')" in pngtuber_block
+    assert pngtuber_block.index("window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()") < pngtuber_block.index(
+        "window.loadPNGTuberAvatar("
+    )
     assert "async function autoInitMMDOnMainPage()" in mmd_init_source
     assert "window.autoInitMMDOnMainPage = autoInitMMDOnMainPage;" in mmd_init_source
     assert "autoInitMMDOnMainPage();" in mmd_init_source

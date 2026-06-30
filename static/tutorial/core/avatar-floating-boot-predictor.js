@@ -210,11 +210,36 @@
         return overlaySequence;
     }
 
+    function isPcLoadingOverlayBridge(bridge) {
+        return !!(
+            bridge
+            && typeof bridge === 'object'
+            && typeof bridge.begin === 'function'
+            && typeof bridge.update === 'function'
+            && typeof bridge.clear === 'function'
+        );
+    }
+
     function getPcLoadingOverlayBridge() {
-        return window.nekoTutorialLoadingOverlay
-            && typeof window.nekoTutorialLoadingOverlay === 'object'
-            ? window.nekoTutorialLoadingOverlay
-            : null;
+        if (isPcLoadingOverlayBridge(window.nekoTutorialLoadingOverlay)) {
+            return window.nekoTutorialLoadingOverlay;
+        }
+        if (window.nekoTutorialOverlay && isPcLoadingOverlayBridge(window.nekoTutorialOverlay.loadingOverlay)) {
+            return window.nekoTutorialOverlay.loadingOverlay;
+        }
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.beginLoading === 'function'
+            && typeof window.nekoTutorialOverlay.updateLoading === 'function'
+            && typeof window.nekoTutorialOverlay.clearLoading === 'function'
+        ) {
+            return {
+                begin: payload => window.nekoTutorialOverlay.beginLoading(payload),
+                update: payload => window.nekoTutorialOverlay.updateLoading(payload),
+                clear: payload => window.nekoTutorialOverlay.clearLoading(payload)
+            };
+        }
+        return null;
     }
 
     function beginDirectTutorialLoading(reason) {
