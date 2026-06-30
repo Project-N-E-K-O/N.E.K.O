@@ -59,7 +59,7 @@ test('round prelude runs avatar override, visibility, delay, lifecycle and start
         'reveal',
         ['visible', 'avatar_floating_day4'],
         ['ready', 'avatar_floating_day4'],
-        ['sleep', 1500],
+        ['sleep', 0],
         ['takeover', 4, 'manual'],
         ['lifecycle', true],
         'skip',

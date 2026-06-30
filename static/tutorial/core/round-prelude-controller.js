@@ -39,7 +39,7 @@
             this.warn = normalizedOptions.warn || noop;
             this.defaultDelayMs = Number.isFinite(normalizedOptions.delayMs)
                 ? Math.max(0, Math.round(normalizedOptions.delayMs))
-                : 1500;
+                : 0;
         }
 
         async play(day, options) {

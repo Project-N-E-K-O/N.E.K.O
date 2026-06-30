@@ -648,10 +648,17 @@ def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
         "clearModelManagerTutorialRecheckTimer()",
         1,
     )[0]
+    default_delay_block = prelude_source.split(
+        "this.defaultDelayMs = Number.isFinite(normalizedOptions.delayMs)",
+        1,
+    )[1].split(
+        "        }",
+        1,
+    )[0]
 
     assert "await toPromise(() => this.sleep(delayMs));" in prelude_source
     assert "this.defaultDelayMs" in prelude_source
-    assert "1500" in prelude_source
+    assert ": 0;" in default_delay_block
     assert prelude_source.index("this.ensureVisible(sceneId, {") < prelude_source.index(
         "await toPromise(() => this.sleep(delayMs));"
     )
