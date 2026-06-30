@@ -88,6 +88,7 @@ class RoastRuntime:
         # 串行化插件自身的配置写，避免并发 update_config 内存 apply 互踩 / 叠加持久化。
         # 懒初始化，避免构造时无运行 loop。
         self._idle_hosting_task: asyncio.Task[Any] | None = None
+        self._warmup_hosting_last_attempt_at: float = 0.0
         self._idle_hosting_last_attempt_at: float = 0.0
         self._idle_hosting_consecutive_failures: int = 0
         self._idle_hosting_sleep = asyncio.sleep
@@ -355,6 +356,7 @@ class RoastRuntime:
         if started:
             self.pipeline.clear_dry_run_session_state()
             self._live_listener_started_at = float(self._live_state_now())
+            self._warmup_hosting_last_attempt_at = 0.0
         self.live_connection_state = "connected" if started else "disconnected"
         self.config.live_enabled = bool(started)
         self.safety_guard.set_connected(started)

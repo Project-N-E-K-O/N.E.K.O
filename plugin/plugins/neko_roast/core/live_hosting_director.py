@@ -242,12 +242,16 @@ class LiveHostingDirector:
         return await self.runtime.pipeline.handle_event(event)
 
     async def maybe_trigger_warmup_hosting(self) -> InteractionResult | None:
+        now = float(self.runtime._idle_hosting_now())
+        if now - self.runtime._warmup_hosting_last_attempt_at < self.runtime._idle_hosting_min_interval_seconds():
+            return None
         live_connection = self.runtime.live_connection_snapshot()
         live_status = self.runtime.live_status_summary(live_connection)
         health_rows = self.runtime.runtime_health_rows()
         live_state = self.runtime.live_state_summary(live_status, health_rows)
         if not bool(live_state.get("warmup_hosting_candidate")):
             return None
+        self.runtime._warmup_hosting_last_attempt_at = now
         return await self.trigger_warmup_hosting()
 
     def warmup_hosting_event(self, live_state: dict[str, Any]) -> ViewerEvent:

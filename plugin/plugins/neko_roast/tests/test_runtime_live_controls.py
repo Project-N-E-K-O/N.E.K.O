@@ -4139,6 +4139,36 @@ async def test_auto_warmup_hosting_triggers_once_for_new_solo_stream(runtime: Ro
 
 
 @pytest.mark.asyncio
+async def test_auto_warmup_hosting_respects_attempt_interval_after_skip(runtime: RoastRuntime) -> None:
+    runtime.config.live_room_id = 123
+    runtime.config.live_enabled = True
+    runtime.config.dry_run = True
+    runtime.config.live_mode = "solo_stream"
+    runtime._idle_hosting_now = lambda: 1000.0
+    await runtime.bili_live_ingest.start_listening(123)
+    runtime.safety_guard.set_connected(True)
+
+    async def skipped_warmup(event: ViewerEvent) -> InteractionResult:
+        return InteractionResult(
+            accepted=False,
+            status="skipped",
+            event=event,
+            reason="dispatcher.skipped",
+            steps=[PipelineStep("warmup_hosting", "ok"), PipelineStep("neko_dispatcher", "skipped")],
+        )
+
+    runtime.pipeline.handle_event = skipped_warmup
+
+    first = await runtime.maybe_trigger_warmup_hosting()
+    runtime._idle_hosting_now = lambda: 1005.0
+    second = await runtime.maybe_trigger_warmup_hosting()
+
+    assert first is not None
+    assert first.status == "skipped"
+    assert second is None
+
+
+@pytest.mark.asyncio
 async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: RoastRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
