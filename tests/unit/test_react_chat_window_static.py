@@ -55,6 +55,49 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
+def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
+
+    assert "id: 'auto-cat'" in chat_settings_block
+    assert "id: 'cat-audio'" in chat_settings_block
+    assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
+    assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
+    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    assert "neko:auto-cat-setting-changed" not in source
+
+    cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
+        "const indicator = document.createElement('div');",
+        1,
+    )[0]
+    assert "window.nekoIdleCatAudio.isEnabled()" in cat_audio_init_block
+
+    dependency_block = source.split("const updateDependentToggleState = () => {", 1)[1].split(
+        "const updateStyle = () => {",
+        1,
+    )[0]
+    assert "toggle.dependsOnToggleId" in dependency_block
+    assert "const parent = toggleItem.parentElement;" in dependency_block
+    assert "parent.querySelector(`#${dependencyId}`)" in dependency_block
+    assert "document.getElementById(dependencyId)" in dependency_block
+    assert "checkbox.disabled = !dependencyChecked;" in dependency_block
+    assert "aria-disabled" in dependency_block
+    assert "toggleItem.setAttribute('tabIndex', dependencyChecked ? '0' : '-1');" in dependency_block
+    assert "toggleItem.style.opacity = dependencyChecked ? '1' : '0.5';" in dependency_block
+    assert "const cursor = dependencyChecked ? 'pointer' : 'default';" in dependency_block
+    assert "[toggleItem, indicator, label].forEach(el => { el.style.cursor = cursor; });" in dependency_block
+    assert "if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function')" in source
+    assert "toggleItem._nekoUpdateSettingsToggleStyle();" in source
+    assert "const refreshDependentToggles = () => {" in source
+    assert "candidate._nekoUpdateSettingsToggleStyle();" in source
+
+    cat_audio_change_block = source.split("} else if (toggle.id === 'cat-audio')", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    assert "window.nekoIdleCatAudio.setEnabled(isChecked)" in cat_audio_change_block
+
+
 def test_index_game_window_state_pauses_hidden_avatar_rendering():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     block = source.split("var pngtuberHiddenForGameWindow = false;", 1)[1].split(

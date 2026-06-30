@@ -1893,9 +1893,23 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble." not in source
+    assert "window.nekoIdleCatAudio = Object.freeze({" in source
+    assert "isEnabled: isNekoIdleCatAudioEnabled," in source
+    assert "setEnabled: setNekoIdleCatAudioEnabled," in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06" in source
     assert "function _playNekoIdleSound(state, src, volume)" in source
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in source
+    assert "_stopNekoIdleSoundAudio(state);" in source
+    assert "_stopNekoIdleSleepSound();" in source
+    sleep_sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleSleepSoundForTier(tier)",
+        "function _clearNekoIdleCat1AmbientSoundTimer()",
+        "sleep sound sync block",
+    )
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in sleep_sync_block
+    assert "_stopNekoIdleSleepSound();" in sleep_sync_block
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
     assert "srcs: Object.freeze([" in source
@@ -1950,6 +1964,16 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1" in source
     assert "_syncNekoIdleCat1AmbientSoundForTier(detail.tier)" in source
     assert "_stopNekoIdleCat1AmbientSound()" in source
+    assert "_syncNekoIdleCat1AmbientSoundForTier(_getActiveNekoIdleReturnTier())" in source
+    assert "neko:idle-cat-audio-setting-changed" not in source
+    ambient_sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleCat1AmbientSoundForTier(tier)",
+        "function _playNekoIdleCat1DragSound(tier)",
+        "cat1 ambient sync block",
+    )
+    assert "if (!isNekoIdleCatAudioEnabled()) {" in ambient_sync_block
+    assert "_stopNekoIdleCat1AmbientSound();" in ambient_sync_block
 
     rapid_drag_sound_block = _source_slice_between(
         source,
