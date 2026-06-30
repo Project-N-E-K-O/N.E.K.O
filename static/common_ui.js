@@ -11,7 +11,15 @@
 const chatContainer = document.getElementById('chat-container');
 const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
-const CHAT_MINIMIZED_YARN_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const CHAT_MINIMIZED_YARN_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
+const CHAT_MINIMIZED_YARN_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
+
+function applyChatMinimizedYarnBallIcon(iconImg) {
+    if (!iconImg) return;
+    iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+    iconImg.srcset = CHAT_MINIMIZED_YARN_BALL_ICON_SRCSET;
+    iconImg.style.imageRendering = 'auto';
+}
 const CHAT_MINIMIZED_SIZE_PX = 51;
 
 let isTransitioning = false;
@@ -427,13 +435,15 @@ if (toggleBtn) {
                 }
 
                 if (becomingCollapsed) {
-                    iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+                    applyChatMinimizedYarnBallIcon(iconImg);
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                     // 折叠后执行回弹，避免位置越界
                     triggerExpandSnap();
                 } else {
                     iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.removeAttribute('srcset');
+                    iconImg.style.imageRendering = '';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                     setTimeout(scrollToBottom, 300);
@@ -562,7 +572,7 @@ if (toggleBtn) {
 
             if (isMinimized) {
                 // 刚刚最小化，显示展开图标（加号）
-                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+                applyChatMinimizedYarnBallIcon(iconImg);
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
@@ -572,6 +582,8 @@ if (toggleBtn) {
             } else {
                 // 刚刚还原展开，显示最小化图标（减号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.removeAttribute('srcset');
+                iconImg.style.imageRendering = '';
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 iconImg.style.width = '32px';
@@ -600,7 +612,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+                applyChatMinimizedYarnBallIcon(iconImg);
             }
         }
     });
@@ -609,7 +621,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+                applyChatMinimizedYarnBallIcon(iconImg);
             }
         }
     });
@@ -1102,12 +1114,14 @@ async function initCommonUiAfterStorageBarrier() {
 
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
+            applyChatMinimizedYarnBallIcon(iconImg);
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 展开状态，显示最小化图标（减号）
             iconImg.src = '/static/icons/expand_icon_off.png';
+            iconImg.removeAttribute('srcset');
+            iconImg.style.imageRendering = '';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             scrollToBottom(); // 初始加载时滚动一次
@@ -1140,11 +1154,21 @@ if (chatContentWrapper) {
 // ========== Electron 全局快捷键接口 ==========
 // 以下接口供 Electron 主进程通过 IPC 调用，用于全局快捷键功能
 
+function blockNekoShortcutDuringTutorial(actionName) {
+    if (typeof window.isNekoShortcutBlockedByTutorial !== 'function'
+        || !window.isNekoShortcutBlockedByTutorial()) {
+        return false;
+    }
+    console.log('[Electron Shortcut] ' + actionName + ': blocked - tutorial active');
+    return true;
+}
+
 /**
  * 切换语音会话状态（开始/结束）
  * Electron 调用此接口来触发语音按钮的切换
  */
 window.toggleVoiceSession = function () {
+    if (blockNekoShortcutDuringTutorial('toggleVoiceSession')) return;
     // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
     const micButton = window.live2dManager?._floatingButtons?.mic?.button
         || window.vrmManager?._floatingButtons?.mic?.button
@@ -1165,6 +1189,7 @@ window.toggleVoiceSession = function () {
  * Electron 调用此接口来触发屏幕分享按钮的切换
  */
 window.toggleScreenShare = function () {
+    if (blockNekoShortcutDuringTutorial('toggleScreenShare')) return;
     // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
     const screenBtn = window.live2dManager?._floatingButtons?.screen?.button
         || window.vrmManager?._floatingButtons?.screen?.button
@@ -1199,6 +1224,7 @@ window.toggleScreenShare = function () {
  * Electron 调用此接口来触发截图按钮点击
  */
 window.triggerScreenshot = function () {
+    if (blockNekoShortcutDuringTutorial('triggerScreenshot')) return;
     // 语音会话中禁止截图（文本框处于禁用态时意味着用户处于语音会话中）
     if (window.isRecording) {
         console.log('[Electron Shortcut] triggerScreenshot: blocked - in voice session');

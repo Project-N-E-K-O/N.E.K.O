@@ -13,6 +13,8 @@
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/libs/driver.min.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
@@ -223,7 +225,9 @@
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
+    <script src="/static/libs/driver.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/core/page-tutorial-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
 
     <!-- 初始化 -->
@@ -231,6 +235,9 @@
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
+            }
+            if (typeof initPageTutorialManager === 'function') {
+                initPageTutorialManager();
             }
         });
     </script>

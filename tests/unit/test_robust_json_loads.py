@@ -402,3 +402,66 @@ def test_inner_quotes_transform_is_noop_on_valid_json():
     """已合法的 JSON（含已转义引号）不应被这步动到。"""  # noqa: DOCSTRING_CJK
     raw = '{"a": "say \\"hi\\" loud", "b": ["x", "y"]}'
     assert robust_json_loads(raw) == {"a": 'say "hi" loud', "b": ["x", "y"]}
+
+
+# ── 容器元素间缺逗号 `}{`→`},{`（记忆审阅 correction 模型最高频失败） ────────
+
+
+@pytest.mark.unit
+def test_missing_comma_between_array_objects():
+    """实测案例：记忆审阅模型在 corrected_dialogue 两个对象间漏逗号。
+    `} {` 在合法 JSON 中永不出现 → 补 `},{` 零歧义。"""  # noqa: DOCSTRING_CJK
+    raw = (
+        '{"explanation": "去重",'
+        ' "corrected_dialogue": ['
+        '{"role": "user", "content": "你好"}'
+        ' {"role": "ai", "content": "嗨"}'
+        ']}'
+    )
+    parsed = robust_json_loads(raw)
+    assert [m["content"] for m in parsed["corrected_dialogue"]] == ["你好", "嗨"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 对象数组缺逗号（含换行 / 缩进，pretty-printed 场景）
+        ('[{"a":1}\n{"b":2}]', [{"a": 1}, {"b": 2}]),
+        # 数组套数组缺逗号
+        ('[[1]\n[2]]', [[1], [2]]),
+        ('[{"a":1} [2]]', [{"a": 1}, [2]]),
+        ('[[1] {"b":2}]', [[1], {"b": 2}]),
+        # 连续多个缺口
+        ('[{"a":1} {"b":2} {"c":3}]', [{"a": 1}, {"b": 2}, {"c": 3}]),
+    ],
+)
+def test_missing_structural_comma_various(raw, expected):
+    assert robust_json_loads(raw) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 嵌套闭合后立刻开新容器是合法的（中间有逗号）→ 不应再插
+        '{"a": {"b": 1}, "c": [1, 2]}',
+        '[[1], [2]]',
+        # 字符串值里的 `}{` 不是结构 token → 不许动
+        '{"s": "code: }{ here", "t": "arr ][ x"}',
+    ],
+)
+def test_missing_structural_comma_noop_on_valid(raw):
+    """补逗号 transform 在合法 JSON（含字符串内的 `}{`）上必须是 no-op。"""  # noqa: DOCSTRING_CJK
+    assert robust_json_loads(raw) == json.loads(raw)
+
+
+@pytest.mark.unit
+def test_missing_comma_repair_runs_after_inner_quote_escape():
+    """关键回归（Codex P2）：补逗号必须排在内引号转义之后。
+
+    内容里有未转义英文引号（奇数个）会翻转串解析奇偶，使字面 `}{` 落在
+    “串外”。若补逗号先跑，会把内容里的 `{a}{b}` 误判为结构边界插逗号，
+    静默篡改成 `{a},{b}`。先转义内引号、串边界稳了，才不会误插。"""  # noqa: DOCSTRING_CJK
+    raw = '{"c": "他说"后写 {a}{b}"}'
+    assert robust_json_loads(raw) == {"c": '他说"后写 {a}{b}'}

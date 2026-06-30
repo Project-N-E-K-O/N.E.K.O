@@ -160,3 +160,86 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_
             return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
         }"""
     )
+
+
+@pytest.mark.frontend
+def test_voice_clone_localizes_free_api_native_voice_labels(mock_page: Page, running_server: str):
+    """English UI must not leak backend Chinese provider or native voice names."""
+    mock_page.add_init_script(
+        """
+        localStorage.setItem('neko_tutorial_voice_clone', 'true');
+        localStorage.setItem('i18nextLng', 'en');
+        """
+    )
+    mock_page.route(
+        "**/api/config/page_config",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"success": True, "lanlan_name": "test-lanlan"}),
+        ),
+    )
+    mock_page.route(
+        "**/api/config/core_api",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "success": True,
+                "enableCustomApi": False,
+                "ttsModelUrl": "",
+                "assistApiKeyQwen": "test-qwen-key",
+            }),
+        ),
+    )
+    mock_page.route(
+        "**/api/config/api_providers",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(VOICE_CLONE_API_PROVIDERS_RESPONSE),
+        ),
+    )
+    mock_page.route(
+        "**/api/characters/voices",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "voices": {"custom01": {"prefix": "Custom Voice", "created_at": "2026-01-01T00:00:00Z"}},
+                "free_voices": {},
+                "pinned_voices": [],
+                "native_voices": {
+                    "qingchunshaonv": {
+                        "prefix": "青春少女",
+                        "display_name": "青春少女",
+                        "provider": "free",
+                        "provider_label": "免费 API",
+                    },
+                    "wenrounansheng": {
+                        "prefix": "温柔男声",
+                        "display_name": "温柔男声",
+                        "provider": "free",
+                        "provider_label": "免费 API",
+                    },
+                },
+            }),
+        ),
+    )
+
+    mock_page.goto(f"{running_server}/voice_clone")
+    mock_page.wait_for_load_state("domcontentloaded")
+    mock_page.wait_for_function(
+        """() => {
+            const text = document.querySelector('#voice-list-container')?.innerText || '';
+            return text.includes('Youthful Girl') && text.includes('Gentle Male Voice');
+        }"""
+    )
+
+    text = mock_page.locator("#voice-list-container").inner_text()
+    assert "Free API Native Voices" in text
+    assert "Youthful Girl" in text
+    assert "Gentle Male Voice" in text
+    assert "免费 API" not in text
+    assert "青春少女" not in text
+    assert "温柔男声" not in text

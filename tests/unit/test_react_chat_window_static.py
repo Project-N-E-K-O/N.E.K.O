@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
@@ -316,6 +317,20 @@ def test_chat_full_is_reserved_from_character_page_config_routing():
     assert "'web_chat_compact'" in source
     assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
     assert "isReservedPagePath(window.location.pathname)" in source
+
+
+def test_chat_full_skips_startup_prominent_notice_queue():
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    load_block = source.split("window.addEventListener('load'", 1)[1].split(
+        "// 监听 voice_id",
+        1,
+    )[0]
+
+    assert "window.location.pathname === '/chat'" in load_block
+    assert "window.location.pathname === '/chat/'" in load_block
+    assert "window.location.pathname === '/chat_full'" in load_block
+    assert "window.location.pathname === '/chat_full/'" in load_block
+    assert "if (_isChatPage) return;" in load_block
 
 
 def test_web_chat_compact_is_allowed_during_main_limited_mode():
@@ -1595,6 +1610,32 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;" in listener_block
     assert "handleDesktopCompactLayoutChange(layout || null);" in listener_block
     assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
+
+
+def test_compact_surface_tracking_stops_idle_raf_but_keeps_active_sessions():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    tracking_block = script.split("function scheduleCompactMinimizeBallTracking()", 1)[1].split(
+        "function revealPendingCompactSurfaceOpen",
+        1,
+    )[0]
+    drag_start_block = script.split("function startDrag(clientX, clientY, options)", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+
+    assert "var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
+    assert "var compactSurfaceTrackingSettleFramesRemaining = 0;" in script
+    assert "function isCompactSurfaceTrackingActive()" in script
+    assert "(dragState && dragState.compactSurface)" in script
+    assert "compactSurfaceDesktopDragActive" in script
+    assert "compactSurfaceResizeSession" in script
+    assert "compactSurfaceDesktopResizeActive" in script
+    assert "compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;" in tracking_block
+    assert "if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {\n                return;\n            }" in tracking_block
+    assert "compactMinimizeBallFrame = window.requestAnimationFrame(loop);" in tracking_block
+    assert "COMPACT_SURFACE_IDLE_SYNC_INTERVAL_MS" not in script
+    assert "if (compactSurface) {\n            scheduleCompactMinimizeBallTracking();\n        }" in drag_start_block
 
 
 def test_electron_compact_chat_retires_full_surface_chrome():

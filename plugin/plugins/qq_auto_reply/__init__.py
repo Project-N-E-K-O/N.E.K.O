@@ -9,16 +9,33 @@ if _lib_dir.exists() and str(_lib_dir) not in _sys.path:
 del _sys, _pathlib, _lib_dir
 
 import asyncio
+import base64
+import copy
+import inspect
+import io
+import json
 import random
 import shutil
 import subprocess
 import time
+import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import httpx
+import websockets
+
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_entry, Ok, Err, SdkError, tr, ui
 
+from utils.api_config_loader import get_free_voices
+from utils.config_manager import get_reserved
+from utils.gemini_tts_voices import normalize_gemini_tts_voice
+from utils.native_voice_registry import get_active_realtime_native_provider_for_ui
+from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+from utils.voice_config import read_legacy_voice_id
 from .feedback_classifier import QQFeedbackClassifier
 from .backlog_models import QQBacklogMessage
 from .backlog_store import QQBacklogStore
@@ -98,6 +115,293 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 if qq:
                     self._admin_qq = qq
                     return
+
+    def _get_reply_mode(self) -> str:
+        return self.config_store.normalize_reply_mode((self._qq_settings or {}).get("reply_mode"))
+
+    def _get_voice_output_dir(self) -> Path:
+        return self.data_path() / "voice_cache"
+
+    async def _cleanup_voice_output_dir(self, *, max_age_seconds: int = 1800) -> None:
+        voice_dir = self._get_voice_output_dir()
+        if not voice_dir.exists():
+            return
+        cutoff = time.time() - max_age_seconds
+        for pattern in ("*.wav", "*.mp3"):
+            for path in voice_dir.glob(pattern):
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        await asyncio.to_thread(path.unlink)
+                except FileNotFoundError:
+                    continue
+                except Exception as exc:
+                    self.logger.warning(f"清理过期 QQ 语音缓存失败: {path} err={exc}")
+
+    async def _get_current_voice_id(self) -> str:
+        try:
+            from utils.config_manager import get_config_manager
+            config_manager = get_config_manager()
+            characters = await config_manager.aload_characters()
+            if not isinstance(characters, dict):
+                return ""
+            current_name = str(characters.get("当前猫娘") or "").strip()
+            catgirls = characters.get("猫娘") or {}
+            current_character = catgirls.get(current_name) if isinstance(catgirls, dict) else None
+            if not isinstance(current_character, dict):
+                return ""
+            return read_legacy_voice_id(get_reserved(current_character, "voice_id", default="", legacy_keys=("voice_id",)))
+        except Exception as exc:
+            self.logger.warning(f"读取当前猫娘 voice_id 失败: {exc}")
+            return ""
+
+    async def _synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            raise RuntimeError("语音合成文本不能为空")
+        try:
+            from utils.config_manager import get_config_manager
+            from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE
+            from main_logic.tts_client.workers.step import _adjust_free_tts_url, _build_step_tts_create_data
+
+            config_manager = get_config_manager()
+            voices = config_manager.get_voices_for_current_api()
+            voice_id = await self._get_current_voice_id()
+            if not voice_id:
+                raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
+            voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
+            provider = (voice_data or {}).get("provider", "")
+            preview_language = "zh-CN"
+            text = normalized_text
+
+            try:
+                tts_custom_config = config_manager.get_model_api_config("tts_custom")
+                audio_api_key = tts_custom_config.get("api_key", "")
+            except Exception:
+                audio_api_key = ""
+            if not audio_api_key:
+                core_config = await config_manager.aget_core_config()
+                audio_api_key = core_config.get("AUDIO_API_KEY", "")
+            preview_core_config = await config_manager.aget_core_config()
+
+            logger = self.logger
+            logger.info(f"正在为音色 {voice_id} 生成回复语音...")
+
+            if provider == "mimo":
+                sample_b64 = (voice_data or {}).get("clone_sample_b64") or ""
+                if not sample_b64:
+                    raise RuntimeError(f"MiMo 克隆音色缺少参考样本，无法生成回复语音: {voice_id}")
+                mimo_api_key = config_manager.get_tts_api_key("mimo")
+                if not mimo_api_key:
+                    raise RuntimeError("MIMO_API_KEY_MISSING")
+                if str(preview_core_config.get("assistApi") or "").strip().lower() == "mimo":
+                    mimo_base_url = (preview_core_config.get("OPENROUTER_URL") or "").strip()
+                else:
+                    mimo_base_url = str((voice_data or {}).get("mimo_base_url") or "").strip()
+                sample_bytes = base64.b64decode(sample_b64)
+                mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                audio_data = await mimo_client.synthesize_preview(
+                    sample_bytes,
+                    (voice_data or {}).get("clone_sample_mime") or "audio/wav",
+                    text=text,
+                )
+                return audio_data, "audio/wav"
+
+            if provider in ("minimax", "minimax_intl"):
+                minimax_api_key = config_manager.get_tts_api_key(provider)
+                if not minimax_api_key:
+                    raise RuntimeError("MINIMAX_API_KEY_MISSING")
+                from utils.voice_clone import get_minimax_base_url
+                minimax_base_url = (voice_data or {}).get("minimax_base_url") or get_minimax_base_url(provider)
+                minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
+                audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
+                return audio_data, "audio/mpeg"
+
+            if not audio_api_key:
+                raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
+
+            active_native_provider = get_active_realtime_native_provider_for_ui(config_manager)
+            if active_native_provider:
+                native_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
+                if active_native_provider == "gemini" and recognized:
+                    from main_routers.characters_router import _synthesize_gemini_native_voice_preview
+                    core_config = await config_manager.aget_core_config()
+                    native_audio_api_key = (core_config or {}).get("CORE_API_KEY", "")
+                    if not native_audio_api_key:
+                        raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
+                    audio_data = await _synthesize_gemini_native_voice_preview(
+                        voice_id=native_voice_id,
+                        preview_line=text,
+                        audio_api_key=native_audio_api_key,
+                    )
+                    return audio_data, "audio/wav"
+
+            free_voice_ids = set((get_free_voices() or {}).values())
+            if voice_id in free_voice_ids:
+                tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
+                headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
+                lang_hint = None
+                is_lanlan_app = "lanlan.app" in tts_url
+                session_id = ""
+                pcm_chunks: list[bytes] = []
+                wav_meta: tuple[int, int, int] | None = None
+                async with asyncio.timeout(20):
+                    async with websockets.connect(tts_url, additional_headers=headers) as ws:
+                        while True:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            if isinstance(raw, bytes):
+                                continue
+                            event = json.loads(raw)
+                            event_type = event.get("type")
+                            if event_type == "tts.connection.done":
+                                session_id = event.get("data", {}).get("session_id") or ""
+                                break
+                            if event_type == "tts.response.error":
+                                raise RuntimeError(str(event.get("data") or event))
+                        if not session_id:
+                            raise RuntimeError("TTS 连接未返回 session_id")
+                        create_data = _build_step_tts_create_data(session_id, voice_id or STEPFUN_TTS_DEFAULT_VOICE, lang_hint, is_lanlan_app)
+                        await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
+                        await ws.send(json.dumps({"type": "tts.text.delta", "data": {"session_id": session_id, "text": text}}))
+                        await ws.send(json.dumps({"type": "tts.text.done", "data": {"session_id": session_id}}))
+                        while True:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=12.0)
+                            if isinstance(raw, bytes):
+                                continue
+                            event = json.loads(raw)
+                            event_type = event.get("type")
+                            if event_type == "tts.response.error":
+                                raise RuntimeError(str(event.get("data") or event))
+                            if event_type == "tts.response.audio.delta":
+                                audio_b64 = event.get("data", {}).get("audio", "")
+                                if audio_b64:
+                                    with wave.open(io.BytesIO(base64.b64decode(audio_b64)), "rb") as wav_file:
+                                        pcm_data = wav_file.readframes(wav_file.getnframes())
+                                        channels = wav_file.getnchannels()
+                                        sample_width = wav_file.getsampwidth()
+                                        sample_rate = wav_file.getframerate()
+                                    pcm_chunks.append(pcm_data)
+                                    wav_meta = wav_meta or (channels, sample_width, sample_rate)
+                            elif event_type in ("tts.response.done", "tts.response.audio.done"):
+                                break
+                if not pcm_chunks or wav_meta is None:
+                    raise RuntimeError("TTS 未返回音频")
+                channels, sample_width, sample_rate = wav_meta
+                out = io.BytesIO()
+                with wave.open(out, "wb") as wav_file:
+                    wav_file.setnchannels(channels)
+                    wav_file.setsampwidth(sample_width)
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(b"".join(pcm_chunks))
+                return out.getvalue(), "audio/wav"
+
+            cosyvoice_base_url = ""
+            if provider in ("cosyvoice", "cosyvoice_intl"):
+                cosyvoice_runtime = config_manager.get_cosyvoice_clone_runtime(provider)
+                runtime_key = (cosyvoice_runtime.get("api_key") or "").strip()
+                if runtime_key:
+                    audio_api_key = runtime_key
+                elif provider == "cosyvoice_intl":
+                    raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
+                cosyvoice_base_url = (voice_data or {}).get("dashscope_base_url") or cosyvoice_runtime.get("base_url", "")
+            try:
+                tts_api_config = config_manager.get_model_api_config("tts_custom")
+            except Exception:
+                tts_api_config = {}
+            preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)
+
+            def _do_synthesize():
+                import dashscope
+                from dashscope.audio.tts_v2 import SpeechSynthesizer
+                from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+                with DASHSCOPE_GLOBAL_LOCK:
+                    dashscope.api_key = audio_api_key
+                    try:
+                        configure_dashscope_sdk_urls(dashscope, preview_base_url, websocket_path="inference")
+                    except Exception:
+                        configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+                    synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                    return synthesizer.call(text)
+
+            audio_data = await asyncio.to_thread(_do_synthesize)
+            if not audio_data:
+                raise RuntimeError("语音合成未返回音频数据")
+            return audio_data, "audio/mpeg"
+        except (MimoVoiceCloneError, MinimaxVoiceCloneError) as e:
+            raise RuntimeError(str(e)) from e
+
+    async def _synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            raise RuntimeError("语音合成文本不能为空")
+        voice_id = await self._get_current_voice_id()
+        if not voice_id:
+            raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
+        await self._cleanup_voice_output_dir()
+        audio_bytes, mime_type = await self._synthesize_reply_voice_audio(normalized_text)
+        if not audio_bytes:
+            raise RuntimeError("语音合成未返回音频数据")
+        voice_dir = self._get_voice_output_dir()
+        await asyncio.to_thread(voice_dir.mkdir, parents=True, exist_ok=True)
+        suffix = ".mp3" if "mpeg" in mime_type else ".wav"
+        output_path = voice_dir / f"qq_reply_{int(time.time() * 1000)}_{random.randint(1000, 9999)}{suffix}"
+        await asyncio.to_thread(output_path.write_bytes, audio_bytes)
+        return output_path.resolve().as_uri(), mime_type
+
+    async def _deliver_private_reply(self, target_qq: str, text: str, *, fallback_to_text_on_voice_failure: bool) -> None:
+        normalized_text = self._validate_outbound_message(text)
+        mode = self._get_reply_mode()
+        if mode == "text":
+            await self.qq_client.send_message(target_qq, normalized_text)
+            return
+        if mode == "both":
+            await self.qq_client.send_message(target_qq, normalized_text)
+        try:
+            file_uri, _ = await self._synthesize_reply_voice_file(normalized_text)
+            if mode == "voice":
+                await self.qq_client.send_private_record(target_qq, file_uri)
+                return
+            await self.qq_client.send_private_record(target_qq, file_uri)
+        except Exception:
+            if mode == "voice" and fallback_to_text_on_voice_failure:
+                self.logger.warning("QQ 纯语音私聊发送失败，回退文本", exc_info=True)
+                await self.qq_client.send_message(target_qq, normalized_text)
+                return
+            if mode == "both":
+                self.logger.warning("QQ 复合私聊中的语音发送失败，已保留文本", exc_info=True)
+                return
+            raise
+
+    async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+        normalized_text = self._validate_outbound_message(text)
+        mode = self._get_reply_mode()
+        text_segments: list[dict[str, Any]] = []
+        if str(reply_message_id or "").strip():
+            text_segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
+        if str(at_user_id or "").strip():
+            text_segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
+        text_segments.append({"type": "text", "data": {"text": f" {normalized_text}" if at_user_id else normalized_text}})
+        if mode == "text":
+            await self.qq_client.send_group_message_segments(group_id, text_segments)
+            return
+        if mode == "both":
+            await self.qq_client.send_group_message_segments(group_id, text_segments)
+        try:
+            file_uri, _ = await self._synthesize_reply_voice_file(normalized_text)
+            if mode == "voice":
+                await self.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
+                return
+            await self.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
+        except Exception:
+            if mode == "voice" and fallback_to_text_on_voice_failure:
+                self.logger.warning("QQ 纯语音群聊发送失败，回退文本", exc_info=True)
+                await self.qq_client.send_group_message_segments(group_id, text_segments)
+                return
+            if mode == "both":
+                self.logger.warning("QQ 复合群聊中的语音发送失败，已保留文本", exc_info=True)
+                return
+            raise
 
     async def _load_business_config(self) -> dict[str, Any]:
         self._qq_settings = await self.config_store.load()
@@ -189,8 +493,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     def _get_napcat_directory(self) -> Path:
         configured = str((self._qq_settings or {}).get("napcat_directory") or "").strip()
         if configured:
-            return Path(configured)
+            configured_path = Path(configured)
+            if configured_path.is_file():
+                return configured_path.parent
+            return configured_path
         return Path(__file__).parent / "NapCat.Shell"
+
+    def _get_napcat_launch_target(self) -> Path:
+        configured = str((self._qq_settings or {}).get("napcat_directory") or "").strip()
+        if configured:
+            return Path(configured)
+        return self._get_napcat_directory()
 
     def _get_napcat_qrcode_path(self) -> Path:
         return self._get_napcat_directory() / "cache" / "qrcode.png"
@@ -209,7 +522,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return False
 
     def _find_napcat_launcher(self) -> Path | None:
-        root = self._get_napcat_directory()
+        launch_target = self._get_napcat_launch_target()
+        if launch_target.is_file():
+            return launch_target
+        root = launch_target
         candidates = [
             root / "launcher-user.bat",
             root / "launcher.bat",
@@ -336,6 +652,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "napcat_directory": str(napcat_dir),
                 "napcat_directory_exists": napcat_dir.exists(),
                 "show_napcat_window": bool(settings.get("show_napcat_window", True)),
+                "reply_mode": self.config_store.normalize_reply_mode(settings.get("reply_mode")),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
                 "guide_step_napcat_done": bool(settings.get("guide_step_napcat_done", False)),
                 "guide_step_config_done": bool(settings.get("guide_step_config_done", False)),
@@ -435,8 +752,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"REFRESH_FAILED: {self.i18n.t('errors.refresh_failed', default='{error}', error=str(e))}"))
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
-    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_napcat_done: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
+    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, reply_mode: Optional[str] = None, show_onboarding: Optional[bool] = None, guide_step_napcat_done: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
         if onebot_url is not None:
             self._qq_settings["onebot_url"] = str(onebot_url or "").strip()
         if token is not None:
@@ -445,6 +762,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._qq_settings["napcat_directory"] = str(napcat_directory or "").strip()
         if show_napcat_window is not None:
             self._qq_settings["show_napcat_window"] = bool(show_napcat_window)
+        if reply_mode is not None:
+            self._qq_settings["reply_mode"] = self.config_store.normalize_reply_mode(reply_mode)
         if show_onboarding is not None:
             self._qq_settings["show_onboarding"] = bool(show_onboarding)
         if guide_step_napcat_done is not None:
@@ -576,13 +895,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             if not normalized_target_id:
                 return Err(SdkError("INVALID_TARGET: target_id 不能为空"))
             if normalized_source_type == "group":
-                segments = []
-                if normalized_message_id:
-                    segments.append({"type": "reply", "data": {"id": normalized_message_id}})
-                if sender_id:
-                    segments.append({"type": "at", "data": {"qq": str(sender_id)}})
-                segments.append({"type": "text", "data": {"text": f" {normalized_reply_text}" if sender_id else normalized_reply_text}})
-                await self.qq_client.send_group_message_segments(normalized_target_id, segments)
+                await self._deliver_group_reply(
+                    normalized_target_id,
+                    normalized_reply_text,
+                    reply_message_id=normalized_message_id,
+                    at_user_id=str(sender_id or ""),
+                    fallback_to_text_on_voice_failure=False,
+                )
                 self._relay_backlog_items = [
                     item for item in self._relay_backlog_items
                     if not (
@@ -594,7 +913,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 ]
                 await self.backlog_store.mark_group_reviewed(normalized_target_id)
             else:
-                await self.qq_client.send_message(normalized_target_id, normalized_reply_text)
+                await self._deliver_private_reply(
+                    normalized_target_id,
+                    normalized_reply_text,
+                    fallback_to_text_on_voice_failure=False,
+                )
             self._relay_backlog_items = [
                 item for item in self._relay_backlog_items
                 if not (
@@ -661,7 +984,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             )
             if not reply_text:
                 return Err(SdkError(f"GENERATE_FAILED: {self.i18n.t('errors.proactive_private_generate_failed', default='AI 未生成可发送的私聊内容')}"))
-            await self.qq_client.send_message(resolved_qq, reply_text)
+            await self._deliver_private_reply(
+                resolved_qq,
+                reply_text,
+                fallback_to_text_on_voice_failure=False,
+            )
             return Ok({
                 "status": "sent",
                 "target": str(target or "").strip(),
@@ -705,7 +1032,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             )
             if not reply_text:
                 return Err(SdkError(f"GENERATE_FAILED: {self.i18n.t('errors.proactive_group_generate_failed', default='AI 未生成可发送的群聊内容')}"))
-            await self.qq_client.send_group_message(normalized_group_id, reply_text)
+            await self._deliver_group_reply(
+                normalized_group_id,
+                reply_text,
+                fallback_to_text_on_voice_failure=False,
+            )
             return Ok({
                 "status": "sent",
                 "group_id": normalized_group_id,
@@ -810,7 +1141,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         group_level = self.group_permission_mgr.get_group_level(group_id) if self.group_permission_mgr else "none"
         if group_level == "none":
             return
-        conversation_key = self._build_session_key(sender_id=sender_id, is_group=True, group_id=group_id)
+        conversation_key = self._build_backlog_conversation_key(sender_id=sender_id, is_group=True, group_id=group_id)
         backlog_message = QQBacklogMessage(
             conversation_key=conversation_key,
             conversation_type="group",
@@ -957,22 +1288,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
         message_text = message.get("content", "")
+        attachments = list(message.get("attachments") or [])
         user_nickname = message.get("user_nickname")
         if message_type == "private":
             session_key = self._build_session_key(sender_id=sender_id, is_group=False)
             if session_key in self._user_sessions:
                 self._user_sessions[session_key]["last_activity_at"] = time.time()
-            await self._handle_private_message(sender_id, message_text, user_nickname)
+            await self._handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname)
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
             session_key = self._build_session_key(sender_id=sender_id, is_group=True, group_id=group_id)
             if session_key in self._user_sessions:
                 self._user_sessions[session_key]["last_activity_at"] = time.time()
-            await self._handle_group_message(group_id, sender_id, message_text, is_at_bot, user_nickname)
+            await self._handle_group_message(group_id, sender_id, message_text, is_at_bot, attachments=attachments, user_nickname=user_nickname)
             await self._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def _handle_private_message(self, sender_id: str, message_text: str, user_nickname: Optional[str] = None):
+    async def _handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
         permission_level = self.permission_mgr.get_permission_level(sender_id)
         if permission_level == "none":
             return
@@ -980,11 +1312,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             relay_probability = self.permission_mgr.get_normal_relay_probability(sender_id) if self.permission_mgr else None
             await self._handle_normal_relay(message_text, sender_id, source_type="private", source_id=sender_id, relay_probability=relay_probability)
             return
-        reply_text = await self._generate_reply(message_text, permission_level, sender_id, is_group=False, user_nickname=user_nickname)
+        reply_text = await self._generate_reply(message_text, permission_level, sender_id, attachments=attachments, is_group=False, user_nickname=user_nickname)
         if reply_text:
-            await self.qq_client.send_message(sender_id, reply_text)
+            await self._deliver_private_reply(
+                sender_id,
+                reply_text,
+                fallback_to_text_on_voice_failure=True,
+            )
 
-    async def _handle_group_message(self, group_id: str, sender_id: str, message_text: str, is_at_bot: bool, user_nickname: Optional[str] = None):
+    async def _handle_group_message(self, group_id: str, sender_id: str, message_text: str, is_at_bot: bool, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
         group_level = self.group_permission_mgr.get_group_level(group_id)
         if group_level == "none":
             return
@@ -999,9 +1335,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             effective_reply_probability = self._truth_reply_probability if reply_probability is None else reply_probability
             if effective_reply_probability <= 0.0 or random.random() >= effective_reply_probability:
                 return
-        reply_text = await self._generate_reply(message_text, group_level, sender_id, is_group=True, group_id=group_id, user_nickname=user_nickname)
+        reply_text = await self._generate_reply(message_text, group_level, sender_id, attachments=attachments, is_group=True, group_id=group_id, user_nickname=user_nickname)
         if reply_text:
-            await self.qq_client.send_group_message(group_id, reply_text)
+            await self._deliver_group_reply(
+                group_id,
+                reply_text,
+                fallback_to_text_on_voice_failure=True,
+            )
 
     @staticmethod
     def _sanitize_message_text(text: str) -> str:
@@ -1031,7 +1371,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "relay_preview": relay_text,
             "timestamp": int(time.time()),
         }] + list(self._relay_backlog_items))[:50]
-        await self.qq_client.send_message(self._admin_qq, relay_text)
+        await self._deliver_private_reply(
+            self._admin_qq,
+            relay_text,
+            fallback_to_text_on_voice_failure=True,
+        )
         return None
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:

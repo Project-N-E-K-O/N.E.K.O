@@ -19,6 +19,8 @@ Small base/cap/cache values keep the arithmetic obvious:
 10 → 20 → 40 → 80 (capped). ``cache=3`` makes LRU eviction easy to drive.
 """
 
+import pytest
+
 from main_logic.activity.activity_guess_gate import ActivityGuessGate
 
 
@@ -131,7 +133,6 @@ def test_cap_below_base_is_clamped():
 
 
 def test_rejects_nonpositive_base():
-    import pytest
     with pytest.raises(ValueError):
         ActivityGuessGate(base_seconds=0.0, cap_seconds=600.0, cache_size=8)
 
@@ -168,6 +169,60 @@ def test_cached_unknown_signature_is_empty():
     gate.record_fired('A', 0, 0.0, scores={'x': 1.0}, guess='g')
     # A different, not-yet-narrated signature stays empty (honest, not stale).
     assert gate.cached('B') == ({}, '')
+
+
+def test_default_multiplier_is_two():
+    """Omitting ``backoff_multiplier`` preserves the historical 2x schedule, so
+    callers that predate the knob (and these tests' ``_gate`` helper) are
+    unaffected."""
+    gate = ActivityGuessGate(base_seconds=10.0, cap_seconds=80.0, cache_size=3)
+    fired = _fire_times(gate, 'A', conv_seq=0, start=0.0, end=400.0, step=5.0)
+    intervals = [b - a for a, b in zip(fired, fired[1:])]
+    assert intervals[:4] == [10.0, 20.0, 40.0, 80.0]
+
+
+def test_custom_multiplier_grows_faster_then_caps():
+    """A larger multiplier reaches the cap in fewer re-narrations. base=10,
+    mult=4, cap=160 → a stable signature's intervals climb 10 → 40 → 160 (capped),
+    i.e. two re-narrations instead of four to settle at the floor."""
+    gate = ActivityGuessGate(
+        base_seconds=10.0, cap_seconds=160.0, cache_size=3, backoff_multiplier=4.0,
+    )
+    fired = _fire_times(gate, 'A', conv_seq=0, start=0.0, end=1000.0, step=1.0)
+    intervals = [b - a for a, b in zip(fired, fired[1:])]
+    assert intervals[:2] == [10.0, 40.0]
+    assert all(iv == 160.0 for iv in intervals[2:])  # never exceeds the cap
+
+
+def test_production_4x_900_schedule():
+    """The user-tuned production schedule: base=30, mult=4, cap=900 → a stable
+    activity decays 30 → 120 → 480 → 900 (capped) — to the floor in 3 steps."""
+    gate = ActivityGuessGate(
+        base_seconds=30.0, cap_seconds=900.0, cache_size=8, backoff_multiplier=4.0,
+    )
+    fired = _fire_times(gate, 'A', conv_seq=0, start=0.0, end=4000.0, step=1.0)
+    intervals = [b - a for a, b in zip(fired, fired[1:])]
+    assert intervals[:3] == [30.0, 120.0, 480.0]
+    assert all(iv == 900.0 for iv in intervals[3:])
+
+
+def test_multiplier_must_exceed_one():
+    """A multiplier <= 1 would degrade the backoff to 'every BASE' (the original
+    idle burn), so it is rejected at construction like a non-positive base;
+    anything strictly above 1 is accepted. Asserting both sides locks the ``> 1``
+    boundary so a mutation that wrongly tightens the check (e.g. ``< 2.0``,
+    rejecting a legitimate 1.5) can't slip through."""
+    for bad in (1.0, 0.5, 0.0, -2.0):
+        with pytest.raises(ValueError):
+            ActivityGuessGate(
+                base_seconds=10.0, cap_seconds=80.0, cache_size=3,
+                backoff_multiplier=bad,
+            )
+    # Just-above-boundary value must construct without raising.
+    ActivityGuessGate(
+        base_seconds=10.0, cap_seconds=80.0, cache_size=3,
+        backoff_multiplier=1.0001,
+    )
 
 
 def test_new_conversation_freshness_is_per_signature():

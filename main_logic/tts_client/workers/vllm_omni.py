@@ -27,6 +27,7 @@ from utils.gptsovits_config import redact_url_for_log
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
 from .._telemetry import _record_tts_telemetry
+from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -34,8 +35,59 @@ logger = get_module_logger(__name__, "Main")
 VLLM_OMNI_DEFAULT_BASE_URL = "ws://localhost:8091/v1"
 VLLM_OMNI_DEFAULT_MODEL = "Qwen3-TTS"
 
+
+def _vllm_omni_normalize_ws_endpoint(base_url: str) -> str:
+    """Normalize a vLLM-Omni base URL into the full WebSocket speech endpoint.
+
+    Extracted from the worker body so the clone-preview branch in
+    ``characters_router`` can share the same normalization (http→ws,
+    path completion, idempotent endpoint assembly) without copy-paste.
+
+    - ``https://`` → ``wss://``, ``http://`` → ``ws://``; ``ws://``/``wss://``
+      pass through unchanged.
+    - Bare ``host:port`` defaults to ``ws://``.
+    - Empty path gets ``/v1`` prepended.
+    - Idempotent: if the path already ends with ``/audio/speech/stream``,
+      it is not appended again.
+
+    Returns the full ws endpoint, or ``''`` when ``base_url`` is blank (caller
+    decides how to surface the missing-config error).
+    """
+    raw_base_url = (base_url or '').strip().rstrip('/')
+    if not raw_base_url:
+        return ''
+
+    if raw_base_url.startswith("https://"):
+        ws_url = "wss://" + raw_base_url[len("https://"):]
+    elif raw_base_url.startswith("http://"):
+        ws_url = "ws://" + raw_base_url[len("http://"):]
+    elif raw_base_url.startswith(("ws://", "wss://")):
+        ws_url = raw_base_url
+    else:
+        # 裸 host:port 形式，默认 ws
+        ws_url = "ws://" + raw_base_url
+
+    parsed = urlparse(ws_url)
+    base_path = (parsed.path or "").rstrip("/")
+    if base_path in ("", "/"):
+        base_path = "/v1"
+    # 幂等：若 path 已是完整 endpoint 则不重复拼接
+    if not base_path.endswith("/audio/speech/stream"):
+        base_path = f"{base_path}/audio/speech/stream"
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            base_path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
-                          base_url='', model='', voice=''):
+                          base_url='', model='', voice='', ref_audio='', ref_text=''):
     """vLLM-Omni TTS worker — full-duplex WebSocket streaming synthesis.
 
     Protocol: ``ws://{base_url}/v1/audio/speech/stream``
@@ -56,6 +108,14 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                    automatically rewritten to ws:// scheme.
         model:     Model name (defaults to ``Qwen3-TTS``).
         voice:     Voice id exposed by vllm-omni.
+        ref_audio: Voice-clone reference audio as a ``data:audio/...;base64,...``
+                   URI. When set, the worker switches to inline-clone mode and
+                   forwards it as ``session.config.ref_audio`` (dual to MiMo's
+                   inline ``clone_voice``). ⚠ vllm-omni only accepts the field
+                   name ``ref_audio`` (NOT ``prompt_audio``).
+        ref_text:  The transcript of the reference audio, forwarded as
+                   ``session.config.ref_text`` when set. ⚠ field name ``ref_text``
+                   (NOT ``prompt_text``).
     """
     raw_base_url = (base_url or '').strip().rstrip('/')
     if not raw_base_url:
@@ -68,53 +128,44 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         response_queue.put(("__ready__", False))
         return
 
-    # 修复 PR #1764 review #1（CodeRabbit）：URL 规整 + 补 /v1 + 协议转换
-    # 原实现：base_url + '/audio/speech/stream'，未做 http→ws 协议转换，未补 /v1，
-    # 用户传 http://host:8091 直接交给 websockets.connect 必失败
-    if raw_base_url.startswith("https://"):
-        ws_url = "wss://" + raw_base_url[len("https://"):]
-    elif raw_base_url.startswith("http://"):
-        ws_url = "ws://" + raw_base_url[len("http://"):]
-    elif raw_base_url.startswith(("ws://", "wss://")):
-        ws_url = raw_base_url
-    else:
-        # 裸 host:port 形式，默认 ws
-        ws_url = "ws://" + raw_base_url
-
-    parsed = urlparse(ws_url)
-    base_path = (parsed.path or "").rstrip("/")
-    if base_path in ("", "/"):
-        base_path = "/v1"
-    # 修复 PR #1764 review 第二轮 #2：URL 规整幂等——若 path 已是完整 endpoint 则不重复拼接
-    if base_path.endswith("/audio/speech/stream"):
-        ws_endpoint = urlunparse(
-            (
-                parsed.scheme,
-                parsed.netloc,
-                base_path,
-                parsed.params,
-                parsed.query,
-                parsed.fragment,
-            )
-        )
-    else:
-        ws_endpoint = urlunparse(
-            (
-                parsed.scheme,
-                parsed.netloc,
-                f"{base_path}/audio/speech/stream",
-                parsed.params,
-                parsed.query,
-                parsed.fragment,
-            )
-        )
+    # URL 规整 + 补 /v1 + 协议转换（http→ws / 补 endpoint / 幂等），与克隆预览分支
+    # 共用 _vllm_omni_normalize_ws_endpoint（见函数 docstring）。
+    ws_endpoint = _vllm_omni_normalize_ws_endpoint(raw_base_url)
 
     effective_model = (model or '').strip() or 'Qwen3-TTS'
-    effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
+    # 克隆模式（内联参考音频，对偶 MiMo 的 clone_voice）：ref_audio 为 data URI、ref_text
+    # 为参考音频原文，二者非空时透传进 session.config。⚠ 字段名严格 ref_audio/ref_text，
+    # vllm-omni 用错（prompt_audio/prompt_text）会 500。
+    effective_ref_audio = (ref_audio or '').strip()
+    effective_ref_text = (ref_text or '').strip()
+    is_clone = bool(effective_ref_audio)
+
+    # voice 解析：
+    # 1. 克隆模式（ref_audio 非空）：忽略 voice_id（N.E.K.O. 内部存储标识如
+    #    vllm-omni-clone-ch-xxx，不是 vLLM-Omni 服务端认识的预制音色名），
+    #    只使用 voice 参数（clone resolve 传入 'default'）。
+    # 2. voice_id 看起来像克隆 ID 但 ref_audio 为空：这是异常状态（resolve 应该
+    #    走 clone 分支带 ref_audio，但可能因 voice_meta 缓存/时序问题漏传）。
+    #    强制回退到 default voice + 发 warning，避免把克隆 ID 发给服务端导致
+    #    Invalid Voice / 服务端崩溃（vLLM-Omni 会把该 ID 解析为 speaker name 并
+    #    期望 ref_audio，缺失则 ValueError 崩溃）。
+    # 3. 正常 preset：voice_id 优先（对偶其他 worker 的 voice_id→voice 回落）。
+    _voice_id_is_clone_id = bool(voice_id and str(voice_id).startswith('vllm-omni-clone-'))
+    if is_clone:
+        effective_voice = (voice or '').strip() or 'default'
+    elif _voice_id_is_clone_id:
+        logger.warning(
+            "[vLLM-Omni TTS] voice_id='%s' 是克隆音色 ID 但 ref_audio 为空，"
+            "回退到 default voice（clone resolve 可能漏传 ref_audio）",
+            voice_id,
+        )
+        effective_voice = (voice or '').strip() or 'default'
+    else:
+        effective_voice = (voice_id or '').strip() or (voice or '').strip() or 'default'
 
     logger.info(
-        "[vLLM-Omni TTS] ws=%s model=%s voice=%s",
-        redact_url_for_log(ws_endpoint), effective_model, effective_voice,
+        "[vLLM-Omni TTS] ws=%s model=%s voice=%s clone=%s",
+        redact_url_for_log(ws_endpoint), effective_model, effective_voice, is_clone,
     )
 
     async def async_worker():
@@ -172,6 +223,15 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     "stream_audio": True,
                     "split_granularity": "sentence",
                 }
+                # 克隆模式：内联参考音频 + 参考文本（对偶 MiMo 内联 clone_voice）。
+                # ⚠ 字段名严格 ref_audio/ref_text，vllm-omni 服务端只认这两个。
+                # ⚠ ref_text 必须与 ref_audio 配套发送：单独发 ref_text 而无 ref_audio
+                # 会导致 vLLM-Omni 服务端 ValueError 崩溃（服务端把 voice 解析为
+                # speaker name 后期望 ref_audio，缺失则报错）。
+                if effective_ref_audio:
+                    config["ref_audio"] = effective_ref_audio
+                    if effective_ref_text:
+                        config["ref_text"] = effective_ref_text
                 # session 层鉴权（部分自建服务端从 config 读 api_key）
                 if key_for_auth:
                     config["api_key"] = key_for_auth
@@ -381,6 +441,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     pass
                 session_state["active"] = False
                 session_state["awaiting_done"] = False
+                # 与其他失效路径（_receive_loop / _rebuild_session / _fail_pending_flush /
+                # sid 切换）对齐，同步清理 speech_id，避免中断后残留旧 utterance id。
+                session_state["speech_id"] = None
                 pending_text.clear()
                 pending_text_sid = None
                 continue
@@ -532,15 +595,98 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         logger.error(f"[vLLM-Omni TTS] Worker 启动失败: {e}")
         response_queue.put(("__ready__", False))
 
+# ── vLLM-Omni（本地 self-hosted 服务）────────────────────────────────────────
+# 两种选中机制（设计文档 §3.1）合并在一个 provider 条目里，照搬 MiMo 的做法：
+#   1. 配置选中（preset）——用户在下拉显式选 ttsModelProvider=='vllm_omni'，走预制/用户填的
+#      voice id，不带克隆参考音频。
+#   2. 音色元数据选中（clone）——用户挑了某个 vLLM-Omni 克隆音色（voice_meta.provider==
+#      'vllm_omni'），对偶 MiMo 的克隆路由。vLLM-Omni 克隆没有远端 voice_id：参考音频存在本地
+#      voice_meta（clone_sample_b64），dispatch 时读出来内联进 session.config 的 ref_audio。
+
+def _vllm_omni_voice_meta_is_clone(vm) -> bool:
+    return bool(vm and vm.get('provider') == 'vllm_omni')
+
+def _build_vllm_omni_clone_data_uri(voice_meta) -> str | None:
+    """Build the ``data:`` reference-audio URI for a vLLM-Omni clone from its
+    voice_meta (the clone identity lives entirely in voice_storage.json — the
+    sample base64 is stored inline, dual to MiMo's ``clone_sample_b64``), or None
+    when absent.
+
+    The stored value is already base64, so this only frames it as a data URI —
+    no decode/re-encode.
+    """
+    b64 = str((voice_meta or {}).get('clone_sample_b64') or '').strip()
+    if not b64:
+        return None
+    mime = str((voice_meta or {}).get('clone_sample_mime') or '').strip() or 'audio/wav'
+    return f"data:{mime};base64,{b64}"
+
 def _vllm_omni_is_selected(ctx) -> bool:
+    # 配置选中（preset）优先判定，且**必须先于任何 ctx.voice_meta 访问**——voice_meta 是惰性的，
+    # 显式选中 vllm_omni（下拉默认）时不能触发 voice_meta 加载，否则违反
+    # test_get_tts_worker_routes_explicit_vllm_before_cloned_voice 的短路契约（对偶 _mimo_is_selected
+    # 的顺序：config-selected 先判，clone-meta 后判）。
     core_config, cm = ctx.core_config, ctx.cm
-    if not _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
-        return False
+    if _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
+        try:
+            raw = cm.load_json_config('core_config.json', {})
+        except Exception:
+            raw = {}
+        if (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni':
+            return True
+    # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
+    # provider / 本 provider 的 config 分支时不会触发 voice_meta 加载）。
+    return _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+
+def _vllm_omni_clone_is_selected(ctx) -> bool:
+    """Clone-only selection predicate (for symmetry with _mimo dispatch / tests)."""
+    return _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+
+def _vllm_omni_clone_resolve(ctx):
+    """Resolve a vLLM-Omni *clone* voice to its worker (inline reference audio).
+
+    Dual to ``_mimo_resolve``'s clone branch: reads the reference-audio sample
+    from ``voice_meta`` and builds a data URI to inline into
+    ``session.config.ref_audio``; reads ``clone_ref_text`` as ``ref_text``.
+    vLLM-Omni is a local service with no API key — the api_key override returns
+    an empty string (consistent with ``_vllm_omni_resolve``'s credential-leak
+    prevention: never fall back to another provider's key).
+    """
+    cm = ctx.cm
+    vm = ctx.voice_meta or {}
+    clone_uri = _build_vllm_omni_clone_data_uri(vm)
+    if not clone_uri:
+        logger.warning(
+            "vLLM-Omni 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
+        return dummy_tts_worker, None, None
     try:
         raw = cm.load_json_config('core_config.json', {})
     except Exception:
-        return False
-    return (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        raw = {}
+    # base_url：优先用 voice_meta 存的 vllm_omni_base_url（对偶 mimo_base_url），缺省回落
+    # 当前 core_config 配置的端点，再缺省走默认。
+    vllm_url = (
+        str(vm.get('vllm_omni_base_url') or '').strip()
+        or (raw.get('ttsModelUrl') or '').strip()
+        or VLLM_OMNI_DEFAULT_BASE_URL
+    )
+    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    clone_ref_text = str(vm.get('clone_ref_text') or '').strip()
+    if not clone_ref_text:
+        # ref_text 与参考音频严格对应是 vLLM-Omni 克隆音质的前提；前端注册入口已强制必填
+        # （voice_clone.js），但旧数据 / 直接编辑 voice_storage 可能缺失。空 ref_text 仍可
+        # 合成（不阻塞），仅音质下降——记 warning 提供可观测性。
+        logger.warning(
+            "vLLM-Omni 克隆音色 %s 缺少 ref_text，克隆音质可能下降", ctx.voice_id)
+    worker = partial(
+        vllm_omni_tts_worker,
+        base_url=vllm_url, model=vllm_model, voice='default',
+        ref_audio=clone_uri, ref_text=clone_ref_text,
+    )
+    # 凭证防泄漏：与 preset 路径一致，读 ttsModelApiKey；无 key 返回空串，禁止 fallback
+    # 到别家 provider 的 key（见 _vllm_omni_resolve L713 同源逻辑）。
+    vllm_key = (raw.get('ttsModelApiKey') or '').strip()
+    return worker, vllm_key, 'vllm_omni'
 
 def _vllm_omni_resolve(ctx):
     cm = ctx.cm
@@ -548,13 +694,25 @@ def _vllm_omni_resolve(ctx):
         raw = cm.load_json_config('core_config.json', {})
     except Exception:
         raw = {}
+
+    # 克隆音色始终优先于配置默认（preset）：用户选了克隆音色 = 明确意图用克隆，
+    # 无论是否配置了 vllm_omni 作为默认 provider 都应走 clone resolve。之前的
+    # `not config_selected` 守卫导致"配置选了 vllm_omni + 用户选了克隆音色"时走
+    # preset 路径，把克隆音色的内部 ID（如 vllm-omni-clone-ch-xxx）当作 voice
+    # 发给 vLLM-Omni 服务端，服务端报 Invalid Voice（该 ID 是 N.E.K.O. 本地
+    # 存储标识，不是 vLLM-Omni 的预制音色名）。config_selected 守卫的原始目的是
+    # 避免触发 voice_meta 惰性加载（短路契约），但 _vllm_omni_is_selected 已在
+    # config-selected 后惰性检查 voice_meta，resolve 到达时 is_selected 已返回
+    # True，voice_meta 已加载完毕，不存在短路问题。
+    if _vllm_omni_voice_meta_is_clone(ctx.voice_meta):
+        return _vllm_omni_clone_resolve(ctx)
     vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
     vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
     vllm_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
     # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
     # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
     # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
-    vllm_key = (raw.get('ttsModelApiKey') or '')
+    vllm_key = (raw.get('ttsModelApiKey') or '').strip()
     worker = partial(
         vllm_omni_tts_worker,
         base_url=vllm_url, model=vllm_model, voice=vllm_voice,

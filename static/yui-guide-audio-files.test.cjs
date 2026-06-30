@@ -359,6 +359,7 @@ test('day6 plugin side panel opens management preview through timeline operation
     assert.equal(operationCommand.at, 1);
     assert.equal(operationCommand.operation, 'day6-plugin-open-management-panel-flow');
     assert.equal(operationCommand.blocking, true);
+    assert.equal(scene.afterSceneDelayMs, 0);
 });
 
 test('day6 plugin dashboard handoff runs through timeline operation after narration starts', () => {

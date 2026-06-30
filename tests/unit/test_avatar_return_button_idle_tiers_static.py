@@ -398,10 +398,30 @@ def test_pngtuber_return_restores_pointer_events():
         source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
     ]
 
-    assert "prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });" in branch
+    assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
     assert "pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');" in branch
+    assert "pngtuberContainer.querySelectorAll('.pngtuber-image').forEach((pngtuberImage) => {" in branch
+    assert "pngtuberImage.style.removeProperty('transition');" in branch
+    assert "pngtuberImage.style.removeProperty('opacity');" in branch
+    assert "pngtuberImage.style.setProperty('visibility', 'visible', 'important');" in branch
     assert "pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');" in branch
     assert "pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');" not in branch
+
+
+def test_pngtuber_return_replays_model_enter_animation_after_preparing_container():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+    branch = source[
+        source.index("} else if (effectiveModelType === 'pngtuber') {"):
+        source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
+    ]
+
+    assert "const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;" in branch
+    assert branch.count("consumeModelReturnEnterRect()") == 1
+    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
+    assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
+    assert "if (modelReturnEnterRect) {" in branch
+    assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch
+    assert branch.index("prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });") < branch.index("playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);")
 
 
 def test_return_button_idle_tier_styles_are_present():
