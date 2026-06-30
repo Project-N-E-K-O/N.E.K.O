@@ -4479,6 +4479,7 @@
     }
 
     var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE = 83; // chat.html BALL fallback: 51px visible ball + transparent carrier
     var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
@@ -4653,6 +4654,20 @@
         ].join(':');
     }
 
+    function getElectronChatMinimizedScreenRect(windowRect) {
+        if (!windowRect) return null;
+        var left = Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2));
+        var top = Math.round(windowRect.top + Math.max(0, (windowRect.height - MINIMIZED_SIZE) / 2));
+        return {
+            left: left,
+            top: top,
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            right: left + MINIMIZED_SIZE,
+            bottom: top + MINIMIZED_SIZE
+        };
+    }
+
     function dispatchElectronChatMinimizedState(reason) {
         if (!isElectronChatWindow()) return;
         var bridge = window.nekoChatWindow;
@@ -4682,10 +4697,12 @@
         }
 
         bridge.getBounds().then(function (bounds) {
-            var rect = normalizeElectronWindowBoundsRect(bounds);
-            if (!rect) return;
+            var windowRect = normalizeElectronWindowBoundsRect(bounds);
+            if (!windowRect) return;
+            var yarnRect = getElectronChatMinimizedScreenRect(windowRect);
+            if (!yarnRect) return;
             var now = Date.now();
-            var signature = getElectronChatMinimizedStateSignature(true, rect);
+            var signature = getElectronChatMinimizedStateSignature(true, yarnRect);
             if (signature === electronChatMinimizedStateSignature &&
                 reason === 'poll' &&
                 now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
@@ -4699,7 +4716,7 @@
                     source: 'chat-window',
                     reason: reason || 'sync',
                     minimized: true,
-                    screenRect: rect,
+                    screenRect: yarnRect,
                     timestamp: now
                 }
             }));
@@ -4746,7 +4763,7 @@
         };
     }
 
-    function electronRectToBounds(rect) {
+    function electronVisibleYarnRectToWindowBounds(rect, carrierRect) {
         if (!rect || typeof rect !== 'object') return null;
         var normalized = normalizeElectronRect({
             left: Number.isFinite(Number(rect.left)) ? rect.left : rect.x,
@@ -4755,11 +4772,20 @@
             height: rect.height
         });
         if (!normalized) return null;
+        var carrier = normalizeElectronWindowBoundsRect(carrierRect);
+        var carrierWidth = carrier && carrier.width > normalized.width
+            ? carrier.width
+            : Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.width));
+        var carrierHeight = carrier && carrier.height > normalized.height
+            ? carrier.height
+            : Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.height));
+        var insetX = Math.max(0, (carrierWidth - normalized.width) / 2);
+        var insetY = Math.max(0, (carrierHeight - normalized.height) / 2);
         return {
-            x: Math.round(normalized.left),
-            y: Math.round(normalized.top),
-            width: Math.round(normalized.width),
-            height: Math.round(normalized.height)
+            x: Math.round(normalized.left - insetX),
+            y: Math.round(normalized.top - insetY),
+            width: Math.round(carrierWidth),
+            height: Math.round(carrierHeight)
         };
     }
 
@@ -4769,11 +4795,15 @@
             ? options.reason
             : 'cat1-pair-move';
         if (isElectronLinuxRuntime() && !force) return;
-        var targetBounds = electronRectToBounds(bounds);
-        if (!targetBounds) return;
         var bridge = getElectronIdleDockBridge();
         if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;
         if (hasElectronIdleDockPendingOrActive()) return;
+        var carrierBounds = null;
+        try {
+            carrierBounds = await bridge.getBounds();
+        } catch (_) {}
+        var targetBounds = electronVisibleYarnRectToWindowBounds(bounds, carrierBounds);
+        if (!targetBounds) return;
         try {
             if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
                 await bridge.idleDockCommitCollapsedBounds(targetBounds);
@@ -4793,7 +4823,12 @@
             : (options && typeof options.source === 'string' && options.source ? options.source : 'cat1-pair-move');
         if (!isElectronChatWindow()) return;
         if (isElectronLinuxRuntime() && !force) return;
-        electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
+        electronCat1PairMovePendingBounds = normalizeElectronRect({
+            left: bounds && Number.isFinite(Number(bounds.left)) ? bounds.left : bounds && bounds.x,
+            top: bounds && Number.isFinite(Number(bounds.top)) ? bounds.top : bounds && bounds.y,
+            width: bounds && bounds.width,
+            height: bounds && bounds.height
+        });
         electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;
         electronCat1PairMovePendingReason = reason;
         if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;

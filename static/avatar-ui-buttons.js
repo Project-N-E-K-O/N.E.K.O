@@ -200,6 +200,7 @@ const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -5;
+const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
 const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
 const _NEKO_IDLE_CAT1_MINIMIZED_BACKWARD_RETREAT_TOLERANCE_PX = 2;
 // 容器属性名：本次走路提交的接近侧（true=站毛球左侧/朝右，false=站毛球右侧/朝左）。
@@ -367,7 +368,7 @@ const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
 const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
 const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
 const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
@@ -5519,10 +5520,23 @@ function _getNekoIdleReactChatMinimizedRect() {
     const shell = document.getElementById('react-chat-window-shell');
     if (!shell || !shell.classList || !shell.classList.contains('is-minimized')) return null;
     if (shell.classList.contains('is-collapsing') || shell.classList.contains('is-expanding')) return null;
+    if (typeof shell.querySelector !== 'function') return null;
+    const icon = shell.querySelector('.react-chat-minimized-icon');
+    const iconRect = _getNekoIdleVisibleElementRect(icon);
+    if (iconRect) return iconRect;
     if (typeof shell.getBoundingClientRect !== 'function') return null;
-    const rect = shell.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-    return rect;
+    const shellRect = _normalizeNekoIdleScreenRect(shell.getBoundingClientRect());
+    if (!shellRect) return null;
+    const left = shellRect.left + Math.max(0, (shellRect.width - _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX) / 2);
+    const top = shellRect.top + Math.max(0, (shellRect.height - _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX) / 2);
+    return {
+        left: left,
+        top: top,
+        width: _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX,
+        height: _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX,
+        right: left + _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX,
+        bottom: top + _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX
+    };
 }
 
 function _getNekoIdleReactChatMinimizedShell() {
@@ -5536,9 +5550,7 @@ function _getNekoIdleReactChatMinimizedShell() {
         shell.classList.contains('is-idle-docked')) {
         return null;
     }
-    if (typeof shell.getBoundingClientRect !== 'function') return null;
-    const rect = shell.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    if (!_getNekoIdleReactChatMinimizedRect()) return null;
     return shell;
 }
 
@@ -6115,7 +6127,7 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
 function _getNekoIdleCat1PairMoveChatTarget() {
     const shell = _getNekoIdleReactChatMinimizedShell();
     if (shell) {
-        const rect = shell.getBoundingClientRect();
+        const rect = _getNekoIdleReactChatMinimizedRect();
         if (rect && rect.width > 0 && rect.height > 0) {
             return {
                 mode: 'dom',

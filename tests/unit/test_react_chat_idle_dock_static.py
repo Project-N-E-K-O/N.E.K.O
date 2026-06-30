@@ -149,6 +149,11 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     avatar_source = _read(AVATAR_UI_BUTTONS_PATH)
 
     assert "function dispatchElectronChatMinimizedState(reason)" in source
+    assert "function getElectronChatMinimizedScreenRect(windowRect)" in source
+    assert "width: MINIMIZED_SIZE" in source
+    assert "height: MINIMIZED_SIZE" in source
+    assert "Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2))" in source
+    assert "Math.round(windowRect.top + Math.max(0, (windowRect.height - MINIMIZED_SIZE) / 2))" in source
     assert "action: 'idle_chat_minimized_state'" in source
     assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
     assert "bridge.getBounds().then(function (bounds)" in source
@@ -159,6 +164,14 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "}, 500);" in source
     assert "electronChatMinimizedStatePublishedAt" in source
     assert "_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500" in avatar_source
+
+    dispatch_block = source.split("function dispatchElectronChatMinimizedState(reason)", 1)[1].split(
+        "function scheduleElectronChatMinimizedState(reason)",
+        1,
+    )[0]
+    assert "getElectronChatMinimizedScreenRect(windowRect)" in dispatch_block
+    assert "classList.contains('is-minimized')" not in dispatch_block
+    assert "querySelector('.react-chat-minimized-icon')" not in dispatch_block
 
 
 def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
@@ -274,6 +287,8 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "electronCat1PairMovePendingReason" in source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in source
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in source
+    assert "function electronVisibleYarnRectToWindowBounds(rect, carrierRect)" in source
+    assert "ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE = 83" in source
     assert "window.addEventListener('neko:idle-chat-pair-move-bounds'" in source
     assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds, {" in source
     assert "reason: detail.reason || detail.source || 'cat1-pair-move'" in source
@@ -292,6 +307,23 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert ": 'cat1-pair-move';" in apply_block
     assert "if (isElectronLinuxRuntime() && !force) return;" in apply_block
     assert "if (isElectronLinuxRuntime()) return;" not in apply_block
+    assert "carrierBounds = await bridge.getBounds();" in apply_block
+    assert "var targetBounds = electronVisibleYarnRectToWindowBounds(bounds, carrierBounds);" in apply_block
+    assert "electronRectToBounds(bounds)" not in apply_block
+
+    visible_to_window_block = _between(
+        source,
+        "function electronVisibleYarnRectToWindowBounds(rect, carrierRect) {",
+        "async function applyElectronCat1PairMoveBounds(bounds, options) {",
+    )
+    assert "var carrier = normalizeElectronWindowBoundsRect(carrierRect);" in visible_to_window_block
+    assert "Math.max(ELECTRON_CHAT_MINIMIZED_FALLBACK_WINDOW_SIZE, Math.round(normalized.width))" in visible_to_window_block
+    assert "var insetX = Math.max(0, (carrierWidth - normalized.width) / 2);" in visible_to_window_block
+    assert "var insetY = Math.max(0, (carrierHeight - normalized.height) / 2);" in visible_to_window_block
+    assert "x: Math.round(normalized.left - insetX)" in visible_to_window_block
+    assert "y: Math.round(normalized.top - insetY)" in visible_to_window_block
+    assert "width: Math.round(carrierWidth)" in visible_to_window_block
+    assert "height: Math.round(carrierHeight)" in visible_to_window_block
 
     schedule_block = _between(
         source,
@@ -305,6 +337,7 @@ def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
     assert "electronCat1PairMovePendingForce = electronCat1PairMovePendingForce || force;" in schedule_block
     assert "electronCat1PairMovePendingReason = reason;" in schedule_block
     assert "var pendingForce = electronCat1PairMovePendingForce;" in schedule_block
+    assert "electronCat1PairMovePendingBounds = normalizeElectronRect({" in schedule_block
     assert "var pendingReason = electronCat1PairMovePendingReason || 'cat1-pair-move';" in schedule_block
     assert "electronCat1PairMovePendingForce = false;" in schedule_block
     assert "electronCat1PairMovePendingReason = '';" in schedule_block

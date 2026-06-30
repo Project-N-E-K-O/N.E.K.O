@@ -507,7 +507,6 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "window.addEventListener('beforeunload', () => {" in source
     assert "_releaseAllNekoIdleCat1PlaygroundDropLifecycles('beforeunload');" in source
 
-
 def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
@@ -2522,7 +2521,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "Dev-only short interval for tuning cat sounds and the linked thought bubble." not in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000" in source
     assert "_NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10" in source
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10" in source

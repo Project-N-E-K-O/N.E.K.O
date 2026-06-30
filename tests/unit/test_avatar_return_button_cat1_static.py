@@ -107,7 +107,8 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[1].split("}", 1)[0]
     assert ".neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble" in thought_bubble_hidden_block
     assert ".neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble" in thought_bubble_hidden_block
-    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble" in thought_bubble_hidden_block
+    assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" not in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
     assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
@@ -121,7 +122,7 @@ def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
 
     assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
     assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 10 * 1000" in source
     assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",
