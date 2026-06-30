@@ -156,16 +156,20 @@ function createSceneLike(options = {}) {
     };
 }
 
-function createRenderer() {
+function createRenderer(viewport = { width: 2560, height: 1440 }) {
     return {
         domElement: {
-            clientWidth: 2560,
-            clientHeight: 1440,
+            get clientWidth() {
+                return viewport.width;
+            },
+            get clientHeight() {
+                return viewport.height;
+            },
             getBoundingClientRect: () => ({
                 left: 0,
                 top: 0,
-                width: 2560,
-                height: 1440
+                width: viewport.width,
+                height: viewport.height
             })
         }
     };
@@ -179,7 +183,7 @@ function createCamera() {
     };
 }
 
-function createScreenBridge() {
+function createScreenBridge({ onMove } = {}) {
     const calls = [];
     return {
         calls,
@@ -195,6 +199,9 @@ function createScreenBridge() {
             },
             async moveWindowToDisplay(screenX, screenY) {
                 calls.push({ screenX, screenY });
+                if (typeof onMove === 'function') {
+                    onMove();
+                }
                 return {
                     success: true,
                     sameDisplay: false,
@@ -211,12 +218,18 @@ function createScreenBridge() {
 test('VRM display switch uses the released drag pointer as the cross-screen target', async () => {
     const window = createInteractionContext('vrm-interaction.js');
     const scene = createSceneLike();
-    const screenBridge = createScreenBridge();
+    const viewport = { width: 2560, height: 1440 };
+    const screenBridge = createScreenBridge({
+        onMove() {
+            viewport.width = 1470;
+            viewport.height = 956;
+        }
+    });
     window.electronScreen = screenBridge.bridge;
     const interaction = new window.VRMInteraction({
         currentModel: { scene, vrm: { scene }, url: '/vrm/yui.vrm' },
         camera: createCamera(),
-        renderer: createRenderer(),
+        renderer: createRenderer(viewport),
         core: { saveUserPreferences: async () => true }
     });
     interaction._lastPanDragPointerScreen = { x: 3200, y: 720 };
@@ -231,7 +244,7 @@ test('VRM display switch uses the released drag pointer as the cross-screen targ
     await interaction._checkAndSwitchDisplay();
 
     assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
-    assert.ok(scene.position.x > -8, 'model should not be compensated back to the target display edge');
+    assert.ok(scene.position.x > -6, 'target-display viewport should be used when preserving the released pointer');
     assert.equal(snapCalls, 0, 'pointer-anchored cross-display drag should not run a second snap animation');
     assert.equal(interaction._lastPanDragPointerScreen, null, 'display switch should consume the cached drag pointer');
 });
@@ -281,12 +294,18 @@ test('VRM display switch falls back to the model center when the release pointer
 test('MMD display switch uses the released drag pointer as the cross-screen target', async () => {
     const window = createInteractionContext('mmd-interaction.js', 'window.MMDInteraction = MMDInteraction;');
     const mesh = createSceneLike();
-    const screenBridge = createScreenBridge();
+    const viewport = { width: 2560, height: 1440 };
+    const screenBridge = createScreenBridge({
+        onMove() {
+            viewport.width = 1470;
+            viewport.height = 956;
+        }
+    });
     window.electronScreen = screenBridge.bridge;
     const interaction = new window.MMDInteraction({
         currentModel: { mesh, url: '/mmd/yui.pmx' },
         camera: createCamera(),
-        renderer: createRenderer(),
+        renderer: createRenderer(viewport),
         core: { saveUserPreferences: async () => true }
     });
     interaction._lastPanDragPointerScreen = { x: 3200, y: 720 };
@@ -301,7 +320,7 @@ test('MMD display switch uses the released drag pointer as the cross-screen targ
     await interaction._checkAndSwitchDisplay();
 
     assert.deepEqual(screenBridge.calls[0], { screenX: 3200, screenY: 720 });
-    assert.ok(mesh.position.x > -8, 'model should not be compensated back to the target display edge');
+    assert.ok(mesh.position.x > -6, 'target-display viewport should be used when preserving the released pointer');
     assert.equal(snapCalls, 0, 'pointer-anchored cross-display drag should not run a second snap animation');
     assert.equal(interaction._lastPanDragPointerScreen, null, 'display switch should consume the cached drag pointer');
 });

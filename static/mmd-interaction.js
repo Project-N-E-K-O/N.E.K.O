@@ -220,6 +220,40 @@ class MMDInteraction {
         }
     }
 
+    _moveModelCenterToWindowPoint(targetX, targetY) {
+        const mesh = this.manager.currentModel?.mesh;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!mesh || !camera || !renderer || !THREE) return false;
+        if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return false;
+
+        const center = this._getProjectedModelCenterInWindow();
+        if (!center) return false;
+
+        const canvasRect = renderer.domElement.getBoundingClientRect();
+        const screenWidth = canvasRect.width;
+        const screenHeight = canvasRect.height;
+        if (!(screenWidth > 0) || !(screenHeight > 0)) return false;
+
+        const deltaPxX = targetX - center.x;
+        const deltaPxY = targetY - center.y;
+        if (deltaPxX === 0 && deltaPxY === 0) return true;
+
+        const cameraDistance = camera.position.distanceTo(mesh.position);
+        const fov = camera.fov * (Math.PI / 180);
+        const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+        const worldWidth = worldHeight * (screenWidth / screenHeight);
+        const pixelToWorldX = worldWidth / screenWidth;
+        const pixelToWorldY = worldHeight / screenHeight;
+
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+        mesh.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
+        mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
+        return true;
+    }
+
     // ═══════════════════ 锁定控制 ═══════════════════
 
     setLocked(locked) {
@@ -679,27 +713,11 @@ class MMDInteraction {
             const desiredModelCenterY = useDragPointerForSwitch
                 ? switchScreenY - targetDisplay.screenY + (Number(pointerOffset.y) || 0)
                 : modelScreenY - targetDisplay.screenY;
-            const deltaPxX = desiredModelCenterX - modelCenterX;
-            const deltaPxY = desiredModelCenterY - modelCenterY;
-
-            if (deltaPxX !== 0 || deltaPxY !== 0) {
-                const cameraDistance = camera.position.distanceTo(mesh.position);
-                const fov = camera.fov * (Math.PI / 180);
-                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-                const worldWidth = worldHeight * (screenWidth / screenHeight);
-                const pixelToWorldX = worldWidth / screenWidth;
-                const pixelToWorldY = worldHeight / screenHeight;
-
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-                mesh.position.add(right.clone().multiplyScalar(deltaPxX * pixelToWorldX));
-                mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
-            }
 
             // 6. 等待新窗口尺寸生效，再执行回弹与保存
             await new Promise(resolve => requestAnimationFrame(resolve));
             await new Promise(resolve => requestAnimationFrame(resolve));
+            this._moveModelCenterToWindowPoint(desiredModelCenterX, desiredModelCenterY);
 
             const snapped = useDragPointerForSwitch
                 ? false
