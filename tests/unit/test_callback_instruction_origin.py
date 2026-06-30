@@ -27,10 +27,11 @@ wrappers, so the origin routing must be re-asserted there.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
 
 
-def _build(callbacks, *, passive: bool = False):
+def _build(callbacks, *, passive: bool = False, recent_live_replies: list[str] | None = None):
     from main_logic.core import _build_callback_instruction
 
     return _build_callback_instruction(
@@ -39,6 +40,7 @@ def _build(callbacks, *, passive: bool = False):
         lanlan_name="兰兰",
         master_name="主人",
         passive=passive,
+        recent_live_replies=recent_live_replies,
     )
 
 
@@ -516,3 +518,246 @@ def test_voice_swap_empty_input_returns_empty_string():
     assert _render_swap([]) == ""
     assert _render_swap([_voice_entry("event")]) == ""  # all blank
     assert _render_swap([_voice_entry("event", summary="   ", detail="   ")]) == ""
+
+
+def test_neko_live_short_reply_contract_is_rendered_from_callback_metadata():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "viewer_42: why are you so quiet?",
+                "detail": "viewer_42: why are you so quiet?",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "danmaku_response",
+                },
+            }
+        ],
+    )
+
+    assert "NEKO Live short output contract:" in out
+    assert "Target at most 14 Chinese characters; absolute ceiling 28." in out
+    assert "Output exactly one sentence, one breath, no paragraph." in out
+    assert "Do not continue, summarize, or imitate the previous NEKO reply." in out
+    assert "If the draft sounds like the previous NEKO reply, change the angle before output." in out
+    assert "Do not reuse the previous reply's opening words, sentence rhythm, punchline, or host beat." in out
+    assert "Do not invent a punishment, public-shaming, trial, labor-camp, report, or moral judgment bit." in out
+    assert "Forbidden words: 公开示众, 劳改, 审判, 处刑, 惩罚." in out
+    assert "Do not force technical, game-specific, guide, tutorial, or news material into an unclear expert question." in out
+    assert "Never end with an unfinished choice such as 还是, 或者, or or." in out
+    assert "answer only the current danmaku" in out
+    assert "first appearance" in out
+
+
+def test_neko_live_short_reply_contract_includes_recent_output_negative_examples():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "viewer_42: why are you so quiet?",
+                "detail": "viewer_42: why are you so quiet?",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "danmaku_response",
+                },
+            }
+        ],
+        recent_live_replies=[
+            "old line one",
+            "cat says tiny plan",
+            "fresh different angle",
+        ],
+    )
+
+    assert "Recent NEKO Live outputs below are negative examples" in out
+    assert "forbidden material, not conversation context to resume" in out
+    assert "conversation memory" not in out
+    assert "Avoid repeating: cat says tiny plan" in out
+    assert "Avoid repeating: fresh different angle" in out
+    assert "fresh angle" in out
+
+
+def test_neko_live_recent_output_negative_examples_use_turn_values_not_ids():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "viewer_42: why are you so quiet?",
+                "detail": "viewer_42: why are you so quiet?",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "danmaku_response",
+                },
+            }
+        ],
+        recent_live_replies=OrderedDict(
+            [
+                ("live-turn-1", "cat says tiny plan"),
+                ("live-turn-2", "fresh different angle"),
+            ]
+        ),
+    )
+
+    assert "Avoid repeating: cat says tiny plan" in out
+    assert "Avoid repeating: fresh different angle" in out
+    assert "live-turn-1" not in out
+    assert "live-turn-2" not in out
+
+
+def test_neko_live_recent_output_negative_examples_keep_last_twelve_only():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "solo stream needs a fresh short reply",
+                "detail": "solo stream needs a fresh short reply",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "active_engagement",
+                },
+            }
+        ],
+        recent_live_replies=[
+            "oldest line should fall out",
+            "second live line",
+            "third live line",
+            "fourth live line",
+            "fifth live line",
+            "sixth live line",
+            "seventh live line",
+            "eighth live line",
+            "ninth live line",
+            "tenth live line",
+            "eleventh live line",
+            "twelfth live line",
+            "thirteenth live line",
+        ],
+    )
+
+    assert "oldest line should fall out" not in out
+    assert "Avoid repeating: second live line" in out
+    assert "Avoid repeating: thirteenth live line" in out
+    assert "For active_engagement: offer one concrete reply hook" in out
+    assert "make only a small surface reaction instead of inventing an expert A/B question" in out
+
+
+def test_neko_live_repeat_detector_catches_chinese_host_beat_family():
+    from main_logic.core import _looks_like_recent_neko_live_reply_repeat
+
+    recent = [
+        "猫猫先给你记一条小鱼干奖励，等弹幕接一句再开奖。",
+        "这个房间现在像猫猫小电台，先轻轻播一口气氛。",
+    ]
+
+    assert _looks_like_recent_neko_live_reply_repeat("收到这份小鱼干奖励啦，猫猫先把开心收好。", recent)
+    assert not _looks_like_recent_neko_live_reply_repeat("这一分钟像小电台空拍，猫猫先把气氛托住。", recent)
+    assert _looks_like_recent_neko_live_reply_repeat("这个房间现在像猫猫小电台，先轻轻播一口气氛。", recent)
+
+
+def test_neko_live_repeat_detector_catches_audience_prompt_remix():
+    from main_logic.core import _looks_like_recent_neko_live_reply_repeat
+
+    recent = [
+        "现在大家想听猫猫聊点什么，可以发一条弹幕。",
+    ]
+
+    assert _looks_like_recent_neko_live_reply_repeat("你们最想看猫猫做什么，快来接一句。", recent)
+
+
+def test_neko_live_repeat_detector_catches_short_audience_callback_remix():
+    from main_logic.core import _looks_like_recent_neko_live_reply_repeat
+
+    recent = [
+        "觉得猫猫还能抢救一下的扣个1，猫猫看看还有没有人在。",
+    ]
+
+    assert _looks_like_recent_neko_live_reply_repeat("还在的观众吱一声，给猫猫一点反应。", recent)
+
+
+def test_neko_live_repeat_detector_catches_presence_check_audience_prompt():
+    from main_logic.core import _looks_like_recent_neko_live_reply_repeat
+
+    recent = [
+        "直播间还有人吗，猫猫轻轻探头。",
+    ]
+
+    assert _looks_like_recent_neko_live_reply_repeat("在不在，猫猫确认一下信号。", recent)
+
+
+def test_neko_live_repeat_detector_does_not_treat_example_phrase_as_audience_prompt():
+    from main_logic.core import _looks_like_recent_neko_live_reply_repeat
+
+    recent = [
+        "现在大家想听猫猫聊点什么，可以发一条弹幕。",
+    ]
+
+    assert not _looks_like_recent_neko_live_reply_repeat("大家别急，猫猫打个比方，这局像开盲盒。", recent)
+
+
+def test_neko_live_host_routes_allow_expanded_reply_ceiling_from_metadata():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "neko_roast",
+                "summary": "solo stream is idle",
+                "detail": "solo stream is idle",
+                "delivery_mode": "proactive",
+                "metadata": {
+                    "plugin": "neko_roast",
+                    "live_reply_contract": "short_tts_line",
+                    "max_reply_chars": 40,
+                    "response_module_hint": "idle_hosting",
+                },
+            }
+        ],
+    )
+
+    assert "absolute ceiling 40" in out
+    assert "Host modules may use one or two short sentences" in out
+    assert "tiny two-sentence aside" in out
+    assert "not a full monologue or survey" in out
+
+
+def test_non_neko_callbacks_do_not_get_live_reply_contract():
+    out = _build(
+        [
+            {
+                "origin": "event",
+                "status": "completed",
+                "source_kind": "plugin",
+                "source_name": "warthunder",
+                "summary": "mission update",
+                "detail": "mission update",
+                "delivery_mode": "proactive",
+            }
+        ],
+    )
+
+    assert "NEKO Live short output contract:" not in out

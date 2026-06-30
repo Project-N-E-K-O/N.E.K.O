@@ -116,6 +116,8 @@ def is_mirror_assistant_message(data: dict) -> bool:
     metadata = data.get("metadata")
     if not isinstance(metadata, dict):
         return False
+    if is_live_reply_contract_meta(metadata):
+        return True
     mirror = metadata.get("mirror")
     if not isinstance(mirror, dict):
         return False
@@ -130,6 +132,8 @@ def is_mirror_turn_end_meta(meta: Optional[dict]) -> bool:
     memory pipeline."""
     if not isinstance(meta, dict):
         return False
+    if is_live_reply_contract_meta(meta):
+        return True
     mirror = meta.get("mirror")
     if not isinstance(mirror, dict):
         return False
@@ -137,6 +141,13 @@ def is_mirror_turn_end_meta(meta: Optional[dict]) -> bool:
     if not isinstance(event, dict):
         return False
     return is_mirror_event_memory_disabled(event)
+
+
+def is_live_reply_contract_meta(meta: Optional[dict]) -> bool:
+    """NEKO Live short broadcast replies are visual/TTS output, not
+    ordinary chat turns.  Keep them out of the normal memory/analyzer
+    pipeline while their own live anti-repeat window tracks them."""
+    return isinstance(meta, dict) and meta.get("live_reply_contract") == "short_tts_line"
 
 
 # Sentinel input_type values used by mirror_user_input — cross_server
