@@ -532,6 +532,71 @@ This package prepared the 2026-06-26 long solo-stream validation and remains use
 
 These slices were validated together in the 2026-06-26 solo-stream run. Do not add Gift / SC / Guard behavior, multi-persona settings, or a major UI redesign while addressing the remaining live-feel findings.
 
+## External Test Readiness Checklist
+
+This is the release gate for handing NEKO Live to more testers. It is stricter than a single developer smoke test and should be used before inviting 3-5 external or semi-external streamers.
+
+Goal: a streamer who is not reading the code can deploy NEKO Live, enter `solo_stream`, and trust NEKO to hold a 30-minute low-danmaku room without obvious silence, spam, repeated first-appearance roast, long-reply drift, cross-plugin contamination, or confusing recovery steps.
+
+### Required before external testing
+
+- Deployment path is documented well enough that a tester can start the plugin without live help from the maintainer.
+- Dashboard first screen answers four streamer questions: can NEKO stream, is this dry_run or real output, why is NEKO quiet, and what should the streamer do if something is blocked.
+- `solo_stream` is the default validation target for this gate. `co_stream` may remain available, but it does not prove Independent Mode readiness.
+- A 30-minute real-output `solo_stream` run passes at least twice after the latest behavior changes.
+- One validation run includes a low-danmaku or no-danmaku window of at least 5 minutes.
+- One validation run includes at least 5-20 real viewer danmaku, or an explicitly documented substitute if real viewers are unavailable.
+- Plugin disabled or `live_enabled=false` never allows NEKO Live to push proactive speech or steal another plugin's output window.
+- Gift / SC / Guard remain signal-only until dedicated behavior exists; they must not fall through to `avatar_roast` or ordinary `danmaku_response`.
+- `dry_run=true` and `dry_run=false` are visually and operationally obvious to the streamer.
+- Pause / resume / stop listening / refresh status remain available from the panel and do not require code or terminal access.
+- Viewer profile clearing works for controlled first-appearance validation and does not clear unrelated sandbox, safety, or live-summary data.
+
+### Live-behavior acceptance
+
+- First useful danmaku from a new viewer creates one first-appearance moment through `avatar_roast`.
+- The same UID's later danmaku routes through `danmaku_response`, not another avatar / ID / entrance roast.
+- Short reactions such as laughter, emoji, `6`, or one-word replies get short responses, not a new segment or long explanation.
+- Question danmaku is answered directly before NEKO changes topic or adds a host hook.
+- Viewer-to-viewer `@` messages are not treated as a call to NEKO; NEKO-directed `@NEKO` / `@猫猫` still works as normal current-message input.
+- Follow-up replies target the current danmaku and do not continue the previous NEKO line unless the viewer explicitly continues that thread.
+- No-danmaku windows can reach `idle_hosting`; idle lines are short, non-template, and do not beg for interaction.
+- Repeated idle windows show some program rhythm, such as `settle -> column -> callback`, instead of random filler.
+- `active_engagement` creates one concrete low-pressure reply point, such as a tiny choice, small stance, or small challenge.
+- Active Engagement does not overuse "send danmaku / anyone here / what should we talk about" audience-prompt language.
+- NEKO output remains one short TTS-friendly line in normal cases; no repeated long monologues appear in the second half of the run.
+- Recent output should not drift into paraphrasing a previous NEKO Live line, reward bit, host self-test, one-word callback, tiny radio, or other spent output family.
+
+### Observability acceptance
+
+- `monitor_live.ps1 -ExpectRealOutput` can be run during a real-output validation.
+- If backend logs are available, the monitor should also run with `-BackendLogPath <backend-log>`.
+- Monitor output exposes the latest route, latest status, latest source, latest text, latest reason, latest output length, and recent actual route counts.
+- Monitor output exposes `latest_danmaku_profile` and `latest_danmaku_reply_shape` for ordinary danmaku review.
+- Monitor output exposes idle / active review signals such as `latest_host_beat_idle_stage`, `latest_topic_pack`, topic family, host beat family, and spent output family.
+- `alerts` must be understandable enough to triage the next action. In particular, `live_disabled`, `test_isolation`, `backend_log_missing`, `long_reply`, `reply_repeat`, `generic_host_prompt`, `avatar_bias`, `idle_missing`, and `active_missing` should be treated as review signals, not ignored.
+
+### Pass / hold decision
+
+Pass for 3-5 tester rollout if:
+
+- Two 30-minute `solo_stream` runs pass without deathly silence, obvious spam, or repeated route confusion.
+- At least one quiet window validates `idle_hosting`.
+- At least one active topic validates a concrete reply hook.
+- Same-UID follow-up danmaku validates `danmaku_response`.
+- Short reactions, questions, and `@` cases behave acceptably.
+- The streamer can recover from common states using the panel, without editing config files.
+
+Hold external testing if:
+
+- NEKO Live speaks while disabled or steals output from another plugin.
+- The streamer cannot tell whether the run is dry_run or real output.
+- Same UID repeatedly gets avatar / ID roast.
+- Gift / SC / Guard are mistaken for ordinary roastable danmaku.
+- Long replies or previous-reply contamination still dominate the second half of a run.
+- Idle windows remain silent or turn into generic interaction begging.
+- The maintainer must explain terminal logs live for the tester to know what is happening.
+
 ## Next Live Test Checklist
 
 This is the canonical checklist for the next controlled solo-stream validation. Quickstart may link to it, but should not duplicate the full decision criteria.

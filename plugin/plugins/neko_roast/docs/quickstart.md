@@ -7,6 +7,21 @@ NEKO Live 当前有两条使用路径：
 
 “首次弹幕头像 / ID 锐评”仍是当前最稳定的底层链路；猫猫独播会在这个链路之上增加 Live Status、为什么没说话和 Idle Hosting 的基础能力。
 
+如果本次目的是给组长或内测主播快速体验猫猫独播，先读 [`solo-stream-test-guide.md`](solo-stream-test-guide.md)。那份只保留启动、连接、`dry_run`、真实输出、监控和通过标准；本文下面保留完整操作细节和现场复盘口径。
+
+## 10 分钟最短路径
+
+1. 启动后端：`uv run python launcher.py`。
+2. 启动前端：`npm start`。
+3. 打开 NEKO Live 面板，启动 `neko_roast`。
+4. 控制台填写直播间 ID 或直播间链接，查询确认目标房间。
+5. 选择“猫猫独播”。
+6. 首次验证保持 `dry_run=true`，清空观众档案后开始监听。
+7. 发一两条真实弹幕，确认 recent result 有 `avatar_roast` / `danmaku_response`。
+8. 确认 Live Status 和“为什么没说话”能解释当前状态。
+9. 需要真实开口时再切 `dry_run=false`。
+10. 测完切回 `dry_run=true`，停止监听和插件。
+
 插件启动或配置重载后只有在 `live_enabled=true` 时才会向当前猫猫注入轻量直播语境，让她知道接下来收到的是直播间弹幕/头像锐评事件；未开启直播插件时不会注入直播语境，避免影响 Warthunder 等其他插件发言。真正的沙盒或直播弹幕仍会通过 `respond` 事件触发自然短句回应。
 开发者模式开启时会在直播语境之上追加调试语境。手动从面板开启开发者模式时，猫猫会短句播报一次已进入调试状态；插件启动时如果配置已开启，只注入调试语境，不自动播报。
 插件关闭时会发送恢复语境，提醒猫猫回到日常聊天状态，不再把后续普通对话当成直播弹幕或头像锐评。
@@ -33,7 +48,7 @@ NEKO Live 当前有两条使用路径：
 
 ## 猫猫独播 30 分钟验收
 
-这一步用于熟人主播陪跑或小范围内测，不用于证明功能全量完成。完整产品判定以 [`independent-mode-product-plan.md`](independent-mode-product-plan.md) 的 `Next Live Test Checklist` 为准；本节只保留现场操作速查。
+这一步用于熟人主播陪跑或小范围内测，不用于证明功能全量完成。完整外测准入以 [`independent-mode-product-plan.md`](independent-mode-product-plan.md) 的 `External Test Readiness Checklist` 为准；单场直播验证以 `Next Live Test Checklist` 为准；本节只保留现场操作速查。
 
 开播前确认：
 
@@ -50,6 +65,8 @@ NEKO Live 当前有两条使用路径：
   - 如果出现 `avatar_bias`，优先看 `avatar_roast_share`、`recent_danmaku_response` 和 `entrance_pacing_window`，确认猫猫是不是又把普通弹幕当成连续首评，以及当前活跃度下连续首评会被压多久；如果出现 `long_reply`，同时看 `latest_output_len`、`recent_long_reply_count` 和 `recent_long_reply_*`，确认长回复主要来自首评、后续接话、冷场陪播还是主动营业，避免旧长回复被最新短回复盖住。
   - 如果出现 `generic_host_prompt`，看 `recent_generic_host_prompt_count`、`log_generic_host_prompt` 和最新输出 / 后端日志，确认主动营业是不是退化成“大家快来互动 / 发弹幕 / 还有人吗 / 在不在 / get the chat moving”这类模板句。
   - 如果出现 `reply_repeat`，优先看 `log_reply_repeat`、`latest_topic_family`、`latest_host_beat_family`、`latest_spent_output_family`、`recent_spent_output_family_*`、`topic_family_bias`、`host_beat_family_bias` 和 `spent_output_family_bias`，确认猫猫是不是换词复用了同一套直播梗；如果同时出现 `reply_suppressed` 或 `log_reply_suppressed=True`，说明宿主最终输出层已经因为复读拦下这句话，插件 recent result 可能仍显示 `pushed`，不要先误判成 dispatcher 或 TTS 没触发。
+  - 如果出现 `reply_quality_fallback` 或 `reply_dangling_choice`，优先看 `log_reply_shape_reason`。这表示宿主最终输出层已经把“不知所云 / 低置信度 / 未完成选择题”草稿救成短安全句；偶发可接受。若出现 `reply_quality_fallback_many` 或 `reply_dangling_choice_many`，再看 `log_reply_quality_fallback_count` / `log_reply_dangling_choice_count`，这表示当前日志窗口里同类救场至少 3 次，上游话题素材或 prompt 仍需收敛。
+  - `log_contamination=none` 表示后端日志窗口里没有检测到非 NEKO Live 的主动输出污染；`neko_roast` 自己的主动营业、冷场陪播和开场暖场 proactive 消息不算串台。若出现 `contamination_proactive` 或 `log_contamination=warthunder`，先停掉无关插件或重启到干净测试窗口，再判断 NEKO Live 的节奏问题。
   - 如果主动营业感觉无聊或接不住，看 `recent_topic_shape_either_or` / `recent_topic_shape_light_stance` / `recent_topic_shape_tiny_tease` / `recent_topic_shape_small_challenge` 和 `recent_topic_intent_quick_vote` / `recent_topic_intent_tiny_answer` / `recent_topic_intent_tease_back` / `recent_topic_intent_agree_or_pushback`，确认最近话题是不是只在同一种互动形态或接话意图里打转；如果出现 `topic_shape_bias` 或 `topic_intent_bias`，说明最近主动营业已经明显偏向同一种说法，下一轮应优先调 topic pool 或形态轮换。
   - 如果主动营业话题本身无聊，看 `recent_topic_source_fallback` / `recent_topic_source_bili_trending` / `recent_topic_source_recent_danmaku`，确认最近主要靠内置兜底、B 站公开素材，还是近期弹幕开题；如果出现 `topic_source_bias`，说明最近素材来源过于单一。
   - 如果出现 `proactive_in_engaged`，说明最新一条实际输出是开场暖场 / 冷场陪播 / 主动营业，但当前房间状态是 `engaged`，优先判断猫猫是否在观众刚互动时抢话。
@@ -90,6 +107,8 @@ NEKO Live 当前有两条使用路径：
 - 有没有明显刷屏。
 - 观众发弹幕到 NEKO 回复是否偏慢。
 - 冷场补位是否重复、油腻或像客服。
+- 是否出现不知所云、没头没尾的二选一，或突然像攻略 / 专家 / 老师。
+- 监控是否出现 `long_reply`、`reply_repeat`、`generic_host_prompt`、`reply_quality_fallback_many` 或 `reply_dangling_choice_many`。
 - 锐评强度是否符合当前档位。
 - 主播是否敢继续把台前交给 NEKO。
 
@@ -105,12 +124,14 @@ NEKO Live 当前有两条使用路径：
 - 可以继续内测：30 分钟内没有死亡沉默、没有明显刷屏，主播愿意继续把台前交给 NEKO。
 - 需要调参再测：主要问题是太安静、太吵、冷却不合适或档位选择不合适。
 - 需要改话术再测：主要问题是冷场补位重复、油腻、像客服，或不像 NEKO。
+- 需要继续收敛输出质量：主要问题是长回复、复读、模板喊互动、频繁质量兜底，或频繁没说完的二选一。
 
 测完后的下一步按问题分流：
 
 - 太安静 / 太吵：先调整节奏档位或 Pacing Control。
 - 弹幕到回复慢：记录具体时间点和大约延迟，优先排查响应链路耗时。
 - 冷场话术尴尬：先调整 Idle Hosting 文案，不急着加主动营业。
+- `reply_quality_fallback_many` / `reply_dangling_choice_many`：先看对应 count 和最近话题来源，优先收敛 prompt / topic material，而不是继续提高开口频率。
 - 状态看不懂：先细化 Live Status / 为什么没说话，再继续测试。
 
 ## 详细步骤

@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-06-29 · 测试基线 397 passed / 0 error
+> 更新日期：2026-06-30 · 测试基线 432 passed / 0 error
 
 ---
 
@@ -45,7 +45,9 @@
 neko_roast/
 ├─ __init__.py            插件入口（NekoRoastPlugin）+ @ui.action / @plugin_entry 动作
 ├─ core/                  骨架：pipeline / safety_guard / runtime / contracts / event_bus /
-│                         module_registry / permission_gate / instructions
+│                         module_registry / permission_gate / instructions，以及 NEKO Live
+│                         的 live_reply_policy / recent_context / live_status /
+│                         active_topic_selector / live_hosting_director
 ├─ modules/               能力模块（InteractionModule）：bili_live_ingest / bili_identity /
 │                         developer_sandbox + 预留模块
 ├─ adapters/              neko_dispatcher（唯一输出）/ bili_auth_service（扫码登录）

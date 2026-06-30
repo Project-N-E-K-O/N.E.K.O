@@ -12,7 +12,7 @@
 
 ## 当前实现快照
 
-更新日期：2026-06-23
+更新日期：2026-06-30
 
 核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_roast` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
 
@@ -25,6 +25,23 @@
 - **B站登录态**（P5）：扫码登录 + Fernet 加密凭据，接进头像抓取 / 弹幕连接 / 查询，根治 -352。见「B站登录态」。
 - **健壮性**：`dry_run` 安全态、限流 / 自动急停 / 队列、配置写竞争免疫、查询 -352 友好降级、房号支持直播间链接输入。见各对应章节。
 - **开发者沙盒**：离线 UID / URL 调试、内置 demo 案例。
+
+### NEKO Live 核心模块边界
+
+`core/runtime.py` 是运行编排层，不再承载直播表现策略本身。当前核心职责拆分如下：
+
+| 模块 | 职责 | 不应做什么 |
+|---|---|---|
+| `core/runtime.py` | 装配模块、配置/凭据生命周期、action 入口、dashboard 聚合、直播连接控制 | 不写直播台词策略、不直接选择主动营业话题、不承载状态机细则 |
+| `core/live_reply_policy.py` | NEKO Live 最终回复合约、字数上限、质量 fallback、最近回复 negative examples | 不连接直播间、不读写观众档案 |
+| `core/recent_context.py` | recent result 路由、已输出文本提取、spent-output family、上下文压缩 | 不决定是否开口 |
+| `core/live_status.py` | Live Status、Live State、Idle/Active eligibility、Live Director 状态、Solo Test Readiness、Speech Explanation | 不触发 pipeline，不选择素材 |
+| `core/active_topic_selector.py` | 主动营业 topic 选择、近期弹幕/公开素材/fallback 组合、shape guard、topic family / affordance 轮转 | 不直接调用 dispatcher，不绕过 safety guard |
+| `core/live_hosting_director.py` | warmup hosting、idle hosting、host beat 轮转、自动调度 loop | 不生成最终台词，不处理普通弹幕 |
+| `core/active_topic_rules.py` | 主动话题过滤、material profile、viewer mention、shape 文案等纯规则 | 不持有 runtime 状态 |
+| `core/live_content.py` | idle host beat 和 active fallback topic 素材池 | 不做选择、不读 runtime 状态 |
+
+新增直播表现能力时优先判断属于哪一层：输出合约进 `live_reply_policy`，状态判断进 `live_status`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，纯过滤规则进 `active_topic_rules`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
 
 主要链路（直播弹幕路径）：
 
@@ -395,6 +412,8 @@ Live Feel Pack v1.5 增加三个监控信号：`recent_topic_skip_viewer_to_view
 
 Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 `live_reply_contract=short_tts_line`、`max_reply_chars=28` 和 `response_module_hint=...`。宿主 callback instruction 会消费这组 metadata，并在进入核心生成前追加 NEKO Live 短句契约：目标 14 个中文字符、单句、单口气、不续写上一轮回复，并按 `response_module_hint` 收紧 `avatar_roast` / `danmaku_response` / `warmup_hosting` / `idle_hosting` / `active_engagement` 的场景边界。宿主还会把这组 NEKO Live metadata 透传到最终 `send_lanlan_response()` 输出路径；文本 proactive 走当前 callback 上下文，异步语音 output transcript 还会按 `speech_id` 查兜底缓存，让最终播出的文本也能参与复读窗口检测。带有 `live_reply_contract=short_tts_line` 的文本 / 语音流式 chunk 不直接逐段进入前端或项目 TTS，而是先按 `current_speech_id` 缓冲，等对应 completion 回调后合成一句再统一截短、判重和输出；普通聊天不走这层缓冲，仍保持原有流式行为。最终输出层会先取第一句，再按 `max_reply_chars` 和模块上限做硬截短；前端显示、mirror speech 的项目 TTS 队列和 repeat metadata 都必须使用截短后的同一份文本，并在 metadata 标记 `neko_live_reply_shaped` / `neko_live_reply_shape_reason`。若某次 NEKO Live 输出的第一段已经和最近播过的直播句子高度相似，`send_lanlan_response()` 会在前端 / TTS 发送前直接 suppress，并在日志中记录 `NEKO Live repeated reply suppressed`；mirror speech 路径不得继续把这句送进项目 TTS，即使未来走 `mirror_text=false` 的纯语音输出，也必须先经过同一复读窗口。mirror 返回值和对应 turn_end 也必须携带最终 `neko_live_reply_repeat` / `neko_live_reply_suppressed` metadata，便于区分“插件没触发”“TTS 没播”和“输出被复读抑制”。若后端实际 `send_lanlan_response` 仍变长，以 `monitor_live.ps1` 的长回复告警为准继续收敛。
 
+最终输出层还会处理两类直播现场高风险草稿：一是结尾停在“选 A 还是选 B”这类未完成二选一的问题，会标记 `neko_live_reply_shape_reason=dangling_choice` 并先截掉尾巴；二是生成了低置信度教程、游戏攻略、惩罚审判、公开处刑、泛泛喊弹幕互动，或把核电站 / 代码 / 电路 / 泰拉瑞亚等素材硬编成“你是打算...”式含糊技术问句等不适合独播场景的句子，会标记 `quality_fallback` 并替换为短安全兜底句。`monitor_live.ps1` 读取后端日志时会输出 `log_reply_shape_reason`，并在 `alerts` 中标记 `reply_dangling_choice` 或 `reply_quality_fallback`。偶发兜底表示最终出口救场成功；若一场直播里频繁出现，说明上游 prompt、topic material 或 host beat 仍在诱导不清楚 / 不自然的台词，应优先调整素材和提示词，而不是把兜底当成正常节目效果。
+
 ## 富模型弹幕解析（`livedanmaku.LiveDanmaku.from_danmaku`）
 
 `livedanmaku.py` 的 `LiveDanmaku` 是吞并自 `bilibili_danmaku` 的富模型（覆盖 30+ 字段，含 `get_score()` 打分），是后续 P2.5「事件中枢 / 事件族」的前置。`danmaku_core._dispatch_message` 在收到 `DANMU_MSG` 时除了发轻量 `on_danmaku`，还会用 `from_danmaku(data)` 产出 `LiveDanmaku` 并发 `on_event("DANMU_MSG", ld)`。
@@ -672,7 +691,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-06-29：`uv run pytest plugin/plugins/neko_roast/tests -q` → **397 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-06-30：`uv run pytest plugin/plugins/neko_roast/tests -q` → **432 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

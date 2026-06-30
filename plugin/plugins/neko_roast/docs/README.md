@@ -5,6 +5,7 @@
 ## 使用文档
 
 - [快速开始](quickstart.md)：主播和开发者的实际使用流程。用户可见步骤、按钮、操作顺序、运行注意事项以这里为准。
+- [猫猫独播体验指南](solo-stream-test-guide.md)：给组长、内测主播或接手开发者的 `solo_stream` 试播 runbook。只保留启动、连接、dry_run、真实输出、监控和通过标准。
 
 ## 开发文档
 
@@ -25,6 +26,7 @@
 |---|---|---|
 | 项目定位、用户入口、当前不做 | `../README.md` | 只链接，不复述完整定位 |
 | 用户/主播操作流程 | `quickstart.md` | 只给入口链接 |
+| 猫猫独播试播 runbook | `solo-stream-test-guide.md` | quickstart 只给入口链接 |
 | Independent Mode 产品路线、当前阶段开发分工、MVP、内测节奏 | `independent-mode-product-plan.md` | roadmap 只保留阶段指针 |
 | 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
 | 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |
@@ -38,6 +40,7 @@
 ## 文档更新路由
 
 - 改用户流程、按钮、操作顺序：更新 `quickstart.md`。
+- 改猫猫独播试播步骤、dry_run 使用、30 分钟验收流程：更新 `solo-stream-test-guide.md`。
 - 改 Independent Mode 产品路线、当前阶段开发分工、MVP、非目标或内测节奏：更新 `independent-mode-product-plan.md`。
 - 改模块边界、pipeline、数据边界、协作规范、测试门禁：更新 `development.md`。
 - 改 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 或 Dashboard Visibility：更新 `runtime-observability.md`。
