@@ -47,7 +47,8 @@ neko_roast/
 ├─ core/                  骨架：pipeline / safety_guard / runtime / contracts / event_bus /
 │                         module_registry / permission_gate / instructions，以及 NEKO Live
 │                         的 live_reply_policy / recent_context / live_status /
-│                         active_topic_selector / live_hosting_director，以及
+│                         live_timing / live_state / live_director_state /
+│                         solo_readiness / active_topic_selector / live_hosting_director，以及
 │                         active_topic_filters / active_topic_materials /
 │                         active_engagement_shapes
 ├─ modules/               能力模块（InteractionModule）：bili_live_ingest / bili_identity /
