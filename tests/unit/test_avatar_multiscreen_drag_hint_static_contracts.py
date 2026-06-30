@@ -23,6 +23,7 @@ def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_dis
     assert "const MISS_WINDOW_MS = 30 * 1000;" in source
     assert "function hasDisplaySwitchBridge()" in source
     assert "typeof window.electronScreen.moveWindowToDisplay === 'function'" in source
+    assert "typeof window.electronScreen.getCurrentDisplay === 'function'" in source
     assert "async function hasMultipleDisplays()" in source
     assert "window.electronScreen.getAllDisplays" in source
     assert "if (!hasDisplaySwitchBridge()) return false;" in source
@@ -42,6 +43,18 @@ def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
     assert "return recordDisplaySwitchMissNow(source);" in source
     assert "missRecordQueue = nextRecord.catch(function () {});" in source
     assert "function recordDisplaySwitchMissNow(source)" in source
+
+
+def test_multiscreen_drag_hint_records_pointer_edge_release_intent():
+    source = _source("static/avatar-multiscreen-drag-hint.js")
+
+    assert "const EDGE_RELEASE_THRESHOLD_PX = 36;" in source
+    assert "const MIN_EDGE_DRAG_DISTANCE_PX = 48;" in source
+    assert "function getPointerEdgeIntent(pointer, currentDisplay)" in source
+    assert "function hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer)" in source
+    assert "async function recordPointerEdgeRelease(source, pointer)" in source
+    assert "window.electronScreen.getCurrentDisplay" in source
+    assert "recordPointerEdgeRelease," in source
 
 
 def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
@@ -84,11 +97,15 @@ def test_model_interactions_report_display_switch_misses_and_success():
     assert "_checkAndSwitchDisplay" in helper
     assert "recordDisplaySwitchMiss('live2d')" in helper
     assert "recordDisplaySwitchMiss('live2d')" not in live2d
+    assert "recordPointerEdgeRelease('live2d'" in live2d
+    assert "recordEdgeBounce('live2d')" not in live2d
     assert "markDisplaySwitchSuccess('live2d')" in live2d
     assert "recordDisplaySwitchMiss('mmd')" in mmd
+    assert "await this._recordDragHintPointerEdgeRelease('mmd');" in mmd
     assert "recordEdgeBounce('mmd')" not in mmd
     assert "markDisplaySwitchSuccess('mmd')" in mmd
     assert "recordDisplaySwitchMiss('vrm')" in vrm
+    assert "await this._recordDragHintPointerEdgeRelease('vrm');" in vrm
     assert "recordEdgeBounce('vrm')" not in vrm
     assert "markDisplaySwitchSuccess('vrm')" in vrm
 

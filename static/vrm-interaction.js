@@ -62,6 +62,9 @@ class VRMInteraction {
         this._snapResolve = null;
         this._lastPanDragPointerScreen = null;
         this._panDragModelCenterOffset = null;
+        this._dragHintPanStartPointer = null;
+        this._dragHintPanLastPointer = null;
+        this._dragHintApproachShown = false;
     }
 
 
@@ -145,6 +148,56 @@ class VRMInteraction {
         } else {
             this._panDragModelCenterOffset = { x: 0, y: 0 };
         }
+    }
+
+    _captureDragHintPointer(event) {
+        const screenX = Number(event?.screenX);
+        const screenY = Number(event?.screenY);
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+        return { screenX, screenY };
+    }
+
+    _rememberDragHintPanPointer(event, { start = false } = {}) {
+        const pointer = this._captureDragHintPointer(event);
+        if (!pointer) return;
+        if (start) {
+            pointer.startedAt = Date.now();
+            this._dragHintPanStartPointer = pointer;
+        }
+        this._dragHintPanLastPointer = pointer;
+    }
+
+    async _recordDragHintPointerEdgeRelease(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeRelease !== 'function') return false;
+        const start = this._dragHintPanStartPointer;
+        const release = this._dragHintPanLastPointer;
+        if (!start || !release) return false;
+        return await helper.recordPointerEdgeRelease(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: release.screenX,
+            screenY: release.screenY
+        });
+    }
+
+    async _recordDragHintPointerEdgeApproach(source) {
+        const helper = window.NekoAvatarMultiScreenDragHint;
+        if (!helper || typeof helper.recordPointerEdgeApproach !== 'function') return false;
+        if (this._dragHintApproachShown) return false;
+        const start = this._dragHintPanStartPointer;
+        const pointer = this._dragHintPanLastPointer;
+        if (!start || !pointer) return false;
+        const shown = await helper.recordPointerEdgeApproach(source, {
+            startedAt: start.startedAt,
+            startScreenX: start.screenX,
+            startScreenY: start.screenY,
+            screenX: pointer.screenX,
+            screenY: pointer.screenY
+        });
+        if (shown) this._dragHintApproachShown = true;
+        return shown;
     }
 
     _moveModelCenterToWindowPoint(targetX, targetY) {
@@ -287,6 +340,8 @@ class VRMInteraction {
                 this.dragMode = 'pan';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 this._rememberPanDragPointer(e, { captureOffset: true });
+                this._rememberDragHintPanPointer(e, { start: true });
+                this._dragHintApproachShown = false;
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
@@ -355,6 +410,8 @@ class VRMInteraction {
             const deltaY = e.clientY - this.previousMousePosition.y;
             if (this.dragMode === 'pan') {
                 this._rememberPanDragPointer(e);
+                this._rememberDragHintPanPointer(e);
+                void this._recordDragHintPointerEdgeApproach('vrm');
             }
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
@@ -432,6 +489,7 @@ class VRMInteraction {
                 e.stopPropagation();
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
+                    this._rememberDragHintPanPointer(e);
                 }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
                 // （orbit 绕包围盒中心原地转身，屏幕投影不位移，无需多屏切换）
@@ -450,6 +508,9 @@ class VRMInteraction {
                     : false;
 
                 if (!displaySwitched) {
+                    if (wasPanDrag) {
+                        await this._recordDragHintPointerEdgeRelease('vrm');
+                    }
                     // 拖拽结束后：若超出屏幕范围，执行回弹
                     await this._snapModelIntoScreen({ animate: true });
 
@@ -1122,7 +1183,6 @@ class VRMInteraction {
                 }
             }
             if (!targetDisplay) {
-                recordDisplaySwitchMiss();
                 return false;
             }
 
