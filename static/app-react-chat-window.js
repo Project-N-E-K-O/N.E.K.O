@@ -394,9 +394,10 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
-    // surface 锚点跟踪：拖拽/缩放会话每帧同步保证跟手，静止时降到 ~30fps 省 CPU（sync 幂等，降频零视觉代价）。
-    var compactSurfaceTrackingLastSyncTs = 0;
-    var COMPACT_SURFACE_IDLE_SYNC_INTERVAL_MS = 33;
+    // surface 锚点跟踪：拖拽/缩放会话每帧同步保证跟手；静止时只做短暂 settle，
+    // 后续由 layout/avatar/resize/geometry 事件重新唤醒，避免 compact 打开后长期空转。
+    var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;
+    var compactSurfaceTrackingSettleFramesRemaining = 0;
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -468,8 +469,7 @@
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
         }
-        // 桌面侧布局变化（窗口移动/跨屏等）：归零节流时钟，让下一帧立即重同步，不受静止节流延迟。
-        compactSurfaceTrackingLastSyncTs = 0;
+        // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         scheduleCompactMinimizeBallTracking();
     }
 
@@ -2040,8 +2040,18 @@
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
+        compactSurfaceTrackingSettleFramesRemaining = 0;
         compactSurfacePendingModelOpen = false;
         clearCompactSurfaceAnchor();
+    }
+
+    function isCompactSurfaceTrackingActive() {
+        return !!(
+            (dragState && dragState.compactSurface) ||
+            compactSurfaceDesktopDragActive ||
+            compactSurfaceResizeSession ||
+            compactSurfaceDesktopResizeActive
+        );
     }
 
     function scheduleCompactMinimizeBallTracking() {
@@ -2049,6 +2059,7 @@
             stopCompactMinimizeBallTracking();
             return;
         }
+        compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
         if (compactMinimizeBallFrame) {
             return;
         }
@@ -2059,30 +2070,22 @@
                 stopCompactMinimizeBallTracking();
                 return;
             }
-            // 拖拽/缩放 surface 时每帧同步保证跟手；静止时按 ~30fps 节流，避免无谓的每帧
-            // getModelScreenBounds/getBoundingClientRect/序列化比较把 CPU 与 GPU 合成打满。
-            var trackingActive = !!(
-                (dragState && dragState.compactSurface) ||
-                compactSurfaceDesktopDragActive ||
-                compactSurfaceResizeSession ||
-                compactSurfaceDesktopResizeActive
-            );
-            var now = (window.performance && typeof window.performance.now === 'function')
-                ? window.performance.now()
-                : Date.now();
-            if (trackingActive || (now - compactSurfaceTrackingLastSyncTs) >= COMPACT_SURFACE_IDLE_SYNC_INTERVAL_MS) {
-                compactSurfaceTrackingLastSyncTs = now;
-                syncCompactSurfaceAnchor();
-                syncCompactInteractionGeometry();
+            var trackingActive = isCompactSurfaceTrackingActive();
+            if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {
+                return;
+            }
+            syncCompactSurfaceAnchor();
+            syncCompactInteractionGeometry();
+            if (trackingActive) {
+                compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;
+            } else {
+                compactSurfaceTrackingSettleFramesRemaining -= 1;
             }
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
         syncCompactSurfaceAnchor();
         syncCompactInteractionGeometry();
-        compactSurfaceTrackingLastSyncTs = (window.performance && typeof window.performance.now === 'function')
-            ? window.performance.now()
-            : Date.now();
         compactMinimizeBallFrame = window.requestAnimationFrame(loop);
     }
 
@@ -6232,6 +6235,9 @@
 
         shell.classList.add('is-dragging');
         document.body.classList.add('react-chat-window-dragging');
+        if (compactSurface) {
+            scheduleCompactMinimizeBallTracking();
+        }
     }
 
     function updateDrag(clientX, clientY) {

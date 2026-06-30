@@ -1612,6 +1612,32 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
 
 
+def test_compact_surface_tracking_stops_idle_raf_but_keeps_active_sessions():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    tracking_block = script.split("function scheduleCompactMinimizeBallTracking()", 1)[1].split(
+        "function revealPendingCompactSurfaceOpen",
+        1,
+    )[0]
+    drag_start_block = script.split("function startDrag(clientX, clientY, options)", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+
+    assert "var COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT = 3;" in script
+    assert "var compactSurfaceTrackingSettleFramesRemaining = 0;" in script
+    assert "function isCompactSurfaceTrackingActive()" in script
+    assert "(dragState && dragState.compactSurface)" in script
+    assert "compactSurfaceDesktopDragActive" in script
+    assert "compactSurfaceResizeSession" in script
+    assert "compactSurfaceDesktopResizeActive" in script
+    assert "compactSurfaceTrackingSettleFramesRemaining = COMPACT_SURFACE_IDLE_SETTLE_FRAME_COUNT;" in tracking_block
+    assert "if (!trackingActive && compactSurfaceTrackingSettleFramesRemaining <= 0) {\n                return;\n            }" in tracking_block
+    assert "compactMinimizeBallFrame = window.requestAnimationFrame(loop);" in tracking_block
+    assert "COMPACT_SURFACE_IDLE_SYNC_INTERVAL_MS" not in script
+    assert "if (compactSurface) {\n            scheduleCompactMinimizeBallTracking();\n        }" in drag_start_block
+
+
 def test_electron_compact_chat_retires_full_surface_chrome():
     template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
