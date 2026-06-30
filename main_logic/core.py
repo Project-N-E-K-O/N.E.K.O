@@ -385,10 +385,8 @@ def _merge_neko_live_reply_chunk(existing: str, incoming: str, *, is_first_chunk
         return incoming_text
     if not incoming_text:
         return existing_text
-    if incoming_text.startswith(existing_text):
+    if len(incoming_text) > len(existing_text) and incoming_text.startswith(existing_text):
         return incoming_text
-    if existing_text.endswith(incoming_text):
-        return existing_text
     return existing_text + incoming_text
 
 

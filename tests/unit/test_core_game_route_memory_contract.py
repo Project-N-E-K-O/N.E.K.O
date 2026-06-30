@@ -2462,6 +2462,36 @@ async def test_send_lanlan_response_merges_neko_live_full_buffer_snapshots_by_tu
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_lanlan_response_preserves_repeated_neko_live_delta_chunks():
+    mgr = _make_manager()
+    metadata = {
+        "plugin": "neko_roast",
+        "live_reply_contract": "short_tts_line",
+        "response_module_hint": "danmaku_response",
+    }
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "ha",
+        is_first_chunk=True,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "ha",
+        is_first_chunk=False,
+        turn_id="live-turn-1",
+        metadata=metadata,
+    )
+
+    assert list(mgr._neko_live_recent_reply_texts.values()) == ["haha"]
+    second = mgr.sync_message_queue.messages[1]["data"]["metadata"]
+    assert second["neko_live_reply_repeat"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_send_lanlan_response_detects_repeated_neko_live_reply_without_turn_id():
     mgr = _make_manager()
     mgr.current_speech_id = None
