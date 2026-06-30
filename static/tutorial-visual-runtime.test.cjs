@@ -32,7 +32,12 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
             return Promise.resolve(true);
         },
         runAvatarFloatingSceneOperation(scene, primaryTarget) {
-            calls.push(['operation', scene.operation, primaryTarget && primaryTarget.id]);
+            calls.push([
+                'operation',
+                scene.operation,
+                primaryTarget && primaryTarget.id,
+                scene.preserveExternalizedChatGuideTarget === true
+            ]);
             return Promise.resolve(true);
         },
         cursor: {
@@ -58,7 +63,12 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
     await registry.dispatch({ command: 'cursor.move', target: 'chat-input', durationMs: 320 }, { director });
     await registry.dispatch({ command: 'cursor.click', effectDurationMs: 180 }, { director });
     await registry.dispatch({ command: 'cursor.wobble', durationMs: 120 }, { director });
-    await registry.dispatch({ command: 'operation.run', operation: 'cleanup', target: 'chat-input' }, {
+    await registry.dispatch({
+        command: 'operation.run',
+        operation: 'cleanup',
+        target: 'chat-input',
+        preserveExternalizedChatGuideTarget: true
+    }, {
         scene: { id: 'scene-a' },
         director
     });
@@ -74,7 +84,7 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
         ['wobble', 120],
         ['delay', 120],
         ['resolve', 'chat-input'],
-        ['operation', 'cleanup', 'chat-input']
+        ['operation', 'cleanup', 'chat-input', true]
     ]);
 });
 
@@ -949,9 +959,12 @@ test('VisualRuntime routes day3 galgame wheel rotation command to the existing d
     ]);
 });
 
-test('VisualRuntime routes settings tour command to SettingsTourFlow with scene context', async () => {
+test('VisualRuntime clears day four externalized chat cursor before settings tour playback', async () => {
     const calls = [];
     const director = {
+        clearExternalizedChatGuideTarget(options) {
+            calls.push(['clear-externalized-chat', options.clearCursor]);
+        },
         settingsTourFlow: {
             play(scene, context) {
                 calls.push([
@@ -995,7 +1008,44 @@ test('VisualRuntime routes settings tour command to SettingsTourFlow with scene 
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
+        ['clear-externalized-chat', true],
         ['settings-tour', 'day4_chat_settings', 41, 'day4_intro_companion', 1, 6]
+    ]);
+});
+
+test('VisualRuntime leaves non-day-four settings tours externalized cursor state intact', async () => {
+    const calls = [];
+    const director = {
+        clearExternalizedChatGuideTarget(options) {
+            calls.push(['clear-externalized-chat', options.clearCursor]);
+        },
+        settingsTourFlow: {
+            play(scene, context) {
+                calls.push(['settings-tour', scene.id, context.sceneRunId]);
+                return Promise.resolve(true);
+            }
+        }
+    };
+    const registry = new CommandRegistry();
+    const runtime = createTutorialVisualRuntime(director);
+
+    runtime.registerCommands(registry);
+    const result = await registry.dispatch({
+        command: 'settingsTour.play'
+    }, {
+        scene: {
+            id: 'day5_character_settings',
+            legacyScene: {
+                id: 'day5_character_settings'
+            }
+        },
+        director,
+        sceneRunId: 51
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['settings-tour', 'day5_character_settings', 51]
     ]);
 });
 

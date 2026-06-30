@@ -28,9 +28,11 @@
             anchorHighlightSuffix: 'chat-settings-button',
             panelHighlightSuffix: 'chat-settings-panel',
             cursorMoveDurationMs: 620,
+            panelEllipseDurationMs: 4200,
+            panelMinDurationMs: 4200,
             openWithSettingsCursor: true,
             settingsCursorIdSuffix: '_settings_button',
-            settingsCursorMoveDurationMs: 760,
+            settingsCursorMoveDurationMs: 560,
             openFailureMessage: '[YuiGuide] 第4天对话设置打开设置面板失败:'
         }),
         day4_model_behavior: Object.freeze({
@@ -40,7 +42,10 @@
             anchorHighlightSuffix: 'animation-settings-button',
             panelHighlightSuffix: 'animation-settings-panel',
             cursorMoveDurationMs: 620,
-            collapseBeforeAnchorHighlight: true
+            collapseBeforeAnchorHighlight: true,
+            openWithAnchorCursor: true,
+            panelEllipseDurationMs: 3200,
+            panelMinDurationMs: 3200
         })
     });
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
@@ -160,6 +165,7 @@
             const narration = this.prepareNarration(scene);
             const settingsButton = director.getDay4SettingsButtonSpotlightTarget();
             let sidePanel = null;
+            let openedPanelPromise = null;
 
             if (normalizedSchema.waitForPanelBeforeOpening) {
                 sidePanel = director.getAvatarFloatingSidePanel(panelId);
@@ -194,7 +200,9 @@
             }
             director.enableInterrupts(director.currentStep);
 
-            const narrationPromise = this.createNarrationPromise(scene, narration);
+            const narrationPromise = this.createNarrationPromise(scene, narration, {
+                minDurationMs: normalizedSchema.panelMinDurationMs
+            });
 
             await director.waitForSceneDelay(220);
             if (this.isSceneStale(sceneRunId)) {
@@ -214,7 +222,22 @@
             } else if (!normalizedSchema.waitForPanelBeforeOpening) {
                 await director.openSettingsPanel();
             } else if (anchorButton) {
-                await director.moveCursorToElement(anchorButton, normalizedSchema.cursorMoveDurationMs);
+                if (
+                    normalizedSchema.openWithAnchorCursor
+                    && typeof director.moveAvatarFloatingCursor === 'function'
+                ) {
+                    await director.moveAvatarFloatingCursor({
+                        id: scene.id + '_anchor_button',
+                        cursorAction: 'click',
+                        cursorMoveDurationMs: normalizedSchema.cursorMoveDurationMs
+                    }, anchorButton, null, previousSceneId, {
+                        onClickStart: () => {
+                            openedPanelPromise = director.ensureAvatarFloatingSettingsSidePanel(panelId);
+                        }
+                    });
+                } else {
+                    await director.moveCursorToElement(anchorButton, normalizedSchema.cursorMoveDurationMs);
+                }
             }
             if (this.isSceneStale(sceneRunId)) {
                 return false;
@@ -241,11 +264,15 @@
                 return false;
             }
 
-            const touredPanel = await director.ensureAvatarFloatingSettingsSidePanel(panelId)
+            const openedPanel = openedPanelPromise ? await openedPanelPromise : null;
+            const touredPanel = openedPanel
+                || await director.ensureAvatarFloatingSettingsSidePanel(panelId)
                 || sidePanel;
             await this.tourPanel(scene, sceneRunId, touredPanel, narrationPromise, {
                 key: scene.id + '-' + normalizedSchema.panelHighlightSuffix,
-                persistent: settingsButton || null
+                persistent: settingsButton || null,
+                ellipseDurationMs: normalizedSchema.panelEllipseDurationMs,
+                minDurationMs: normalizedSchema.panelMinDurationMs
             });
 
             return this.finalizeNarration(sceneRunId, narration, normalizedContext);
@@ -549,7 +576,10 @@
                 if (Number.isFinite(normalizedOptions.cursorMoveDurationMs)) {
                     await director.moveCursorToElement(panel, normalizedOptions.cursorMoveDurationMs);
                 }
-                await this.runPanelNarrationEllipse(sceneRunId, panel, narrationPromise);
+                await this.runPanelNarrationEllipse(sceneRunId, panel, narrationPromise, {
+                    durationMs: normalizedOptions.ellipseDurationMs,
+                    minDurationMs: normalizedOptions.minDurationMs
+                });
                 return;
             }
             await (narrationPromise || Promise.resolve());
@@ -581,8 +611,24 @@
             const durationMs = Number.isFinite(normalizedOptions.durationMs)
                 ? Math.max(0, normalizedOptions.durationMs)
                 : 5600;
+            const minDurationMs = Number.isFinite(normalizedOptions.minDurationMs)
+                ? Math.max(0, normalizedOptions.minDurationMs)
+                : 0;
             let narrationDone = false;
-            const guardedNarrationPromise = resolvedNarrationPromise.finally(() => {
+            const minimumDisplayPromise = minDurationMs > 0
+                ? (typeof director.waitForSceneDelay === 'function'
+                    ? director.waitForSceneDelay(minDurationMs)
+                    : new Promise((resolve) => {
+                        const timerApi = typeof window !== 'undefined' && window.setTimeout
+                            ? window
+                            : globalThis;
+                        timerApi.setTimeout(resolve, minDurationMs);
+                    }))
+                : Promise.resolve();
+            const guardedNarrationPromise = Promise.all([
+                resolvedNarrationPromise,
+                minimumDisplayPromise
+            ]).finally(() => {
                 narrationDone = true;
             });
             const narrationSettledPromise = guardedNarrationPromise.catch(() => {});
