@@ -8,7 +8,7 @@ from collections import deque
 from typing import Any
 
 from . import active_topic_rules
-from .live_content import active_engagement_fallback_topic_candidates
+from .live_active_content import active_engagement_fallback_topic_candidates
 
 
 class ActiveTopicSelector:

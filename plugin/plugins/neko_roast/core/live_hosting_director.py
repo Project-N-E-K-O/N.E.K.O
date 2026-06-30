@@ -7,7 +7,7 @@ from typing import Any
 
 from . import active_topic_rules
 from .contracts import InteractionResult, PipelineStep, ViewerEvent
-from .live_content import idle_hosting_beat_candidates
+from .live_idle_content import idle_hosting_beat_candidates
 
 
 class LiveHostingDirector:

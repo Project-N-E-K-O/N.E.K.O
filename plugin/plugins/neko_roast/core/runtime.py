@@ -29,7 +29,7 @@ from .event_bus import EventBus
 from . import active_topic_rules, live_status as live_status_rules, recent_context
 from .active_topic_selector import ActiveTopicSelector
 from .live_hosting_director import LiveHostingDirector
-from .live_content import active_engagement_fallback_topic_candidates
+from .live_active_content import active_engagement_fallback_topic_candidates
 from .instructions import (
     NEKO_ROAST_CONTEXT_INSTRUCTIONS,
     NEKO_ROAST_DEVELOPER_ANNOUNCEMENT,

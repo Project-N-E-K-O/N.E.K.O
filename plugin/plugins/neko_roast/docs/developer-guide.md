@@ -52,7 +52,8 @@ neko_roast/
 │                         live_timing / live_state / live_director_state /
 │                         solo_readiness / active_topic_selector / live_hosting_director，以及
 │                         active_topic_filters / active_topic_materials /
-│                         active_engagement_shapes
+│                         active_engagement_shapes / live_idle_content /
+│                         live_active_content
 ├─ modules/               能力模块（InteractionModule）：bili_live_ingest / bili_identity /
 │                         developer_sandbox + 预留模块
 ├─ adapters/              neko_dispatcher（唯一输出）/ bili_auth_service（扫码登录）

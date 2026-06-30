@@ -50,9 +50,11 @@
 | `core/active_topic_filters.py` | 主动话题文本过滤、低置信度材料拦截、viewer mention / reaction 判断 | 不持有 runtime 状态 |
 | `core/active_topic_materials.py` | material profile、host material family、近期标题相似度和 streak 判断 | 不生成 prompt 文案 |
 | `core/active_engagement_shapes.py` | active engagement shape 的 hook / pattern / hint / affordance 文案 | 不选择 topic，不读取素材池 |
-| `core/live_content.py` | idle host beat 和 active fallback topic 素材池 | 不做选择、不读 runtime 状态 |
+| `core/live_content.py` | 直播素材池兼容门面，保留旧 import 路径 | 不新增素材 |
+| `core/live_idle_content.py` | idle host beat 素材池 | 不做选择、不读 runtime 状态 |
+| `core/live_active_content.py` | active fallback topic 素材池 | 不做选择、不读 runtime 状态 |
 
-新增直播表现能力时优先判断属于哪一层：回复 metadata 和 route 合约进 `live_reply_contracts`，质量 fallback 进 `live_reply_fallbacks`，最终文本修剪进 `live_reply_shape`，prompt 合约说明进 `live_reply_instructions`，时间和年龄计算进 `live_timing`，状态摘要进 `live_state`，自动导演 eligibility 进 `live_director_state`，独播测试诊断进 `solo_readiness`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，文本过滤进 `active_topic_filters`，素材画像和去重进 `active_topic_materials`，shape 文案进 `active_engagement_shapes`，素材进 `live_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
+新增直播表现能力时优先判断属于哪一层：回复 metadata 和 route 合约进 `live_reply_contracts`，质量 fallback 进 `live_reply_fallbacks`，最终文本修剪进 `live_reply_shape`，prompt 合约说明进 `live_reply_instructions`，时间和年龄计算进 `live_timing`，状态摘要进 `live_state`，自动导演 eligibility 进 `live_director_state`，独播测试诊断进 `solo_readiness`，主动营业素材选择进 `active_topic_selector`，冷场/开场调度进 `live_hosting_director`，文本过滤进 `active_topic_filters`，素材画像和去重进 `active_topic_materials`，shape 文案进 `active_engagement_shapes`，冷场素材进 `live_idle_content`，主动 fallback 素材进 `live_active_content`。只有跨模块装配、配置、action 或 dashboard 聚合才进入 `runtime.py`。
 
 主要链路（直播弹幕路径）：
 
