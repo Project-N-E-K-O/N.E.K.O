@@ -36,6 +36,12 @@ _ROUTABLE_MESSAGE_TYPES = {
     MessageType.MSG_GUARD_BUY,
 }
 
+_SIGNAL_ONLY_MESSAGE_TYPES = {
+    MessageType.MSG_GIFT,
+    MessageType.MSG_SUPER_CHAT,
+    MessageType.MSG_GUARD_BUY,
+}
+
 _MESSAGE_TYPE_LABELS = {
     MessageType.MSG_DANMAKU: "danmaku",
     MessageType.MSG_GIFT: "gift",
@@ -146,6 +152,9 @@ class LiveEventsModule(BaseModule):
         text = str(getattr(event, "text", "") or "").strip()
         if not uid or uid == "0" or not text:
             return  # 无 uid / 无文本，无从锐评
+        if getattr(event, "msg_type", None) in _SIGNAL_ONLY_MESSAGE_TYPES:
+            self._spawn(self._record_signal_only(event))
+            return
         remaining = self._cooldown_remaining()
         if remaining <= 0 and self._flush_task is None:
             # 空闲态：首条即时锐评，保留已验证 DoD。
@@ -200,6 +209,16 @@ class LiveEventsModule(BaseModule):
             "text_length": len(str(getattr(event, "text", "") or "")),
         }
 
+    def _payload_for_event(self, event: Any, event_type: str) -> dict[str, Any]:
+        return {
+            "uid": str(getattr(event, "uid", "") or ""),
+            "nickname": str(getattr(event, "nickname", "") or ""),
+            "danmaku_text": str(getattr(event, "text", "") or ""),
+            "avatar_url": str(getattr(event, "face_url", "") or ""),
+            "room_id": getattr(event, "room_id", 0),
+            "event_type": event_type,
+        }
+
     def _spawn(self, coro: Any) -> "asyncio.Task[Any]":
         task = asyncio.create_task(coro)
         self._tasks.add(task)
@@ -236,14 +255,7 @@ class LiveEventsModule(BaseModule):
         # 弹幕不含头像 URL，礼物/SC 可能带 face_url；下游仍会按既有身份解析兜底。
         msg_type = getattr(event, "msg_type", None)
         event_type = _MESSAGE_TYPE_LABELS.get(msg_type, str(msg_type or "unknown"))
-        payload = {
-            "uid": uid,
-            "nickname": str(getattr(event, "nickname", "") or ""),
-            "danmaku_text": str(getattr(event, "text", "") or ""),
-            "avatar_url": str(getattr(event, "face_url", "") or ""),
-            "room_id": getattr(event, "room_id", 0),
-            "event_type": event_type,
-        }
+        payload = self._payload_for_event(event, event_type)
         selected = next((item for item in (candidates or []) if item.get("order") == winner_order), None)
         if selected is None:
             selected = self._candidate_summary(event, score, winner_order or 1)
@@ -274,3 +286,13 @@ class LiveEventsModule(BaseModule):
             await self.ctx.handle_live_payload(payload)
         except Exception as exc:
             self.ctx.audit.record("live_event_roast_failed", type(exc).__name__, level="warning")
+
+    async def _record_signal_only(self, event: Any) -> None:
+        if self.ctx is None:
+            return
+        msg_type = getattr(event, "msg_type", None)
+        event_type = _MESSAGE_TYPE_LABELS.get(msg_type, str(msg_type or "unknown"))
+        try:
+            await self.ctx.handle_live_payload(self._payload_for_event(event, event_type))
+        except Exception as exc:
+            self.ctx.audit.record("live_event_signal_failed", type(exc).__name__, level="warning")

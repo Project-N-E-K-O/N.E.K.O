@@ -137,6 +137,7 @@ async def test_connect_live_room_injects_live_instructions_after_listener_starts
 
 @pytest.mark.asyncio
 async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = True
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
     await runtime.viewer_store.mark_roasted("1001", "first roast")
     runtime.recent_results.appendleft(
@@ -159,6 +160,7 @@ async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(ru
 
 @pytest.mark.asyncio
 async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = True
     calls = 0
 
     def clear_marker() -> None:
@@ -170,6 +172,17 @@ async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: Roas
     await runtime.clear_viewer_profiles()
 
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_viewer_profiles_requires_developer_mode(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = False
+    await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
+
+    with pytest.raises(PermissionError):
+        await runtime.clear_viewer_profiles()
+
+    assert [profile["uid"] for profile in await runtime.viewer_store.recent_profiles()] == ["1001"]
 
 
 @pytest.mark.asyncio
@@ -4293,6 +4306,7 @@ async def test_solo_test_readiness_warns_when_viewer_profiles_are_present(runtim
 
 @pytest.mark.asyncio
 async def test_solo_test_readiness_marks_test_isolation_ready_after_profile_clear(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = True
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False

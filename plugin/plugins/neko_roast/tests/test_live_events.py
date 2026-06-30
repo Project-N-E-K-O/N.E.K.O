@@ -149,7 +149,7 @@ async def test_selection_status_tracks_last_decision_for_health_rows():
     assert status["last_candidate_count"] == 2
 
 
-async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
+async def test_cooldown_window_keeps_signal_only_gift_from_beating_danmaku():
     ctx = _FakeCtx(remaining=5.0)
     hub = await _make_hub(ctx)
 
@@ -157,16 +157,16 @@ async def test_cooldown_window_allows_high_value_gift_to_beat_danmaku():
     hub.submit(_gift("9", gift_name="醒目礼物", total_coin=200000))
     await _drain(hub)
 
-    assert len(ctx.payloads) == 1
-    assert ctx.payloads[0]["uid"] == "9"
-    assert ctx.payloads[0]["danmaku_text"] == "赠送 1 个 醒目礼物"
-    assert any(
-        r["op"] == "live_event_selected" and r["detail"]["event_type"] == "gift"
-        for r in ctx.audit.records
-    )
+    assert len(ctx.payloads) == 2
+    payloads_by_type = {payload["event_type"]: payload for payload in ctx.payloads}
+    assert payloads_by_type["gift"]["uid"] == "9"
+    assert payloads_by_type["danmaku"]["uid"] == "1"
+    selected = next(r for r in ctx.audit.records if r["op"] == "live_event_selected")
+    assert selected["detail"]["event_type"] == "danmaku"
+    assert selected["detail"]["selected"]["uid"] == "1"
 
 
-async def test_event_bus_routes_gift_events_into_live_event_window():
+async def test_event_bus_routes_gift_events_as_signal_only_without_selection_window():
     ctx = _FakeCtx(remaining=0.0)
     hub = await _make_hub(ctx)
 
@@ -177,6 +177,10 @@ async def test_event_bus_routes_gift_events_into_live_event_window():
     assert ctx.event_bus.subscriber_count("gift") == 1
     assert len(ctx.payloads) == 1
     assert ctx.payloads[0]["uid"] == "9"
+    assert ctx.payloads[0]["event_type"] == "gift"
+    assert hub._flush_task is None
+    assert not any(r["op"] == "live_event_selected" for r in ctx.audit.records)
+    assert hub._last_dispatch_at == 0.0
 
 
 async def test_local_cooldown_blocks_second_concurrent_roast():

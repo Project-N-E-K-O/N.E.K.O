@@ -1301,6 +1301,7 @@ class RoastRuntime:
         self.audit.record("queue_clear", "queue cleared")
 
     async def clear_viewer_profiles(self) -> dict[str, Any]:
+        self._require_developer_mode()
         result = await self.viewer_store.clear_profiles()
         self.pipeline.clear_dry_run_session_state()
         self.audit.record("viewer_profiles_clear", "viewer profiles cleared", detail=result)
