@@ -55,7 +55,7 @@ class RoastPipeline:
 
     @staticmethod
     def _is_live_danmaku_with_text(event: ViewerEvent) -> bool:
-        return event.source == "live_danmaku" and bool((event.danmaku_text or "").strip())
+        return event.source in {"live_danmaku", "manual_live_simulation"} and bool((event.danmaku_text or "").strip())
 
     @staticmethod
     def _is_transient_event(event: ViewerEvent) -> bool:

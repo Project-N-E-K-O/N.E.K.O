@@ -165,6 +165,8 @@
   "entries.submit_viewer_event.description": "從開發者沙盒提交 UID/URL 測試事件。",
   "entries.submit_live_event.name": "提交直播事件",
   "entries.submit_live_event.description": "提交歸一化後的直播彈幕事件。",
+  "entries.submit_manual_live_event.name": "提交手動直播事件",
+  "entries.submit_manual_live_event.description": "透過直播 pipeline 提交僅限開發者使用的手動直播模擬事件。",
   "panel.tabs.liveRoom": "直播間配置",
   "panel.tabs.roast": "彈幕銳評",
   "panel.tabs.summary": "直播總結",

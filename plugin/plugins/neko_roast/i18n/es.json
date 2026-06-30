@@ -165,6 +165,8 @@
   "entries.submit_viewer_event.description": "Envía un evento de prueba UID/URL desde la sandbox.",
   "entries.submit_live_event.name": "Enviar evento de directo",
   "entries.submit_live_event.description": "Envía un evento live danmaku normalizado.",
+  "entries.submit_manual_live_event.name": "Enviar evento manual de directo",
+  "entries.submit_manual_live_event.description": "Envía un evento manual de simulación de directo, solo para desarrolladores, por el live pipeline.",
   "panel.tabs.liveRoom": "Live Room Setup",
   "panel.tabs.roast": "Danmaku Roast",
   "panel.tabs.summary": "Live Summary",

@@ -367,6 +367,32 @@ class NekoRoastPlugin(NekoPluginBase):
         result = await self._runtime().handle_live_payload(kwargs)
         return Ok(result.to_public_dict())
 
+    @plugin_entry(
+        id="submit_manual_live_event",
+        name=tr("entries.submit_manual_live_event.name", default="Submit manual live event"),
+        description=tr(
+            "entries.submit_manual_live_event.description",
+            default="Submit a developer-only manual live simulation event through the live pipeline.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string"},
+                "nickname": {"type": "string"},
+                "avatar_url": {"type": "string"},
+                "danmaku_text": {"type": "string"},
+                "target_lanlan": {"type": "string"},
+            },
+            "required": ["uid"],
+        },
+    )
+    async def submit_manual_live_event(self, **kwargs):
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        result = await runtime.handle_manual_event(**kwargs)
+        return Ok(result.to_public_dict())
+
     @ui.action(id="clear_sandbox_data", label=tr("actions.clear_sandbox_data.label", default="清空沙盒记录"), group="developer", order=30, refresh_context=True)
     @plugin_entry(id="clear_sandbox_data", name=tr("entries.clear_sandbox_data.name", default="清空沙盒记录"), description=tr("entries.clear_sandbox_data.description", default="清空开发者沙盒的临时记录和头像预览缓存，不影响观众档案。"))
     async def clear_sandbox_data(self, **_):

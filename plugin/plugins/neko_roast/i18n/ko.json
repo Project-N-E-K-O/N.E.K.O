@@ -165,6 +165,8 @@
   "entries.submit_viewer_event.description": "개발자 샌드박스에서 UID/URL 테스트 이벤트를 제출합니다.",
   "entries.submit_live_event.name": "라이브 이벤트 제출",
   "entries.submit_live_event.description": "정규화된 라이브 탄막 이벤트를 제출합니다.",
+  "entries.submit_manual_live_event.name": "수동 라이브 이벤트 제출",
+  "entries.submit_manual_live_event.description": "개발자 전용 수동 라이브 시뮬레이션 이벤트를 라이브 pipeline으로 제출합니다.",
   "panel.tabs.liveRoom": "Live Room Setup",
   "panel.tabs.roast": "Danmaku Roast",
   "panel.tabs.summary": "Live Summary",

@@ -165,6 +165,8 @@
   "entries.submit_viewer_event.description": "Отправить тестовое событие UID/URL из песочницы разработчика.",
   "entries.submit_live_event.name": "Отправить событие эфира",
   "entries.submit_live_event.description": "Отправить нормализованное событие live danmaku.",
+  "entries.submit_manual_live_event.name": "Отправить ручное событие эфира",
+  "entries.submit_manual_live_event.description": "Отправить доступное только разработчику ручное событие симуляции эфира через live pipeline.",
   "panel.tabs.liveRoom": "Live Room Setup",
   "panel.tabs.roast": "Danmaku Roast",
   "panel.tabs.summary": "Live Summary",

@@ -165,6 +165,8 @@
   "entries.submit_viewer_event.description": "開発者サンドボックスから UID/URL テストイベントを送信します。",
   "entries.submit_live_event.name": "ライブイベントを送信",
   "entries.submit_live_event.description": "正規化済みライブコメントイベントを送信します。",
+  "entries.submit_manual_live_event.name": "手動ライブイベントを送信",
+  "entries.submit_manual_live_event.description": "開発者専用の手動ライブシミュレーションイベントをライブ pipeline に送信します。",
   "panel.tabs.liveRoom": "Live Room Setup",
   "panel.tabs.roast": "Danmaku Roast",
   "panel.tabs.summary": "Live Summary",
