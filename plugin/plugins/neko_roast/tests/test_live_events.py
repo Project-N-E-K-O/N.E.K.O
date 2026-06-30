@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from plugin.plugins.neko_roast.core.contracts import LiveEvent, RoastConfig
 from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import LiveDanmaku
+from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import LiveDanmaku, MessageType
 from plugin.plugins.neko_roast.modules.live_events import LiveEventsModule
 
 
@@ -181,6 +182,20 @@ async def test_event_bus_routes_gift_events_as_signal_only_without_selection_win
     assert hub._flush_task is None
     assert not any(r["op"] == "live_event_selected" for r in ctx.audit.records)
     assert hub._last_dispatch_at == 0.0
+
+
+async def test_signal_only_event_without_text_is_still_recorded():
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(SimpleNamespace(msg_type=MessageType.MSG_GIFT, uid=9, nickname="u9", text="", room_id=1))
+    await _drain(hub)
+
+    assert len(ctx.payloads) == 1
+    assert ctx.payloads[0]["uid"] == "9"
+    assert ctx.payloads[0]["event_type"] == "gift"
+    assert ctx.payloads[0]["danmaku_text"] == ""
+    assert not any(r["op"] == "live_event_selected" for r in ctx.audit.records)
 
 
 async def test_local_cooldown_blocks_second_concurrent_roast():

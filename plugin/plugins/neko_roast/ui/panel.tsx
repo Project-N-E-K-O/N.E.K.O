@@ -493,6 +493,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function clearViewerProfiles() {
+    if (!developerToolsEnabled) {
+      setClearViewerProfilesArmed(false)
+      toast.error(t("panel.dev.developerModeDisabled"))
+      return
+    }
     if (!clearViewerProfilesArmed) {
       setClearViewerProfilesArmed(true)
       return
@@ -539,6 +544,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveStateLastOutputAge = formatAgeSec(liveState.last_output_age_sec)
   const liveStateQuietAfter = `${Number(liveState.engaged_threshold_seconds || 0).toFixed(0)}s`
   const liveStateIdleAfter = `${Number(liveState.idle_threshold_seconds || 0).toFixed(0)}s`
+  const developerToolsEnabled = !!configForm.values.developer_tools_enabled
   const warmupHostingCandidate = !!liveState.warmup_hosting_candidate
   const idleHostingCandidate = !!liveState.idle_hosting_candidate
   const idleHostingEligible = !!idleHostingStatus.eligible
@@ -725,7 +731,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             })}
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <Button tone="danger" onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
+            <Button tone="danger" disabled={!developerToolsEnabled} onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
           </div>
         </Stack>
       </Card>
@@ -1205,7 +1211,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       </Card>
       <Card title={t("panel.profiles.title")}>
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
-          <Button tone="danger" onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
+          <Button tone="danger" disabled={!developerToolsEnabled} onClick={clearViewerProfiles}>{clearViewerProfilesArmed ? t("panel.actions.confirmClearViewerProfiles") : t("panel.actions.clearViewerProfiles")}</Button>
         </div>
         {profiles.length ? (
           <DataTable
@@ -1244,7 +1250,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const dmSection = comingSoonSection(t("panel.tabs.dm"), t("panel.dm.desc"))
   const automationSection = comingSoonSection(t("panel.tabs.automation"), t("panel.automation.desc"))
 
-  const developerToolsEnabled = !!configForm.values.developer_tools_enabled
   const lookupIdentity = lookupResult?.identity || null
   const lookupAvatarSrc = lookupIdentity?.avatar_preview_url || lookupIdentity?.avatar_url || lookupResult?.profile?.avatar_url || ""
   const lookupSourceLabel = !lookupIdentity

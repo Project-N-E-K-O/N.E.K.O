@@ -149,12 +149,14 @@ class LiveEventsModule(BaseModule):
         if getattr(event, "msg_type", None) not in _ROUTABLE_MESSAGE_TYPES:
             return  # 进场等事件留给各自 P3 handler；无 handler 类型保持静默。
         uid = str(getattr(event, "uid", "") or "").strip()
-        text = str(getattr(event, "text", "") or "").strip()
-        if not uid or uid == "0" or not text:
-            return  # 无 uid / 无文本，无从锐评
+        if not uid or uid == "0":
+            return  # 无 uid，无从记录 / 锐评
         if getattr(event, "msg_type", None) in _SIGNAL_ONLY_MESSAGE_TYPES:
             self._spawn(self._record_signal_only(event))
             return
+        text = str(getattr(event, "text", "") or "").strip()
+        if not text:
+            return  # 无文本，无从锐评
         remaining = self._cooldown_remaining()
         if remaining <= 0 and self._flush_task is None:
             # 空闲态：首条即时锐评，保留已验证 DoD。

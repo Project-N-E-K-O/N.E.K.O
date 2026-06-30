@@ -185,8 +185,10 @@ def test_panel_confirms_before_clearing_viewer_profiles():
     assert "window.confirm" not in source
     assert "clearViewerProfilesArmed" in source
     assert "panel.actions.confirmClearViewerProfiles" in source
+    assert "if (!developerToolsEnabled)" in source
+    assert "disabled={!developerToolsEnabled}" in source
     assert 'callSimple("clear_viewer_profiles")' in source
-    assert 'onClick={clearViewerProfiles}' in source
+    assert "onClick={clearViewerProfiles}" in source
 
 
 def test_once_per_uid_copy_scopes_to_first_appearance_roast():
