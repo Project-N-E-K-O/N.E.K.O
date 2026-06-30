@@ -118,14 +118,25 @@
         return state.predictedRound;
     }
 
+    function isTutorialBootAvailable() {
+        return !(typeof window.innerWidth === 'number' && window.innerWidth <= 768);
+    }
+
     function shouldBootIntoTutorial() {
         if (state.predictionSuppressed) {
+            return false;
+        }
+        if (!isTutorialBootAvailable()) {
+            state.predictedRound = null;
             return false;
         }
         return !!getPredictedRound();
     }
 
     function shouldSkipUserModelBoot() {
+        if (!isTutorialBootAvailable()) {
+            return false;
+        }
         return shouldBootIntoTutorial() || state.directTutorialBootClaimed === true;
     }
 
@@ -137,6 +148,11 @@
     }
 
     function claimDirectTutorialBoot(round, reason) {
+        if (!isTutorialBootAvailable()) {
+            state.predictedRound = null;
+            state.directTutorialBootClaimed = false;
+            return false;
+        }
         const normalizedRound = normalizeRound(round);
         state.predictionSuppressed = false;
         state.predictedRound = normalizedRound || getPredictedRound();

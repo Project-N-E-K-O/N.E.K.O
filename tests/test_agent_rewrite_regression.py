@@ -1783,6 +1783,7 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
 
 def test_avatar_floating_tutorial_boot_predictor_contract():
     predictor_source = Path("static/tutorial/core/avatar-floating-boot-predictor.js").read_text(encoding="utf-8")
+    manager_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
     assert "AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1'" in predictor_source
     assert "manualResetRound" in predictor_source
@@ -1804,6 +1805,16 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
     assert "window.nekoTutorialOverlay" not in predictor_source
     assert "yuiGuidePcOverlayRunId" in predictor_source
     assert "emotion_model_icon.png" in predictor_source
+    assert "function isTutorialBootAvailable()" in predictor_source
+    assert "window.innerWidth <= 768" in predictor_source
+    assert "window.innerWidth <= 768" in manager_source
+
+    should_skip_block = predictor_source.split("function shouldSkipUserModelBoot()", 1)[1].split(
+        "function markUserModelBootSkipped",
+        1,
+    )[0]
+    assert "if (!isTutorialBootAvailable()) {" in should_skip_block
+    assert "return false;" in should_skip_block.split("if (!isTutorialBootAvailable()) {", 1)[1].split("}", 1)[0]
 
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():
